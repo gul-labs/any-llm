@@ -1,6 +1,6 @@
 {
   "name": "@gullabs/quota",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Provider quota primitives for any-llm — middleware, RateLimiter wrapper, distributed store integration, and typed allow/defer/deny decisions.",
   "type": "module",
   "license": "Apache-2.0",

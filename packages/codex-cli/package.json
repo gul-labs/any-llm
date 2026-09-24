@@ -1,6 +1,6 @@
 {
   "name": "@gullabs/codex-cli",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Dev-only OpenAI Codex CLI provider adapter for any-llm — routes calls through a locally-authenticated `codex` CLI session for $0 API spend during workflow iteration. NOT for production use.",
   "type": "module",
   "license": "Apache-2.0",
