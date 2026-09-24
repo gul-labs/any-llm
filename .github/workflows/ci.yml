@@ -37,7 +37,7 @@ jobs:
       - name: Scan for secrets
         run: gitleaks detect --source . -v --redact
 
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -46,7 +46,13 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Not `pnpm audit` directly. That command cannot distinguish "found a high
+      # severity vulnerability" from "npm's advisory service is unreachable" —
+      # its plain form exits 1 for both, and its --json form is worse, exiting 0
+      # with an empty advisory list that reads as CLEAN. `audit:gate` probes the
+      # service with a known-vulnerable canary first, so an outage is reported as
+      # UNDETERMINED instead of being silently laundered into a pass.
       - name: Audit dependencies
-        run: pnpm audit --audit-level=high
+        run: pnpm audit:gate
 
       - run: pnpm quality

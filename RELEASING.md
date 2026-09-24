@@ -4,11 +4,15 @@ This monorepo uses [Changesets](https://github.com/changesets/changesets) for ve
 
 ## Provenance
 
-This repository is public. The Release workflow requests `id-token: write` and sets `NPM_CONFIG_PROVENANCE=true` so every `changeset publish` attaches [npm provenance](https://docs.npmjs.com/generating-provenance-statements).
+Provenance comes from [npm trusted publishing](https://docs.npmjs.com/trusted-publishers). The Release job requests `id-token: write`; on every publish pnpm 11 exchanges the Actions OIDC token for a short-lived publish credential and attaches a provenance attestation from it. Each package needs a trusted publisher configured on npmjs.com (package → Settings → Trusted Publisher → GitHub Actions, organization `gul-labs`, repository `any-llm`, workflow `release.yml`). A package without one still publishes through the `NPM_TOKEN` fallback, but **without** provenance.
 
-If the repository is ever made private again, npm will reject those provenance bundles (`E422 Unsupported GitHub Actions source repository visibility: "private"`). Disable both `id-token: write` and `NPM_CONFIG_PROVENANCE` in that case.
+There is no `NPM_CONFIG_PROVENANCE` setting. pnpm 11 publishes natively and reads `provenance` only from the `--provenance` CLI flag, not from the environment or `.npmrc`, and `changeset publish` does not pass that flag. This is why `@gullabs/*` 0.14.0 (the first pnpm 11 release) shipped without attestations while 0.13.x has them.
 
-When `NPM_CONFIG_PROVENANCE=true`, npm compares the manifest `repository.url` against the provenance attestation's `sourceRepositoryURI` (derived from the Actions OIDC claims, which include `GITHUB_REPOSITORY`). The org/repo path must be exactly `gul-labs/any-llm`. The comparison is literal, so it is not satisfied by different casing, and **not** by a GitHub redirect from a former org name either — the org was renamed from `GulLabs` to `gul-labs`, and while `github.com/GulLabs/any-llm` still redirects in a browser, the old path in a manifest fails this check. A `git+https://….git` form is valid npm metadata; change the path only. The emergency laptop path does not attach this provenance bundle, so this is a CI-publish constraint.
+After a release, confirm the attestation landed: `npm view @gullabs/<pkg>@<version> dist.attestations`.
+
+If the repository is ever made private, npm rejects provenance bundles (`E422 Unsupported GitHub Actions source repository visibility: "private"`); remove the trusted publishers and `id-token: write` in that case.
+
+npm compares the manifest `repository.url` against the attestation's `sourceRepositoryURI` (derived from the OIDC claims, which include `GITHUB_REPOSITORY`). The org/repo path must be exactly `gul-labs/any-llm`. The comparison is literal: different casing fails, and so does a former org name that GitHub still redirects (the org was renamed from `GulLabs` to `gul-labs`). A `git+https://….git` form is valid npm metadata; change the path only.
 
 Verbatim registry error from Release [31787709259](https://github.com/gul-labs/any-llm/actions/runs/31787709259), from the earlier lowercase-casing incident under the old org name (quoted as-is; the paths in it are historical):
 
@@ -22,7 +26,11 @@ information: package.json: "repository.url" is
 
 The Release workflow fails fast if any public package's `repository.url` path does not equal `GITHUB_REPOSITORY`, before `changeset publish` starts. `packages/core/src/package-metadata.test.ts` asserts the same path on every public package and that this file lists each one. After an org/repo rename, update that test's `repoPath` first.
 
-Registry provenance validation is not exercised by `npm publish --dry-run`. A rejected publish does not consume that package's version, so retry by rolling the path fix forward — never revert to a stale path. `changeset publish` is sequential: if a later package fails after an earlier one succeeded, the published versions are immutable. Before merging a metadata-only fix, verify with `npm view @gullabs/<pkg> version` and `git ls-remote --tags origin` and add a patch changeset for any version already on the registry. If a later Release still returns E422 after the path matches, check that `NPM_CONFIG_PROVENANCE` actually attached a bundle rather than mutating the URL shape.
+Registry provenance validation is not exercised by `npm publish --dry-run`. A rejected publish does not consume that package's version, so retry by rolling the path fix forward — never revert to a stale path. `changeset publish` is sequential: if a later package fails after an earlier one succeeded, the published versions are immutable. Before merging a metadata-only fix, verify with `npm view @gullabs/<pkg> version` and `git ls-remote --tags origin` and add a patch changeset for any version already on the registry.
+
+## Release security
+
+`release.yml` runs on `workflow_run`, which executes in the base repository with secrets even when the triggering CI run came from a fork PR. The job therefore only runs when the CI run succeeded **and** was a `push` event **and** came from this repository **and** from `main`. Top-level permissions are `contents: read`; the write grants are scoped to the release job. Do not loosen any of these conditions.
 
 ## How it works
 
@@ -31,7 +39,7 @@ Registry provenance validation is not exercised by `npm publish --dry-run`. A re
 3. **Let the `Release` workflow run after `main` CI succeeds.** `.github/workflows/release.yml` is triggered by a successful `CI` workflow run on `main`.
 4. **Changesets decides whether to version or publish:**
    - Pending `.changeset/*.md` files → `changesets/action` opens a "Version Packages" PR.
-   - Versions already bumped and no pending changesets → `changesets/action` runs `pnpm release` and publishes unpublished versions with the `NPM_TOKEN` secret.
+   - Versions already bumped and no pending changesets → `changesets/action` runs `pnpm release` and publishes unpublished versions (trusted publishing via OIDC, `NPM_TOKEN` as fallback).
 
 Do not block a normal CI release on local `npm whoami`. Local npm auth is only for the emergency manual path.
 
@@ -105,7 +113,7 @@ All packages are published to the `@gullabs` scope with `publishConfig.access = 
 | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `NPM_TOKEN` | npm automation token with publish access to the `@gullabs` scope. Generate at https://www.npmjs.com/settings → Access Tokens → Generate New Token → Automation. |
 
-`GITHUB_TOKEN` is provided by GitHub Actions.
+`GITHUB_TOKEN` is provided by GitHub Actions and passed to `changesets/action` as `github-token` (v2 no longer reads it from the environment). `NPM_TOKEN` is the fallback for packages without a trusted publisher; once all nine have one, it can be deleted.
 
 ## Manual release (emergency)
 

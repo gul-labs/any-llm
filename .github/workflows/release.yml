@@ -8,17 +8,51 @@ on:
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
+# Least privilege at the top: any job added to this file later starts read-only
+# and has to ask. The publish job's elevated grants are scoped to that job.
 permissions:
-  contents: write
-  pull-requests: write
-  id-token: write
+  contents: read
 
 jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    if: github.event.workflow_run.conclusion == 'success'
+    # FOUR conditions, and only the first was here. `workflow_run` is the
+    # "pwn request" trigger: it runs in the BASE repo with full secrets
+    # (`NPM_TOKEN`, `contents: write`, `id-token: write`), and it fires for CI
+    # runs triggered by `pull_request` — which `ci.yml` accepts unrestricted,
+    # so fork PRs included. The `branches: [main]` filter above does NOT help:
+    # for a `workflow_run` it matches `head_branch`, and for a fork PR that is
+    # the FORK's branch name.
+    #
+    # So the chain was: fork the repo, name your branch `main`, open a PR. CI
+    # runs your commit — you control the tests, so it goes green. Release fires,
+    # checks out `head_sha` (your commit), and runs `pnpm install
+    # --frozen-lockfile` with your lockfile and `pnpm -r build` with your
+    # `tsup.config.ts`. That is arbitrary code execution in a job holding the
+    # publish token, and `changeset publish` will then upload whatever it built
+    # as `@gullabs/*`.
+    #
+    # `event == 'push'` is the load-bearing one: a PR-triggered CI run can never
+    # satisfy it. The repository and branch checks are belt and braces, and cost
+    # nothing.
+    #
+    # Not empirically executed — GitHub Actions cannot be run locally — so this
+    # is reasoned from the documented `workflow_run` semantics.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_branch == 'main'
+    permissions:
+      # changeset publish pushes version tags; changesets/action opens the
+      # release PR.
+      contents: write
+      pull-requests: write
+      # Required to sign the npm provenance attestation, and to mint the OIDC
+      # token that trusted publishing exchanges for a short-lived publish token.
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -66,7 +100,7 @@ jobs:
           EOF
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -78,15 +112,37 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # changesets/action@v2 renamed the root inputs (version → version-script,
+      # publish → publish-script, title → pr-title, commit → commit-message) and
+      # stopped reading GITHUB_TOKEN from the environment — pass github-token.
+      # A blind pin bump without these renames breaks the next publish, because
+      # the old input names are silently ignored rather than rejected.
+      #
+      # `NPM_CONFIG_PROVENANCE` used to live here and is deliberately gone. It
+      # was only ever load-bearing under pnpm 9/10, which shelled out to the npm
+      # CLI, and npm honours that variable. pnpm 11 replaced that with a native
+      # publish implementation which reads `provenance` ONLY from the
+      # `--provenance` CLI flag — not from the environment and not from
+      # `.npmrc`. `changeset publish` invokes `pnpm publish` with a fixed
+      # argument list, so the flag cannot be injected. That is why 0.13.x
+      # carries an attestation and 0.14.0 does not.
+      #
+      # Provenance is now produced by npm trusted publishing instead: pnpm 11
+      # attempts the OIDC exchange on every publish (gated on the
+      # `id-token: write` above) and sets provenance from its result. The
+      # trusted publisher for each package is configured on npmjs.com against
+      # this repository and this workflow filename.
       - name: Create Release PR or Publish to npm
-        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
-          version: pnpm version-packages
-          publish: pnpm release
-          title: 'chore: version packages'
-          commit: 'chore: version packages'
+          version-script: pnpm version-packages
+          publish-script: pnpm release
+          pr-title: 'chore: version packages'
+          commit-message: 'chore: version packages'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Retained as the auth fallback until trusted publishing is confirmed
+          # working for all nine packages. pnpm prefers OIDC over a static token
+          # when both are available, so this does not suppress provenance.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: 'true'
