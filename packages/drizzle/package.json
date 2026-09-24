@@ -1,6 +1,6 @@
 {
   "name": "@gullabs/drizzle",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Drizzle ORM companion for any-llm — reference llm_calls schema and UsageSink for Postgres.",
   "type": "module",
   "license": "Apache-2.0",

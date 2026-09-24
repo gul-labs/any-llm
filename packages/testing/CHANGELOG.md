@@ -1,5 +1,12 @@
 # @gullabs/testing
 
+## 0.8.1
+
+### Patch Changes
+
+- Updated dependencies [cb4980f]
+  - @gullabs/core@0.14.1
+
 ## 0.8.0
 
 ### Minor Changes

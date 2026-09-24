@@ -1,5 +1,15 @@
 # @gullabs/google
 
+## 0.12.1
+
+### Patch Changes
+
+- cb4980f: Raise runtime dependency floors: `zod` `^4.6.5` (was `^4.4.3`) in core, google, xai,
+  claude-cli and codex-cli, and `@google/genai` `^2.23.0` (was `^2.19.0`) in any-llm. No API
+  changes.
+- Updated dependencies [cb4980f]
+  - @gullabs/core@0.14.1
+
 ## 0.12.0
 
 ### Minor Changes

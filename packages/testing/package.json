@@ -1,6 +1,6 @@
 {
   "name": "@gullabs/testing",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Test fakes for any-llm — FakeClock, FakeIds, RecordingSink, FakeAdapter, makeFakeGemini, fakeGeminiResponse. No network in tests.",
   "type": "module",
   "license": "Apache-2.0",

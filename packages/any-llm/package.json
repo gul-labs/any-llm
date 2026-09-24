@@ -1,6 +1,6 @@
 {
   "name": "@gullabs/any-llm",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Batteries-included any-llm client for Gemini: engine, adapter, and Google SDK in one install.",
   "type": "module",
   "license": "Apache-2.0",

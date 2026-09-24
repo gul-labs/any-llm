@@ -1,6 +1,6 @@
 {
   "name": "@gullabs/core",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "description": "Provider-agnostic LLM engine: types, ports, cost computation, and the call pipeline. No provider dependencies.",
   "type": "module",
   "license": "Apache-2.0",
