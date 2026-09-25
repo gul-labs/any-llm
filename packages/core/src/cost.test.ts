@@ -329,6 +329,48 @@ describe('computeCost — edge cases', () => {
     expect(result.unpricedReason).not.toContain('Unknown service tier')
   })
 
+  it('names the model when the standard-tier probe fails, and the tier when it prices', () => {
+    const usage = makeUsage({ inputTokens: 1_000, outputTokens: 100 })
+    const seen: Array<[string, string | undefined]> = []
+    const lookup: CostRatesLookup = (model, tier) => {
+      seen.push([model, tier])
+      if (model === 'priced-model' && (tier === undefined || tier === 'standard')) {
+        return { inputPerM: 1, cachedPerM: 1, outputPerM: 1 }
+      }
+      return undefined
+    }
+
+    const unknown = computeCost(
+      'gemma-4-31b-it',
+      usage,
+      'standard',
+      lookup,
+      TEST_PRICING_VERSION,
+    )
+    const unknownTier = computeCost(
+      'priced-model',
+      usage,
+      'enterprise-super-tier',
+      lookup,
+      TEST_PRICING_VERSION,
+    )
+
+    expect(unknown.microUsd).toBeNull()
+    expect(unknown.unpricedReason).toBe(
+      'Unknown model "gemma-4-31b-it"; no pricing entry found.',
+    )
+    expect(unknownTier.microUsd).toBeNull()
+    expect(unknownTier.unpricedReason).toBe(
+      'Unknown service tier "enterprise-super-tier" for model "priced-model"; refusing to guess a pricing multiplier.',
+    )
+    expect(seen).toEqual([
+      ['gemma-4-31b-it', 'standard'],
+      ['gemma-4-31b-it', undefined],
+      ['priced-model', 'enterprise-super-tier'],
+      ['priced-model', undefined],
+    ])
+  })
+
   it('unknown (but defined) service tier → unpriced, never silently mapped to standard', () => {
     const usage = makeUsage({ inputTokens: 10_000, outputTokens: 500 })
     const result = cost('acme-large', usage, 'enterprise-super-tier')

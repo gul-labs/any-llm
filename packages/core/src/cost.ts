@@ -137,12 +137,13 @@ export function computeCost(
   const modelRates = rates(model, tier)
 
   if (modelRates === undefined) {
-    // A defined tier on an unknown model must name the model. Name the tier
-    // only when the same model prices at the unspecified (standard) tier.
-    const modelIsPriced = tier !== undefined && rates(model, undefined) !== undefined
-    const unpricedReason = modelIsPriced
-      ? `Unknown service tier "${tier}" for model "${model}"; refusing to guess a pricing multiplier.`
-      : `Unknown model "${model}"; no pricing entry found.`
+    // Name the tier only after a standard-tier probe prices this model.
+    // An unknown model fails that probe even when the caller passed a tier.
+    const standardRates = tier !== undefined ? rates(model, undefined) : undefined
+    const unpricedReason =
+      standardRates !== undefined
+        ? `Unknown service tier "${tier}" for model "${model}"; refusing to guess a pricing multiplier.`
+        : `Unknown model "${model}"; no pricing entry found.`
     return {
       microUsd: null,
       usd: null,
