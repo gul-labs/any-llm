@@ -85,6 +85,28 @@ For structured output with built-in tools, follow the exact public
 `gemini-3.1-pro-preview` and `gemini-3.8-flash`. Other models should fail early
 instead of relying on adapter repair or provider-side surprises.
 
+## Registered models
+
+| id                       | Efforts                         | SO + search | caching.minTokens | Tiers          |
+| ------------------------ | ------------------------------- | ----------- | ----------------- | -------------- |
+| `gemini-2.5-pro`         | `low`, `medium`, `high`         | no          | 2048              | flex, standard |
+| `gemini-2.5-flash`       | `none`, `low`, `medium`, `high` | no          | 2048              | flex, standard |
+| `gemini-2.5-flash-lite`  | `none`, `low`, `medium`, `high` | no          | 2048              | flex, standard |
+| `gemini-3.1-pro-preview` | `low`, `medium`, `high`         | yes         | 4096              | flex, standard |
+| `gemini-3.1-flash-lite`  | `none`, `low`, `medium`, `high` | no          | 2048              | flex, standard |
+| `gemini-3.5-flash-lite`  | `none`, `low`, `medium`, `high` | no          | 2048              | flex, standard |
+| `gemini-3.6-flash`       | `none`, `low`, `medium`, `high` | no          | 4096              | flex, standard |
+| `gemini-3.7-flash`       | `low`, `medium`, `high`         | no          | 4096              | flex, standard |
+| `gemini-3.8-flash`       | `low`, `medium`, `high`         | yes         | 4096              | flex, standard |
+| `gemma-4-31b-it`         | `none`, `high`                  | no          | n/a               | none           |
+| `gemma-4-26b-a4b-it`     | `none`, `high`                  | no          | n/a               | none           |
+
+`gemini-3.7-flash` and `gemini-3.8-flash` never emit `thinkingLevel` MINIMAL.
+`gemini-3-flash-preview` and `gemini-3.5-flash` are deleted and are not aliased.
+Migrate both to `gemini-3.6-flash`. `servedServiceTier` is the requested tier
+(plus flex capacity fallback to `standard`). The adapter does not read
+`usageMetadata.serviceTier`.
+
 ## Gemma 4
 
 The default registry includes two API-verified Gemma 4 models: `gemma-4-31b-it`

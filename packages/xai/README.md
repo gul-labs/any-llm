@@ -24,6 +24,7 @@ xAI has no first-party TypeScript SDK. xAI's own quickstart recommends using the
 | `classifyXaiError(err)` | Classifies a raw thrown error into a typed `LlmError`, including xAI's 400-for-auth quirk                            |
 | `grok45ModelDescriptor` | The `grok-4.5` `ModelDescriptor`                                                                                     |
 | `grok46ModelDescriptor` | The `grok-4.6` `ModelDescriptor`                                                                                     |
+| `grok47ModelDescriptor` | The `grok-4.7` `ModelDescriptor`                                                                                     |
 | `xaiModelDescriptors`   | Every model descriptor this package contributes (`grok-4.5`, `grok-4.6`, `grok-4.7`)                                 |
 | `xaiRegistry`           | Pre-built `ModelRegistry` over `xaiModelDescriptors`                                                                 |
 | `xaiPricingSource()`    | Built-in xAI `PricingSource` port implementation, backed by `XAI_PRICING`                                            |
@@ -31,6 +32,7 @@ xAI has no first-party TypeScript SDK. xAI's own quickstart recommends using the
 | `XaiModelRates`         | Per-model rate entry type (`inputPerM`, `cachedPerM`, `outputPerM`, optional `gt200k`)                               |
 | `Grok45ConfigSchema`    | Strict Zod config schema for `grok-4.5`                                                                              |
 | `Grok46ConfigSchema`    | Strict Zod config schema for `grok-4.6`                                                                              |
+| `Grok47ConfigSchema`    | Strict Zod config schema for `grok-4.7`                                                                              |
 | `XaiProviderOptions`    | `{ promptCacheKey? }` — typed `providerOptions.xai` extension shape                                                  |
 | `XaiFileStore`          | Files API store: upload (TTL), get, list, idempotent delete, content                                                 |
 | `XaiFileHandle`         | `{ id, filename?, bytes?, expiresAt?, … }` returned by the store                                                     |
@@ -125,11 +127,11 @@ const replay = await client.generate(
 
 ## grok-4.5, grok-4.6, and grok-4.7
 
-The default registry ships two canonical models (500k token context window each). They route through this adapter and support:
+The default registry ships three canonical models (500k token context window each). They route through this adapter and support:
 
 - **Reasoning** — level-api (`reasoningApi: 'level'`), mapped to the Responses API `reasoning.effort` field. There is no `budgetTokens` field (xAI uses level-style reasoning) — passing it throws `bad_request`. The schema does not set a default effort; if `reasoning` is omitted, no `reasoning` field is sent and xAI's own server-side default (`high`) applies.
   - `grok-4.5`: `admittedReasoningEfforts: ['low', 'medium', 'high']` (live-verified 2026-08-24; `'medium'` is now accepted). `'none'` and `'xhigh'` are rejected. `'none'` remains rejected ("reasoning cannot be disabled").
-  - `grok-4.6`: `admittedReasoningEfforts: ['low', 'medium', 'high', 'xhigh']` (live-verified 2026-08-12). `'none'` is rejected by the live API.
+  - `grok-4.6` and `grok-4.7`: `admittedReasoningEfforts: ['low', 'medium', 'high', 'xhigh']`. `'none'` is rejected.
 - **Structured output** — native. `output.jsonSchema` maps to the Responses API's `text.format` field with `{ type: 'json_schema', name, schema, strict: true }`, **not** `response_format` — this differs from OpenAI's own convention for the same underlying concept.
 - **`strict: true` performs no OpenAI-style compile-time schema validation, as of the 2026-07-09 live probes.** 2026-07-09 live verification against the real xAI Responses API — 13 single-variant probes plus 1 combined probe (14 calls total, all accepted HTTP 200; the combined probe is recorded as fixture `10-non-strict-schema-accepted.json`) — verified that `text.format` with `strict: true` accepted every one of the following schema shapes that OpenAI's own strict mode rejects at compile time: schemas (root and nested) missing `additionalProperties: false`; properties omitted from `required` (optional properties); `format`, `minLength`, `pattern`, and `default` keywords; `anyOf`; `$defs`/`$ref`; `enum`/`const`; and nullable unions (`type: [T, 'null']`). `strict: false` on the same surface showed no observed behavioral divergence from `strict: true`. This adapter forwards schemas to xAI verbatim — no rewriting, no preflight validation, and no injection of `additionalProperties: false` or `required` completion — so OpenAI-strict schema rewriting (including `@gullabs/codex-cli`'s `toOpenAiStrictOutputSchema` helper) is unnecessary for xai as of that verification date. (Reject-don't-map still applies to genuinely invalid input the xai schema/types layer itself rejects; this note is only about strict-mode compile-time schema-shape enforcement.) `packages/xai/src/__fixtures__/10-non-strict-schema-accepted.json` records one live example combining three of these — missing root `additionalProperties: false`, an optional property, and a `format` keyword — in a single accepted call.
 - **Sampling** — `temperature` and `topP` are forwarded verbatim. No `topK`.
@@ -191,7 +193,7 @@ try {
 
 ## Vision constraints
 
-Both models accept image input as an `inline-media` or `file-uri` `Part`, and document attachments as a `file-ref` `Part`:
+All three models accept image input as an `inline-media` or `file-uri` `Part`, and document attachments as a `file-ref` `Part`:
 
 - **`inline-media`** — only `image/jpeg` and `image/png` are accepted; anything else throws `bad_request`. The decoded payload must be at most 20 MiB (xAI's documented inline-image ceiling); larger images throw `bad_request` before the request is sent.
 - **`file-uri`** — only accepted when the URI is a public `http(s)://` URL **and** the declared `mimeType` is jpg/png. A provider-hosted URI from another provider — for example a Gemini Files API URI (`https://generativelanguage.googleapis.com/...`) — is technically `https://` but is not dereferenceable by xAI and is not portable across providers. The adapter rejects it rather than trying to map or proxy it (reject-don't-map).
@@ -220,8 +222,10 @@ Enable Live Search with `providerOptions.xai.tools` (`web_search` / `x_search`).
 | `grok-4.5` | `gt200k` (≥200k gross input) | $4.00/M | $0.60/M      | $12.00/M |
 | `grok-4.6` | standard (<200k gross input) | $2.00/M | $0.50/M      | $6.00/M  |
 | `grok-4.6` | `gt200k` (≥200k gross input) | $4.00/M | $1.00/M      | $12.00/M |
+| `grok-4.7` | standard (<200k gross input) | $2.00/M | $0.50/M      | $6.00/M  |
+| `grok-4.7` | `gt200k` (≥200k gross input) | $4.00/M | $1.00/M      | $12.00/M |
 
-The `gt200k` long-context tier is selected by **gross** `inputTokens` (including cached), not billable input — at or above 200,000 tokens (`long_context_threshold`). The adapter now surfaces the echoed Responses `service_tier` (`'default'` or `'priority'`), so `price()` receives that served value instead of `undefined`. Custom xAI `PricingSource` implementations must price `'default'` at the standard list. Built-in `xaiPricingSource().price()` prices `grok-4.6` + `tier: 'priority'` at 2× every token type after the cache discount: uncached standard-list 2× is confirmed by fixture `12-grok-4-6-xhigh-priority.json` `cost_in_usd_ticks`; cached and `gt200k` legs follow the official 2×-after-cache-discount rule. `grok-4.5` and `grok-4.6` both price `priority` at 2×. `fast` is not admitted. Any other defined tier is unpriced (`microUsd: null`). Standard list rates are pinned to `packages/xai/src/__fixtures__/14-v1-models-pricing.json` (live `GET /v1/models` 2026-08-12).
+The `gt200k` long-context tier is selected by **gross** `inputTokens` (including cached), not billable input — at or above 200,000 tokens (`long_context_threshold`). The adapter now surfaces the echoed Responses `service_tier` (`'default'` or `'priority'`), so `price()` receives that served value instead of `undefined`. Custom xAI `PricingSource` implementations must price `'default'` at the standard list. Built-in `xaiPricingSource().price()` prices `grok-4.6` + `tier: 'priority'` at 2× every token type after the cache discount: uncached standard-list 2× is confirmed by fixture `12-grok-4-6-xhigh-priority.json` `cost_in_usd_ticks`; cached and `gt200k` legs follow the official 2×-after-cache-discount rule. `grok-4.5`, `grok-4.6`, and `grok-4.7` price `priority` at 2×. `fast` is not admitted. Any other defined tier is unpriced (`microUsd: null`). Standard list rates are pinned to `packages/xai/src/__fixtures__/14-v1-models-pricing.json` (live `GET /v1/models` 2026-08-12).
 
 ## EU unavailability
 

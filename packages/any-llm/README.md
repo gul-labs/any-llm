@@ -52,7 +52,7 @@ const result = await client.runStructured(
   { auth: { apiKey: process.env.GEMINI_API_KEY! } },
 )
 
-const descriptor = defaultGeminiRegistry.resolve('google', 'gemini-3.5-flash')
+const descriptor = defaultGeminiRegistry.resolve('google', 'gemini-3.6-flash')
 if (!descriptor) throw new Error('unknown model')
 
 const parsedConfig = descriptor.configSchema.parse({

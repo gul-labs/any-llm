@@ -46,8 +46,8 @@ packages/
   core/       @gullabs/core       # types, ports, engine, callsite, computeCost, errors, record  (no provider deps)
   google/     @gullabs/google     # googleProvider: geminiAdapter over @google/genai + model configs + pricing  (peerDep @google/genai)
   xai/        @gullabs/xai        # xaiProvider: grok-4.5 / grok-4.6 / grok-4.7 over the openai SDK's Responses API  (peerDep openai)
-  claude-cli/ @gullabs/claude-cli # dev-only provider over a local claude CLI session (never production)
-  codex-cli/  @gullabs/codex-cli  # dev-only provider over a local codex CLI session (never production)
+  claude-cli/ @gullabs/claude-cli # dev-only: claude-fable-5-1, claude-opus-5-5, claude-sonnet-5, claude-haiku-4-5-20251001
+  codex-cli/  @gullabs/codex-cli  # dev-only: gpt-6-astra, gpt-6-sol, gpt-6-luna
   any-llm/    @gullabs/any-llm    # batteries-included facade: re-exports core + google
   drizzle/    @gullabs/drizzle    # reference llm_calls schema + drizzleUsageSink  (peerDep drizzle-orm)
   quota/      @gullabs/quota      # provider quota middleware
@@ -371,8 +371,11 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
   `output.jsonSchema` → `responseSchema` (`responseMimeType:'application/json'`) only when native
   structured output is enabled; `providerOptions.google.*` is a strict per-model allowlist mapped
   field-by-field onto the SDK call, not forwarded verbatim.
-- Routes Gemini 2.5/3.x and two API-verified Gemma 4 models (`gemma-4-31b-it`,
-  `gemma-4-26b-a4b-it`). Both Gemma 4 descriptors support multimodal parts, native structured
+- Routes Gemini 2.5 (`gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`),
+  Gemini 3.x (`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
+  `gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`), and two API-verified Gemma 4
+  models (`gemma-4-31b-it`, `gemma-4-26b-a4b-it`). `gemini-3-flash-preview` and
+  `gemini-3.5-flash` do not resolve. Both Gemma 4 descriptors support multimodal parts, native structured
   output, grounding, and thinking (thinkingLevel). They do not support Gemini Flex or pricing.
 - Usage: read `usageMetadata` → `promptTokenCount`→inputTokens, `candidatesTokenCount`→outputTokens,
   `cachedContentTokenCount`→cachedInputTokens, `thoughtsTokenCount`→thinkingTokens; copy whole object

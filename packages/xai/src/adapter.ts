@@ -702,7 +702,7 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       ).reasoningItems
       if (replayedReasoning !== undefined) {
         for (const item of replayedReasoning) {
-          input.push(item as XaiRequestInputItem)
+          input.push(item as unknown as XaiRequestInputItem)
         }
       }
 

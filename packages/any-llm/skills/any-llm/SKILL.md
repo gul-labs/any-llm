@@ -548,9 +548,15 @@ Use the model-native boundary directly:
 - xAI `grok-4.5`: `reasoning.effort` `'low' | 'medium' | 'high'`
 - xAI `grok-4.6` and `grok-4.7`: `reasoning.effort` `'low' | 'medium' | 'high' | 'xhigh'`
 
+Registered Google ids: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`,
+`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
+`gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemma-4-31b-it`,
+`gemma-4-26b-a4b-it`. `gemini-3-flash-preview` and `gemini-3.5-flash` do not resolve.
+
 Exact model reminders:
 
-- `gemini-3.1-pro-preview` does **not** admit `effort: 'none'`
+- `gemini-3.1-pro-preview`, `gemini-3.7-flash`, and `gemini-3.8-flash` do **not** admit `effort: 'none'`
+- Explicit-cache floors: 4096 on `gemini-3.1-pro-preview`, `gemini-3.6-flash`, `gemini-3.7-flash`, and `gemini-3.8-flash`; 2048 on Gemini 2.5, `gemini-3.1-flash-lite`, and `gemini-3.5-flash-lite` (P-G5 not captured for the two Flash-Lite ids)
 - Gemma 4 is binary: only `effort: 'none'` or `effort: 'high'`
 - Omit `serviceTier` for provider-standard; set `flex` explicitly
 - `priority` remains rejected by the library even though Google documents it
@@ -567,8 +573,9 @@ Optional preflight gate: pass `preflight` to the constructor to refuse a cache
 `create()` — including through `getOrCreate()` and its coalesced in-flight path —
 when the token-bearing payload (`model` + `contents` + `systemInstruction` only;
 `ttl` and `displayName` are excluded) doesn't clear a minimum token count. This
-mirrors Gemini's own explicit-caching minimum (2048 tokens on 3.x) without
-hard-coding it into the store.
+mirrors the selected model's explicit-caching minimum (4096 on
+`gemini-3.1-pro-preview` and Gemini 3.6/3.7/3.8 Flash; 2048 on Gemini 2.5 and
+the Flash-Lite ids) without hard-coding it into the store.
 
 ```ts
 import { GoogleCacheStore } from '@gullabs/google'

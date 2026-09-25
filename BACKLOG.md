@@ -136,7 +136,7 @@ paths to other repos.
 ## Model refresh deferrals (2026-09-25)
 
 - **2027-01-01 Gemini intro-price re-snapshot.** `gemini-3.6-flash`, `gemini-3.7-flash`, and `gemini-3.8-flash` ship at the published intro rates $0.75 / $0.075 / $3.75 per million (input / cached / output). On 2027-01-01 those become $1.50 / $0.15 / $7.50. Re-snapshot `GEMINI_PRICING` that day. Until then the snapshot under-records by 50% from that date.
-- Gemini `priority` tier. `usageMetadata.serviceTier` is now reported. Still needs downgrade accounting before the schema admits it.
+- Gemini `priority` tier. The SDK type `usageMetadata.serviceTier` exists, but this adapter does not read it (P-G7 was not captured). Still needs a captured echo plus downgrade accounting before the schema admits `priority`.
 - Other Gemini features: built-in tools beyond `googleSearch` (URL context, Maps, code execution, file search); `media_resolution: ultra_high`; `gemini-3.1-pro-preview-customtools`.
 - xAI models not in this refresh: grok-4.3, the grok-4.20 family (including multi-agent), grok-build-0.1.
 - xAI tools not supported: code execution, collections, remote MCP.

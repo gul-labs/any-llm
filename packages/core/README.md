@@ -82,7 +82,7 @@ Built-in descriptors own the model-config contract. Core owns only the generic
 ```ts
 import { defaultGeminiRegistry } from '@gullabs/google'
 
-const descriptor = defaultGeminiRegistry.resolve('google', 'gemini-3.5-flash')
+const descriptor = defaultGeminiRegistry.resolve('google', 'gemini-3.6-flash')
 if (!descriptor) throw new Error('unknown model')
 
 // Derived JSON Schema for UI/forms.
