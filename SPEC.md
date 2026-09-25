@@ -10,7 +10,7 @@
 1. Call **provider-hosted models** through self-contained provider packages composed via
    `composeProviders` (ADR-023): `@gullabs/google` over `@google/genai` (Gemini with Flex where
    supported; Gemma without Gemini-only Flex assumptions), `@gullabs/xai` over the `openai`
-   SDK's Responses API (grok-4.5, grok-4.6), plus the dev-only CLI providers (`@gullabs/claude-cli`,
+   SDK's Responses API (grok-4.5, grok-4.6, grok-4.7), plus the dev-only CLI providers (`@gullabs/claude-cli`,
    `@gullabs/codex-cli`). The core engine ships zero provider knowledge.
 2. **Record token usage** (input / output / cached / **thinking**).
 3. Capture **thinking** — thinking _token usage_ always; the provider-returned _thought-summary
@@ -45,7 +45,7 @@ Seams are present; machinery is intentionally small.
 packages/
   core/       @gullabs/core       # types, ports, engine, callsite, computeCost, errors, record  (no provider deps)
   google/     @gullabs/google     # googleProvider: geminiAdapter over @google/genai + model configs + pricing  (peerDep @google/genai)
-  xai/        @gullabs/xai        # xaiProvider: grok-4.5 / grok-4.6 over the openai SDK's Responses API  (peerDep openai)
+  xai/        @gullabs/xai        # xaiProvider: grok-4.5 / grok-4.6 / grok-4.7 over the openai SDK's Responses API  (peerDep openai)
   claude-cli/ @gullabs/claude-cli # dev-only provider over a local claude CLI session (never production)
   codex-cli/  @gullabs/codex-cli  # dev-only provider over a local codex CLI session (never production)
   any-llm/    @gullabs/any-llm    # batteries-included facade: re-exports core + google
@@ -388,9 +388,9 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
 
 - `xaiAdapter(): ProviderAdapter` over the `openai` SDK's Responses API pointed at
   `https://api.x.ai/v1` (peerDep `openai@^6`), API-key auth only. Ships `grok-4.5`
-  and `grok-4.6` (level reasoning; 4.6 admits `low | medium | high | xhigh` and
+  `grok-4.6`, and `grok-4.7` (level reasoning; 4.6 and 4.7 admit `low | medium | high | xhigh` and
   `serviceTier: 'priority'`; native structured output via `text.format`, vision, automatic
-  caching + `providerOptions.xai.promptCacheKey`, live-verified pricing incl. the >200k
+  caching + `providerOptions.xai.promptCacheKey`, pricing incl. the ≥200k
   long-context tier). Same contract as the Google adapter: strict per-model schema,
   reject-don't-map, GROSS usage, never persists/loops. Full details in
   `packages/xai/README.md`.

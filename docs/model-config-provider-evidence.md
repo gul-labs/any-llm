@@ -22,6 +22,33 @@ legacy field the provider may still accept.
 | `gemma-4-31b-it`         | `generateContent` | `thinkingLevel`  | `none`, `high`                       | On/off only; `thinkingLevel = minimal` disables, `thinkingLevel = high` enables; no `budgetTokens` lane                                | Tunable per live probe; keep re-verification note until strict schema lands | Yes               | Blocked pending exact evidence; do not admit by schema yet         | None admitted until verified              | Supported ids and on/off thinking model from [Run Gemma with the Gemini API](https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api). Repo live-probe notes in `packages/core/CHANGELOG.md` and `packages/google/CHANGELOG.md` record that only `gemma-4-31b-it` and `gemma-4-26b-a4b-it` are callable, `thinkingBudget` returns HTTP 400, native structured output works, grounding works, and only `MINIMAL`/`HIGH` are accepted. Public Gemma docs do not currently provide the same evidence shape for service tiers or structured-output-with-tools, so those stay out of schema. |
 | `gemma-4-26b-a4b-it`     | `generateContent` | `thinkingLevel`  | `none`, `high`                       | On/off only; `thinkingLevel = minimal` disables, `thinkingLevel = high` enables; no `budgetTokens` lane                                | Tunable per live probe; keep re-verification note until strict schema lands | Yes               | Blocked pending exact evidence; do not admit by schema yet         | None admitted until verified              | Supported ids and on/off thinking model from [Run Gemma with the Gemini API](https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api). Repo live-probe notes in `packages/core/CHANGELOG.md` and `packages/google/CHANGELOG.md` record that only `gemma-4-31b-it` and `gemma-4-26b-a4b-it` are callable, `thinkingBudget` returns HTTP 400, native structured output works, grounding works, and only `MINIMAL`/`HIGH` are accepted. Public Gemma docs do not currently provide the same evidence shape for service tiers or structured-output-with-tools, so those stay out of schema. |
 
+## 2026-09-25 refresh
+
+Registered after the 2026-09-25 catalog refresh. Hosts migrate deleted ids themselves:
+`gemini-3-flash-preview` and `gemini-3.5-flash` → `gemini-3.6-flash`; `gpt-5.x` →
+`gpt-6-astra` / `gpt-6-sol` / `gpt-6-luna`; `claude-fable-5` → `claude-fable-5-1`;
+`claude-opus-4-8` → `claude-opus-5-5`. There is no alias.
+
+| Model                                                    | Efforts                                 | SO + search | caching.minTokens | Tiers          | Notes                                                        |
+| -------------------------------------------------------- | --------------------------------------- | ----------- | ----------------- | -------------- | ------------------------------------------------------------ |
+| `gemini-3.8-flash`                                       | `low`, `medium`, `high`                 | yes         | 4096              | flex, standard | Intro rates. Never emits `thinkingLevel` MINIMAL.            |
+| `gemini-3.7-flash`                                       | `low`, `medium`, `high`                 | no          | 4096              | flex, standard | Same intro rates. Never emits MINIMAL.                       |
+| `gemini-3.6-flash`                                       | `none`, `low`, `medium`, `high`         | no          | 4096              | flex, standard | Same intro rates.                                            |
+| `gemini-3.5-flash-lite`                                  | `none`, `low`, `medium`, `high`         | no          | 2048              | flex, standard | P-G5 did not pin 2048 vs 4096. Flex/batch cached is $0.02.   |
+| `gemini-3.1-pro-preview`                                 | `low`, `medium`, `high`                 | yes         | 4096              | flex, standard | Cache minimum corrected from the previous 2048.              |
+| `gemini-3.1-flash-lite`                                  | `none`, `low`, `medium`, `high`         | no          | 2048              | flex, standard | Unchanged. P-G5 not captured.                                |
+| `grok-4.7`                                               | `low`, `medium`, `high`, `xhigh`        | n/a         | n/a               | priority       | Same list as grok-4.6. Long-context starts at ≥200,000.      |
+| `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`                 | `low`, `medium`, `high`, `xhigh`, `max` | n/a         | n/a               | n/a            | `--strict-config` is invariant. `ultra` and `none` excluded. |
+| `claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5` | `low` through `max`                     | n/a         | n/a               | n/a            | `--settings {"switchModelsOnFlag":false}`.                   |
+| `claude-haiku-4-5-20251001`                              | none                                    | n/a         | n/a               | n/a            | No reasoning key. The CLI drops `--effort`.                  |
+
+Recorded with this refresh:
+
+- Structured output plus `googleSearch` is a descriptor flag, `structuredOutputWithTools`. Only `gemini-3.1-pro-preview` and `gemini-3.8-flash` admit it.
+- July 21 sampling deprecation and the 2026-09-18 2.5 access restriction are provider facts. 2.5 Pro, Flash, and Flash-Lite stay registered. P-G8 was not captured, so error classification for a blocked 2.5 key is unchanged.
+- Served-tier reporting is available as `usageMetadata.serviceTier`. Gemini `priority` stays out of schema until downgrade accounting exists.
+- xAI `long_context_threshold` is inclusive: gross input at or above 200,000 uses the long-context rates. The xAI lookup owns `>=`; core's selector stays `>`.
+
 ## Contract Notes
 
 - `descriptor.configSchema` is the runtime source of truth for persisted and

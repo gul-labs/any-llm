@@ -133,6 +133,21 @@ paths to other repos.
 
 ---
 
+## Model refresh deferrals (2026-09-25)
+
+- **2027-01-01 Gemini intro-price re-snapshot.** `gemini-3.6-flash`, `gemini-3.7-flash`, and `gemini-3.8-flash` ship at the published intro rates $0.75 / $0.075 / $3.75 per million (input / cached / output). On 2027-01-01 those become $1.50 / $0.15 / $7.50. Re-snapshot `GEMINI_PRICING` that day. Until then the snapshot under-records by 50% from that date.
+- Gemini `priority` tier. `usageMetadata.serviceTier` is now reported. Still needs downgrade accounting before the schema admits it.
+- Other Gemini features: built-in tools beyond `googleSearch` (URL context, Maps, code execution, file search); `media_resolution: ultra_high`; `gemini-3.1-pro-preview-customtools`.
+- xAI models not in this refresh: grok-4.3, the grok-4.20 family (including multi-agent), grok-build-0.1.
+- xAI tools not supported: code execution, collections, remote MCP.
+- xAI US regional endpoint (1.1×).
+- Undocumented xAI ids (`grok-4.5-cloud`, `grok-4.5-sp`, `grok-orca-oa0917`) are never registered.
+- Vision on the CLI providers (`codex exec -i`; `claude -p --input-format stream-json`).
+- Non-text models (image, video, TTS, STT, live, music, embeddings).
+- P-G5: pin `caching.minTokens` for `gemini-3.5-flash-lite` and `gemini-3.1-flash-lite` with an explicit cache create at 2,048 vs 4,096. Both stay at 2048 until that probe.
+- P-X2: pin the `attachment_search` usage counter name, then price it at $10/1k and delete `attachment_search_unpinned`.
+- P-X3: capture a grok-4.7 `store: false` function-call replay fixture, including reasoning items. The adapter already replays function-call items unchanged; no fixture values were invented.
+
 ## Optional later (not ticketed)
 
 - Tool-invocation fee Cost lane for xAI server tools (`attachment_search`, etc.) once

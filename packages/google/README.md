@@ -82,7 +82,7 @@ descriptor boundary:
 
 For structured output with built-in tools, follow the exact public
 `generateContent` evidence: the current docs only admit that combination for
-`gemini-3.1-pro-preview` and `gemini-3.5-flash`. Other models should fail early
+`gemini-3.1-pro-preview` and `gemini-3.8-flash`. Other models should fail early
 instead of relying on adapter repair or provider-side surprises.
 
 ## Gemma 4

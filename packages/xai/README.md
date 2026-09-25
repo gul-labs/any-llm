@@ -14,28 +14,28 @@ xAI has no first-party TypeScript SDK. xAI's own quickstart recommends using the
 
 ## Key exports
 
-| Export                  | What it is                                                                                              |
-| ----------------------- | ------------------------------------------------------------------------------------------------------- |
-| `xaiProvider(opts?)`    | `ProviderPlugin` factory — bundles the adapter, `grok-4.5` / `grok-4.6` descriptors, and pricing source |
-| `xaiAdapter(opts?)`     | Creates the `ProviderAdapter` for xAI                                                                   |
-| `XaiAdapterOptions`     | `{ client?: XaiClientLike }` — inject a pre-built or fake client                                        |
-| `XaiClientLike`         | Structural interface the adapter depends on (satisfied by real SDK and fakes)                           |
-| `buildXaiClient(auth)`  | Builds the real `openai`-SDK-backed client from `AuthMaterial`, pointed at xAI's base URL               |
-| `classifyXaiError(err)` | Classifies a raw thrown error into a typed `LlmError`, including xAI's 400-for-auth quirk               |
-| `grok45ModelDescriptor` | The `grok-4.5` `ModelDescriptor`                                                                        |
-| `grok46ModelDescriptor` | The `grok-4.6` `ModelDescriptor`                                                                        |
-| `xaiModelDescriptors`   | Every model descriptor this package contributes (`grok-4.5`, `grok-4.6`)                                |
-| `xaiRegistry`           | Pre-built `ModelRegistry` over `xaiModelDescriptors`                                                    |
-| `xaiPricingSource()`    | Built-in xAI `PricingSource` port implementation, backed by `XAI_PRICING`                               |
-| `XAI_PRICING`           | Frozen xAI pricing snapshot (µUSD per million tokens)                                                   |
-| `XaiModelRates`         | Per-model rate entry type (`inputPerM`, `cachedPerM`, `outputPerM`, optional `gt200k`)                  |
-| `Grok45ConfigSchema`    | Strict Zod config schema for `grok-4.5`                                                                 |
-| `Grok46ConfigSchema`    | Strict Zod config schema for `grok-4.6`                                                                 |
-| `XaiProviderOptions`    | `{ promptCacheKey? }` — typed `providerOptions.xai` extension shape                                     |
-| `XaiFileStore`          | Files API store: upload (TTL), get, list, idempotent delete, content                                    |
-| `XaiFileHandle`         | `{ id, filename?, bytes?, expiresAt?, … }` returned by the store                                        |
-| `FileDeleteOptions`     | `{ failClosed?, signal? }` — opt-in fail-closed delete for durable release gates                        |
-| `XAI_FILE_TTL_*`        | TTL bounds (`3600`…`2592000` seconds) and `XAI_FILE_MAX_BYTES` (48 MiB)                                 |
+| Export                  | What it is                                                                                                           |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `xaiProvider(opts?)`    | `ProviderPlugin` factory — bundles the adapter, `grok-4.5` / `grok-4.6` / `grok-4.7` descriptors, and pricing source |
+| `xaiAdapter(opts?)`     | Creates the `ProviderAdapter` for xAI                                                                                |
+| `XaiAdapterOptions`     | `{ client?: XaiClientLike }` — inject a pre-built or fake client                                                     |
+| `XaiClientLike`         | Structural interface the adapter depends on (satisfied by real SDK and fakes)                                        |
+| `buildXaiClient(auth)`  | Builds the real `openai`-SDK-backed client from `AuthMaterial`, pointed at xAI's base URL                            |
+| `classifyXaiError(err)` | Classifies a raw thrown error into a typed `LlmError`, including xAI's 400-for-auth quirk                            |
+| `grok45ModelDescriptor` | The `grok-4.5` `ModelDescriptor`                                                                                     |
+| `grok46ModelDescriptor` | The `grok-4.6` `ModelDescriptor`                                                                                     |
+| `xaiModelDescriptors`   | Every model descriptor this package contributes (`grok-4.5`, `grok-4.6`, `grok-4.7`)                                 |
+| `xaiRegistry`           | Pre-built `ModelRegistry` over `xaiModelDescriptors`                                                                 |
+| `xaiPricingSource()`    | Built-in xAI `PricingSource` port implementation, backed by `XAI_PRICING`                                            |
+| `XAI_PRICING`           | Frozen xAI pricing snapshot (µUSD per million tokens)                                                                |
+| `XaiModelRates`         | Per-model rate entry type (`inputPerM`, `cachedPerM`, `outputPerM`, optional `gt200k`)                               |
+| `Grok45ConfigSchema`    | Strict Zod config schema for `grok-4.5`                                                                              |
+| `Grok46ConfigSchema`    | Strict Zod config schema for `grok-4.6`                                                                              |
+| `XaiProviderOptions`    | `{ promptCacheKey? }` — typed `providerOptions.xai` extension shape                                                  |
+| `XaiFileStore`          | Files API store: upload (TTL), get, list, idempotent delete, content                                                 |
+| `XaiFileHandle`         | `{ id, filename?, bytes?, expiresAt?, … }` returned by the store                                                     |
+| `FileDeleteOptions`     | `{ failClosed?, signal? }` — opt-in fail-closed delete for durable release gates                                     |
+| `XAI_FILE_TTL_*`        | TTL bounds (`3600`…`2592000` seconds) and `XAI_FILE_MAX_BYTES` (48 MiB)                                              |
 
 ## Quick example
 

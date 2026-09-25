@@ -158,11 +158,10 @@ const result = await client.generate(
 )
 ```
 
-`grok-4.5`'s `reasoning.effort` admits only `'low' | 'high'` (`Grok45ConfigSchema`).
-`grok-4.6` admits `'low' | 'medium' | 'high' | 'xhigh'` (live-verified 2026-08-12);
-`'none'` is rejected. `grok-4.6` also admits `serviceTier: 'priority'` (2× list
-price, confirmed by live `cost_in_usd_ticks`). `grok-4.5` still rejects every
-`serviceTier`. No `topK`.
+`grok-4.5` admits `reasoning.effort` `'low' | 'medium' | 'high'` and
+`serviceTier: 'priority'`. `grok-4.6` and `grok-4.7` admit
+`'low' | 'medium' | 'high' | 'xhigh'` and `serviceTier: 'priority'` (2× list
+price). `'none'` is rejected. No `topK`.
 
 ## xAI structured-output schemas vs. OpenAI-strict / codex-cli schemas
 
@@ -367,7 +366,7 @@ Treat model config as descriptor-owned:
 ```ts
 import { defaultGeminiRegistry } from '@gullabs/google'
 
-const descriptor = defaultGeminiRegistry.resolve('google', 'gemini-3.5-flash')
+const descriptor = defaultGeminiRegistry.resolve('google', 'gemini-3.6-flash')
 if (!descriptor) throw new Error('unknown model')
 
 // UI/forms:
@@ -546,8 +545,8 @@ Use the model-native boundary directly:
 
 - Gemini 2.5: `reasoning.budgetTokens` or admitted `reasoning.effort` (not `xhigh`)
 - Gemini 3 / Gemma 4: `reasoning.effort` (not `xhigh`)
-- xAI `grok-4.5`: `reasoning.effort` `'low' | 'high'`
-- xAI `grok-4.6`: `reasoning.effort` `'low' | 'medium' | 'high' | 'xhigh'`
+- xAI `grok-4.5`: `reasoning.effort` `'low' | 'medium' | 'high'`
+- xAI `grok-4.6` and `grok-4.7`: `reasoning.effort` `'low' | 'medium' | 'high' | 'xhigh'`
 
 Exact model reminders:
 
