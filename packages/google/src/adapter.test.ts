@@ -2156,7 +2156,7 @@ describe('grounding — providerMetadata merge', () => {
 
 describe('grounding — registry capabilities', () => {
   it('every Gemini model descriptor has capabilities.grounding === true', () => {
-    expect(geminiModelDescriptors).toHaveLength(5)
+    expect(geminiModelDescriptors).toHaveLength(9)
     for (const desc of geminiModelDescriptors) {
       expect(desc.capabilities?.grounding).toBe(true)
     }

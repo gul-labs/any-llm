@@ -560,6 +560,9 @@ Exact model reminders:
 - Gemma 4 is binary: only `effort: 'none'` or `effort: 'high'`
 - Omit `serviceTier` for provider-standard; set `flex` explicitly
 - `priority` remains rejected by the library even though Google documents it
+- July 21, 2026: Google deprecated sampling parameters `temperature`, `top_p`, and `top_k`. Gemini 3.x schemas already omit them. Gemini 2.5 and Gemma stay tunable.
+- September 18, 2026: Gemini 2.5 access is restricted to projects that already used 2.5. The three 2.5 ids stay registered.
+- xAI long-context rates apply at gross input `>= 200_000` (`long_context_threshold` is inclusive).
 
 ## Context caching — `GoogleCacheStore`
 
