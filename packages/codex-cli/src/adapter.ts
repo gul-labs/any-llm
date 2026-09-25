@@ -99,6 +99,7 @@ const INVARIANT_ARGS = [
   '--ignore-rules',
   '--sandbox',
   'read-only',
+  '--strict-config',
 ]
 
 // ---------------------------------------------------------------------------

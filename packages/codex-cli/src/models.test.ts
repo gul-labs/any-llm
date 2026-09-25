@@ -8,43 +8,50 @@ import { describe, it, expect } from 'vitest'
 import { assertRegistryInvariants } from '@gullabs/testing'
 import {
   CODEX_CLI_MODEL_IDS,
-  Gpt54MiniConfigSchema,
+  CODEX_CLI_REASONING_EFFORTS,
+  DELETED_CODEX_CLI_MODEL_IDS,
+  Gpt6SolConfigSchema,
   codexCliModelDescriptors,
   codexCliRegistry,
 } from './models.js'
 
 describe('codex-cli config schemas', () => {
   it('rejects unknown keys (strict object)', () => {
-    const result = Gpt54MiniConfigSchema.safeParse({ notARealKey: true })
+    const result = Gpt6SolConfigSchema.safeParse({ notARealKey: true })
     expect(result.success).toBe(false)
   })
 
   it('rejects a bad reasoning effort', () => {
-    const result = Gpt54MiniConfigSchema.safeParse({
+    const result = Gpt6SolConfigSchema.safeParse({
       reasoning: { effort: 'ultra-mega' },
     })
     expect(result.success).toBe(false)
   })
 
+  it('rejects ultra (CLI delegation switch, not a reasoning level)', () => {
+    const result = Gpt6SolConfigSchema.safeParse({ reasoning: { effort: 'ultra' } })
+    expect(result.success).toBe(false)
+  })
+
   it('rejects reasoning.effort "none" (not admitted by codex-cli, unlike core)', () => {
-    const result = Gpt54MiniConfigSchema.safeParse({ reasoning: { effort: 'none' } })
+    const result = Gpt6SolConfigSchema.safeParse({ reasoning: { effort: 'none' } })
     expect(result.success).toBe(false)
   })
 
   it('accepts each admitted reasoning effort', () => {
-    for (const effort of ['low', 'medium', 'high', 'xhigh']) {
-      const result = Gpt54MiniConfigSchema.safeParse({ reasoning: { effort } })
+    for (const effort of CODEX_CLI_REASONING_EFFORTS) {
+      const result = Gpt6SolConfigSchema.safeParse({ reasoning: { effort } })
       expect(result.success).toBe(true)
     }
   })
 
   it('accepts a valid timeoutMs', () => {
-    const result = Gpt54MiniConfigSchema.safeParse({ timeoutMs: 60_000 })
+    const result = Gpt6SolConfigSchema.safeParse({ timeoutMs: 60_000 })
     expect(result.success).toBe(true)
   })
 
   it('rejects a timeoutMs above the 30-minute cap', () => {
-    const result = Gpt54MiniConfigSchema.safeParse({ timeoutMs: 1_800_001 })
+    const result = Gpt6SolConfigSchema.safeParse({ timeoutMs: 1_800_001 })
     expect(result.success).toBe(false)
   })
 
@@ -56,14 +63,26 @@ describe('codex-cli config schemas', () => {
       'maxOutputTokens',
       'stopSequences',
     ]) {
-      const result = Gpt54MiniConfigSchema.safeParse({ [key]: 1 })
+      const result = Gpt6SolConfigSchema.safeParse({ [key]: 1 })
       expect(result.success).toBe(false)
     }
   })
 
   it('accepts an empty config object', () => {
-    const result = Gpt54MiniConfigSchema.safeParse({})
+    const result = Gpt6SolConfigSchema.safeParse({})
     expect(result.success).toBe(true)
+  })
+})
+
+describe('deleted codex-cli model ids', () => {
+  it.each(DELETED_CODEX_CLI_MODEL_IDS)('resolve(%s) is undefined', (id) => {
+    expect(codexCliRegistry.resolve('codex-cli', id)).toBeUndefined()
+  })
+
+  it('registers no gpt-5 id', () => {
+    for (const descriptor of codexCliModelDescriptors) {
+      expect(descriptor.model.startsWith('gpt-5')).toBe(false)
+    }
   })
 })
 
@@ -84,7 +103,7 @@ describe('codexCliRegistry', () => {
   })
 
   it('validateConfig["~standard"].validate accepts a good config', async () => {
-    const descriptor = codexCliRegistry.resolve('codex-cli', 'gpt-5.4-mini')
+    const descriptor = codexCliRegistry.resolve('codex-cli', 'gpt-6-sol')
     expect(descriptor).toBeDefined()
     const result = await descriptor?.validateConfig['~standard'].validate({
       reasoning: { effort: 'high' },
@@ -93,7 +112,7 @@ describe('codexCliRegistry', () => {
   })
 
   it('validateConfig["~standard"].validate rejects a bad config', async () => {
-    const descriptor = codexCliRegistry.resolve('codex-cli', 'gpt-5.4-mini')
+    const descriptor = codexCliRegistry.resolve('codex-cli', 'gpt-6-sol')
     expect(descriptor).toBeDefined()
     const result = await descriptor?.validateConfig['~standard'].validate({
       temperature: 0.5,

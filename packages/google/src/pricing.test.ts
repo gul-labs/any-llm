@@ -297,6 +297,16 @@ describe('computeCost — edge cases', () => {
     )
   })
 
+  it('inherited object keys are not priced tiers', () => {
+    const usage = makeUsage({ inputTokens: 10_000, outputTokens: 500 })
+    for (const tier of ['constructor', 'toString']) {
+      const cost = PRICING.price('gemini-2.5-pro', usage, tier)
+      expect(cost.microUsd).toBeNull()
+      expect(cost.confidence).toBe('estimated')
+      expect(cost.unpricedReason).toContain(tier)
+    }
+  })
+
   it('unknown (but defined) service tier → unpriced, never silently mapped to standard', () => {
     const usage = makeUsage({ inputTokens: 10_000, outputTokens: 500 })
     const cost = computeCost('gemini-2.5-pro', usage, 'enterprise-super-tier')

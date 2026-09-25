@@ -24,16 +24,22 @@ import type { ModelDescriptor, ModelRegistry } from '@gullabs/core'
 // ---------------------------------------------------------------------------
 
 /** The exact set of Codex CLI model identifiers this package supports. */
-export type CodexCliModelId =
-  'gpt-5.5' | 'gpt-5.4' | 'gpt-5.4-mini' | 'gpt-5.3-codex-spark'
+export type CodexCliModelId = 'gpt-6-astra' | 'gpt-6-sol' | 'gpt-6-luna'
 
 /** All supported {@link CodexCliModelId} values, in registry order. */
 export const CODEX_CLI_MODEL_IDS: readonly CodexCliModelId[] = [
+  'gpt-6-astra',
+  'gpt-6-sol',
+  'gpt-6-luna',
+]
+
+/** Deleted ids. Resolve returns undefined; there is no alias. */
+export const DELETED_CODEX_CLI_MODEL_IDS = [
   'gpt-5.5',
   'gpt-5.4',
   'gpt-5.4-mini',
   'gpt-5.3-codex-spark',
-]
+] as const
 
 // ---------------------------------------------------------------------------
 // Reasoning effort — deliberately NOT core's ReasoningEffort
@@ -43,11 +49,17 @@ export const CODEX_CLI_MODEL_IDS: readonly CodexCliModelId[] = [
  * Codex CLI's `model_reasoning_effort` levels.
  *
  * Distinct from core's `ReasoningEffort`
- * (`'none'|'low'|'medium'|'high'|'xhigh'`): codex admits `'xhigh'` and does
- * not admit `'none'`, so we keep a package-local enum rather than reuse
- * core's type as-is.
+ * (`'none'|'low'|'medium'|'high'|'xhigh'`): Codex admits `'xhigh'` and
+ * `'max'`, and does not admit `'none'`. `'ultra'` is a CLI delegation switch,
+ * not a server reasoning level, so it is excluded.
  */
-export const CODEX_CLI_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const
+export const CODEX_CLI_REASONING_EFFORTS = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const
 
 export type CodexCliReasoningEffort = (typeof CODEX_CLI_REASONING_EFFORTS)[number]
 
@@ -90,22 +102,20 @@ function buildCodexCliConfigSchema(modelName: string, title: string) {
     })
 }
 
-export const Gpt55ConfigSchema = buildCodexCliConfigSchema('gpt-5.5', 'Gpt55Config')
-export const Gpt54ConfigSchema = buildCodexCliConfigSchema('gpt-5.4', 'Gpt54Config')
-export const Gpt54MiniConfigSchema = buildCodexCliConfigSchema(
-  'gpt-5.4-mini',
-  'Gpt54MiniConfig',
+export const Gpt6AstraConfigSchema = buildCodexCliConfigSchema(
+  'gpt-6-astra',
+  'Gpt6AstraConfig',
 )
-export const Gpt53CodexSparkConfigSchema = buildCodexCliConfigSchema(
-  'gpt-5.3-codex-spark',
-  'Gpt53CodexSparkConfig',
+export const Gpt6SolConfigSchema = buildCodexCliConfigSchema('gpt-6-sol', 'Gpt6SolConfig')
+export const Gpt6LunaConfigSchema = buildCodexCliConfigSchema(
+  'gpt-6-luna',
+  'Gpt6LunaConfig',
 )
 
 const CONFIG_SCHEMA_BY_ID: Record<CodexCliModelId, z.ZodType> = {
-  'gpt-5.5': Gpt55ConfigSchema,
-  'gpt-5.4': Gpt54ConfigSchema,
-  'gpt-5.4-mini': Gpt54MiniConfigSchema,
-  'gpt-5.3-codex-spark': Gpt53CodexSparkConfigSchema,
+  'gpt-6-astra': Gpt6AstraConfigSchema,
+  'gpt-6-sol': Gpt6SolConfigSchema,
+  'gpt-6-luna': Gpt6LunaConfigSchema,
 }
 
 // ---------------------------------------------------------------------------

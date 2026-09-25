@@ -149,24 +149,33 @@ export function geminiStandardRates(model: string): ModelRates | undefined {
  * Concrete rates for `(model, tier)`. `undefined` tier is standard. A defined
  * tier this snapshot does not price returns `undefined`.
  */
+function isPricedGeminiTier(tier: string): tier is GeminiPricedTier {
+  return (GEMINI_PRICED_TIERS as readonly string[]).includes(tier)
+}
+
 export function lookupGeminiTierRates(
   model: string,
   tier?: string,
 ): GeminiTierRates | undefined {
   const exact = GEMINI_PRICING[model]
-  if (exact !== undefined) return tier === undefined || tier in exact ? exact : undefined
-
-  let bestKey = ''
-  let best: GeminiTierRates | undefined
-  for (const key of Object.keys(GEMINI_PRICING)) {
-    if (model.startsWith(key) && key.length > bestKey.length) {
-      bestKey = key
-      best = GEMINI_PRICING[key]
-    }
-  }
-  if (best === undefined) return undefined
-  if (tier !== undefined && !(tier in best)) return undefined
-  return best
+  const entry =
+    exact ??
+    (() => {
+      let bestKey = ''
+      let best: GeminiTierRates | undefined
+      for (const key of Object.keys(GEMINI_PRICING)) {
+        if (model.startsWith(key) && key.length > bestKey.length) {
+          bestKey = key
+          best = GEMINI_PRICING[key]
+        }
+      }
+      return best
+    })()
+  if (entry === undefined) return undefined
+  // Own priced tiers only. `in` is true for inherited names (`constructor`,
+  // `toString`) and would let resolveGeminiRates price them as zero.
+  if (tier !== undefined && !isPricedGeminiTier(tier)) return undefined
+  return entry
 }
 
 /** Resolve the concrete {@link ModelRates} `computeCost` should apply. */
