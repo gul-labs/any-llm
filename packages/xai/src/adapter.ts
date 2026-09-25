@@ -320,7 +320,7 @@ const CANONICALLY_MAPPED_USAGE_KEYS = new Set([
  * extras (e.g. `context_details`) belong to `AdapterResult.providerMetadata`
  * (see the adapter) and the full raw payload always lands in `Usage.raw`
  * verbatim. Tool invocation fees are billed in `Cost.details.tools` from the
- * live-pinned counters (`web_search_calls`, `x_search_calls`).
+ * live-pinned counters (`web_search_calls`, `x_posts_fetched`, `x_users_fetched`).
  */
 function mapUsage(usage: XaiUsageShape): Usage {
   const inputTokens = usage.input_tokens
@@ -345,8 +345,8 @@ function mapUsage(usage: XaiUsageShape): Usage {
   }
 
   // Live 2026-08-24: per-tool invocation counters live in the nested
-  // `server_side_tool_usage_details` object (web_search_calls, x_search_calls,
-  // document_search_calls, …). Flatten numeric members under their raw names
+  // `server_side_tool_usage_details` object (web_search_calls,
+  // x_posts_fetched, x_users_fetched, …). Flatten numeric members under their raw names
   // so pricing can read them from Usage.details.
   const toolUsage = usage['server_side_tool_usage_details']
   if (isPlainRecord(toolUsage)) {
@@ -934,6 +934,11 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       )
       if (expectedToolCounters.length > 0 || hasFileRef) {
         usage.details['server_tools_requested'] = 1
+        if (
+          xaiProviderConfig.tools?.some((tool) => tool['type'] === 'x_search') === true
+        ) {
+          usage.details['x_search_requested'] = 1
+        }
         const missing = expectedToolCounters.filter((key) => !(key in usage.details))
         if (missing.length > 0) {
           usage.details['server_tools_missing'] = 1
@@ -1069,9 +1074,9 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
   }
 }
 
-/** Live-pinned 2026-08-24 counter names from `usage.server_side_tool_usage_details`. */
+/** Counter names from `usage.server_side_tool_usage_details`. */
 const WEB_SEARCH_COUNTER = 'web_search_calls'
-const X_SEARCH_COUNTER = 'x_search_calls'
+const X_SEARCH_ITEM_COUNTERS = ['x_posts_fetched', 'x_users_fetched'] as const
 function expectedServerToolCounters(
   tools: Array<Record<string, unknown>> | undefined,
   _hasFileRef: boolean,
@@ -1080,7 +1085,7 @@ function expectedServerToolCounters(
   if (tools !== undefined) {
     for (const tool of tools) {
       if (tool['type'] === 'web_search') keys.push(WEB_SEARCH_COUNTER)
-      if (tool['type'] === 'x_search') keys.push(X_SEARCH_COUNTER)
+      if (tool['type'] === 'x_search') keys.push(...X_SEARCH_ITEM_COUNTERS)
     }
   }
   return keys

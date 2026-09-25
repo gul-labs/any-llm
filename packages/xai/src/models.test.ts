@@ -39,7 +39,7 @@ describe('grok45ModelDescriptor', () => {
       grounding: true,
       functionCalling: true,
     })
-    expect(grok45ModelDescriptor.capabilities?.serviceTiers).toBeUndefined()
+    expect(grok45ModelDescriptor.capabilities?.serviceTiers).toEqual(['priority'])
   })
 
   it('configJsonSchema is structurally derived from Grok45ConfigSchema', () => {
@@ -54,6 +54,7 @@ describe('grok45ModelDescriptor', () => {
         'topP',
         'maxOutputTokens',
         'reasoning',
+        'serviceTier',
         'timeoutMs',
         'providerOptions',
       ]),

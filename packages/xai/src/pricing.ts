@@ -12,22 +12,24 @@
  * contract (see `packages/core/src/ports.ts`).
  *
  * **Long-context tier.** grok-4.5 / grok-4.6 charge a premium when the GROSS
- * input token count exceeds 200,000 (`long_context_threshold` in xAI's
- * `/v1/models` listing). Selected by `inputTokens` (incl. cached), not by
- * billable input — mirrors core's `selectRates` convention exactly (strictly
- * greater than 200,000).
+ * input token count is at or above 200,000. xAI defines
+ * `long_context_threshold` as the token count at or above which long-context
+ * prices apply, and the live listing returns 200000. Selected by
+ * `inputTokens` (incl. cached), not by billable input. Core's selector is
+ * strictly greater than 200,000; this module owns the `>=` predicate.
  *
- * **Service tiers.** grok-4.5 has none. grok-4.6 admits `'priority'`
- * (echo live-verified 2026-08-12). The 2× multiplier is confirmed by
- * fixture `12-grok-4-6-xhigh-priority.json` (`cost_in_usd_ticks` equals
- * exactly 2× standard list). `'default'` (the value xAI echoes when no
- * priority is served) and `undefined` (no tier requested) price at the
- * standard list. Any other defined tier is unpriced (reject-don't-map).
+ * **Service tiers.** grok-4.5 and grok-4.6 admit `'priority'` at 2× on every
+ * token type, cached included (grok-4.6 live-verified 2026-08-12 by fixture
+ * `12-grok-4-6-xhigh-priority.json`; grok-4.5 live-verified 2026-09-25 at
+ * 2.0×). `'fast'` is an alias and is not admitted. `'default'` (the value
+ * xAI echoes when no priority is served) and `undefined` (no tier requested)
+ * price at the standard list. Any other defined tier is unpriced
+ * (reject-don't-map).
  *
  * **Conversion factor.** xAI's `/v1/models` raw `*_token_price` fields are
- * in hundred-thousandths of a dollar per token (i.e. divide the raw integer
- * by 10,000 to get USD per million tokens): e.g. `grok-4.6`'s raw
- * `prompt_text_token_price: 20000` ÷ 10,000 = $2.00/M.
+ * in hundred-thousandths of a dollar per token — cents per 100M tokens
+ * (divide the raw integer by 10,000 to get USD per million tokens): e.g.
+ * `grok-4.6`'s raw `prompt_text_token_price: 20000` ÷ 10,000 = $2.00/M.
  *
  * Verified against `/v1/models` on 2026-08-12. Prior snapshot
  * `xai-2026-07-09` priced grok-4.5 cached input at $0.50 / $1.00; the live
@@ -43,21 +45,37 @@ import type { Cost, CostRatesLookup, PricingSource, Usage } from '@gullabs/core'
 export const xaiPricingVersion = 'xai-2026-08-24' as const
 
 /**
- * Live-pinned 2026-08-24 per-invocation tool rates (µUSD per call).
- * Source: `usage.server_side_tool_usage_details` on /v1/responses.
- * $5 / 1,000 web or X searches. Attachment search is not priced until live-pinned.
+ * Tool rates in µUSD per unit.
+ *
+ * - `web_search_calls`: $5 / 1,000 calls (per invocation).
+ * - `x_posts_fetched`: $5 / 1,000 posts (per item, since 2026-09-21).
+ * - `x_users_fetched`: $10 / 1,000 profiles (per item, since 2026-09-21).
+ *
+ * The per-call `x_search_calls` rate is gone. Attachment search stays
+ * unpriced until a live probe pins the counter name (P-X2); a file-ref call
+ * is estimated, not billed at an invented counter.
  */
 export const XAI_TOOL_RATE_MICRO_USD = {
   web_search_calls: 5_000,
-  x_search_calls: 5_000,
+  x_posts_fetched: 5_000,
+  x_users_fetched: 10_000,
 } as const
 
-const XAI_TOOL_COUNTER_KEYS = ['web_search_calls', 'x_search_calls'] as const
+const XAI_TOOL_COUNTER_KEYS = [
+  'web_search_calls',
+  'x_posts_fetched',
+  'x_users_fetched',
+] as const
+
+/** Counters an x_search request must report. A missing one unprices the call. */
+export const X_SEARCH_ITEM_COUNTERS = ['x_posts_fetched', 'x_users_fetched'] as const
+
+const LONG_CONTEXT_THRESHOLD = 200_000
 
 /**
  * Per-model rate entry (all values in µUSD per million tokens).
  *
- * `gt200k` (when present) applies when GROSS input tokens > 200,000.
+ * `gt200k` (when present) applies when GROSS input tokens >= 200,000.
  */
 export interface XaiModelRates {
   /** µUSD per million input tokens (billable = gross − cached). */
@@ -101,6 +119,8 @@ export const XAI_PRICING: Readonly<Record<string, XaiModelRates>> = Object.freez
       cachedPerM: 600_000,
       outputPerM: 12_000_000,
     },
+    // Live-verified 2026-09-25: priority is 2.0× on every token type, cached included.
+    priorityFactor: 2,
   },
   // ── grok-4.6 ──  $2.00/$6.00 (≤200k), $4.00/$12.00 (>200k); cached $0.50/$1.00
   'grok-4.6': {
@@ -152,6 +172,24 @@ const lookupConcreteRates: CostRatesLookup = (model, tier) => {
   return undefined
 }
 
+/**
+ * Select base vs long-context rates. xAI's threshold is inclusive: 200,000
+ * gross input tokens already pays the long-context list.
+ */
+export function selectXaiRates(
+  rates: XaiModelRates,
+  grossInputTokens: number,
+): { inputPerM: number; cachedPerM: number; outputPerM: number } {
+  if (rates.gt200k !== undefined && grossInputTokens >= LONG_CONTEXT_THRESHOLD) {
+    return rates.gt200k
+  }
+  return {
+    inputPerM: rates.inputPerM,
+    cachedPerM: rates.cachedPerM,
+    outputPerM: rates.outputPerM,
+  }
+}
+
 function scaleRates(rates: XaiModelRates, factor: number): XaiModelRates {
   const scaled: XaiModelRates = {
     inputPerM: rates.inputPerM * factor,
@@ -183,41 +221,62 @@ function scaleRates(rates: XaiModelRates, factor: number): XaiModelRates {
  *    `priorityFactor` when the model admits it. An unknown model, any other
  *    defined tier, or `'priority'` on a model without `priorityFactor` is
  *    unpriced (reject-don't-map) — `computeCost` returns `microUsd: null`.
- * 2. Core selects base vs. `>200k` long-context rates from GROSS `inputTokens`.
+ * 2. `selectXaiRates` applies long-context rates when GROSS input is
+ *    `>= 200_000` (xAI's inclusive threshold; core's selector stays `>`).
  * 4. Billable input = `inputTokens − (cachedInputTokens ?? 0)`, clamped to 0.
  * 5. Round each component (input, cached, output) independently to the
  *    nearest integer micro-USD.
  * 6. `microUsd` is the sum of the four components — guarantees
  *    `details.input + details.cached + details.output + details.tools === microUsd`.
- * 7. Tool lanes: live-pinned counters `web_search_calls`, `x_search_calls`.
- *    Missing expected counters → `tools: 0`, `estimated`. File-ref sets
- *    `attachment_search_unpinned` → `estimated` (attachment not priced).
- *    `'exact'` requires no unpinned attachment and counters present or no
- *    server tools requested.
+ * 7. Tool lanes: `web_search_calls` per call; x_search is
+ *    `x_posts_fetched` × $5/1k + `x_users_fetched` × $10/1k. A missing
+ *    x_search item counter unprices the whole call (`microUsd: null`).
+ *    File-ref still sets `attachment_search_unpinned` and the call is
+ *    estimated — the counter name is not pinned (P-X2).
  */
 export function computeXaiCost(model: string, usage: Usage, tier?: string): Cost {
-  const tokenCost = computeCost(
-    model,
-    usage,
-    tier,
-    lookupConcreteRates,
-    xaiPricingVersion,
-  )
-  if (tokenCost.microUsd === null) return tokenCost
+  const listed = lookupConcreteRates(model, tier)
+  if (listed === undefined) {
+    return computeCost(model, usage, tier, lookupConcreteRates, xaiPricingVersion)
+  }
+  const band = selectXaiRates(listed, usage.inputTokens)
+  const bandLookup: CostRatesLookup = () => ({
+    inputPerM: band.inputPerM,
+    cachedPerM: band.cachedPerM,
+    outputPerM: band.outputPerM,
+  })
+  const tokenCost = computeCost(model, usage, undefined, bandLookup, xaiPricingVersion)
 
   const inputCost = tokenCost.details.input
   const cachedCost = tokenCost.details.cached
   const outputCost = tokenCost.details.output
 
   const serverToolsRequested = usage.details['server_tools_requested'] === 1
-  const missingRequestedCounters =
-    usage.details['server_tools_missing'] === 1 ||
-    (serverToolsRequested &&
-      usage.details['attachment_search_unpinned'] !== 1 &&
-      !XAI_TOOL_COUNTER_KEYS.some((key) => key in usage.details))
-  const attachmentUnpinned = usage.details['attachment_search_unpinned'] === 1
+  const xSearchRequested = usage.details['x_search_requested'] === 1
+  const missingXSearchCounter =
+    xSearchRequested &&
+    X_SEARCH_ITEM_COUNTERS.some((key) => typeof usage.details[key] !== 'number')
+  if (missingXSearchCounter || usage.details['server_tools_missing'] === 1) {
+    return {
+      microUsd: null,
+      usd: null,
+      pricingVersion: xaiPricingVersion,
+      confidence: 'estimated',
+      details: { input: 0, cached: 0, output: 0, tools: 0 },
+      unpricedReason: missingXSearchCounter
+        ? 'x_search usage is missing x_posts_fetched or x_users_fetched; refusing to bill a per-call estimate.'
+        : 'Server tool usage is missing a required counter; refusing to guess a tool cost.',
+    }
+  }
 
-  const toolsCost = missingRequestedCounters
+  const attachmentUnpinned = usage.details['attachment_search_unpinned'] === 1
+  const missingWebCounter =
+    serverToolsRequested &&
+    !xSearchRequested &&
+    !attachmentUnpinned &&
+    !XAI_TOOL_COUNTER_KEYS.some((key) => key in usage.details)
+
+  const toolsCost = missingWebCounter
     ? 0
     : XAI_TOOL_COUNTER_KEYS.reduce((sum, key) => {
         const count = usage.details[key]
@@ -231,7 +290,7 @@ export function computeXaiCost(model: string, usage: Usage, tier?: string): Cost
     microUsd,
     usd: microUsd / 1_000_000,
     pricingVersion: xaiPricingVersion,
-    confidence: missingRequestedCounters || attachmentUnpinned ? 'estimated' : 'exact',
+    confidence: missingWebCounter || attachmentUnpinned ? 'estimated' : 'exact',
     details: {
       input: inputCost,
       cached: cachedCost,

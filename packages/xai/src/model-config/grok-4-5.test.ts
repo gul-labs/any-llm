@@ -23,9 +23,17 @@ describe('Grok45ConfigSchema', () => {
     expect(result.success).toBe(false)
   })
 
-  it('rejects serviceTier', () => {
-    const result = Grok45ConfigSchema.safeParse({ serviceTier: 'flex' })
-    expect(result.success).toBe(false)
+  it.each(['flex', 'fast', 'standard'] as const)(
+    'rejects serviceTier=%s',
+    (serviceTier) => {
+      const result = Grok45ConfigSchema.safeParse({ serviceTier })
+      expect(result.success).toBe(false)
+    },
+  )
+
+  it('accepts serviceTier=priority', () => {
+    const result = Grok45ConfigSchema.safeParse({ serviceTier: 'priority' })
+    expect(result.success).toBe(true)
   })
 
   it('rejects reasoning.budgetTokens', () => {

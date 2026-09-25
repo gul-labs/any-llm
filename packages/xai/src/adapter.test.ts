@@ -1653,6 +1653,26 @@ describe('xai Live Search tools', () => {
     expect(result.warnings).toEqual([])
   })
 
+  it('expects x_posts_fetched and x_users_fetched when x_search is requested', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 8, outputTokens: 2 })
+    response.usage['server_side_tool_usage_details'] = {
+      x_posts_fetched: 44,
+      x_users_fetched: 3,
+    }
+    const adapter = xaiAdapter({ client: makeFakeXai(response) })
+    const result = await adapter.run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'x_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.usage.details.x_search_requested).toBe(1)
+    expect(result.usage.details.x_posts_fetched).toBe(44)
+    expect(result.usage.details.x_users_fetched).toBe(3)
+    expect(result.usage.details.server_tools_missing).toBeUndefined()
+  })
+
   it('warns when requested tool counters are missing', async () => {
     const adapter = xaiAdapter({
       client: makeFakeXai(

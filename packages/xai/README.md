@@ -181,7 +181,7 @@ try {
 | ZDR teams                   | New uploads and `file_id` attachments are blocked by xAI; errors mention Zero Data Retention when detectable                                                                                                  |
 | Max size                    | 48 MiB (conservative vs docs 48–50 MB)                                                                                                                                                                        |
 
-**Billing note:** attaching files on Responses implicitly enables xAI's `attachment_search` agentic tool. Live 2026-08-24 pins `web_search_calls` and `x_search_calls` in `usage.server_side_tool_usage_details` (flattened into `usage.details`). The attachment_search counter is **not** live-pinned (ZDR blocks file attach on this key); a `file-ref` call sets synthetic `usage.details.attachment_search_unpinned = 1` and `Cost.confidence: 'estimated'` — it is never reported as exact `$0`. `server_tools_requested = 1` is adapter-owned. Missing expected web/X counters → `tools: 0`, `estimated`, plus an adapter warning.
+**Billing note:** attaching files on Responses implicitly enables xAI's `attachment_search` agentic tool. `web_search_calls` is billed per call. Since 2026-09-21, x_search is billed from `x_posts_fetched` and `x_users_fetched`, not `x_search_calls`. The attachment_search counter is **not** live-pinned (P-X2); a `file-ref` call sets synthetic `usage.details.attachment_search_unpinned = 1` and `Cost.confidence: 'estimated'`. A missing x_search item counter unprices the whole call.
 
 **Host tests:** `@gullabs/testing` exports `FakeXaiFileStore` (in-memory upload/get/delete with optional TTL clock and `failClosed`).
 
@@ -202,21 +202,22 @@ xAI caching is automatic — there is no explicit cache-create/cache-store API c
 
 `XAI_PRICING` is a frozen, versioned snapshot (`xaiPricingVersion: 'xai-2026-08-24'`) — a point-in-time capture from `/v1/models`, not a live lookup (ADR-005). Rates are in µUSD per million tokens. Tool invocations add `Cost.details.tools` (`microUsd = input + cached + output + tools`):
 
-| Counter (raw `usage.details` key) | Rate       |
-| --------------------------------- | ---------- |
-| `web_search_calls`                | $5 / 1,000 |
-| `x_search_calls`                  | $5 / 1,000 |
+| Counter (raw `usage.details` key) | Rate                 |
+| --------------------------------- | -------------------- |
+| `web_search_calls`                | $5 / 1,000 calls     |
+| `x_posts_fetched`                 | $5 / 1,000 posts     |
+| `x_users_fetched`                 | $10 / 1,000 profiles |
 
 Enable Live Search with `providerOptions.xai.tools` (`web_search` / `x_search`). Citations land on `result.citations`. `countTokens` uses `POST /v1/tokenize-text` and returns `accuracy: 'lower-bound'` (text parts only; media / file parts are `bad_request`).
 
 | Model      | Tier                         | Input   | Cached input | Output   |
 | ---------- | ---------------------------- | ------- | ------------ | -------- |
-| `grok-4.5` | standard (≤200k gross input) | $2.00/M | $0.30/M      | $6.00/M  |
-| `grok-4.5` | `gt200k` (>200k gross input) | $4.00/M | $0.60/M      | $12.00/M |
+| `grok-4.5` | standard (<200k gross input) | $2.00/M | $0.30/M      | $6.00/M  |
+| `grok-4.5` | `gt200k` (≥200k gross input) | $4.00/M | $0.60/M      | $12.00/M |
 | `grok-4.6` | standard (≤200k gross input) | $2.00/M | $0.50/M      | $6.00/M  |
-| `grok-4.6` | `gt200k` (>200k gross input) | $4.00/M | $1.00/M      | $12.00/M |
+| `grok-4.6` | `gt200k` (≥200k gross input) | $4.00/M | $1.00/M      | $12.00/M |
 
-The `gt200k` long-context tier is selected by **gross** `inputTokens` (including cached), not billable input — strictly greater than 200,000 tokens, mirroring core's `selectRates` convention. The adapter now surfaces the echoed Responses `service_tier` (`'default'` or `'priority'`), so `price()` receives that served value instead of `undefined`. Custom xAI `PricingSource` implementations must price `'default'` at the standard list. Built-in `xaiPricingSource().price()` prices `grok-4.6` + `tier: 'priority'` at 2× every token type after the cache discount: uncached standard-list 2× is confirmed by fixture `12-grok-4-6-xhigh-priority.json` `cost_in_usd_ticks`; cached and `gt200k` legs follow the official 2×-after-cache-discount rule. Any other defined tier (including `priority` on `grok-4.5`) is unpriced (`microUsd: null`). Standard list rates are pinned to `packages/xai/src/__fixtures__/14-v1-models-pricing.json` (live `GET /v1/models` 2026-08-12).
+The `gt200k` long-context tier is selected by **gross** `inputTokens` (including cached), not billable input — at or above 200,000 tokens (`long_context_threshold`). The adapter now surfaces the echoed Responses `service_tier` (`'default'` or `'priority'`), so `price()` receives that served value instead of `undefined`. Custom xAI `PricingSource` implementations must price `'default'` at the standard list. Built-in `xaiPricingSource().price()` prices `grok-4.6` + `tier: 'priority'` at 2× every token type after the cache discount: uncached standard-list 2× is confirmed by fixture `12-grok-4-6-xhigh-priority.json` `cost_in_usd_ticks`; cached and `gt200k` legs follow the official 2×-after-cache-discount rule. `grok-4.5` and `grok-4.6` both price `priority` at 2×. `fast` is not admitted. Any other defined tier is unpriced (`microUsd: null`). Standard list rates are pinned to `packages/xai/src/__fixtures__/14-v1-models-pricing.json` (live `GET /v1/models` 2026-08-12).
 
 ## EU unavailability
 

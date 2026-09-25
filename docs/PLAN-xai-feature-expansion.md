@@ -8,7 +8,7 @@ Basis: full read of docs.x.ai (2026-08-24) vs current core/google/xai surface.
 
 In scope (this plan, four workstreams + one probe):
 
-- **WS-0** — live re-probe of grok-4.5 reasoning efforts (docs drift: docs now list `low|medium|high`, our live-verified schema admits `low|high`).
+- **WS-0** — resolved 2026-08-24: grok-4.5 admits `low|medium|high`. `xhigh` stays rejected (model-refresh D2, 2026-09-25).
 - **WS-A** — xAI server-side Live Search tools (`web_search`, `x_search`) via `providerOptions.xai.tools`, with per-invocation pricing lanes.
 - **WS-B** — first-class `citations` on `LlmResult` (core, generic; populated by google + xai adapters).
 - **WS-C** — generic function-calling seam (tools in, tool-call parts out; **no agent loop**). ADR required.
