@@ -688,13 +688,16 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
           }
 
           // Real SDK ThinkingLevel enum: "LOW" | "MEDIUM" | "HIGH" | "MINIMAL".
-          // gemini-3.7-flash and gemini-3.8-flash never emit MINIMAL.
-          const noMinimal = model === 'gemini-3.7-flash' || model === 'gemini-3.8-flash'
+          // `none` maps to MINIMAL. Emit it only when the descriptor admits
+          // `none`. A missing effort list still emits MINIMAL so descriptors
+          // that have not declared an effort set keep the previous level mapping.
+          const admitted = req.modelDescriptor?.capabilities?.admittedReasoningEfforts
+          const admitsNone = admitted === undefined || admitted.includes('none')
           let thinkingLevel: string | undefined
           if (reasoning.effort !== undefined) {
             switch (reasoning.effort) {
               case 'none':
-                if (noMinimal) {
+                if (!admitsNone) {
                   throw new LlmError(
                     `reasoning.effort "none" is not supported for model "${model}"; thinkingLevel MINIMAL is not emitted.`,
                     { kind: 'bad_request', retryable: false },
