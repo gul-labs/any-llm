@@ -67,6 +67,13 @@ Built-in descriptors own the strict model-config contract:
 provider's standard tier, and set `flex` explicitly when that trade-off is
 intended. `priority` remains rejected by the library for now.
 
+Registered Google ids: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`,
+`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
+`gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemma-4-31b-it`,
+`gemma-4-26b-a4b-it`. `gemini-3.1-pro-preview`, `gemini-3.7-flash`, and
+`gemini-3.8-flash` do not admit `effort: 'none'`. `gemini-3-flash-preview` and
+`gemini-3.5-flash` do not resolve.
+
 ## Key exports
 
 This package re-exports the full public API of `@gullabs/core` and `@gullabs/google` verbatim —

@@ -442,8 +442,12 @@ Core owns only the generic registry machinery (`ModelDescriptor`, `ModelRegistry
 exports its own descriptor arrays and a ready-to-use registry; `@gullabs/google` exports
 `geminiModelDescriptors`, `gemmaModelDescriptors`, and `defaultGeminiRegistry` (built from
 `createModelRegistry([...geminiModelDescriptors, ...gemmaModelDescriptors])` in
-`packages/google/src/models.ts`). It covers current Gemini 2.5/3.x model families plus two
-API-verified Gemma 4 models: `gemma-4-31b-it` and `gemma-4-26b-a4b-it`. Hosts wire it in
+`packages/google/src/models.ts`). Registered Google ids:
+`gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`,
+`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
+`gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemma-4-31b-it`,
+`gemma-4-26b-a4b-it`. `gemini-3-flash-preview` and `gemini-3.5-flash` do not
+resolve. Hosts wire it in
 explicitly via `composeProviders`, e.g. `composeProviders([googleProvider()])`, which flattens
 every plugin's `modelDescriptors` into `ClientConfig.modelRegistry` — nothing is auto-populated
 into `createClient` without that call. Hosts can also supply `ClientConfig.modelRegistry`

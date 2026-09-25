@@ -103,7 +103,8 @@ Model-specific reminders:
 
 - `reasoning.budgetTokens` belongs to Gemini 2.5 budget-api models.
 - Gemini 3 and Gemma built-ins should use `reasoning.effort`.
-- `gemini-3.1-pro-preview` does not admit `effort: 'none'`.
+- `gemini-3.1-pro-preview`, `gemini-3.7-flash`, and `gemini-3.8-flash` do not admit `effort: 'none'`.
+- Registered Google ids: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemma-4-31b-it`, `gemma-4-26b-a4b-it`. Deleted, with no alias: `gemini-3-flash-preview`, `gemini-3.5-flash`.
 - Omit `serviceTier` for provider-standard requests; set `flex` explicitly.
 - `priority` remains rejected by the library until the contract is fully
   modeled and tested.

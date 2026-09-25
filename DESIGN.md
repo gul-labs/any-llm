@@ -180,8 +180,9 @@ Grounding is requested via `providerOptions.google.tools: [{ googleSearch: {} }]
 `providerOptions.google` object is merged after typed-field mapping; transport/abort scaffolding
 (`abortSignal`, `httpOptions`) is applied afterward, and caller-supplied `httpOptions` still wins. After the merge, the adapter checks whether any tool entry has a
 `googleSearch` or `googleSearchRetrieval` key. If so and `req.outputJsonSchema` is also set, the
-adapter throws `LlmError('bad_request', retryable: false)` immediately — Gemini does not support
-grounding combined with `responseSchema`. When grounding is active, `candidate.groundingMetadata`
+adapter throws `LlmError('bad_request', retryable: false)` unless the descriptor sets
+`structuredOutputWithTools`. That flag is set only on `gemini-3.1-pro-preview` and
+`gemini-3.8-flash`. When grounding is active, `candidate.groundingMetadata`
 is captured alongside `promptFeedback` into `result.providerMetadata`.
 
 ### Transport Timeout
@@ -251,9 +252,10 @@ that excluded `providerOptions` and let the adapter re-check after merge. Gemini
 have `sampling: 'fixed'` and reject `temperature`, `topP`, `topK` at call time.
 
 **Grounding.** Requested via `providerOptions.google.tools: [{ googleSearch: {} }]`. The adapter
-captures `candidate.groundingMetadata` into `result.providerMetadata`. Grounding and structured
-output (`output.jsonSchema`) are mutually exclusive; the adapter enforces this with a `bad_request`
-error before the SDK call.
+captures `candidate.groundingMetadata` into `result.providerMetadata`. Grounding plus
+`output.jsonSchema` is admitted only when `structuredOutputWithTools` is set
+(`gemini-3.1-pro-preview`, `gemini-3.8-flash`). Every other model fails with
+`bad_request` before the SDK call.
 
 **Flex transport timeout.** The adapter sets `config.httpOptions.timeout` automatically:
 1 500 000 ms (25 minutes) for Flex calls without `timeoutMs`, and `timeoutMs + 5 000 ms` when
@@ -366,6 +368,12 @@ unknown key is rejected outright, never silently dropped or clamped.
   reasoning key.
 - **codex-cli** models: `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`.
   `reasoning.effort`: `low | medium | high | xhigh | max`. No `gpt-5*` id is registered.
+
+Registered Google ids: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`,
+`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
+`gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemma-4-31b-it`,
+`gemma-4-26b-a4b-it`. `gemini-3-flash-preview` and `gemini-3.5-flash` do not resolve.
+xAI ids: `grok-4.5`, `grok-4.6`, `grok-4.7`.
 
 ### Adapter-owned invariant flags
 

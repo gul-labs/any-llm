@@ -32,18 +32,15 @@ export function makeTestPricingSource(
     | Readonly<Record<string, Readonly<Record<string, ModelRates>>>>,
   version: string,
 ): PricingSource {
-  const tiered = isTieredTable(rates)
-
   function lookup(model: string, tier: string | undefined): ModelRates | undefined {
-    if (tiered) {
-      const entry = lookupKey(rates, model) as
-        Readonly<Record<string, ModelRates>> | undefined
+    if (isTieredTable(rates)) {
+      const entry = lookupKey(rates, model)
       if (entry === undefined) return undefined
       const key = tier ?? 'standard'
       return entry[key]
     }
     if (tier !== undefined && tier !== 'standard') return undefined
-    return lookupKey(rates as Readonly<Record<string, ModelRates>>, model)
+    return lookupKey(rates, model)
   }
 
   return {
@@ -80,7 +77,10 @@ function isTieredTable(
     | Readonly<Record<string, ModelRates>>
     | Readonly<Record<string, Readonly<Record<string, ModelRates>>>>,
 ): rates is Readonly<Record<string, Readonly<Record<string, ModelRates>>>> {
-  const first = Object.values(rates)[0]
+  const values = Object.values(rates) as ReadonlyArray<
+    ModelRates | Readonly<Record<string, ModelRates>>
+  >
+  const first = values[0]
   if (first === undefined) return false
   return !('inputPerM' in first)
 }
