@@ -106,8 +106,7 @@ export const Gemini36FlashConfigSchema = z
             .optional()
             .meta({
               title: 'Google Provider Options',
-              description:
-                'Allowlisted Google provider options for gemini-3.6-flash.',
+              description: 'Allowlisted Google provider options for gemini-3.6-flash.',
             }),
         })
         .optional()
@@ -215,8 +214,7 @@ export const Gemini36FlashConfigSchema = z
             .optional()
             .meta({
               title: 'Google Provider Options',
-              description:
-                'Allowlisted Google provider options for gemini-3.6-flash.',
+              description: 'Allowlisted Google provider options for gemini-3.6-flash.',
             }),
         })
         .optional()
