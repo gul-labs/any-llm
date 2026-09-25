@@ -13,6 +13,7 @@ import { describe, it, expect } from 'vitest'
 import type { Usage } from '@gullabs/core'
 import {
   computeXaiCost,
+  selectXaiRates,
   xaiPricingSource,
   xaiPricingVersion,
   XAI_PRICING,
@@ -103,6 +104,20 @@ describe('computeXaiCost — standard tier', () => {
     expect(
       cost.details.input + cost.details.cached + cost.details.output + cost.details.tools,
     ).toBe(cost.microUsd)
+  })
+})
+
+describe('selectXaiRates — >=200k boundary', () => {
+  const rates = XAI_PRICING['grok-4.5']!
+
+  it('returns the base band at 199_999 and gt200k at 200_000 and 200_001', () => {
+    expect(selectXaiRates(rates, 199_999)).toEqual({
+      inputPerM: rates.inputPerM,
+      cachedPerM: rates.cachedPerM,
+      outputPerM: rates.outputPerM,
+    })
+    expect(selectXaiRates(rates, 200_000)).toBe(rates.gt200k)
+    expect(selectXaiRates(rates, 200_001)).toBe(rates.gt200k)
   })
 })
 

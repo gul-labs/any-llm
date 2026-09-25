@@ -24,15 +24,15 @@ actual use; not required to build or test this package.
 
 ## Key exports
 
-| Export                                          | Description                                                                                |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `codexCliAdapter(opts?)`                        | Builds the `ProviderAdapter` (`id: 'codex-cli'`).                                          |
-| `CodexCliAdapterOptions`                        | `{ runner?, codexPath?, maxConcurrency? }`.                                                |
-| `createCodexCliRunner(codexPath?)`              | Real `node:child_process`-backed `CodexCliRunner`.                                         |
-| `CodexCliRunner` / `CodexCliRunResult`          | The subprocess seam interface, for injecting fakes.                                        |
-| `codexCliModelDescriptors` / `codexCliRegistry` | `ModelDescriptor[]` / `ModelRegistry` for the 4 supported models.                          |
-| `CODEX_CLI_MODEL_IDS`                           | `'gpt-6-astra' \| 'gpt-6-sol' \| 'gpt-6-luna'`. No `gpt-5*` id is registered.             |
-| `CODEX_CLI_REASONING_EFFORTS`                   | `['low', 'medium', 'high', 'xhigh', 'max']`. No `'none'`, no `'ultra'`.                   |
+| Export                                          | Description                                                                   |
+| ----------------------------------------------- | ----------------------------------------------------------------------------- |
+| `codexCliAdapter(opts?)`                        | Builds the `ProviderAdapter` (`id: 'codex-cli'`).                             |
+| `CodexCliAdapterOptions`                        | `{ runner?, codexPath?, maxConcurrency? }`.                                   |
+| `createCodexCliRunner(codexPath?)`              | Real `node:child_process`-backed `CodexCliRunner`.                            |
+| `CodexCliRunner` / `CodexCliRunResult`          | The subprocess seam interface, for injecting fakes.                           |
+| `codexCliModelDescriptors` / `codexCliRegistry` | `ModelDescriptor[]` / `ModelRegistry` for the 3 supported models.             |
+| `CODEX_CLI_MODEL_IDS`                           | `'gpt-6-astra' \| 'gpt-6-sol' \| 'gpt-6-luna'`. No `gpt-5*` id is registered. |
+| `CODEX_CLI_REASONING_EFFORTS`                   | `['low', 'medium', 'high', 'xhigh', 'max']`. No `'none'`, no `'ultra'`.       |
 
 ## Quick example
 

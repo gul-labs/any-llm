@@ -38,7 +38,7 @@ export const Gemini38FlashConfigSchema = z
         .optional()
         .meta({
           title: 'Reasoning',
-          description: 'Gemini 3.1 Flash-Lite thinkingLevel configuration.',
+          description: 'Gemini 3.8 Flash thinkingLevel configuration.',
         }),
       timeoutMs: z.number().int().positive().optional().meta({
         title: 'Timeout',
@@ -152,7 +152,7 @@ export const Gemini38FlashConfigSchema = z
         .optional()
         .meta({
           title: 'Reasoning',
-          description: 'Gemini 3.1 Flash-Lite thinkingLevel configuration.',
+          description: 'Gemini 3.8 Flash thinkingLevel configuration.',
         }),
       timeoutMs: z.number().int().positive().optional().meta({
         title: 'Timeout',
@@ -227,7 +227,7 @@ export const Gemini38FlashConfigSchema = z
     }),
   ])
   .meta({
-    title: 'Gemini31FlashLiteConfig',
+    title: 'Gemini38FlashConfig',
     description:
       'Strict generateContent config for model gemini-3.8-flash. Level reasoning, fixed sampling, flex/standard tiers, structured output, grounding, priced.',
     examples: [{ serviceTier: 'flex', reasoning: { effort: 'medium' } }],

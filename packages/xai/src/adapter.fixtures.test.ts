@@ -607,11 +607,11 @@ describe('fixture: 21-function-call-first', () => {
   })
 })
 
-describe('fixture: grok-4.7 reuses the grok-4.6 contract fixtures', () => {
-  it('maps the grok-4.6 positive fixture through the grok-4.7 descriptor', async () => {
+describe('fixture: grok-4.7 schema accepts the grok-4.6 effort set', () => {
+  it('dispatches grok-4.7 with xhigh and priority', async () => {
     const client = makeFakeXai(grok46XhighPriorityFixture.body as never)
     const adapter = xaiAdapter({ client })
-    const result = await adapter.run(
+    await adapter.run(
       makeResolvedReq({
         model: 'grok-4.7',
         config: { reasoning: { effort: 'xhigh' }, serviceTier: 'priority' },
@@ -619,10 +619,9 @@ describe('fixture: grok-4.7 reuses the grok-4.6 contract fixtures', () => {
       }),
       FAKE_CTX,
     )
-    expect(result.servedServiceTier).toBe('priority')
-    const call = client.calls[0] as { model?: string }
+    const call = client.calls[0] as { model?: string; service_tier?: string }
     expect(call.model).toBe('grok-4.7')
-    expect(result.model).toBe('grok-4.6')
+    expect(call.service_tier).toBe('priority')
   })
 
   it('rejects grok-4.7 effort none before dispatch', async () => {

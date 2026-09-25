@@ -21,8 +21,9 @@ verification, not a rename of 4.5.
   (live-verified 2026-08-24). `'none'` and `'xhigh'` stay rejected.
 - `grok-4.6` admits `low|medium|high|xhigh` and `serviceTier: 'priority'`
   only. `'none'` and `'flex'` are rejected.
-- Pricing snapshot `xai-2026-08-24`: 4.5 $2 / $0.30 cached / $6 (≤200k)
-  and $4 / $0.60 / $12 (>200k); 4.6 $2 / $0.50 / $6 and $4 / $1 / $12.
+- Pricing snapshot `xai-2026-08-24`: 4.5 $2 / $0.30 cached / $6 (<200k)
+  and $4 / $0.60 / $12 (≥200k); 4.6 $2 / $0.50 / $6 and $4 / $1 / $12.
+  `grok-4.5` admits `serviceTier: 'priority'` at 2×.
   Priority is 2×, confirmed by live `cost_in_usd_ticks` on fixture 12.
   List rates pinned to `__fixtures__/14-v1-models-pricing.json`.
 
@@ -111,7 +112,7 @@ and Cursor for the first week after 2026-08-12.
 
 Long-context rates apply to **the entire request** once prompt tokens
 reach ≥ 200k. This library selects `gt200k` when **gross** `inputTokens`
-(including cached) is **strictly greater than** 200,000.
+(including cached) is **at or above** 200,000.
 
 ### Official docs table (crawled 2026-08-12)
 
@@ -153,8 +154,8 @@ Other billing (both models, official):
 - Server-side tools (web search, X search, code execution) are typically
   ~$5 / 1k calls plus tokens. File attachments still implicitly enable
   `attachment_search` (see `packages/xai/README.md`).
-- As of 2026-08-12 the adapter admits `serviceTier: 'priority'` on
-  `grok-4.6` only. `grok-4.5` still rejects every `serviceTier`.
+- As of 2026-09-25 the adapter admits `serviceTier: 'priority'` on
+  `grok-4.5`, `grok-4.6`, and `grok-4.7`.
 
 ### Consumer (not this library)
 

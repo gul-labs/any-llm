@@ -84,7 +84,7 @@ export interface XaiModelRates {
   cachedPerM: number
   /** µUSD per million output tokens (reasoning tokens are folded in). */
   outputPerM: number
-  /** Optional high-tier rates for long-context (GROSS input > 200k). */
+  /** Optional high-tier rates for long-context (GROSS input >= 200_000). */
   gt200k?: {
     inputPerM: number
     cachedPerM: number
@@ -109,7 +109,7 @@ export interface XaiModelRates {
  * id; anything else resolves to the unpriced path.
  */
 export const XAI_PRICING: Readonly<Record<string, XaiModelRates>> = Object.freeze({
-  // ── grok-4.5 ──  $2.00/$6.00 (≤200k), $4.00/$12.00 (>200k); cached $0.30/$0.60
+  // ── grok-4.5 ──  $2.00/$6.00 (<200k), $4.00/$12.00 (>=200k); cached $0.30/$0.60
   'grok-4.5': {
     inputPerM: 2_000_000,
     cachedPerM: 300_000,
@@ -122,7 +122,7 @@ export const XAI_PRICING: Readonly<Record<string, XaiModelRates>> = Object.freez
     // Live-verified 2026-09-25: priority is 2.0× on every token type, cached included.
     priorityFactor: 2,
   },
-  // ── grok-4.6 ──  $2.00/$6.00 (≤200k), $4.00/$12.00 (>200k); cached $0.50/$1.00
+  // ── grok-4.6 ──  $2.00/$6.00 (<200k), $4.00/$12.00 (>=200k); cached $0.50/$1.00
   'grok-4.6': {
     inputPerM: 2_000_000,
     cachedPerM: 500_000,

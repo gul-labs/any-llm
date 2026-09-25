@@ -18,8 +18,10 @@ import {
   classifyXaiError,
   Grok45ConfigSchema,
   Grok46ConfigSchema,
+  Grok47ConfigSchema,
   grok45ModelDescriptor,
   grok46ModelDescriptor,
+  grok47ModelDescriptor,
   xaiModelDescriptors,
   xaiRegistry,
   XAI_PRICING,
@@ -73,9 +75,15 @@ describe('@gullabs/xai package surface: commit 3', () => {
     ])
   })
 
-  it('xaiRegistry is reachable and resolves grok-4.5 and grok-4.6', () => {
+  it('xaiRegistry is reachable and resolves grok-4.5, grok-4.6, and grok-4.7', () => {
     expect(xaiRegistry.resolve('xai', 'grok-4.5')).toBeDefined()
     expect(xaiRegistry.resolve('xai', 'grok-4.6')).toBeDefined()
+    expect(xaiRegistry.resolve('xai', 'grok-4.7')).toBeDefined()
+  })
+
+  it('Grok47ConfigSchema and grok47ModelDescriptor are reachable', () => {
+    expect(Grok47ConfigSchema.safeParse({}).success).toBe(true)
+    expect(grok47ModelDescriptor.model).toBe('grok-4.7')
   })
 
   it('Grok46ConfigSchema and grok46ModelDescriptor are reachable', () => {

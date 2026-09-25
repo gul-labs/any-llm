@@ -122,6 +122,11 @@ export const XaiProviderOptionsSchema = z
       title: 'Parallel Tool Calls',
       description: 'xAI Responses parallel_tool_calls. Not a generic contract field.',
     }),
+    reasoningItems: z.array(z.record(z.string(), z.unknown())).optional().meta({
+      title: 'Reasoning Items',
+      description:
+        'Prior Responses reasoning items replayed unchanged when store is false.',
+    }),
   })
   .meta({
     title: 'xAI Provider Options',

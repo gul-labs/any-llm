@@ -1,11 +1,11 @@
 /**
  * Strict Zod config schema for xAI's `grok-4.7` model.
  *
- * Same Responses-API surface as grok-4.5, plus live-verified (2026-09-25)
- * `reasoning.effort` of `'low' | 'medium' | 'high' | 'xhigh'` and
- * `serviceTier: 'priority'`. `'none'` is rejected by the live API. Unknown
- * tiers (`flex`, `standard`, `batch`) are rejected — `flex` is silently
- * remapped to `default` by xAI, so this schema never admits it.
+ * Same Responses-API surface as grok-4.6: `reasoning.effort` of
+ * `'low' | 'medium' | 'high' | 'xhigh'` and `serviceTier: 'priority'`.
+ * Shaped from the grok-4.6 contract. P-X3 was not captured, so these
+ * comments do not claim a 2026-09-25 live probe. `'none'` stays rejected.
+ * Unknown tiers (`flex`, `standard`, `batch`) are rejected.
  *
  * @module
  */
@@ -41,7 +41,7 @@ export const Grok47ConfigSchema = z
         effort: z.enum(['low', 'medium', 'high', 'xhigh']).meta({
           title: 'Reasoning Effort',
           description:
-            'Reasoning effort for grok-4.7. Live-verified 2026-09-25: "low", ' +
+            'Reasoning effort for grok-4.7. "low", ' +
             '"medium", "high", and "xhigh" are accepted; "none" is rejected. ' +
             'Vendor default when omitted is "high".',
         }),
@@ -60,8 +60,8 @@ export const Grok47ConfigSchema = z
         title: 'Service Tier',
         description:
           'xAI priority processing for grok-4.7 (Responses `service_tier: ' +
-          '"priority"`). Echo live-verified 2026-09-25. Bills at 2× after the ' +
-          'cache discount (uncached standard-list 2× confirmed by live ticks; ' +
+          '"priority"`). Bills at 2× after the ' +
+          'cache discount (uncached standard-list 2× ' +
           'cached/long-context legs follow the official 2× rule). ' +
           'Omitted requests stay on xAI default. ' +
           '"flex"/"standard"/"batch" are rejected.',

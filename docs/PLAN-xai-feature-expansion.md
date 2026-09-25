@@ -30,14 +30,7 @@ Sequencing: WS-0 → WS-D → WS-B (core) → WS-A (uses WS-B) → WS-C (own PR,
 
 ## WS-0: grok-4.5 reasoning-effort re-probe
 
-Docs (reasoning page + grok-4.5 model page, 2026-08-24) list grok-4.5 efforts `low|medium|high` (default `high`). Our live verification of 2026-07-09 found `medium` rejected; `Grok45ConfigSchema` and `admittedReasoningEfforts` admit only `['low','high']`. If the API changed, we now 400 a valid value — the inverse of what reject-don't-map is for.
-
-1. Probe script against live API (pattern: `master-config/anyllm-xai-live-verification-2026-07-09`): send `reasoning.effort` = `medium`, `none`, and absent, on `grok-4.5` via `/v1/responses`. Record raw responses as fixtures.
-2. If `medium` accepted: widen `packages/xai/src/model-config/grok-4-5.ts` effort enum to `low|medium|high`, update `grok45ModelDescriptor.admittedReasoningEfforts` in `packages/xai/src/models.ts:25-45`, refresh fixtures, update README quirks table and `docs/grok-4-6-vs-4-5.md`.
-3. If `medium` still rejected: no code change; add a dated note to the README quirks section that docs claim medium but live API rejects it.
-4. `none` is expected to remain rejected (docs: "reasoning cannot be disabled"; `none` is grok-4.3-only). Keep the always-reject of `none`.
-
-Acceptance: probe artifacts stored alongside prior verification runs; schema and descriptor agree with live behavior; typed test asserting the admitted set matches the schema enum.
+Resolved 2026-08-24. `Grok45ConfigSchema` admits `low|medium|high`. `xhigh` stays rejected (model-refresh D2, 2026-09-25): an echo does not prove a distinct level. `none` stays rejected. The 2026-07-09 probe that rejected `medium` is historical.
 
 ## WS-D: xAI `countTokens`
 

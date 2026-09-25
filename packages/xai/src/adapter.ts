@@ -155,12 +155,18 @@ function mapPart(p: Part): XaiInputContentPart {
 // providerOptions.xai → explicit allowlisted mapping
 // ---------------------------------------------------------------------------
 
-const XAI_PROVIDER_OPTION_KEYS = new Set(['promptCacheKey', 'tools', 'parallelToolCalls'])
+const XAI_PROVIDER_OPTION_KEYS = new Set([
+  'promptCacheKey',
+  'tools',
+  'parallelToolCalls',
+  'reasoningItems',
+])
 
 type MappedXaiProviderOptions = {
   promptCacheKey?: string
   tools?: Array<Record<string, unknown>>
   parallelToolCalls?: boolean
+  reasoningItems?: Array<Record<string, unknown>>
 }
 
 function mapXaiProviderOptions(
@@ -182,7 +188,7 @@ function mapXaiProviderOptions(
     throw badXaiRequest(
       `providerOptions.xai contains unsupported keys [${unknownKeys.join(
         ', ',
-      )}] for model "${model}". Allowed keys: promptCacheKey, tools, parallelToolCalls.`,
+      )}] for model "${model}". Allowed keys: promptCacheKey, tools, parallelToolCalls, reasoningItems.`,
     )
   }
 
@@ -210,6 +216,15 @@ function mapXaiProviderOptions(
       )
     }
     mapped.parallelToolCalls = xaiOpts['parallelToolCalls']
+  }
+
+  if (xaiOpts['reasoningItems'] !== undefined) {
+    if (!Array.isArray(xaiOpts['reasoningItems'])) {
+      throw badXaiRequest(
+        `providerOptions.xai.reasoningItems must be an array for model "${model}".`,
+      )
+    }
+    mapped.reasoningItems = xaiOpts['reasoningItems'] as Array<Record<string, unknown>>
   }
 
   return mapped
@@ -681,6 +696,16 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
         }
       }
 
+      const replayedReasoning = mapXaiProviderOptions(
+        req.config.providerOptions?.xai,
+        model,
+      ).reasoningItems
+      if (replayedReasoning !== undefined) {
+        for (const item of replayedReasoning) {
+          input.push(item as XaiRequestInputItem)
+        }
+      }
+
       // ------------------------------------------------------------------
       // 2. Build request params
       // ------------------------------------------------------------------
@@ -946,7 +971,7 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
             type: 'other',
             message: `xai: server tools were requested but usage is missing counters [${missing.join(
               ', ',
-            )}]; tool cost will be estimated.`,
+            )}]; the call is unpriced.`,
           })
         }
         if (hasFileRef) {

@@ -448,6 +448,10 @@ export function claudeCliAdapter(opts?: ClaudeCliAdapterOptions): ProviderAdapte
         envelope = undefined
       }
 
+      if (envelope?.stop_reason === 'refusal') {
+        throw classifyRunFailure(envelope, result)
+      }
+
       if (
         result.exitCode !== 0 ||
         envelope?.is_error === true ||
@@ -456,9 +460,6 @@ export function claudeCliAdapter(opts?: ClaudeCliAdapterOptions): ProviderAdapte
         throw classifyRunFailure(envelope, result)
       }
 
-      if (envelope.stop_reason === 'refusal') {
-        throw classifyRunFailure(envelope, result)
-      }
       assertServedModel(envelope, model)
 
       // ------------------------------------------------------------------

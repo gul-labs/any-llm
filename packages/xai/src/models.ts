@@ -1,7 +1,7 @@
 /**
  * Model descriptor + registry for @gullabs/xai.
  *
- * Ships two canonical models: `grok-4.5` and `grok-4.6`. xAI aliases
+ * Ships `grok-4.5`, `grok-4.6`, and `grok-4.7`. xAI aliases
  * (`grok-4.5-latest`, `grok-build-latest`) visible in `/v1/models` are
  * intentionally NOT registered (reject-don't-map). `grok-4.6` has no
  * aliases as of the 2026-08-12 `/v1/models` listing.

@@ -292,6 +292,21 @@ describe('argv construction', () => {
     )
   })
 
+  it('classifies a successful envelope with stop_reason refusal as content_filter', async () => {
+    const refused: ClaudeCliEnvelope = {
+      ...PLAIN_ENVELOPE,
+      is_error: false,
+      stop_reason: 'refusal',
+    }
+    const { runner } = makeFakeRunner(() => envelopeResult(refused))
+    const adapter = claudeCliAdapter({ runner })
+
+    await expect(adapter.run(makeResolvedReq(), CLI_SESSION_CTX)).rejects.toMatchObject({
+      kind: 'content_filter',
+      retryable: false,
+    })
+  })
+
   it('classifies stop_reason refusal as content_filter', async () => {
     const refused: ClaudeCliEnvelope = {
       ...PLAIN_ENVELOPE,

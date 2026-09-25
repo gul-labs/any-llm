@@ -218,7 +218,7 @@ Enable Live Search with `providerOptions.xai.tools` (`web_search` / `x_search`).
 | ---------- | ---------------------------- | ------- | ------------ | -------- |
 | `grok-4.5` | standard (<200k gross input) | $2.00/M | $0.30/M      | $6.00/M  |
 | `grok-4.5` | `gt200k` (≥200k gross input) | $4.00/M | $0.60/M      | $12.00/M |
-| `grok-4.6` | standard (≤200k gross input) | $2.00/M | $0.50/M      | $6.00/M  |
+| `grok-4.6` | standard (<200k gross input) | $2.00/M | $0.50/M      | $6.00/M  |
 | `grok-4.6` | `gt200k` (≥200k gross input) | $4.00/M | $1.00/M      | $12.00/M |
 
 The `gt200k` long-context tier is selected by **gross** `inputTokens` (including cached), not billable input — at or above 200,000 tokens (`long_context_threshold`). The adapter now surfaces the echoed Responses `service_tier` (`'default'` or `'priority'`), so `price()` receives that served value instead of `undefined`. Custom xAI `PricingSource` implementations must price `'default'` at the standard list. Built-in `xaiPricingSource().price()` prices `grok-4.6` + `tier: 'priority'` at 2× every token type after the cache discount: uncached standard-list 2× is confirmed by fixture `12-grok-4-6-xhigh-priority.json` `cost_in_usd_ticks`; cached and `gt200k` legs follow the official 2×-after-cache-discount rule. `grok-4.5` and `grok-4.6` both price `priority` at 2×. `fast` is not admitted. Any other defined tier is unpriced (`microUsd: null`). Standard list rates are pinned to `packages/xai/src/__fixtures__/14-v1-models-pricing.json` (live `GET /v1/models` 2026-08-12).

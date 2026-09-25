@@ -1727,6 +1727,46 @@ describe('xai Live Search tools', () => {
     expect(result.usage.details.server_tools_missing).toBeUndefined()
   })
 
+  it('marks the call unpriced when an x_search item counter is absent', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 8, outputTokens: 2 })
+    response.usage['server_side_tool_usage_details'] = { x_posts_fetched: 1 }
+    const adapter = xaiAdapter({ client: makeFakeXai(response) })
+    const result = await adapter.run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'x_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.usage.details.server_tools_missing).toBe(1)
+    expect(result.warnings[0]?.message).toContain('x_users_fetched')
+    expect(result.warnings[0]?.message).toContain('unpriced')
+  })
+
+  it('replays grok-4.7 reasoning items unchanged on store:false', async () => {
+    const reasoningItem = {
+      type: 'reasoning',
+      encrypted_content: 'enc-opaque',
+      summary: [{ type: 'summary_text', text: 'thought' }],
+    }
+    const client = makeFakeXai(fakeXaiResponse({ text: '59F' }))
+    const adapter = xaiAdapter({ client })
+    await adapter.run(
+      makeResolvedReq({
+        model: 'grok-4.7',
+        modelDescriptor: grok47ModelDescriptor,
+        config: {
+          providerOptions: { xai: { reasoningItems: [reasoningItem] } },
+        },
+        messages: [{ role: 'user', parts: [{ kind: 'text', text: 'temp?' }] }],
+      }),
+      FAKE_CTX,
+    )
+    const call = client.calls[0] as { input: unknown[]; store: boolean }
+    expect(call.store).toBe(false)
+    expect(call.input[1]).toEqual(reasoningItem)
+  })
+
   it('warns when requested tool counters are missing', async () => {
     const adapter = xaiAdapter({
       client: makeFakeXai(
