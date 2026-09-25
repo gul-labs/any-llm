@@ -12,7 +12,7 @@ import { LlmError, createClient } from '@gullabs/core'
 import type { ResolvedRequest, AdapterCtx, ModelDescriptor } from '@gullabs/core'
 import { fakeXaiResponse, makeFakeXai, RecordingSink } from '@gullabs/testing'
 import { xaiAdapter, classifyXaiError } from './adapter.js'
-import { xaiRegistry, grok45ModelDescriptor } from './models.js'
+import { xaiRegistry, grok45ModelDescriptor, grok47ModelDescriptor } from './models.js'
 import { makeTestDescriptor } from '../../core/src/test-model-descriptor.js'
 
 // ---------------------------------------------------------------------------
@@ -1351,6 +1351,60 @@ describe('xai function calling', () => {
       },
     ])
     expect(call.tool_choice).toEqual({ type: 'function', name: 'get_temperature' })
+  })
+
+  it('replays grok-4.7 function-call items unchanged on store:false', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ text: '59F' }))
+    const adapter = xaiAdapter({ client })
+    await adapter.run(
+      makeResolvedReq({
+        model: 'grok-4.7',
+        modelDescriptor: grok47ModelDescriptor,
+        tools: [tool],
+        messages: [
+          { role: 'user', parts: [{ kind: 'text', text: 'temp?' }] },
+          {
+            role: 'assistant',
+            parts: [
+              {
+                kind: 'tool-call',
+                toolCallId: 'call-1',
+                toolName: 'get_temperature',
+                args: { location: 'SF' },
+              },
+            ],
+          },
+          {
+            role: 'user',
+            parts: [
+              {
+                kind: 'tool-result',
+                toolCallId: 'call-1',
+                toolName: 'get_temperature',
+                result: { temperature: 59 },
+              },
+            ],
+          },
+        ],
+      }),
+      FAKE_CTX,
+    )
+    const call = client.calls[0] as { input: unknown[]; store: boolean }
+    expect(call.store).toBe(false)
+    expect(call.input).toEqual([
+      { role: 'user', content: [{ type: 'input_text', text: 'temp?' }] },
+      {
+        type: 'function_call',
+        call_id: 'call-1',
+        name: 'get_temperature',
+        arguments: '{"location":"SF"}',
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'call-1',
+        output: '{"temperature":59}',
+      },
+    ])
   })
 
   it('replays tool-call and tool-result as store:false input items', async () => {

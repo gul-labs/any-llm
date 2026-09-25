@@ -123,7 +123,7 @@ const replay = await client.generate(
 // replay.text — model answer after the host dispatched the tool
 ```
 
-## grok-4.5 and grok-4.6
+## grok-4.5, grok-4.6, and grok-4.7
 
 The default registry ships two canonical models (500k token context window each). They route through this adapter and support:
 
@@ -134,7 +134,7 @@ The default registry ships two canonical models (500k token context window each)
 - **`strict: true` performs no OpenAI-style compile-time schema validation, as of the 2026-07-09 live probes.** 2026-07-09 live verification against the real xAI Responses API — 13 single-variant probes plus 1 combined probe (14 calls total, all accepted HTTP 200; the combined probe is recorded as fixture `10-non-strict-schema-accepted.json`) — verified that `text.format` with `strict: true` accepted every one of the following schema shapes that OpenAI's own strict mode rejects at compile time: schemas (root and nested) missing `additionalProperties: false`; properties omitted from `required` (optional properties); `format`, `minLength`, `pattern`, and `default` keywords; `anyOf`; `$defs`/`$ref`; `enum`/`const`; and nullable unions (`type: [T, 'null']`). `strict: false` on the same surface showed no observed behavioral divergence from `strict: true`. This adapter forwards schemas to xAI verbatim — no rewriting, no preflight validation, and no injection of `additionalProperties: false` or `required` completion — so OpenAI-strict schema rewriting (including `@gullabs/codex-cli`'s `toOpenAiStrictOutputSchema` helper) is unnecessary for xai as of that verification date. (Reject-don't-map still applies to genuinely invalid input the xai schema/types layer itself rejects; this note is only about strict-mode compile-time schema-shape enforcement.) `packages/xai/src/__fixtures__/10-non-strict-schema-accepted.json` records one live example combining three of these — missing root `additionalProperties: false`, an optional property, and a `format` keyword — in a single accepted call.
 - **Sampling** — `temperature` and `topP` are forwarded verbatim. No `topK`.
 - **No penalties/stop** — `presence_penalty`, `frequency_penalty`, and `stop` are not in the config schema at all; xAI hard-rejects these on reasoning models, so the schema never admits them (reject-don't-map).
-- **Service tiers** — `grok-4.5` admits none; setting `serviceTier` throws `bad_request`. `grok-4.6` admits `serviceTier: 'priority'` only (Responses `service_tier: "priority"`, live-verified 2026-08-12). `'flex'` / `'standard'` / `'batch'` are rejected — xAI silently remaps unknown tiers to `default`, so this library never forwards them.
+- **Service tiers** — `grok-4.5`, `grok-4.6`, and `grok-4.7` admit `serviceTier: 'priority'` only (Responses `service_tier: "priority"`, live-verified 2026-08-12). `'flex'` / `'standard'` / `'batch'` are rejected — xAI silently remaps unknown tiers to `default`, so this library never forwards them.
 
 ## Files store (`XaiFileStore`)
 
@@ -180,6 +180,10 @@ try {
 | Storage cost                | ~$0.025/GiB/day — **not** injected into `computeCost` token lanes                                                                                                                                             |
 | ZDR teams                   | New uploads and `file_id` attachments are blocked by xAI; errors mention Zero Data Retention when detectable                                                                                                  |
 | Max size                    | 48 MiB (conservative vs docs 48–50 MB)                                                                                                                                                                        |
+
+**Hidden input tokens:** grok-4.5, grok-4.6, and grok-4.7 bill about 1.3k hidden input tokens per request (1,532 for a one-line prompt versus 208 in July; cached on repeats).
+
+**grok-4.7 replay:** the adapter sends `store: false` and replays function-call items unchanged. A live P-X3 fixture for grok-4.7 reasoning replay was not captured, so no fixture values were invented.
 
 **Billing note:** attaching files on Responses implicitly enables xAI's `attachment_search` agentic tool. `web_search_calls` is billed per call. Since 2026-09-21, x_search is billed from `x_posts_fetched` and `x_users_fetched`, not `x_search_calls`. The attachment_search counter is **not** live-pinned (P-X2); a `file-ref` call sets synthetic `usage.details.attachment_search_unpinned = 1` and `Cost.confidence: 'estimated'`. A missing x_search item counter unprices the whole call.
 

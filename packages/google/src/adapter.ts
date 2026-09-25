@@ -687,11 +687,19 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
             )
           }
 
-          // Real SDK ThinkingLevel enum: "LOW" | "MEDIUM" | "HIGH" | "MINIMAL"
+          // Real SDK ThinkingLevel enum: "LOW" | "MEDIUM" | "HIGH" | "MINIMAL".
+          // gemini-3.7-flash and gemini-3.8-flash never emit MINIMAL.
+          const noMinimal = model === 'gemini-3.7-flash' || model === 'gemini-3.8-flash'
           let thinkingLevel: string | undefined
           if (reasoning.effort !== undefined) {
             switch (reasoning.effort) {
               case 'none':
+                if (noMinimal) {
+                  throw new LlmError(
+                    `reasoning.effort "none" is not supported for model "${model}"; thinkingLevel MINIMAL is not emitted.`,
+                    { kind: 'bad_request', retryable: false },
+                  )
+                }
                 thinkingLevel = 'MINIMAL'
                 break
               case 'low':

@@ -135,6 +135,18 @@ export const XAI_PRICING: Readonly<Record<string, XaiModelRates>> = Object.freez
     // Confirmed 2026-08-12 by fixture 12 cost_in_usd_ticks (2× list).
     priorityFactor: 2,
   },
+  // ── grok-4.7 ──  $2.00/$0.50/$6.00 (<200k), $4.00/$1.00/$12.00 (≥200k); priority 2×
+  'grok-4.7': {
+    inputPerM: 2_000_000,
+    cachedPerM: 500_000,
+    outputPerM: 6_000_000,
+    gt200k: {
+      inputPerM: 4_000_000,
+      cachedPerM: 1_000_000,
+      outputPerM: 12_000_000,
+    },
+    priorityFactor: 2,
+  },
 })
 
 // ---------------------------------------------------------------------------

@@ -300,6 +300,34 @@ describe('computeXaiCost vs live cost_in_usd_ticks', () => {
 })
 
 describe('xaiPricingSource', () => {
+  it('prices grok-4.7 at the 4.6 list, including the 200k boundary and priority', () => {
+    const below = computeXaiCost(
+      'grok-4.7',
+      makeUsage({ inputTokens: 199_999, outputTokens: 0 }),
+    )
+    const at = computeXaiCost(
+      'grok-4.7',
+      makeUsage({ inputTokens: 200_000, outputTokens: 0 }),
+    )
+    expect(below.microUsd).toBe(Math.round((199_999 * 2_000_000) / 1_000_000))
+    expect(at.microUsd).toBe(Math.round((200_000 * 4_000_000) / 1_000_000))
+    const cached = computeXaiCost(
+      'grok-4.7',
+      makeUsage({ inputTokens: 1_000, cachedInputTokens: 1_000, outputTokens: 0 }),
+    )
+    expect(cached.details.cached).toBe(Math.round((1_000 * 500_000) / 1_000_000))
+    const priority = computeXaiCost(
+      'grok-4.7',
+      makeUsage({ inputTokens: 1_000, outputTokens: 1_000 }),
+      'priority',
+    )
+    const standard = computeXaiCost(
+      'grok-4.7',
+      makeUsage({ inputTokens: 1_000, outputTokens: 1_000 }),
+    )
+    expect(priority.microUsd).toBe((standard.microUsd as number) * 2)
+  })
+
   it('hasModel is true for grok-4.5 / grok-4.6 and false for an unknown model', () => {
     const source = xaiPricingSource()
     expect(source.hasModel('grok-4.5')).toBe(true)

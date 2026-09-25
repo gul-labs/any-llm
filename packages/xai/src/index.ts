@@ -62,8 +62,10 @@ export type {
 export {
   Grok45ConfigSchema,
   Grok46ConfigSchema,
+  Grok47ConfigSchema,
   grok45ModelDescriptor,
   grok46ModelDescriptor,
+  grok47ModelDescriptor,
   xaiModelDescriptors,
   xaiRegistry,
 } from './models.js'

@@ -114,6 +114,31 @@ export const GEMINI_PRICING: Readonly<Record<string, GeminiTierRates>> = Object.
     { inputPerM: 125_000, cachedPerM: 12_500, outputPerM: 750_000 },
   ),
 
+  // Gemini 3.8 / 3.7 / 3.6 Flash intro rates (2026-09-25). Flex/batch cached
+  // is half of the intro cached rate. Re-snapshot on 2027-01-01.
+  'gemini-3.8-flash': tiers(
+    { inputPerM: 750_000, cachedPerM: 75_000, outputPerM: 3_750_000 },
+    { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
+    { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
+  ),
+  'gemini-3.7-flash': tiers(
+    { inputPerM: 750_000, cachedPerM: 75_000, outputPerM: 3_750_000 },
+    { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
+    { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
+  ),
+  'gemini-3.6-flash': tiers(
+    { inputPerM: 750_000, cachedPerM: 75_000, outputPerM: 3_750_000 },
+    { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
+    { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
+  ),
+
+  // Gemini 3.5 Flash-Lite. Flex/batch cached is the published $0.02, not half of $0.03.
+  'gemini-3.5-flash-lite': tiers(
+    { inputPerM: 300_000, cachedPerM: 30_000, outputPerM: 2_500_000 },
+    { inputPerM: 150_000, cachedPerM: 20_000, outputPerM: 1_250_000 },
+    { inputPerM: 150_000, cachedPerM: 20_000, outputPerM: 1_250_000 },
+  ),
+
   // Gemini 3.1 Pro Preview. Flex/batch cached equals standard on both bands.
   'gemini-3.1-pro-preview': tiers(
     {

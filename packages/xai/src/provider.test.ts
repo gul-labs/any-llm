@@ -23,7 +23,11 @@ describe('xaiProvider', () => {
     for (const descriptor of plugin.modelDescriptors) {
       expect(descriptor.provider).toBe('xai')
     }
-    expect(plugin.modelDescriptors.map((d) => d.model)).toEqual(['grok-4.5', 'grok-4.6'])
+    expect(plugin.modelDescriptors.map((d) => d.model)).toEqual([
+      'grok-4.5',
+      'grok-4.6',
+      'grok-4.7',
+    ])
   })
 
   it('has a pricingSource that knows grok-4.5 and grok-4.6', () => {

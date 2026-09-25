@@ -573,6 +573,32 @@ describe('reasoning mapping', () => {
     expect(call?.config?.thinkingConfig?.thinkingLevel).toBe('LOW')
   })
 
+  it('never emits MINIMAL for gemini-3.7-flash or gemini-3.8-flash', async () => {
+    const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
+    const adapter = geminiAdapter({ client })
+
+    for (const model of ['gemini-3.7-flash', 'gemini-3.8-flash'] as const) {
+      await expect(
+        adapter.run(
+          makeResolvedReq({
+            model,
+            modelDescriptor: makeGoogleDescriptor({
+              model,
+              capabilities: {
+                reasoning: true,
+                reasoningApi: 'level',
+                serviceTiers: ['flex', 'standard'],
+              },
+            }),
+            config: { reasoning: { effort: 'none' } },
+          }),
+          FAKE_CTX,
+        ),
+      ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
+    }
+    expect(client.calls).toHaveLength(0)
+  })
+
   it('rejects reasoning.effort=xhigh on Gemini budget models', async () => {
     const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
     const adapter = geminiAdapter({ client })

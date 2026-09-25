@@ -139,6 +139,27 @@ describe('strict built-in config schemas', () => {
         reasoning: { effort: 'none' },
       }).success,
     ).toBe(false)
+
+    expect(
+      findDescriptor('gemini-3.8-flash').configSchema.safeParse({
+        reasoning: { effort: 'none' },
+      }).success,
+    ).toBe(false)
+    expect(
+      findDescriptor('gemini-3.7-flash').configSchema.safeParse({
+        reasoning: { effort: 'none' },
+      }).success,
+    ).toBe(false)
+    expect(
+      findDescriptor('gemini-3.6-flash').configSchema.safeParse({
+        reasoning: { effort: 'none' },
+      }).success,
+    ).toBe(true)
+    expect(
+      findDescriptor('gemini-3.5-flash-lite').configSchema.safeParse({
+        reasoning: { effort: 'none' },
+      }).success,
+    ).toBe(true)
   })
 
   it('enforces model-specific budget rules', () => {

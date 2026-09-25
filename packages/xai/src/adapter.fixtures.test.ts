@@ -19,7 +19,11 @@ import { describe, it, expect } from 'vitest'
 import type { AdapterCtx, JsonValue, ResolvedRequest } from '@gullabs/core'
 import { makeFakeXai } from '@gullabs/testing'
 import { xaiAdapter, classifyXaiError } from './adapter.js'
-import { grok45ModelDescriptor, grok46ModelDescriptor } from './models.js'
+import {
+  grok45ModelDescriptor,
+  grok46ModelDescriptor,
+  grok47ModelDescriptor,
+} from './models.js'
 import { makeTestDescriptor } from '../../core/src/test-model-descriptor.js'
 
 /** Read + JSON.parse a fixture file at test time (no resolveJsonModule needed). */
@@ -600,6 +604,41 @@ describe('fixture: 21-function-call-first', () => {
     expect(result.finishReason).toBe('tool_calls')
     expect(result.toolCalls?.[0]?.toolName).toBe('get_temperature')
     expect(result.toolCalls?.[0]?.toolCallId).toMatch(/^call-/)
+  })
+})
+
+describe('fixture: grok-4.7 reuses the grok-4.6 contract fixtures', () => {
+  it('maps the grok-4.6 positive fixture through the grok-4.7 descriptor', async () => {
+    const client = makeFakeXai(grok46XhighPriorityFixture.body as never)
+    const adapter = xaiAdapter({ client })
+    const result = await adapter.run(
+      makeResolvedReq({
+        model: 'grok-4.7',
+        config: { reasoning: { effort: 'xhigh' }, serviceTier: 'priority' },
+        modelDescriptor: grok47ModelDescriptor,
+      }),
+      FAKE_CTX,
+    )
+    expect(result.servedServiceTier).toBe('priority')
+    const call = client.calls[0] as { model?: string }
+    expect(call.model).toBe('grok-4.7')
+    expect(result.model).toBe('grok-4.6')
+  })
+
+  it('rejects grok-4.7 effort none before dispatch', async () => {
+    const client = makeFakeXai(grok46XhighPriorityFixture.body as never)
+    const adapter = xaiAdapter({ client })
+    await expect(
+      adapter.run(
+        makeResolvedReq({
+          model: 'grok-4.7',
+          config: { reasoning: { effort: 'none' } },
+          modelDescriptor: grok47ModelDescriptor,
+        }),
+        FAKE_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request' })
+    expect(client.calls).toHaveLength(0)
   })
 })
 

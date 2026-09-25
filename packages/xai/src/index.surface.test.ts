@@ -66,7 +66,11 @@ describe('@gullabs/xai package surface: commit 3', () => {
   })
 
   it('xaiModelDescriptors is reachable and pinned to grok-4.5 then grok-4.6', () => {
-    expect(xaiModelDescriptors.map((d) => d.model)).toEqual(['grok-4.5', 'grok-4.6'])
+    expect(xaiModelDescriptors.map((d) => d.model)).toEqual([
+      'grok-4.5',
+      'grok-4.6',
+      'grok-4.7',
+    ])
   })
 
   it('xaiRegistry is reachable and resolves grok-4.5 and grok-4.6', () => {

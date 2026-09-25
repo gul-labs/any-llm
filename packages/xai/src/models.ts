@@ -18,9 +18,11 @@ import {
 
 import { Grok45ConfigSchema } from './model-config/grok-4-5.js'
 import { Grok46ConfigSchema } from './model-config/grok-4-6.js'
+import { Grok47ConfigSchema } from './model-config/grok-4-7.js'
 
 export { Grok45ConfigSchema } from './model-config/grok-4-5.js'
 export { Grok46ConfigSchema } from './model-config/grok-4-6.js'
+export { Grok47ConfigSchema } from './model-config/grok-4-7.js'
 
 export const grok45ModelDescriptor: ModelDescriptor = {
   model: 'grok-4.5',
@@ -68,10 +70,34 @@ export const grok46ModelDescriptor: ModelDescriptor = {
   validateConfig: zodToStandardSchema(Grok46ConfigSchema),
 }
 
+export const grok47ModelDescriptor: ModelDescriptor = {
+  model: 'grok-4.7',
+  provider: 'xai',
+  pricingFamily: 'grok-4.7',
+  capabilities: {
+    reasoning: true,
+    reasoningApi: 'level',
+    admittedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    structuredOutput: true,
+    nativeStructuredOutput: true,
+    vision: true,
+    audioInput: false,
+    sampling: 'tunable',
+    caching: { explicit: false, minTokens: 0 },
+    grounding: true,
+    functionCalling: true,
+    serviceTiers: ['priority'],
+  },
+  configSchema: Grok47ConfigSchema,
+  configJsonSchema: toConfigJsonSchema(Grok47ConfigSchema),
+  validateConfig: zodToStandardSchema(Grok47ConfigSchema),
+}
+
 /** Every model descriptor `@gullabs/xai` contributes. */
 export const xaiModelDescriptors: ModelDescriptor[] = [
   grok45ModelDescriptor,
   grok46ModelDescriptor,
+  grok47ModelDescriptor,
 ]
 
 export const xaiRegistry: ModelRegistry = createModelRegistry(xaiModelDescriptors)
