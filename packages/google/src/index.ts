@@ -33,7 +33,15 @@ export {
   defaultGeminiRegistry,
 } from './models.js'
 export { geminiPricingSource } from './cost.js'
-export { GEMINI_PRICING, TIER_FACTOR, pricingVersion } from './pricing.js'
+export {
+  GEMINI_PRICING,
+  GEMINI_PRICED_TIERS,
+  geminiStandardRates,
+  lookupGeminiTierRates,
+  pricingVersion,
+  resolveGeminiRates,
+} from './pricing.js'
+export type { GeminiPricedTier, GeminiTierRates } from './pricing.js'
 export type {
   GeminiClientLike,
   GeminiCountTokensParams,

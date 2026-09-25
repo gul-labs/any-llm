@@ -21,7 +21,7 @@ pnpm add @gullabs/google @gullabs/core @google/genai
 | `buildGoogleClient(auth)`                                                  | Builds the real `@google/genai` client from `AuthMaterial`                            |
 | `isGeminiCapacityError(err)`                                               | Detects Gemini Flex shared-capacity errors for built-in fallback                      |
 | `geminiModelDescriptors`, `gemmaModelDescriptors`, `defaultGeminiRegistry` | Built-in model descriptors + pre-built registry                                       |
-| `geminiPricingSource()`, `GEMINI_PRICING`, `TIER_FACTOR`                   | Built-in Gemini pricing snapshot and tier-factor map                                  |
+| `geminiPricingSource()`, `GEMINI_PRICING`, `resolveGeminiRates`            | Built-in Gemini pricing snapshot (concrete standard / flex / batch rates)             |
 | `GoogleFileStore`                                                          | Files API: upload + poll ACTIVE + delete                                              |
 | `FileDeleteOptions`                                                        | `{ failClosed?, signal? }` — opt-in fail-closed delete (parity with `@gullabs/xai`)   |
 

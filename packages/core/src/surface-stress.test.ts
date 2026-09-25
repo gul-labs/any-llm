@@ -90,8 +90,7 @@ const TEST_RATES = {
     outputPerM: 12_000_000,
   },
 }
-const TEST_TIER_FACTOR = { standard: 1, flex: 0.5, batch: 0.5 }
-const PRICING = makeTestPricingSource(TEST_RATES, TEST_TIER_FACTOR, 'test-pricing-1')
+const PRICING = makeTestPricingSource(TEST_RATES, 'test-pricing-1')
 const TEST_REGISTRY = createModelRegistry(
   Object.keys(TEST_RATES).map((model) =>
     makePermissiveTestDescriptor({ model, provider: 'google' }),

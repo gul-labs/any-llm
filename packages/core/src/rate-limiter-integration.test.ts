@@ -46,7 +46,6 @@ const PRICING = makeTestPricingSource(
   {
     'gemini-2.5-flash': { inputPerM: 300_000, cachedPerM: 30_000, outputPerM: 2_500_000 },
   },
-  { standard: 1 },
   'test-pricing-1',
 )
 const TEST_REGISTRY = createModelRegistry([

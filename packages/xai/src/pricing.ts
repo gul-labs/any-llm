@@ -5,10 +5,11 @@
  * `@gullabs/core`'s `ModelRates` convention exactly: `cost_µUSD = N *
  * ratePerM / 1_000_000`.
  *
- * This is a SELF-CONTAINED, xai-owned reimplementation — it does NOT import
- * core's Gemini-specific `computeCost`/`GEMINI_PRICING`/`geminiPricingSource`
- * (those are Gemini-only). `PricingSource` is provider-scoped by contract
- * (see `packages/core/src/ports.ts`); this module is xai's own.
+ * Token arithmetic goes through core's `computeCost`. The xAI lookup resolves
+ * the concrete per-tier rates (including the `priority` multiplier) before
+ * that call, so core never sees an xAI tier name. Tool lanes stay here:
+ * `computeCost` prices tokens only. `PricingSource` is provider-scoped by
+ * contract (see `packages/core/src/ports.ts`).
  *
  * **Long-context tier.** grok-4.5 / grok-4.6 charge a premium when the GROSS
  * input token count exceeds 200,000 (`long_context_threshold` in xAI's
@@ -35,7 +36,8 @@
  * @module
  */
 
-import type { Cost, PricingSource, Usage } from '@gullabs/core'
+import { computeCost } from '@gullabs/core'
+import type { Cost, CostRatesLookup, PricingSource, Usage } from '@gullabs/core'
 
 /** Identifies this pricing snapshot — bump the date when rates change. */
 export const xaiPricingVersion = 'xai-2026-08-24' as const
@@ -115,8 +117,6 @@ export const XAI_PRICING: Readonly<Record<string, XaiModelRates>> = Object.freez
   },
 })
 
-const LONG_CONTEXT_THRESHOLD = 200_000
-
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -134,22 +134,38 @@ function lookupRates(model: string): XaiModelRates | undefined {
 }
 
 /**
- * Select the applicable rate set for a model given the GROSS input token
- * count. When a model has a `gt200k` tier, that tier's rates apply when
- * `grossInputTokens` is **strictly greater than** 200,000.
+ * Resolve concrete token rates for `(model, tier)`.
+ *
+ * `undefined` and `'default'` are the standard list. `'priority'` returns
+ * those rates scaled by `priorityFactor` when the model admits it. Any other
+ * defined tier, or `'priority'` on a model without `priorityFactor`, is
+ * unpriced (reject-don't-map) — the lookup returns `undefined` and
+ * `computeCost` records the unpriced cost.
  */
-function selectRates(
-  rates: XaiModelRates,
-  grossInputTokens: number,
-): { inputPerM: number; cachedPerM: number; outputPerM: number } {
-  if (rates.gt200k !== undefined && grossInputTokens > LONG_CONTEXT_THRESHOLD) {
-    return rates.gt200k
+const lookupConcreteRates: CostRatesLookup = (model, tier) => {
+  const rates = lookupRates(model)
+  if (rates === undefined) return undefined
+  if (tier === undefined || tier === 'default') return rates
+  if (tier === 'priority' && rates.priorityFactor !== undefined) {
+    return scaleRates(rates, rates.priorityFactor)
   }
-  return {
-    inputPerM: rates.inputPerM,
-    cachedPerM: rates.cachedPerM,
-    outputPerM: rates.outputPerM,
+  return undefined
+}
+
+function scaleRates(rates: XaiModelRates, factor: number): XaiModelRates {
+  const scaled: XaiModelRates = {
+    inputPerM: rates.inputPerM * factor,
+    cachedPerM: rates.cachedPerM * factor,
+    outputPerM: rates.outputPerM * factor,
   }
+  if (rates.gt200k !== undefined) {
+    scaled.gt200k = {
+      inputPerM: rates.gt200k.inputPerM * factor,
+      cachedPerM: rates.gt200k.cachedPerM * factor,
+      outputPerM: rates.gt200k.outputPerM * factor,
+    }
+  }
+  return scaled
 }
 
 // ---------------------------------------------------------------------------
@@ -161,14 +177,13 @@ function selectRates(
  *
  * Pure function — no side effects, always returns a well-formed {@link Cost}.
  *
- * **Algorithm** (mirrors `@gullabs/core`'s `computeCost` exactly, xai-owned):
- * 1. Look up rates for `model`; if not found, return an unpriced `Cost`
- *    (`microUsd: null`) naming the model.
- * 2. `undefined` or `'default'` prices at the standard list.
- *    `'priority'` applies `rates.priorityFactor` when present.
- *    Any other defined tier, or `'priority'` on a model without
- *    `priorityFactor`, is unpriced (reject-don't-map).
- * 3. Select base vs. `>200k` long-context rates from GROSS `inputTokens`.
+ * **Algorithm:**
+ * 1. `lookupConcreteRates` resolves the model and tier. `undefined` or
+ *    `'default'` is the standard list. `'priority'` returns rates scaled by
+ *    `priorityFactor` when the model admits it. An unknown model, any other
+ *    defined tier, or `'priority'` on a model without `priorityFactor` is
+ *    unpriced (reject-don't-map) — `computeCost` returns `microUsd: null`.
+ * 2. Core selects base vs. `>200k` long-context rates from GROSS `inputTokens`.
  * 4. Billable input = `inputTokens − (cachedInputTokens ?? 0)`, clamped to 0.
  * 5. Round each component (input, cached, output) independently to the
  *    nearest integer micro-USD.
@@ -181,45 +196,18 @@ function selectRates(
  *    server tools requested.
  */
 export function computeXaiCost(model: string, usage: Usage, tier?: string): Cost {
-  const rates = lookupRates(model)
-
-  if (rates === undefined) {
-    return {
-      microUsd: null,
-      usd: null,
-      pricingVersion: xaiPricingVersion,
-      confidence: 'estimated',
-      details: { input: 0, cached: 0, output: 0, tools: 0 },
-      unpricedReason: `Unknown model "${model}"; no pricing entry found.`,
-    }
-  }
-
-  let factor = 1
-  if (tier !== undefined && tier !== 'default') {
-    if (tier === 'priority' && rates.priorityFactor !== undefined) {
-      factor = rates.priorityFactor
-    } else {
-      return {
-        microUsd: null,
-        usd: null,
-        pricingVersion: xaiPricingVersion,
-        confidence: 'estimated',
-        details: { input: 0, cached: 0, output: 0, tools: 0 },
-        unpricedReason: `Unknown service tier "${tier}"; xai model "${model}" has no such tier, refusing to guess a pricing multiplier.`,
-      }
-    }
-  }
-
-  const base = selectRates(rates, usage.inputTokens)
-
-  const cached = usage.cachedInputTokens ?? 0
-  const billableInput = Math.max(0, usage.inputTokens - cached)
-
-  const inputCost = Math.round((billableInput * base.inputPerM * factor) / 1_000_000)
-  const cachedCost = Math.round((cached * base.cachedPerM * factor) / 1_000_000)
-  const outputCost = Math.round(
-    (usage.outputTokens * base.outputPerM * factor) / 1_000_000,
+  const tokenCost = computeCost(
+    model,
+    usage,
+    tier,
+    lookupConcreteRates,
+    xaiPricingVersion,
   )
+  if (tokenCost.microUsd === null) return tokenCost
+
+  const inputCost = tokenCost.details.input
+  const cachedCost = tokenCost.details.cached
+  const outputCost = tokenCost.details.output
 
   const serverToolsRequested = usage.details['server_tools_requested'] === 1
   const missingRequestedCounters =

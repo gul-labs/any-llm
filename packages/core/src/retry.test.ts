@@ -407,7 +407,6 @@ describe('engine + middleware — integration', () => {
         outputPerM: 10_000_000,
       },
     },
-    { standard: 1 },
     'test-pricing-1',
   )
   const TEST_REGISTRY = createModelRegistry([

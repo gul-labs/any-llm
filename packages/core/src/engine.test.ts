@@ -67,16 +67,22 @@ function makeSuccessResult(overrides?: Partial<AdapterResult>): AdapterResult {
 // Mirrors gemini-2.5-pro's real published rates verbatim (as local test data,
 // not imported from @gullabs/google) so the hardcoded dollar assertions below
 // keep working unchanged.
+const PRO_STANDARD = {
+  inputPerM: 1_250_000,
+  cachedPerM: 125_000,
+  outputPerM: 10_000_000,
+  gt200k: { inputPerM: 2_500_000, cachedPerM: 250_000, outputPerM: 15_000_000 },
+}
+const PRO_FLEX = {
+  inputPerM: 625_000,
+  cachedPerM: 62_500,
+  outputPerM: 5_000_000,
+  gt200k: { inputPerM: 1_250_000, cachedPerM: 125_000, outputPerM: 7_500_000 },
+}
 const PRICING = makeTestPricingSource(
   {
-    'gemini-2.5-pro': {
-      inputPerM: 1_250_000,
-      cachedPerM: 125_000,
-      outputPerM: 10_000_000,
-      gt200k: { inputPerM: 2_500_000, cachedPerM: 250_000, outputPerM: 15_000_000 },
-    },
+    'gemini-2.5-pro': { standard: PRO_STANDARD, flex: PRO_FLEX },
   },
-  { standard: 1, flex: 0.5, batch: 0.5 },
   'test-pricing-1',
 )
 const TEST_REGISTRY = createModelRegistry([

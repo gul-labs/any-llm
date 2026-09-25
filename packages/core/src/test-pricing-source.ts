@@ -18,36 +18,69 @@ import type { ModelRates } from './pricing.js'
 import type { PricingSource } from './ports.js'
 import type { Cost, Usage } from './types.js'
 
+/**
+ * Build a test {@link PricingSource}.
+ *
+ * `rates` may be a flat standard table, or a per-tier table. A flat table
+ * prices `undefined` and `'standard'` at those rates and leaves every other
+ * defined tier unpriced. A per-tier table (`{ standard, flex, batch }`)
+ * resolves the named tier; `undefined` uses `standard`.
+ */
 export function makeTestPricingSource(
-  rates: Readonly<Record<string, ModelRates>>,
-  tierFactors: Readonly<Record<string, number>>,
+  rates:
+    | Readonly<Record<string, ModelRates>>
+    | Readonly<Record<string, Readonly<Record<string, ModelRates>>>>,
   version: string,
 ): PricingSource {
-  function lookup(model: string): ModelRates | undefined {
-    const exact = rates[model]
-    if (exact !== undefined) return exact
+  const tiered = isTieredTable(rates)
 
-    let bestKey = ''
-    let bestRates: ModelRates | undefined
-    for (const key of Object.keys(rates)) {
-      if (model.startsWith(key) && key.length > bestKey.length) {
-        bestKey = key
-        bestRates = rates[key]
-      }
+  function lookup(model: string, tier: string | undefined): ModelRates | undefined {
+    if (tiered) {
+      const entry = lookupKey(rates, model) as
+        Readonly<Record<string, ModelRates>> | undefined
+      if (entry === undefined) return undefined
+      const key = tier ?? 'standard'
+      return entry[key]
     }
-    return bestRates
+    if (tier !== undefined && tier !== 'standard') return undefined
+    return lookupKey(rates as Readonly<Record<string, ModelRates>>, model)
   }
 
   return {
     version,
     price(model: string, usage: Usage, tier?: string): Cost {
-      return computeCost(model, usage, tier, lookup, tierFactors, version)
+      return computeCost(model, usage, tier, lookup, version)
     },
     hasModel(model: string): boolean {
-      return lookup(model) !== undefined
+      return lookup(model, undefined) !== undefined
     },
     listModels(): readonly string[] {
       return Object.keys(rates)
     },
   }
+}
+
+function lookupKey<T>(table: Readonly<Record<string, T>>, model: string): T | undefined {
+  const exact = table[model]
+  if (exact !== undefined) return exact
+
+  let bestKey = ''
+  let best: T | undefined
+  for (const key of Object.keys(table)) {
+    if (model.startsWith(key) && key.length > bestKey.length) {
+      bestKey = key
+      best = table[key]
+    }
+  }
+  return best
+}
+
+function isTieredTable(
+  rates:
+    | Readonly<Record<string, ModelRates>>
+    | Readonly<Record<string, Readonly<Record<string, ModelRates>>>>,
+): rates is Readonly<Record<string, Readonly<Record<string, ModelRates>>>> {
+  const first = Object.values(rates)[0]
+  if (first === undefined) return false
+  return !('inputPerM' in first)
 }
