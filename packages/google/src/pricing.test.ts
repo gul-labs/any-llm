@@ -409,7 +409,6 @@ describe('per-tier golden table — published flex/batch cached rates', () => {
   /**
    * Published µUSD/M from https://ai.google.dev/gemini-api/docs/pricing
    * (2026-09-25). Cached rates that equal standard must not be halved.
-   * `gemini-3.5-flash` flex cached ($0.08) differs from batch ($0.075).
    */
   const PUBLISHED: ReadonlyArray<{
     model: string
@@ -518,31 +517,6 @@ describe('per-tier golden table — published flex/batch cached rates', () => {
       cachedPerM: 10_000,
       outputPerM: 200_000,
     },
-    // gemini-3-flash-preview — cached stays $0.05
-    {
-      model: 'gemini-3-flash-preview',
-      tier: 'standard',
-      context: 'le200k',
-      inputPerM: 500_000,
-      cachedPerM: 50_000,
-      outputPerM: 3_000_000,
-    },
-    {
-      model: 'gemini-3-flash-preview',
-      tier: 'flex',
-      context: 'le200k',
-      inputPerM: 250_000,
-      cachedPerM: 50_000,
-      outputPerM: 1_500_000,
-    },
-    {
-      model: 'gemini-3-flash-preview',
-      tier: 'batch',
-      context: 'le200k',
-      inputPerM: 250_000,
-      cachedPerM: 50_000,
-      outputPerM: 1_500_000,
-    },
     // gemini-3.1-pro-preview — cached stays at standard on both context bands
     {
       model: 'gemini-3.1-pro-preview',
@@ -617,31 +591,6 @@ describe('per-tier golden table — published flex/batch cached rates', () => {
       cachedPerM: 12_500,
       outputPerM: 750_000,
     },
-    // gemini-3.5-flash — flex cached $0.08, batch cached $0.075
-    {
-      model: 'gemini-3.5-flash',
-      tier: 'standard',
-      context: 'le200k',
-      inputPerM: 1_500_000,
-      cachedPerM: 150_000,
-      outputPerM: 9_000_000,
-    },
-    {
-      model: 'gemini-3.5-flash',
-      tier: 'flex',
-      context: 'le200k',
-      inputPerM: 750_000,
-      cachedPerM: 80_000,
-      outputPerM: 4_500_000,
-    },
-    {
-      model: 'gemini-3.5-flash',
-      tier: 'batch',
-      context: 'le200k',
-      inputPerM: 750_000,
-      cachedPerM: 75_000,
-      outputPerM: 4_500_000,
-    },
   ]
 
   it('prices 1M cached tokens at the published cached rate for every model × tier × context band', () => {
@@ -678,7 +627,6 @@ describe('per-tier golden table — published flex/batch cached rates', () => {
       'gemini-2.5-pro',
       'gemini-2.5-flash',
       'gemini-2.5-flash-lite',
-      'gemini-3-flash-preview',
       'gemini-3.1-pro-preview',
     ]
     const usage = makeUsage({
@@ -694,18 +642,6 @@ describe('per-tier golden table — published flex/batch cached rates', () => {
       expect(batch.details.cached, model).toBe(standard.details.cached)
       expect(flex.details.cached).toBeGreaterThan(0)
     }
-  })
-
-  it('keeps gemini-3.5-flash flex cached distinct from batch cached', () => {
-    const usage = makeUsage({
-      inputTokens: 1_000_000,
-      cachedInputTokens: 1_000_000,
-      outputTokens: 0,
-    })
-    const flex = computeCost('gemini-3.5-flash', usage, 'flex')
-    const batch = computeCost('gemini-3.5-flash', usage, 'batch')
-    expect(flex.details.cached).toBe(80_000)
-    expect(batch.details.cached).toBe(75_000)
   })
 })
 

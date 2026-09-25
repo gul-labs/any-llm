@@ -69,7 +69,6 @@ function tiers(
  * cost engine matches exact first, then longest-prefix (see `resolveGeminiRates`).
  *
  * Source: https://ai.google.dev/gemini-api/docs/pricing (re-verified 2026-09-25).
- * Flex cached on `gemini-3.5-flash` is $0.08/1M, not the batch $0.075/1M.
  */
 export const GEMINI_PRICING: Readonly<Record<string, GeminiTierRates>> = Object.freeze({
   // Gemini 2.5 Pro. Flex/batch cached equals standard on both context bands.
@@ -108,13 +107,6 @@ export const GEMINI_PRICING: Readonly<Record<string, GeminiTierRates>> = Object.
     { inputPerM: 50_000, cachedPerM: 10_000, outputPerM: 200_000 },
   ),
 
-  // Gemini 3.5 Flash. Batch cached $0.075; flex cached $0.08.
-  'gemini-3.5-flash': tiers(
-    { inputPerM: 1_500_000, cachedPerM: 150_000, outputPerM: 9_000_000 },
-    { inputPerM: 750_000, cachedPerM: 80_000, outputPerM: 4_500_000 },
-    { inputPerM: 750_000, cachedPerM: 75_000, outputPerM: 4_500_000 },
-  ),
-
   // Gemini 3.1 Flash-Lite. Flex/batch cached is the published $0.0125.
   'gemini-3.1-flash-lite': tiers(
     { inputPerM: 250_000, cachedPerM: 25_000, outputPerM: 1_500_000 },
@@ -142,13 +134,6 @@ export const GEMINI_PRICING: Readonly<Record<string, GeminiTierRates>> = Object.
       outputPerM: 6_000_000,
       gt200k: { inputPerM: 2_000_000, cachedPerM: 400_000, outputPerM: 9_000_000 },
     },
-  ),
-
-  // Gemini 3 Flash Preview. Flex/batch cached stays $0.05. Deleted in 0b.
-  'gemini-3-flash-preview': tiers(
-    { inputPerM: 500_000, cachedPerM: 50_000, outputPerM: 3_000_000 },
-    { inputPerM: 250_000, cachedPerM: 50_000, outputPerM: 1_500_000 },
-    { inputPerM: 250_000, cachedPerM: 50_000, outputPerM: 1_500_000 },
   ),
 })
 

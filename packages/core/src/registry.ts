@@ -46,6 +46,12 @@ export interface ModelDescriptor {
     sampling?: 'tunable' | 'fixed'
     caching?: { explicit: boolean; minTokens: number }
     grounding?: boolean
+    /**
+     * Structured output combined with provider built-in tools (Google:
+     * `googleSearch`). Absent or false means the adapter must reject that
+     * combination. The adapter reads this flag and carries no per-model list.
+     */
+    structuredOutputWithTools?: boolean
     functionCalling?: boolean
     serviceTiers?: readonly string[]
   }

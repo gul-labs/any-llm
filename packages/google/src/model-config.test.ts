@@ -114,7 +114,7 @@ describe('strict built-in config schemas', () => {
   })
 
   it('rejects unsupported sampling fields on fixed-sampling models', () => {
-    const result = findDescriptor('gemini-3.5-flash').configSchema.safeParse({
+    const result = findDescriptor('gemini-3.1-flash-lite').configSchema.safeParse({
       temperature: 0.5,
     })
 
@@ -129,7 +129,7 @@ describe('strict built-in config schemas', () => {
     ).toBe(false)
 
     expect(
-      findDescriptor('gemini-3.5-flash').configSchema.safeParse({
+      findDescriptor('gemini-3.1-flash-lite').configSchema.safeParse({
         reasoning: { effort: 'none' },
       }).success,
     ).toBe(true)

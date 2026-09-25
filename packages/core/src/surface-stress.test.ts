@@ -74,11 +74,6 @@ const TEST_RATES = {
     cachedPerM: 10_000,
     outputPerM: 400_000,
   },
-  'gemini-3.5-flash': {
-    inputPerM: 1_500_000,
-    cachedPerM: 150_000,
-    outputPerM: 9_000_000,
-  },
   'gemini-3.1-flash-lite': {
     inputPerM: 250_000,
     cachedPerM: 25_000,
@@ -825,7 +820,6 @@ describe('surface-stress: cost property', () => {
     'gemini-2.5-pro',
     'gemini-2.5-flash',
     'gemini-2.5-flash-lite',
-    'gemini-3.5-flash',
     'gemini-3.1-flash-lite',
     'gemini-3.1-pro-preview',
     'gemini-2.5-pro-001', // prefix match → gemini-2.5-pro

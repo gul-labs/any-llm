@@ -95,15 +95,8 @@ const GOOGLE_SEARCH_SUPPORTED_MODELS = new Set([
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite',
   'gemini-2.5-pro',
-  'gemini-3-flash-preview',
   'gemini-3.1-flash-lite',
   'gemini-3.1-pro-preview',
-  'gemini-3.5-flash',
-])
-
-const STRUCTURED_OUTPUT_GOOGLE_SEARCH_ALLOWLIST = new Set([
-  'gemini-3.1-pro-preview',
-  'gemini-3.5-flash',
 ])
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -194,6 +187,7 @@ function mapGoogleProviderOptions(
   model: string,
   structuredOutputRequested: boolean,
   descriptorGrounding: boolean | undefined,
+  structuredOutputWithTools: boolean | undefined,
 ): Partial<GeminiDispatchConfig> & { flexFallback?: boolean } {
   if (googleOpts === undefined) {
     return {}
@@ -313,12 +307,9 @@ function mapGoogleProviderOptions(
       )
     }
 
-    if (
-      structuredOutputRequested &&
-      !STRUCTURED_OUTPUT_GOOGLE_SEARCH_ALLOWLIST.has(model)
-    ) {
+    if (structuredOutputRequested && structuredOutputWithTools !== true) {
       throw badGoogleProviderOptions(
-        `Structured output with googleSearch is supported only for models "gemini-3.1-pro-preview" and "gemini-3.5-flash"; got "${model}".`,
+        `Structured output with googleSearch is not supported for model "${model}".`,
       )
     }
 
@@ -758,6 +749,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         model,
         structuredOutputRequested,
         req.modelDescriptor?.capabilities?.grounding,
+        req.modelDescriptor?.capabilities?.structuredOutputWithTools,
       )
       if (googleProviderConfig.cachedContent !== undefined) {
         config.cachedContent = googleProviderConfig.cachedContent

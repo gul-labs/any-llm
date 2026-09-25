@@ -603,9 +603,9 @@ describe('reasoning mapping', () => {
     await expect(
       adapter.run(
         makeResolvedReq({
-          model: 'gemini-3.5-flash',
+          model: 'gemini-3.1-flash-lite',
           modelDescriptor: makeGoogleDescriptor({
-            model: 'gemini-3.5-flash',
+            model: 'gemini-3.1-flash-lite',
             capabilities: {
               reasoning: true,
               reasoningApi: 'level',
@@ -1835,46 +1835,46 @@ describe('transport timeout (httpOptions.timeout)', () => {
 // ---------------------------------------------------------------------------
 
 describe('grounding — model-aware tool guard', () => {
-  it.each(['gemini-3.1-pro-preview', 'gemini-3.5-flash'] as const)(
-    'allows structured output + googleSearch for %s',
-    async (model) => {
-      const client = makeFakeGemini(
-        fakeGeminiResponse({ structuredJson: '{"winner":"Spain"}' }),
-      )
-      const adapter = geminiAdapter({ client })
-      const descriptor = geminiModelDescriptors.find((d) => d.model === model)!
+  it('allows structured output + googleSearch only when the descriptor admits it', async () => {
+    const model = 'gemini-3.1-pro-preview'
+    const client = makeFakeGemini(
+      fakeGeminiResponse({ structuredJson: '{"winner":"Spain"}' }),
+    )
+    const adapter = geminiAdapter({ client })
+    const descriptor = geminiModelDescriptors.find((d) => d.model === model)!
+    expect(descriptor.capabilities?.structuredOutputWithTools).toBe(true)
 
-      const result = await adapter.run(
-        makeResolvedReq({
-          model,
-          modelDescriptor: descriptor,
-          outputJsonSchema: {
-            type: 'object',
-            properties: { winner: { type: 'string' } },
-            required: ['winner'],
-            additionalProperties: false,
-          },
-          config: {
-            serviceTier: 'flex',
-            providerOptions: { google: { tools: [{ googleSearch: {} }] } },
-          },
-        }),
-        FAKE_CTX,
-      )
+    const result = await adapter.run(
+      makeResolvedReq({
+        model,
+        modelDescriptor: descriptor,
+        outputJsonSchema: {
+          type: 'object',
+          properties: { winner: { type: 'string' } },
+          required: ['winner'],
+          additionalProperties: false,
+        },
+        config: {
+          serviceTier: 'flex',
+          providerOptions: { google: { tools: [{ googleSearch: {} }] } },
+        },
+      }),
+      FAKE_CTX,
+    )
 
-      expect(result.rawStructured).toEqual({ winner: 'Spain' })
-      const call = client.calls[0] as {
-        config?: { responseMimeType?: string; tools?: unknown[] }
-      }
-      expect(call?.config?.responseMimeType).toBe('application/json')
-      expect(call?.config?.tools).toEqual([{ googleSearch: {} }])
-    },
-  )
+    expect(result.rawStructured).toEqual({ winner: 'Spain' })
+    const call = client.calls[0] as {
+      config?: { responseMimeType?: string; tools?: unknown[] }
+    }
+    expect(call?.config?.responseMimeType).toBe('application/json')
+    expect(call?.config?.tools).toEqual([{ googleSearch: {} }])
+  })
 
-  it('rejects structured output + googleSearch on non-allowlisted models before dispatch', async () => {
+  it('rejects structured output + googleSearch when the descriptor does not admit it', async () => {
     const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
     const adapter = geminiAdapter({ client })
     const descriptor = geminiModelDescriptors.find((d) => d.model === 'gemini-2.5-pro')!
+    expect(descriptor.capabilities?.structuredOutputWithTools).toBeUndefined()
 
     const err = await adapter
       .run(
@@ -2129,14 +2129,14 @@ describe('grounding — providerMetadata merge', () => {
 // ---------------------------------------------------------------------------
 
 describe('grounding — registry capabilities', () => {
-  it('all 7 Gemini model descriptors have capabilities.grounding === true', () => {
-    expect(geminiModelDescriptors).toHaveLength(7)
+  it('every Gemini model descriptor has capabilities.grounding === true', () => {
+    expect(geminiModelDescriptors).toHaveLength(5)
     for (const desc of geminiModelDescriptors) {
       expect(desc.capabilities?.grounding).toBe(true)
     }
   })
 
-  it('all 7 Gemini model descriptors have capabilities.functionCalling === true', () => {
+  it('every Gemini model descriptor has capabilities.functionCalling === true', () => {
     for (const desc of geminiModelDescriptors) {
       expect(desc.capabilities?.functionCalling).toBe(true)
     }
@@ -2390,7 +2390,7 @@ describe('fixed-sampling defensive check', () => {
       adapter.run(
         {
           provider: 'google',
-          model: 'gemini-3.5-flash',
+          model: 'gemini-3.1-flash-lite',
           messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
           config: {
             serviceTier: 'flex',
@@ -2399,8 +2399,8 @@ describe('fixed-sampling defensive check', () => {
             } as unknown as ProviderOptions,
           },
           modelDescriptor: makeGoogleDescriptor({
-            model: 'gemini-3.5-flash',
-            pricingFamily: 'gemini-3.5-flash',
+            model: 'gemini-3.1-flash-lite',
+            pricingFamily: 'gemini-3.1-flash-lite',
             capabilities: {
               reasoning: true,
               structuredOutput: true,

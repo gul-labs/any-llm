@@ -7,15 +7,15 @@ import {
   geminiModelDescriptors,
 } from './models.js'
 import { geminiPricingSource } from './cost.js'
+import { computeCost } from '@gullabs/core'
+import { resolveGeminiRates, pricingVersion } from './pricing.js'
 
 const EXPECTED_GEMINI_MODEL_IDS = [
   'gemini-2.5-pro',
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite',
-  'gemini-3.5-flash',
   'gemini-3.1-flash-lite',
   'gemini-3.1-pro-preview',
-  'gemini-3-flash-preview',
 ] as const
 const EXPECTED_GEMMA_MODEL_IDS = ['gemma-4-31b-it', 'gemma-4-26b-a4b-it'] as const
 const EXPECTED_BUILT_IN_MODEL_IDS = [
@@ -55,11 +55,6 @@ describe('built-in descriptors', () => {
     ).toEqual(['low', 'medium', 'high'])
 
     expect(
-      geminiModelDescriptors.find((descriptor) => descriptor.model === 'gemini-3.5-flash')
-        ?.capabilities?.admittedReasoningEfforts,
-    ).toEqual(['none', 'low', 'medium', 'high'])
-
-    expect(
       geminiModelDescriptors.find(
         (descriptor) => descriptor.model === 'gemini-3.1-pro-preview',
       )?.capabilities?.admittedReasoningEfforts,
@@ -73,8 +68,17 @@ describe('built-in descriptors', () => {
 
   it('default registry resolves known models scoped to google and does not register deleted aliases', () => {
     expect(
-      defaultGeminiRegistry.resolve('google', 'gemini-3-flash-preview-001')?.model,
-    ).toBe('gemini-3-flash-preview')
+      defaultGeminiRegistry.resolve('google', 'gemini-3.1-pro-preview')?.capabilities
+        ?.caching?.minTokens,
+    ).toBe(4096)
+    expect(
+      defaultGeminiRegistry.resolve('google', 'gemini-3.1-pro-preview')?.capabilities
+        ?.structuredOutputWithTools,
+    ).toBe(true)
+    expect(
+      defaultGeminiRegistry.resolve('google', 'gemini-2.5-pro')?.capabilities
+        ?.structuredOutputWithTools,
+    ).toBeUndefined()
     expect(defaultGeminiRegistry.resolve('google', 'gemma-4-31b-it')?.provider).toBe(
       'google',
     )
@@ -84,4 +88,24 @@ describe('built-in descriptors', () => {
     // Same bare model resolved under a foreign provider must miss entirely.
     expect(defaultGeminiRegistry.resolve('anthropic', 'gemini-2.5-pro')).toBeUndefined()
   })
+
+  it.each(['gemini-3-flash-preview', 'gemini-3.5-flash'] as const)(
+    'deleted id %s does not resolve and is unpriced',
+    (model) => {
+      expect(defaultGeminiRegistry.resolve('google', model)).toBeUndefined()
+      expect(
+        geminiModelDescriptors.some((descriptor) => descriptor.model === model),
+      ).toBe(false)
+      const cost = computeCost(
+        model,
+        { inputTokens: 1_000, outputTokens: 100, details: {}, raw: null },
+        'standard',
+        resolveGeminiRates,
+        pricingVersion,
+      )
+      expect(cost.microUsd).toBeNull()
+      expect(cost.unpricedReason).toContain(model)
+      expect(geminiPricingSource().hasModel(model)).toBe(false)
+    },
+  )
 })
