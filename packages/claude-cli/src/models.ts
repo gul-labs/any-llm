@@ -24,14 +24,17 @@ import {
 
 /** Every model id `@gullabs/claude-cli` knows how to route. */
 export type ClaudeCliModelId =
-  'claude-fable-5' | 'claude-opus-4-8' | 'claude-sonnet-5' | 'claude-haiku-4-5-20251001'
+  'claude-fable-5-1' | 'claude-opus-5-5' | 'claude-sonnet-5' | 'claude-haiku-4-5-20251001'
 
-const CLAUDE_CLI_MODEL_IDS: readonly ClaudeCliModelId[] = [
-  'claude-fable-5',
-  'claude-opus-4-8',
+export const CLAUDE_CLI_MODEL_IDS: readonly ClaudeCliModelId[] = [
+  'claude-fable-5-1',
+  'claude-opus-5-5',
   'claude-sonnet-5',
   'claude-haiku-4-5-20251001',
 ]
+
+/** Deleted ids. Resolve returns undefined; there is no alias. */
+export const DELETED_CLAUDE_CLI_MODEL_IDS = ['claude-fable-5', 'claude-opus-4-8'] as const
 
 /**
  * Reasoning effort levels admitted by the `claude` CLI's `--effort` flag.
@@ -45,16 +48,17 @@ const CLAUDE_CLI_MODEL_IDS: readonly ClaudeCliModelId[] = [
  * schema is the sole validator for `reasoning.effort`, so the field is
  * advisory-only and safe to skip.
  */
-const CLAUDE_CLI_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+export const CLAUDE_CLI_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 /**
- * Build the strict per-model config schema for a `claude-cli` model.
+ * Build the strict per-model config schema for a `claude-cli` model that
+ * admits `--effort`.
  *
  * No `temperature`/`topP`/`topK`/`maxOutputTokens`/`stopSequences` fields —
  * the CLI does not support tuning any of these, and `z.strictObject` rejects
  * any unknown key outright (reject, don't map/clamp).
  */
-function buildClaudeCliConfigSchema(modelName: string): z.ZodType {
+function buildEffortConfigSchema(modelName: string): z.ZodType {
   return z
     .strictObject({
       reasoning: z
@@ -81,16 +85,34 @@ function buildClaudeCliConfigSchema(modelName: string): z.ZodType {
     })
 }
 
-export const ClaudeFable5ConfigSchema = buildClaudeCliConfigSchema('claude-fable-5')
-export const ClaudeOpus48ConfigSchema = buildClaudeCliConfigSchema('claude-opus-4-8')
-export const ClaudeSonnet5ConfigSchema = buildClaudeCliConfigSchema('claude-sonnet-5')
-export const ClaudeHaiku45ConfigSchema = buildClaudeCliConfigSchema(
-  'claude-haiku-4-5-20251001',
-)
+/**
+ * Haiku 4.5 silently drops `--effort`. Accepting a reasoning key would be a
+ * silent map, so the schema has no reasoning field.
+ */
+function buildHaikuConfigSchema(): z.ZodType {
+  return z
+    .strictObject({
+      timeoutMs: z.number().int().positive().max(1_800_000).optional().meta({
+        title: 'Timeout',
+        description:
+          'Logical request timeout in milliseconds; forwarded to the CLI runner.',
+      }),
+    })
+    .meta({
+      title: 'claude-haiku-4-5-20251001Config',
+      description:
+        'Strict claude-cli config for claude-haiku-4-5-20251001. No reasoning key: the CLI drops --effort.',
+    })
+}
+
+export const ClaudeFable51ConfigSchema = buildEffortConfigSchema('claude-fable-5-1')
+export const ClaudeOpus55ConfigSchema = buildEffortConfigSchema('claude-opus-5-5')
+export const ClaudeSonnet5ConfigSchema = buildEffortConfigSchema('claude-sonnet-5')
+export const ClaudeHaiku45ConfigSchema = buildHaikuConfigSchema()
 
 const CONFIG_SCHEMAS: Record<ClaudeCliModelId, z.ZodType> = {
-  'claude-fable-5': ClaudeFable5ConfigSchema,
-  'claude-opus-4-8': ClaudeOpus48ConfigSchema,
+  'claude-fable-5-1': ClaudeFable51ConfigSchema,
+  'claude-opus-5-5': ClaudeOpus55ConfigSchema,
   'claude-sonnet-5': ClaudeSonnet5ConfigSchema,
   'claude-haiku-4-5-20251001': ClaudeHaiku45ConfigSchema,
 }

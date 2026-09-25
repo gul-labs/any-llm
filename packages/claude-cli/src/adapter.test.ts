@@ -228,6 +228,8 @@ describe('argv construction', () => {
       '',
       '--disable-slash-commands',
       '--no-session-persistence',
+      '--settings',
+      '{"switchModelsOnFlag":false}',
       '--model',
       'claude-haiku-4-5-20251001',
       '--effort',
@@ -257,6 +259,56 @@ describe('argv construction', () => {
     expect(calls[0]?.args).not.toContain('--effort')
     expect(calls[0]?.args).not.toContain('--system-prompt')
     expect(calls[0]?.args).not.toContain('--json-schema')
+  })
+
+  it('throws server when modelUsage names a different model', async () => {
+    const switched: ClaudeCliEnvelope = {
+      ...PLAIN_ENVELOPE,
+      modelUsage: { 'claude-opus-5': { input_tokens: 1 } },
+    }
+    const { runner } = makeFakeRunner(() => envelopeResult(switched))
+    const adapter = claudeCliAdapter({ runner })
+
+    await expect(
+      adapter.run(makeResolvedReq({ model: 'claude-fable-5-1' }), CLI_SESSION_CTX),
+    ).rejects.toMatchObject({
+      kind: 'server',
+      retryable: false,
+    })
+  })
+
+  it('names both ids when modelUsage mismatches', async () => {
+    const switched: ClaudeCliEnvelope = {
+      ...PLAIN_ENVELOPE,
+      modelUsage: { 'claude-opus-5': { input_tokens: 1 } },
+    }
+    const { runner } = makeFakeRunner(() => envelopeResult(switched))
+    const adapter = claudeCliAdapter({ runner })
+
+    await expect(
+      adapter.run(makeResolvedReq({ model: 'claude-fable-5-1' }), CLI_SESSION_CTX),
+    ).rejects.toThrow(
+      /claude-opus-5[\s\S]*claude-fable-5-1|claude-fable-5-1[\s\S]*claude-opus-5/,
+    )
+  })
+
+  it('classifies stop_reason refusal as content_filter', async () => {
+    const refused: ClaudeCliEnvelope = {
+      ...PLAIN_ENVELOPE,
+      is_error: true,
+      stop_reason: 'refusal',
+    }
+    const { runner } = makeFakeRunner(() => ({
+      stdout: JSON.stringify(refused),
+      stderr: '',
+      exitCode: 1,
+    }))
+    const adapter = claudeCliAdapter({ runner })
+
+    await expect(adapter.run(makeResolvedReq(), CLI_SESSION_CTX)).rejects.toMatchObject({
+      kind: 'content_filter',
+      retryable: false,
+    })
   })
 })
 

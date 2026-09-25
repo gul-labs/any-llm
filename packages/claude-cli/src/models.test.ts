@@ -7,17 +7,18 @@
 import { describe, it, expect } from 'vitest'
 import { assertRegistryInvariants } from '@gullabs/testing'
 import {
+  CLAUDE_CLI_EFFORTS,
+  CLAUDE_CLI_MODEL_IDS,
+  ClaudeFable51ConfigSchema,
+  ClaudeHaiku45ConfigSchema,
+  ClaudeOpus55ConfigSchema,
+  ClaudeSonnet5ConfigSchema,
+  DELETED_CLAUDE_CLI_MODEL_IDS,
   claudeCliModelDescriptors,
   claudeCliRegistry,
-  ClaudeHaiku45ConfigSchema,
 } from './models.js'
 
-const EXPECTED_MODEL_IDS = [
-  'claude-fable-5',
-  'claude-opus-4-8',
-  'claude-sonnet-5',
-  'claude-haiku-4-5-20251001',
-] as const
+const EXPECTED_MODEL_IDS = CLAUDE_CLI_MODEL_IDS
 
 describe('config schema', () => {
   it('rejects an unknown key (strict object)', () => {
@@ -32,12 +33,23 @@ describe('config schema', () => {
     expect(result.success).toBe(false)
   })
 
-  it('accepts a valid config', () => {
+  it('rejects a reasoning key on Haiku 4.5', () => {
     const result = ClaudeHaiku45ConfigSchema.safeParse({
       reasoning: { effort: 'high' },
-      timeoutMs: 60_000,
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBe(false)
+  })
+
+  it.each([
+    ['claude-fable-5-1', ClaudeFable51ConfigSchema],
+    ['claude-opus-5-5', ClaudeOpus55ConfigSchema],
+    ['claude-sonnet-5', ClaudeSonnet5ConfigSchema],
+  ] as const)('%s accepts low through max and rejects none', (id, schema) => {
+    expect(id).toBeTruthy()
+    for (const effort of CLAUDE_CLI_EFFORTS) {
+      expect(schema.safeParse({ reasoning: { effort } }).success).toBe(true)
+    }
+    expect(schema.safeParse({ reasoning: { effort: 'none' } }).success).toBe(false)
   })
 
   it('accepts an empty config', () => {
@@ -67,11 +79,12 @@ describe('registry', () => {
     expect(descriptor?.provider).toBe('claude-cli')
   })
 
+  it.each(DELETED_CLAUDE_CLI_MODEL_IDS)('resolve(%s) is undefined', (id) => {
+    expect(claudeCliRegistry.resolve('claude-cli', id)).toBeUndefined()
+  })
+
   it('validateConfig accepts a valid config via the Standard Schema surface', () => {
-    const descriptor = claudeCliRegistry.resolve(
-      'claude-cli',
-      'claude-haiku-4-5-20251001',
-    )
+    const descriptor = claudeCliRegistry.resolve('claude-cli', 'claude-sonnet-5')
     const result = descriptor?.validateConfig['~standard'].validate({
       reasoning: { effort: 'medium' },
     })

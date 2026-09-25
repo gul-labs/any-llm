@@ -64,6 +64,8 @@ export interface ClaudeCliEnvelope {
   total_cost_usd?: number
   num_turns?: number
   usage?: ClaudeCliUsageShape
+  /** Per-model usage. Every key must equal the requested model id. */
+  modelUsage?: Record<string, unknown>
   [key: string]: unknown
 }
 
@@ -207,10 +209,31 @@ function looksRateLimited(text: string): boolean {
   return /rate limit|429/i.test(text)
 }
 
+function assertServedModel(envelope: ClaudeCliEnvelope, requestedModel: string): void {
+  const modelUsage = envelope.modelUsage
+  if (modelUsage === undefined) return
+  for (const served of Object.keys(modelUsage)) {
+    if (served !== requestedModel) {
+      throw new LlmError(
+        `claude CLI served model "${served}" but the request asked for "${requestedModel}".`,
+        { kind: 'server', retryable: false, provider: 'claude-cli' },
+      )
+    }
+  }
+}
+
 function classifyRunFailure(
   envelope: ClaudeCliEnvelope | undefined,
   result: ClaudeCliRunResult,
 ): LlmError {
+  if (envelope?.stop_reason === 'refusal') {
+    return new LlmError('claude CLI refused the prompt (stop_reason: refusal).', {
+      kind: 'content_filter',
+      retryable: false,
+      provider: 'claude-cli',
+    })
+  }
+
   const combinedText = `${envelope?.subtype ?? ''} ${result.stderr}`
 
   if (looksAuthy(combinedText)) {
@@ -329,6 +352,8 @@ export function claudeCliAdapter(opts?: ClaudeCliAdapterOptions): ProviderAdapte
         '',
         '--disable-slash-commands',
         '--no-session-persistence',
+        '--settings',
+        '{"switchModelsOnFlag":false}',
       ]
 
       args.push('--model', model)
@@ -430,6 +455,11 @@ export function claudeCliAdapter(opts?: ClaudeCliAdapterOptions): ProviderAdapte
       ) {
         throw classifyRunFailure(envelope, result)
       }
+
+      if (envelope.stop_reason === 'refusal') {
+        throw classifyRunFailure(envelope, result)
+      }
+      assertServedModel(envelope, model)
 
       // ------------------------------------------------------------------
       // 6. Map result → AdapterResult.

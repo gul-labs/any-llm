@@ -63,8 +63,13 @@ of this package (working with **zero** API-key configuration). The full
 invariant argv (never caller-configurable) is:
 
 ```
--p --output-format json --safe-mode --tools "" --disable-slash-commands --no-session-persistence
+-p --output-format json --safe-mode --tools "" --disable-slash-commands --no-session-persistence --settings '{"switchModelsOnFlag":false}'
 ```
+
+`--settings` disables the CLI's silent model switch on a safety flag. If
+`modelUsage` names any model other than the requested id, the adapter throws
+`LlmError` kind `server` (not retryable) naming both ids. `stop_reason:
+"refusal"` is `content_filter`.
 
 `--model`, `--effort`, `--system-prompt`, and `--json-schema` are appended
 from the request when applicable; the prompt itself is always sent over
@@ -78,9 +83,10 @@ semaphore, defaulting to `maxConcurrency: 2`. Override via
 
 ## Supported models
 
-`claude-fable-5`, `claude-opus-4-8`, `claude-sonnet-5`,
-`claude-haiku-4-5-20251001`. Each accepts an optional
-`{ reasoning: { effort }, timeoutMs }` config — no sampling knobs
-(`temperature`/`topP`/`topK`/`maxOutputTokens`/`stopSequences`) are accepted;
-the CLI does not support tuning any of them, and the strict config schema
-rejects unknown keys.
+`claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5`,
+`claude-haiku-4-5-20251001`. Fable 5.1, Opus 5.5, and Sonnet 5 accept
+`{ reasoning: { effort }, timeoutMs }` with effort `low | medium | high |
+xhigh | max`. Haiku 4.5 has no `reasoning` key — the CLI drops `--effort`.
+No sampling knobs (`temperature`/`topP`/`topK`/`maxOutputTokens`/`stopSequences`)
+are accepted; the strict config schema rejects unknown keys. `claude-fable-5`
+and `claude-opus-4-8` are deleted with no alias.

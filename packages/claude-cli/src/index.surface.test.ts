@@ -29,6 +29,11 @@ describe('@gullabs/claude-cli package surface', () => {
     expect(typeof claudeCliProvider).toBe('function')
   })
 
+  it('deleted ids do not resolve', () => {
+    expect(claudeCliRegistry.resolve('claude-cli', 'claude-fable-5')).toBeUndefined()
+    expect(claudeCliRegistry.resolve('claude-cli', 'claude-opus-4-8')).toBeUndefined()
+  })
+
   it('claudeCliRegistry.resolve returns a descriptor for a known model id', () => {
     const descriptor = claudeCliRegistry.resolve(
       'claude-cli',
