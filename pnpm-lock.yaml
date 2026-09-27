@@ -42,8 +42,8 @@ importers:
         specifier: ^17.12.0
         version: 17.12.0
       prettier:
-        specifier: ^3.9.8
-        version: 3.9.8
+        specifier: ^3.9.9
+        version: 3.9.9
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(postcss@8.5.28)(tsx@4.23.15)(typescript@6.0.3)(yaml@2.9.1)
@@ -120,8 +120,8 @@ importers:
         specifier: ^0.5.8
         version: 0.5.8
       drizzle-orm:
-        specifier: ^0.45.2
-        version: 0.45.2(@electric-sql/pglite@0.5.8)
+        specifier: ^0.45.3
+        version: 0.45.3(@electric-sql/pglite@0.5.8)
 
   packages/google:
     dependencies:
@@ -164,8 +164,8 @@ importers:
         specifier: workspace:*
         version: link:../testing
       openai:
-        specifier: ^7.22.0
-        version: 7.22.0(ws@8.21.3)(zod@4.6.5)
+        specifier: ^7.23.0
+        version: 7.23.0(ws@8.21.3)(zod@4.6.5)
 
 packages:
 
@@ -1015,8 +1015,8 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
-  drizzle-orm@0.45.2:
-    resolution: {integrity: sha512-kY0BSaTNYWnoDMVoyY8uxmyHjpJW1geOmBMdSSicKo9CIIWkSxMIj2rkeSR51b8KAPB7m+qysjuHme5nKP+E5Q==}
+  drizzle-orm@0.45.3:
+    resolution: {integrity: sha512-CAloER21cDdcgZ1OmjrZX82EeRNsdP+y0onX/eyoYDaYzki/adrAa91lzM5jWh7zZPK4qUbw/6LGv9J+A+uizA==}
     peerDependencies:
       '@aws-sdk/client-rds-data': '>=3'
       '@cloudflare/workers-types': '>=4'
@@ -1024,6 +1024,7 @@ packages:
       '@libsql/client': '>=0.10.0'
       '@libsql/client-wasm': '>=0.10.0'
       '@neondatabase/serverless': '>=0.10.0'
+      '@netlify/db': '>=0.4.0'
       '@op-engineering/op-sqlite': '>=2'
       '@opentelemetry/api': ^1.4.1
       '@planetscale/database': '>=1.13'
@@ -1059,6 +1060,8 @@ packages:
       '@libsql/client-wasm':
         optional: true
       '@neondatabase/serverless':
+        optional: true
+      '@netlify/db':
         optional: true
       '@op-engineering/op-sqlite':
         optional: true
@@ -1475,8 +1478,8 @@ packages:
     resolution: {integrity: sha512-4a+OsYv9UktOJKE+l1A4OufDgdRF9PifWj+tJnHURo/P+WOxpG4GzUFL9qCalmWauao6ogiG+QvnCovwPoyAWA==}
     engines: {node: '>=12.20.0'}
 
-  openai@7.22.0:
-    resolution: {integrity: sha512-C4bv09YtQQb1qcFrEAENJXkuCZA72kGRwws6QIXgf0oJW6pDOmDC2WaZpQVII3Rl+RNE3Z+TQI92uNfetGwY3w==}
+  openai@7.23.0:
+    resolution: {integrity: sha512-0ecOXnFSMNWZq6cUBcTV6Lf93y+fm8BH/+QzFvpoP1UGNOE5pnytRa6HAPGCw+3IS9SIAW7rc1M8yyzN1PiBAQ==}
     engines: {node: '>=22.0.0'}
     peerDependencies:
       '@aws-sdk/credential-provider-node': '>=3.972.0 <4'
@@ -1573,8 +1576,8 @@ packages:
     resolution: {integrity: sha512-vkcDPrRZo1QZLbn5RLGPpg/WmIQ65qoWWhcGKf/b5eplkkarX0m9z8ppCat4mlOqUsWpyNuYgO3VRyrYHSzX5g==}
     engines: {node: '>= 0.8.0'}
 
-  prettier@3.9.8:
-    resolution: {integrity: sha512-WRFq3Wn3WId7LLROfMLdH7xaFr2jR62wU8nLO6rQUOLOxNZUviyJQs1M0iIhLexSFy+L+w0ch66wtoO2jRjG0A==}
+  prettier@3.9.9:
+    resolution: {integrity: sha512-Z/CJHIkdujO/OtN7nXUii0Rf3VT5SRuhjBA82Xvu2XhBUgX3nhP67T0LHceBdQLex7OOFGTox+Q5Yg8Jk2Qivg==}
     engines: {node: '>=14'}
     hasBin: true
 
@@ -2567,7 +2570,7 @@ snapshots:
 
   detect-libc@2.1.2: {}
 
-  drizzle-orm@0.45.2(@electric-sql/pglite@0.5.8):
+  drizzle-orm@0.45.3(@electric-sql/pglite@0.5.8):
     optionalDependencies:
       '@electric-sql/pglite': 0.5.8
 
@@ -2954,7 +2957,7 @@ snapshots:
 
   obug@2.1.4: {}
 
-  openai@7.22.0(ws@8.21.3)(zod@4.6.5):
+  openai@7.23.0(ws@8.21.3)(zod@4.6.5):
     optionalDependencies:
       ws: 8.21.3
       zod: 4.6.5
@@ -3019,7 +3022,7 @@ snapshots:
 
   prelude-ls@1.2.1: {}
 
-  prettier@3.9.8: {}
+  prettier@3.9.9: {}
 
   protobufjs@7.6.5:
     dependencies:
