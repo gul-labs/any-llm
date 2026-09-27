@@ -1,5 +1,6 @@
 {
   "source": "P-X3 follow-up live grok-4.7 store:false replay of assistant message and web_search_call, 2026-09-26",
+  "sanitization": "Selected response fields only; no credentials or account identifiers. Response output items are verbatim to preserve replay shape.",
   "request": {
     "model": "grok-4.7",
     "store": false,
@@ -21,7 +22,9 @@
         }
       ]
     },
-    "followup_tools_omitted": true
+    "followup_tools_omitted": true,
+    "followup_input_length": 7,
+    "followup_input_sha256": "575038dee77e4e5abd1f25de4be18f9431ef82d5879c318663cb7ca0014191ad"
   },
   "first": {
     "status": 200,

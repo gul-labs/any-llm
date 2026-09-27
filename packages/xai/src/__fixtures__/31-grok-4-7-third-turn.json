@@ -1,5 +1,6 @@
 {
   "source": "P-X3 live third turn replaying fixture 28 assistant message, 2026-09-26",
+  "sanitization": "Selected response fields only; no credentials or account identifiers. Response output items are verbatim to preserve replay shape.",
   "request": {
     "model": "grok-4.7",
     "store": false,
@@ -12,7 +13,10 @@
           "text": "Thanks. In one short sentence, what did we calculate?"
         }
       ]
-    }
+    },
+    "followup_tools_omitted": true,
+    "followup_input_length": 7,
+    "followup_input_sha256": "544517816898b54f771d293696aff719ec673265d62a59046b3023a0ae673a58"
   },
   "status": 200,
   "body": {

@@ -14,6 +14,7 @@
  * @module
  */
 
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
@@ -640,6 +641,8 @@ describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
       request: {
         first_input: { content: [{ text: string }] }
         next_input: { content: [{ text: string }] }
+        followup_input_length: number
+        followup_input_sha256: string
       }
       first: {
         status: number
@@ -703,12 +706,17 @@ describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
       FAKE_CTX,
     )
     expect(second.text).toContain('Grok API')
-    expect((wireClient.calls[1] as { input: unknown[]; tools?: unknown }).input).toEqual([
+    const replayWire = wireClient.calls[1] as { input: unknown[]; tools?: unknown }
+    expect(replayWire.input).toEqual([
       fixture.request.first_input,
       ...fixture.first.output,
       fixture.request.next_input,
     ])
-    expect((wireClient.calls[1] as { tools?: unknown }).tools).toBeUndefined()
+    expect(replayWire.input).toHaveLength(fixture.request.followup_input_length)
+    expect(
+      createHash('sha256').update(JSON.stringify(replayWire.input)).digest('hex'),
+    ).toBe(fixture.request.followup_input_sha256)
+    expect(replayWire.tools).toBeUndefined()
   })
 
   it('continues a function result through the public client without losing reasoning', async () => {
@@ -881,7 +889,16 @@ describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
     ).toEqual([...wire.input, ...(fixture.second.body['output'] as unknown[])])
 
     const nextState = secondResult.transientProviderState as unknown as XaiReplayState
-    const thirdFixture = loadFixture<FixtureCall>('31-grok-4-7-third-turn.json')
+    const thirdFixture = loadFixture<
+      FixtureCall & {
+        request: {
+          next_input: { role: 'user'; content: [{ type: 'input_text'; text: string }] }
+          followup_input_length: number
+          followup_input_sha256: string
+          followup_tools_omitted: boolean
+        }
+      }
+    >('31-grok-4-7-third-turn.json')
     expect(thirdFixture.status).toBe(200)
     const thirdClient = makeFakeXai(thirdFixture.body as never)
     const thirdResult = await xaiAdapter({ client: thirdClient }).run(
@@ -889,15 +906,26 @@ describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
         model: 'grok-4.7',
         modelDescriptor: grok47ModelDescriptor,
         transientProviderState: nextState as unknown as JsonValue,
-        messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Thanks.' }] }],
+        messages: [
+          {
+            role: 'user',
+            parts: [
+              { kind: 'text', text: thirdFixture.request.next_input.content[0].text },
+            ],
+          },
+        ],
       }),
       FAKE_CTX,
     )
     expect(thirdResult.text).toContain('sum of 2 and 3')
-    expect((thirdClient.calls[0] as { input: unknown[] }).input).toEqual([
-      ...nextState.input,
-      { role: 'user', content: [{ type: 'input_text', text: 'Thanks.' }] },
-    ])
+    const thirdWire = thirdClient.calls[0] as { input: unknown[]; tools?: unknown }
+    expect(thirdWire.input).toEqual([...nextState.input, thirdFixture.request.next_input])
+    expect(thirdWire.input).toHaveLength(thirdFixture.request.followup_input_length)
+    expect(
+      createHash('sha256').update(JSON.stringify(thirdWire.input)).digest('hex'),
+    ).toBe(thirdFixture.request.followup_input_sha256)
+    expect(thirdFixture.request.followup_tools_omitted).toBe(true)
+    expect(thirdWire.tools).toBeUndefined()
   })
 
   it('keeps reasoning before assistant text and a function call in mixed output', async () => {
