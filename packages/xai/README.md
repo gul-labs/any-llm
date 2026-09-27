@@ -191,14 +191,18 @@ try {
 response output in provider order, including opaque `encrypted_content`,
 messages, and server-tool items. Pass that object unchanged as
 `request.transientProviderState` on the next request. This state is not written
-to the call ledger; callers must store it securely if they need continuation.
+to the call ledger. It is returned even for one-shot calls and can contain the
+full prompt, inline media, and encrypted reasoning. Strip it before logging or
+caching a whole result; store it securely only when continuation is needed.
 When passing state, provide only new user or tool-result messages; the state
 already contains prior turns. Use the new state returned by each subsequent
 result. The adapter rejects assistant history alongside state, an empty new
 message list, an unknown tool-result id, or a mismatched model. Without state,
 a request starts a fresh conversation and may include text-only assistant
-examples; function-call history requires state. The live two-turn
-P-X3 fixture is `28-grok-4-7-replay.json`.
+examples; function-call history requires state. Live fixtures
+`28-grok-4-7-replay.json`, `30-grok-4-7-search-replay.json`, and
+`31-grok-4-7-third-turn.json` cover function replay and follow-ups that replay
+assistant message and web-search items.
 
 **Billing note:** attaching files on Responses implicitly enables xAI's `attachment_search` agentic tool. `web_search_calls` is billed per call. Since 2026-09-21, x_search is billed from `x_posts_fetched` and `x_users_fetched`, not `x_search_calls`. The attachment_search counter is **not** live-pinned (P-X2); a `file-ref` call sets synthetic `usage.details.attachment_search_unpinned = 1` and `Cost.confidence: 'estimated'`. When a required server-tool counter is absent, the snapshot cost is unpriced (`microUsd: null`) rather than understating an unknown fee. The provider's billed `cost_in_usd_ticks` remains in raw usage for separate reconciliation; it is not represented as a rate-snapshot-derived `Cost`.
 

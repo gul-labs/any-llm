@@ -1,0 +1,68 @@
+{
+  "source": "P-X3 live third turn replaying fixture 28 assistant message, 2026-09-26",
+  "request": {
+    "model": "grok-4.7",
+    "store": false,
+    "input_fixture": "28-grok-4-7-replay.json",
+    "next_input": {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Thanks. In one short sentence, what did we calculate?"
+        }
+      ]
+    }
+  },
+  "status": 200,
+  "body": {
+    "model": "grok-4.7",
+    "status": "completed",
+    "output": [
+      {
+        "id": "rs_e8c92d0c-89ff-9fbd-83a3-af0b5a3082b8",
+        "summary": [
+          {
+            "text": "The user wants a short sentence about what we calculated. We added 2 and 3 and got 5. Simple.",
+            "type": "summary_text"
+          }
+        ],
+        "type": "reasoning",
+        "status": "completed",
+        "encrypted_content": "jQSOt+//kBd+VNDgGHsTzeXOXdTs/N5zPRi1qK7c0uqsF11rFcThls8ggNWCaXiHG/9Hvfl1f2Ss7VSMA9u13UlwVIafTanLexwn+m1gL5X29M2gozffSqkq2vVyqlftcWntIjlgshR4815gDSaJkgM3yG4inH8sRw"
+      },
+      {
+        "content": [
+          {
+            "type": "output_text",
+            "text": "We calculated the sum of 2 and 3, which is 5.",
+            "logprobs": [],
+            "annotations": []
+          }
+        ],
+        "id": "msg_e8c92d0c-89ff-9fbd-83a3-af0b5a3082b8",
+        "role": "assistant",
+        "type": "message",
+        "status": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 1634,
+      "input_tokens_details": {
+        "cached_tokens": 1408
+      },
+      "output_tokens": 41,
+      "output_tokens_details": {
+        "reasoning_tokens": 25
+      },
+      "total_tokens": 1675,
+      "num_sources_used": 0,
+      "num_server_side_tools_used": 0,
+      "cost_in_usd_ticks": 14020000,
+      "context_details": {
+        "input_tokens": 1634,
+        "output_tokens": 48
+      }
+    }
+  }
+}

@@ -635,6 +635,82 @@ describe('fixtures: P-X1 live X Search item billing (2026-09-26)', () => {
 })
 
 describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
+  it('replays a live assistant message and web-search item on the next turn', async () => {
+    const fixture = loadFixture<{
+      request: {
+        first_input: { content: [{ text: string }] }
+        next_input: { content: [{ text: string }] }
+      }
+      first: {
+        status: number
+        output: Array<Record<string, unknown>>
+        usage: Record<string, unknown>
+      }
+      second: {
+        status: number
+        output: Array<Record<string, unknown>>
+        usage: Record<string, unknown>
+      }
+    }>('30-grok-4-7-search-replay.json')
+    expect(fixture.first.status).toBe(200)
+    expect(fixture.second.status).toBe(200)
+    expect(fixture.first.output.some((item) => item['type'] === 'web_search_call')).toBe(
+      true,
+    )
+    expect(fixture.first.output.some((item) => item['type'] === 'message')).toBe(true)
+
+    const wireClient = makeFakeXai([
+      {
+        model: 'grok-4.7',
+        status: 'completed',
+        output: fixture.first.output,
+        usage: fixture.first.usage,
+      },
+      {
+        model: 'grok-4.7',
+        status: 'completed',
+        output: fixture.second.output,
+        usage: fixture.second.usage,
+      },
+    ] as never)
+    const adapter = xaiAdapter({ client: wireClient })
+    const first = await adapter.run(
+      makeResolvedReq({
+        model: 'grok-4.7',
+        modelDescriptor: grok47ModelDescriptor,
+        messages: [
+          {
+            role: 'user',
+            parts: [{ kind: 'text', text: fixture.request.first_input.content[0].text }],
+          },
+        ],
+        config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    const second = await adapter.run(
+      makeResolvedReq({
+        model: 'grok-4.7',
+        modelDescriptor: grok47ModelDescriptor,
+        transientProviderState: first.transientProviderState!,
+        messages: [
+          {
+            role: 'user',
+            parts: [{ kind: 'text', text: fixture.request.next_input.content[0].text }],
+          },
+        ],
+      }),
+      FAKE_CTX,
+    )
+    expect(second.text).toContain('Grok API')
+    expect((wireClient.calls[1] as { input: unknown[]; tools?: unknown }).input).toEqual([
+      fixture.request.first_input,
+      ...fixture.first.output,
+      fixture.request.next_input,
+    ])
+    expect((wireClient.calls[1] as { tools?: unknown }).tools).toBeUndefined()
+  })
+
   it('continues a function result through the public client without losing reasoning', async () => {
     const fixture = loadFixture<{ first: FixtureCall; second: FixtureCall }>(
       '28-grok-4-7-replay.json',
@@ -805,8 +881,10 @@ describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
     ).toEqual([...wire.input, ...(fixture.second.body['output'] as unknown[])])
 
     const nextState = secondResult.transientProviderState as unknown as XaiReplayState
-    const thirdClient = makeFakeXai(fixture.second.body as never)
-    await xaiAdapter({ client: thirdClient }).run(
+    const thirdFixture = loadFixture<FixtureCall>('31-grok-4-7-third-turn.json')
+    expect(thirdFixture.status).toBe(200)
+    const thirdClient = makeFakeXai(thirdFixture.body as never)
+    const thirdResult = await xaiAdapter({ client: thirdClient }).run(
       makeResolvedReq({
         model: 'grok-4.7',
         modelDescriptor: grok47ModelDescriptor,
@@ -815,6 +893,7 @@ describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
       }),
       FAKE_CTX,
     )
+    expect(thirdResult.text).toContain('sum of 2 and 3')
     expect((thirdClient.calls[0] as { input: unknown[] }).input).toEqual([
       ...nextState.input,
       { role: 'user', content: [{ type: 'input_text', text: 'Thanks.' }] },
