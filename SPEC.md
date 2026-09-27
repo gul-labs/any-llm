@@ -390,9 +390,9 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
 ## xAI adapter (`@gullabs/xai`)
 
 - `xaiAdapter(): ProviderAdapter` over the `openai` SDK's Responses API pointed at
-  `https://api.x.ai/v1` (peerDep `openai@^6`), API-key auth only. Ships `grok-4.5`
-  `grok-4.6`, and `grok-4.7` (level reasoning; 4.6 and 4.7 admit `low | medium | high | xhigh` and
-  `serviceTier: 'priority'`; native structured output via `text.format`, vision, automatic
+  `https://api.x.ai/v1` (peerDep `openai@^6`), API-key auth only. Ships `grok-4.5`,
+  `grok-4.6`, and `grok-4.7` (level reasoning; all three admit `serviceTier: 'priority'`,
+  while 4.6 and 4.7 also admit `xhigh`; native structured output via `text.format`, vision, automatic
   caching + `providerOptions.xai.promptCacheKey`, pricing incl. the ≥200k
   long-context tier). Same contract as the Google adapter: strict per-model schema,
   reject-don't-map, GROSS usage, never persists/loops. Full details in

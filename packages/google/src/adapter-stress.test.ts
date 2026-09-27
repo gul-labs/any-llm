@@ -63,6 +63,7 @@ function makeReq(overrides: Partial<ResolvedRequest> = {}): ResolvedRequest {
     model: 'gemini-2.5-pro',
     messages: MESSAGES,
     config: { serviceTier: 'flex' },
+    modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-pro')!,
     ...overrides,
   }
 }
@@ -249,7 +250,7 @@ describe('adapter-stress: malformed usageMetadata — GROSS rule', () => {
 })
 
 // ---------------------------------------------------------------------------
-// INVARIANT 2: Blocked responses → LlmError content_filter
+// INVARIANT 2: Safety blocks differ from candidate-less provider failures.
 // ---------------------------------------------------------------------------
 
 describe('adapter-stress: blocked responses', () => {
@@ -259,16 +260,11 @@ describe('adapter-stress: blocked responses', () => {
     'OTHER',
     'RECITATION',
     'BLOCKLIST',
-    undefined as string | undefined,
   ]
 
   it('promptFeedback.blockReason set → LlmError content_filter (all variants)', async () => {
     for (const blockReason of BLOCK_REASONS) {
-      const fakeClient = makeFakeGemini(
-        blockReason !== undefined
-          ? fakeGeminiBlocked({ blockReason })
-          : { candidates: [], promptFeedback: {} },
-      )
+      const fakeClient = makeFakeGemini(fakeGeminiBlocked({ blockReason }))
 
       const adapter = geminiAdapter({ client: fakeClient })
       const err = await adapter.run(makeReq(), FAKE_CTX).then(
@@ -284,7 +280,7 @@ describe('adapter-stress: blocked responses', () => {
     }
   })
 
-  it('no candidates and no blockReason → LlmError content_filter', async () => {
+  it('no candidates and no blockReason → retryable provider failure', async () => {
     const fakeClient = makeFakeGemini({
       candidates: [],
       // no promptFeedback
@@ -292,13 +288,13 @@ describe('adapter-stress: blocked responses', () => {
 
     const adapter = geminiAdapter({ client: fakeClient })
     await expect(adapter.run(makeReq(), FAKE_CTX)).rejects.toMatchObject({
-      kind: 'content_filter',
-      retryable: false,
+      kind: 'server',
+      retryable: true,
       provider: 'google',
     })
   })
 
-  it('candidates absent (undefined) → LlmError content_filter', async () => {
+  it('candidates absent (undefined) → retryable provider failure', async () => {
     const fakeClient = makeFakeGemini(
       // candidates field entirely absent
       {} as GeminiResponseLike,
@@ -306,7 +302,7 @@ describe('adapter-stress: blocked responses', () => {
 
     const adapter = geminiAdapter({ client: fakeClient })
     await expect(adapter.run(makeReq(), FAKE_CTX)).rejects.toMatchObject({
-      kind: 'content_filter',
+      kind: 'server',
     })
   })
 })

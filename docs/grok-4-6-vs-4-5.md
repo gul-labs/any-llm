@@ -9,7 +9,7 @@ can be live-verified instead of guessed. **Whether any host application
 should flip production traffic is out of scope here** — that is a host
 decision.
 
-## Current library fact (landed 2026-08-12)
+## Historical library fact (as of 2026-08-24)
 
 `@gullabs/xai` registers two canonical models: `grok-4.5` and `grok-4.6`.
 No aliases. Adding 4.6 was a new `ModelDescriptor` + pricing key + live
@@ -23,8 +23,8 @@ verification, not a rename of 4.5.
   only. `'none'` and `'flex'` are rejected.
 - Pricing snapshot `xai-2026-08-24`: 4.5 $2 / $0.30 cached / $6 (<200k)
   and $4 / $0.60 / $12 (≥200k); 4.6 $2 / $0.50 / $6 and $4 / $1 / $12.
-  `grok-4.5` admits `serviceTier: 'priority'` at 2×.
-  Priority is 2×, confirmed by live `cost_in_usd_ticks` on fixture 12.
+  The 2× priority rate is documented on xAI's pricing page; fixture 12
+  confirms it for grok-4.6 only. Grok 4.5's recorded probe rejected the tier.
   List rates pinned to `__fixtures__/14-v1-models-pricing.json`.
 
 ### Library fact as of launch-day research (pre-implementation)
@@ -155,7 +155,8 @@ Other billing (both models, official):
   ~$5 / 1k calls plus tokens. File attachments still implicitly enable
   `attachment_search` (see `packages/xai/README.md`).
 - As of 2026-09-25 the adapter admits `serviceTier: 'priority'` on
-  `grok-4.5`, `grok-4.6`, and `grok-4.7`.
+  `grok-4.5`, `grok-4.6`, and `grok-4.7`. The new Grok 4.5 live probe
+  echoed `priority` and billed exactly 2× the standard list.
 
 ### Consumer (not this library)
 

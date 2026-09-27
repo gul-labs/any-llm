@@ -36,8 +36,6 @@ export { geminiPricingSource } from './cost.js'
 export {
   GEMINI_PRICING,
   GEMINI_PRICED_TIERS,
-  geminiStandardRates,
-  lookupGeminiTierRates,
   pricingVersion,
   resolveGeminiRates,
 } from './pricing.js'

@@ -9,6 +9,7 @@
  */
 
 import type { StandardSchemaV1 } from './standard-schema.js'
+import type { Usage } from './types.js'
 
 // ---------------------------------------------------------------------------
 // Error kind
@@ -20,7 +21,8 @@ import type { StandardSchemaV1 } from './standard-schema.js'
  * - `'invalid_auth'`    — 401, or 403 when no provider overlay reclassified;
  *   credentials wrong, missing, or the key lacks permission.
  * - `'rate_limited'`    — 429; back-off and retry.
- * - `'server'`          — 5xx; transient provider error, retry.
+ * - `'server'`          — 5xx or a candidate-less billed response without a
+ *   safety block; retryable provider failure.
  * - `'timeout'`         — request exceeded `timeoutMs` or network timeout.
  * - `'aborted'`         — caller cancelled via `AbortSignal`.
  * - `'bad_request'`     — 400/422; the request itself is malformed.
@@ -84,6 +86,8 @@ export interface LlmErrorOptions {
   attemptId?: string
   /** Service tier actually attempted by the provider when known. */
   servedServiceTier?: string
+  /** Provider-reported usage for a billed response that failed after HTTP success. */
+  usage?: Usage
   /**
    * Structured validation failures, one entry per violation. Populated by
    * every caller-fault validation path — model-config validation, strict
@@ -131,6 +135,8 @@ export class LlmError extends Error {
   readonly attemptId?: string
   /** Service tier actually attempted by the provider when known. */
   readonly servedServiceTier?: string
+  /** Provider-reported usage for a billed response that failed after HTTP success. */
+  readonly usage?: Usage
   /** Structured validation failures, one entry per violation, when applicable. */
   readonly issues?: readonly LlmErrorIssue[]
 
@@ -161,6 +167,9 @@ export class LlmError extends Error {
     }
     if (options.servedServiceTier !== undefined) {
       this.servedServiceTier = options.servedServiceTier
+    }
+    if (options.usage !== undefined) {
+      this.usage = options.usage
     }
     if (options.issues !== undefined) {
       this.issues = options.issues

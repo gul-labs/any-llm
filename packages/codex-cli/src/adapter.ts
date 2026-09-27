@@ -406,6 +406,24 @@ export function codexCliAdapter(opts?: CodexCliAdapterOptions): ProviderAdapter 
 
       const warnings: Warning[] = []
       const model = req.model
+      if (
+        req.modelDescriptor !== undefined &&
+        (req.modelDescriptor.model !== model ||
+          req.modelDescriptor.provider !== 'codex-cli')
+      ) {
+        throw new LlmError(`Mismatched Codex model descriptor for "${model}".`, {
+          kind: 'bad_request',
+          retryable: false,
+          provider: 'codex-cli',
+        })
+      }
+      if (req.transientProviderState !== undefined) {
+        throw new LlmError(`Model "${model}" does not admit transientProviderState.`, {
+          kind: 'bad_request',
+          retryable: false,
+          provider: 'codex-cli',
+        })
+      }
 
       // ------------------------------------------------------------------
       // 1. Validate + serialize the prompt (throws bad_request on non-text

@@ -21,26 +21,18 @@ import type { Cost, Usage } from './types.js'
 /**
  * Build a test {@link PricingSource}.
  *
- * `rates` may be a flat standard table, or a per-tier table. A flat table
- * prices `undefined` and `'standard'` at those rates and leaves every other
- * defined tier unpriced. A per-tier table (`{ standard, flex, batch }`)
- * resolves the named tier; `undefined` uses `standard`.
+ * Every model has a per-tier table. `undefined` uses `standard`; a defined
+ * tier is priced only when its entry exists.
  */
 export function makeTestPricingSource(
-  rates:
-    | Readonly<Record<string, ModelRates>>
-    | Readonly<Record<string, Readonly<Record<string, ModelRates>>>>,
+  rates: Readonly<Record<string, Readonly<Record<string, ModelRates>>>>,
   version: string,
 ): PricingSource {
   function lookup(model: string, tier: string | undefined): ModelRates | undefined {
-    if (isTieredTable(rates)) {
-      const entry = lookupKey(rates, model)
-      if (entry === undefined) return undefined
-      const key = tier ?? 'standard'
-      return entry[key]
-    }
-    if (tier !== undefined && tier !== 'standard') return undefined
-    return lookupKey(rates, model)
+    const entry = lookupKey(rates, model)
+    if (entry === undefined) return undefined
+    const key = tier ?? 'standard'
+    return Object.hasOwn(entry, key) ? entry[key] : undefined
   }
 
   return {
@@ -58,7 +50,7 @@ export function makeTestPricingSource(
 }
 
 function lookupKey<T>(table: Readonly<Record<string, T>>, model: string): T | undefined {
-  const exact = table[model]
+  const exact = Object.hasOwn(table, model) ? table[model] : undefined
   if (exact !== undefined) return exact
 
   let bestKey = ''
@@ -70,17 +62,4 @@ function lookupKey<T>(table: Readonly<Record<string, T>>, model: string): T | un
     }
   }
   return best
-}
-
-function isTieredTable(
-  rates:
-    | Readonly<Record<string, ModelRates>>
-    | Readonly<Record<string, Readonly<Record<string, ModelRates>>>>,
-): rates is Readonly<Record<string, Readonly<Record<string, ModelRates>>>> {
-  const values = Object.values(rates) as ReadonlyArray<
-    ModelRates | Readonly<Record<string, ModelRates>>
-  >
-  const first = values[0]
-  if (first === undefined) return false
-  return !('inputPerM' in first)
 }

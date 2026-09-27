@@ -176,14 +176,14 @@ recommended `validateStructuredResult` + Standard Schema v1 pattern.
 
 ### Grounding and Conflict Guard
 
-Grounding is requested via `providerOptions.google.tools: [{ googleSearch: {} }]`. The
-`providerOptions.google` object is merged after typed-field mapping; transport/abort scaffolding
-(`abortSignal`, `httpOptions`) is applied afterward, and caller-supplied `httpOptions` still wins. After the merge, the adapter checks whether any tool entry has a
-`googleSearch` or `googleSearchRetrieval` key. If so and `req.outputJsonSchema` is also set, the
-adapter throws `LlmError('bad_request', retryable: false)` unless the descriptor sets
-`structuredOutputWithTools`. That flag is set only on `gemini-3.1-pro-preview` and
-`gemini-3.8-flash`. When grounding is active, `candidate.groundingMetadata`
-is captured alongside `promptFeedback` into `result.providerMetadata`.
+Grounding is requested via `providerOptions.google.tools: [{ googleSearch: {} }]`.
+The adapter validates this strict allowlist before dispatch; `googleSearchRetrieval`
+is not admitted. With `req.outputJsonSchema`, the descriptor must set
+`structuredOutputWithTools`. All six registered Gemini 3.x models set that flag
+after the 2026-09-26 live probes. A successful structured response does not
+guarantee Search ran: those probes did not return `groundingMetadata` when
+Search was requested. When present, `candidate.groundingMetadata` is captured
+alongside `promptFeedback` in `result.providerMetadata`.
 
 ### Transport Timeout
 
@@ -199,8 +199,10 @@ The adapter sets `config.httpOptions.timeout`:
 
 The adapter wraps the entire SDK call (client construction + `generateContent`) in a single
 try/catch. `classifyError` converts SDK errors; the adapter re-throws as `LlmError` tagged with
-`provider: 'google'`. Blocked responses (`promptFeedback.blockReason` set, or no candidates)
-are thrown as `LlmError('content_filter', retryable: false)` rather than returning a result.
+`provider: 'google'`. A response with `promptFeedback.blockReason` is a
+non-retryable `content_filter`. A candidate-less 200 without a block reason is
+a retryable `server` error; its reported usage and cost are recorded on the
+failed attempt.
 
 ### Thought Text Extraction
 
@@ -254,8 +256,9 @@ have `sampling: 'fixed'` and reject `temperature`, `topP`, `topK` at call time.
 **Grounding.** Requested via `providerOptions.google.tools: [{ googleSearch: {} }]`. The adapter
 captures `candidate.groundingMetadata` into `result.providerMetadata`. Grounding plus
 `output.jsonSchema` is admitted only when `structuredOutputWithTools` is set
-(`gemini-3.1-pro-preview`, `gemini-3.8-flash`). Every other model fails with
-`bad_request` before the SDK call.
+(all six registered Gemini 3.x models). Other models fail with `bad_request`
+before the SDK call. A successful structured response may omit grounding
+metadata, so callers needing auditable citations must check it explicitly.
 
 **Flex transport timeout.** The adapter sets `config.httpOptions.timeout` automatically:
 1 500 000 ms (25 minutes) for Flex calls without `timeoutMs`, and `timeoutMs + 5 000 ms` when

@@ -208,14 +208,15 @@ export type Message = { role: 'user' | 'assistant'; parts: Part[] }
  * Adapters map this to provider-specific knobs (e.g. Gemini `thinkingConfig`)
  * Adapters throw `LlmError('bad_request')` when the mapping cannot be applied.
  */
-export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh'
+export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 export interface ReasoningIntent {
   /**
    * Abstract effort level. Admitted values are per-model (`admittedReasoningEfforts`).
    * - Gemini 2.5 → maps to `thinkingBudget` tokens (`xhigh` is rejected).
    * - Gemini 3.x → maps to `thinkingLevel` (`xhigh` is rejected).
-   * - xAI grok-4.6 → Responses `reasoning.effort`, including native `xhigh`.
+   * - xAI grok-4.6/4.7 → Responses `reasoning.effort`, including native `xhigh`.
+   * - Codex and Claude CLI → native `max` where admitted by the model schema.
    */
   effort?: ReasoningEffort
   /** Explicit token budget for budget-API models; schemas reject it with `effort`. */
@@ -346,6 +347,8 @@ export interface LlmRequest {
   output?: { jsonSchema: JsonValue }
   /** Generation configuration; merged over library defaults and call-site defaults. */
   config?: GenConfig
+  /** Opaque provider continuation state. Forwarded to the adapter but never persisted. */
+  transientProviderState?: JsonValue
   /** Host-supplied metadata anchors persisted verbatim. */
   metadata?: CallMetadata
   /** Optional call-site identifier for direct `generate()` observability grouping. */
@@ -468,8 +471,8 @@ export interface Usage {
 export interface Cost {
   /**
    * Total cost in micro-USD (1 USD = 1,000,000 µUSD).
-   * `null` when the model is not in the pricing table; tokens are still
-   * captured for later backfill.
+   * `null` when this snapshot cannot safely price the model, tier, or usage;
+   * tokens are still captured for later reconciliation or backfill.
    */
   microUsd: number | null
   /**
@@ -496,7 +499,7 @@ export interface Cost {
     cached: number
     /** Cost of output tokens (thinking is billed here, not separately). */
     output: number
-    /** Cost of priced tool invocations (0 when none). */
+    /** Tool charges. */
     tools: number
   }
   /**
@@ -574,6 +577,8 @@ export interface LlmResult {
    * Stored as JsonValue to avoid a hard coupling to provider-specific types.
    */
   providerMetadata?: JsonValue
+  /** Opaque provider continuation state. The caller owns secure storage and replay. */
+  transientProviderState?: JsonValue
   /**
    * Library-assigned stable identifier for this logical call.
    * Use this to correlate the result with the persisted `LlmCallRecord`

@@ -61,6 +61,8 @@ export interface ResolvedRequest {
    * provider's default behavior instead of inferring a tier.
    */
   config: GenConfig
+  /** Opaque continuation state, forwarded from the caller without ledger persistence. */
+  transientProviderState?: JsonValue
   /** Propagated abort signal (timeout + caller cancel merged). */
   signal?: AbortSignal
   /**
@@ -152,6 +154,8 @@ export interface AdapterResult {
   }>
   /** Raw provider metadata (grounding, safety ratings, etc.). */
   providerMetadata?: JsonValue
+  /** Opaque continuation state returned to the caller, never written to the ledger. */
+  transientProviderState?: JsonValue
 }
 
 /**

@@ -67,22 +67,20 @@ function mulberry32(seed: number): () => number {
 // ---------------------------------------------------------------------------
 
 const TEST_RATES = {
-  'gemini-2.5-pro': { inputPerM: 1_250_000, cachedPerM: 125_000, outputPerM: 10_000_000 },
-  'gemini-2.5-flash': { inputPerM: 300_000, cachedPerM: 30_000, outputPerM: 2_500_000 },
+  'gemini-2.5-pro': {
+    standard: { inputPerM: 1_250_000, cachedPerM: 125_000, outputPerM: 10_000_000 },
+  },
+  'gemini-2.5-flash': {
+    standard: { inputPerM: 300_000, cachedPerM: 30_000, outputPerM: 2_500_000 },
+  },
   'gemini-2.5-flash-lite': {
-    inputPerM: 100_000,
-    cachedPerM: 10_000,
-    outputPerM: 400_000,
+    standard: { inputPerM: 100_000, cachedPerM: 10_000, outputPerM: 400_000 },
   },
   'gemini-3.1-flash-lite': {
-    inputPerM: 250_000,
-    cachedPerM: 25_000,
-    outputPerM: 1_500_000,
+    standard: { inputPerM: 250_000, cachedPerM: 25_000, outputPerM: 1_500_000 },
   },
   'gemini-3.1-pro-preview': {
-    inputPerM: 2_000_000,
-    cachedPerM: 200_000,
-    outputPerM: 12_000_000,
+    standard: { inputPerM: 2_000_000, cachedPerM: 200_000, outputPerM: 12_000_000 },
   },
 }
 const PRICING = makeTestPricingSource(TEST_RATES, 'test-pricing-1')

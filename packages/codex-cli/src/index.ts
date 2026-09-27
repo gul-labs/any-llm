@@ -41,6 +41,5 @@ export {
   Gpt6AstraConfigSchema,
   Gpt6SolConfigSchema,
   Gpt6LunaConfigSchema,
-  DELETED_CODEX_CLI_MODEL_IDS,
 } from './models.js'
 export type { CodexCliModelId, CodexCliReasoningEffort } from './models.js'

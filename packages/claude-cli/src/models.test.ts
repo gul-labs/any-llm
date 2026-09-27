@@ -8,17 +8,20 @@ import { describe, it, expect } from 'vitest'
 import { assertRegistryInvariants } from '@gullabs/testing'
 import {
   CLAUDE_CLI_EFFORTS,
-  CLAUDE_CLI_MODEL_IDS,
   ClaudeFable51ConfigSchema,
   ClaudeHaiku45ConfigSchema,
   ClaudeOpus55ConfigSchema,
   ClaudeSonnet5ConfigSchema,
-  DELETED_CLAUDE_CLI_MODEL_IDS,
   claudeCliModelDescriptors,
   claudeCliRegistry,
 } from './models.js'
 
-const EXPECTED_MODEL_IDS = CLAUDE_CLI_MODEL_IDS
+const EXPECTED_MODEL_IDS = [
+  'claude-fable-5-1',
+  'claude-opus-5-5',
+  'claude-sonnet-5',
+  'claude-haiku-4-5-20251001',
+] as const
 
 describe('config schema', () => {
   it('rejects an unknown key (strict object)', () => {
@@ -27,7 +30,7 @@ describe('config schema', () => {
   })
 
   it('rejects a bad effort value', () => {
-    const result = ClaudeHaiku45ConfigSchema.safeParse({
+    const result = ClaudeSonnet5ConfigSchema.safeParse({
       reasoning: { effort: 'extreme' },
     })
     expect(result.success).toBe(false)
@@ -45,7 +48,9 @@ describe('config schema', () => {
     ['claude-opus-5-5', ClaudeOpus55ConfigSchema],
     ['claude-sonnet-5', ClaudeSonnet5ConfigSchema],
   ] as const)('%s accepts low through max and rejects none', (id, schema) => {
-    expect(id).toBeTruthy()
+    const descriptor = claudeCliRegistry.resolve('claude-cli', id)
+    expect(descriptor?.configSchema).toBe(schema)
+    expect(descriptor?.capabilities?.admittedReasoningEfforts).toEqual(CLAUDE_CLI_EFFORTS)
     for (const effort of CLAUDE_CLI_EFFORTS) {
       expect(schema.safeParse({ reasoning: { effort } }).success).toBe(true)
     }
@@ -79,8 +84,20 @@ describe('registry', () => {
     expect(descriptor?.provider).toBe('claude-cli')
   })
 
-  it.each(DELETED_CLAUDE_CLI_MODEL_IDS)('resolve(%s) is undefined', (id) => {
+  it.each(['claude-fable-5', 'claude-opus-4-8'])('resolve(%s) is undefined', (id) => {
     expect(claudeCliRegistry.resolve('claude-cli', id)).toBeUndefined()
+  })
+
+  it('does not advertise a reasoning control for Haiku 4.5', () => {
+    const descriptor = claudeCliRegistry.resolve(
+      'claude-cli',
+      'claude-haiku-4-5-20251001',
+    )
+    expect(descriptor?.capabilities?.reasoningApi).toBeUndefined()
+    expect(descriptor?.capabilities?.admittedReasoningEfforts).toEqual([])
+    expect(
+      descriptor?.configSchema.safeParse({ reasoning: { effort: 'high' } }).success,
+    ).toBe(false)
   })
 
   it('validateConfig accepts a valid config via the Standard Schema surface', () => {

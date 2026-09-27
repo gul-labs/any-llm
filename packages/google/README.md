@@ -65,7 +65,7 @@ const result = await client.generate(
 - `output.jsonSchema` → `responseMimeType: 'application/json'` + verbatim `responseSchema` when native structured output is enabled; the engine returns parsed output and `outputParsed` without validating shape
 - `providerOptions.google.*` → typed provider-extension lane for admitted keys such as `cachedContent`, `safetySettings`, and exact tool declarations
 - Usage: `promptTokenCount`→`inputTokens`, `candidatesTokenCount`+`thoughtsTokenCount`→`outputTokens` (GROSS)
-- Errors: `401` and a bare `403` default to `invalid_auth`; `429`→`rate_limited`; `5xx`→`server`; timeouts; Gemini safety blocks are a 200-path `content_filter` (`promptFeedback.blockReason` / no candidates), not an HTTP 403
+- Errors: `401` and a bare `403` default to `invalid_auth`; `429`→`rate_limited`; `5xx`→`server`; timeouts; Gemini safety blocks are a 200-path `content_filter` when `promptFeedback.blockReason` is set. A candidate-less 200 without a block reason is retryable `server`.
 
 ## Strict model-config expectations
 
@@ -80,10 +80,10 @@ descriptor boundary:
   library has not yet shipped the matching schema, pricing, served-tier
   recording, and tests.
 
-For structured output with built-in tools, follow the exact public
-`generateContent` evidence: the current docs only admit that combination for
-`gemini-3.1-pro-preview` and `gemini-3.8-flash`. Other models should fail early
-instead of relying on adapter repair or provider-side surprises.
+The Developer API accepted structured JSON plus `googleSearch` on all registered
+Gemini 3.x models in the 2026-09-26 live probes. The structured responses did
+not include `groundingMetadata`, even when asked to search; callers must not
+assume that an accepted tool means Search ran or that citations are available.
 
 ## Registered models
 
@@ -92,20 +92,30 @@ instead of relying on adapter repair or provider-side surprises.
 | `gemini-2.5-pro`         | `low`, `medium`, `high`         | no          | 2048              | flex, standard |
 | `gemini-2.5-flash`       | `none`, `low`, `medium`, `high` | no          | 2048              | flex, standard |
 | `gemini-2.5-flash-lite`  | `none`, `low`, `medium`, `high` | no          | 2048              | flex, standard |
-| `gemini-3.1-pro-preview` | `low`, `medium`, `high`         | yes         | 4096              | flex, standard |
-| `gemini-3.1-flash-lite`  | `none`, `low`, `medium`, `high` | no          | 2048              | flex, standard |
-| `gemini-3.5-flash-lite`  | `none`, `low`, `medium`, `high` | no          | 2048              | flex, standard |
-| `gemini-3.6-flash`       | `none`, `low`, `medium`, `high` | no          | 4096              | flex, standard |
-| `gemini-3.7-flash`       | `low`, `medium`, `high`         | no          | 4096              | flex, standard |
-| `gemini-3.8-flash`       | `low`, `medium`, `high`         | yes         | 4096              | flex, standard |
+| `gemini-3.1-pro-preview` | `low`, `medium`, `high`         | yes         | 1024              | flex, standard |
+| `gemini-3.1-flash-lite`  | `none`, `low`, `medium`, `high` | yes         | 1024              | flex, standard |
+| `gemini-3.5-flash-lite`  | `none`, `low`, `medium`, `high` | yes         | 1024              | flex, standard |
+| `gemini-3.6-flash`       | `none`, `low`, `medium`, `high` | yes         | 1024              | flex, standard |
+| `gemini-3.7-flash`       | `low`, `medium`, `high`         | yes         | 1024              | flex, standard |
+| `gemini-3.8-flash`       | `low`, `medium`, `high`         | yes         | 1024              | flex, standard |
 | `gemma-4-31b-it`         | `none`, `high`                  | no          | n/a               | none           |
 | `gemma-4-26b-a4b-it`     | `none`, `high`                  | no          | n/a               | none           |
 
+All six Gemini 3.x cache-create minimums above were live checked: 103 tokens
+returned `min_total_token_count=1024`; exactly 1024 tokens succeeded.
+Google's 4096-token table in the caching guide describes **implicit** caching;
+this column is the **explicit cache-create** floor.
+
 `gemini-3.7-flash` and `gemini-3.8-flash` never emit `thinkingLevel` MINIMAL.
 `gemini-3-flash-preview` and `gemini-3.5-flash` are deleted and are not aliased.
-Migrate both to `gemini-3.6-flash`. `servedServiceTier` is the requested tier
-(plus flex capacity fallback to `standard`). The adapter does not read
-`usageMetadata.serviceTier`.
+Migrate both to `gemini-3.6-flash`. `servedServiceTier` reads the provider's
+`usageMetadata.serviceTier` echo when present, then falls back to the tier
+actually dispatched when the echo is absent.
+An echo that differs from the requested tier emits a warning so callers can
+see a provider-side remap. `flexFallback: false` disables the adapter's retry
+at standard tier; it cannot prevent a provider-side remap after dispatch.
+A candidate-less HTTP 200 without a safety block is a retryable provider error;
+its reported usage and snapshot cost are saved on that failed attempt.
 
 ## Gemma 4
 

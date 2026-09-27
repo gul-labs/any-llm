@@ -74,7 +74,7 @@ describe('built-in descriptors', () => {
     expect(
       defaultGeminiRegistry.resolve('google', 'gemini-3.1-pro-preview')?.capabilities
         ?.caching?.minTokens,
-    ).toBe(4096)
+    ).toBe(1024)
     expect(
       defaultGeminiRegistry.resolve('google', 'gemini-3.1-pro-preview')?.capabilities
         ?.structuredOutputWithTools,
@@ -83,18 +83,25 @@ describe('built-in descriptors', () => {
       defaultGeminiRegistry.resolve('google', 'gemini-3.8-flash')?.capabilities
         ?.structuredOutputWithTools,
     ).toBe(true)
-    expect(
-      defaultGeminiRegistry.resolve('google', 'gemini-3.7-flash')?.capabilities
-        ?.structuredOutputWithTools,
-    ).toBeUndefined()
+    for (const model of [
+      'gemini-3.7-flash',
+      'gemini-3.6-flash',
+      'gemini-3.5-flash-lite',
+      'gemini-3.1-flash-lite',
+    ]) {
+      expect(
+        defaultGeminiRegistry.resolve('google', model)?.capabilities
+          ?.structuredOutputWithTools,
+      ).toBe(true)
+    }
     expect(
       defaultGeminiRegistry.resolve('google', 'gemini-3.8-flash')?.capabilities?.caching
         ?.minTokens,
-    ).toBe(4096)
+    ).toBe(1024)
     expect(
       defaultGeminiRegistry.resolve('google', 'gemini-3.5-flash-lite')?.capabilities
         ?.caching?.minTokens,
-    ).toBe(2048)
+    ).toBe(1024)
     expect(
       defaultGeminiRegistry.resolve('google', 'gemini-3.7-flash')?.capabilities
         ?.admittedReasoningEfforts,

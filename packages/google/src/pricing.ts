@@ -19,7 +19,7 @@
  * billed at the output rate — no separate thinking lane.
  *
  * **Modality caveat (v1 = text).** Gemini 2.5 Flash / Flash-Lite / 3.1
- * Flash-Lite / 3 Flash Preview charge a higher INPUT rate for audio tokens
+ * Flash-Lite charge a higher INPUT rate for audio tokens
  * than for text/image/video. v1 is text-only and uses the text/img/vid input
  * rate. Per-modality input pricing is a deferred seam (see DESIGN.md).
  *
@@ -65,8 +65,7 @@ function tiers(
  * Frozen Gemini pricing snapshot (per-1M in µUSD), keyed by model id, then
  * by priced tier. Every number is transcribed from the pricing page.
  *
- * Keys are model-string prefixes / exact identifiers used in routing. The
- * cost engine matches exact first, then longest-prefix (see `resolveGeminiRates`).
+ * Keys are exact priced model identifiers. Unlisted variants are unpriced.
  *
  * Source: https://ai.google.dev/gemini-api/docs/pricing (re-verified 2026-09-25).
  */
@@ -163,14 +162,6 @@ export const GEMINI_PRICING: Readonly<Record<string, GeminiTierRates>> = Object.
 })
 
 /**
- * Standard-tier rates for a model id, or `undefined` when the id is not in
- * the snapshot. Longest-prefix match, same walk as the cost lookup.
- */
-export function geminiStandardRates(model: string): ModelRates | undefined {
-  return lookupGeminiTierRates(model)?.standard
-}
-
-/**
  * Concrete rates for `(model, tier)`. `undefined` tier is standard. A defined
  * tier this snapshot does not price returns `undefined`.
  */
@@ -178,27 +169,14 @@ function isPricedGeminiTier(tier: string): tier is GeminiPricedTier {
   return (GEMINI_PRICED_TIERS as readonly string[]).includes(tier)
 }
 
-export function lookupGeminiTierRates(
+function lookupGeminiTierRates(
   model: string,
   tier?: string,
 ): GeminiTierRates | undefined {
-  const exact = GEMINI_PRICING[model]
-  const entry =
-    exact ??
-    (() => {
-      let bestKey = ''
-      let best: GeminiTierRates | undefined
-      for (const key of Object.keys(GEMINI_PRICING)) {
-        if (model.startsWith(key) && key.length > bestKey.length) {
-          bestKey = key
-          best = GEMINI_PRICING[key]
-        }
-      }
-      return best
-    })()
+  const entry = Object.hasOwn(GEMINI_PRICING, model) ? GEMINI_PRICING[model] : undefined
   if (entry === undefined) return undefined
-  // Own priced tiers only. `in` is true for inherited names (`constructor`,
-  // `toString`) and would let resolveGeminiRates price them as zero.
+  // Only the three published tiers are priced. Inherited names such as
+  // `constructor` and `toString` must not pass this check.
   if (tier !== undefined && !isPricedGeminiTier(tier)) return undefined
   return entry
 }

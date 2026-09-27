@@ -8,7 +8,7 @@
  * - cached > input (defensive clamp; no negative cost).
  * - Zero tokens everywhere.
  * - Unknown model → microUsd null + confidence estimated.
- * - Flat (non-tiered) model pricing.
+ * - Per-tier model pricing.
  * - Property: sum(details) === microUsd for arbitrary usages on a known model.
  */
 
@@ -24,7 +24,7 @@ import {
 
 const PRICING = geminiPricingSource()
 
-/** computeCost, pre-bound to the Gemini rates + tier-factor + version for this test file. */
+/** computeCost, pre-bound to the Gemini rates and version for this test file. */
 function computeCost(model: string, usage: Usage, tier?: string) {
   return PRICING.price(model, usage, tier)
 }
@@ -307,6 +307,13 @@ describe('computeCost — edge cases', () => {
     }
   })
 
+  it('inherited object keys are not models in any exported rate lookup', () => {
+    for (const model of ['constructor', 'toString', '__proto__']) {
+      expect(resolveGeminiRates(model, 'standard')).toBeUndefined()
+      expect(resolveGeminiRates(model, 'standard')).toBeUndefined()
+    }
+  })
+
   it('unknown (but defined) service tier → unpriced, never silently mapped to standard', () => {
     const usage = makeUsage({ inputTokens: 10_000, outputTokens: 500 })
     const cost = computeCost('gemini-2.5-pro', usage, 'enterprise-super-tier')
@@ -358,13 +365,17 @@ describe('computeCost — edge cases', () => {
     expect(cost.unpricedReason).toContain('some-future-model-xyz')
   })
 
-  it('prefix match: gemini-2.5-pro-001 → matched to gemini-2.5-pro rates', () => {
+  it('does not price unregistered suffix variants at a parent model rate', () => {
     const usage = makeUsage({ inputTokens: 10_000, outputTokens: 500 })
-    const costFull = computeCost('gemini-2.5-pro', usage)
-    const costVersioned = computeCost('gemini-2.5-pro-001', usage)
-
-    expect(costVersioned.microUsd).toBe(costFull.microUsd)
-    expect(costVersioned.confidence).toBe('exact')
+    for (const model of [
+      'gemini-2.5-pro-001',
+      'gemini-3.8-flash-lite',
+      'gemini-3.8-flash-tts',
+    ]) {
+      const cost = computeCost(model, usage)
+      expect(cost.microUsd).toBeNull()
+      expect(cost.unpricedReason).toContain(model)
+    }
   })
 })
 
@@ -396,11 +407,11 @@ describe('geminiPricingSource', () => {
     expect(cost.confidence).toBe('estimated')
   })
 
-  it('hasModel uses the same exact and prefix matching as price()', () => {
+  it('hasModel uses exact model identifiers', () => {
     const src = geminiPricingSource()
 
     expect(src.hasModel('gemini-2.5-pro')).toBe(true)
-    expect(src.hasModel('gemini-2.5-pro-001')).toBe(true)
+    expect(src.hasModel('gemini-2.5-pro-001')).toBe(false)
     expect(src.hasModel('gemma-4-31b-it')).toBe(false)
   })
 
@@ -593,12 +604,52 @@ describe('per-tier golden table — published flex/batch cached rates', () => {
       outputPerM: 1_875_000,
     },
     {
+      model: 'gemini-3.8-flash',
+      tier: 'batch',
+      context: 'le200k',
+      inputPerM: 375_000,
+      cachedPerM: 37_500,
+      outputPerM: 1_875_000,
+    },
+    {
       model: 'gemini-3.7-flash',
       tier: 'standard',
       context: 'le200k',
       inputPerM: 750_000,
       cachedPerM: 75_000,
       outputPerM: 3_750_000,
+    },
+    {
+      model: 'gemini-3.7-flash',
+      tier: 'flex',
+      context: 'le200k',
+      inputPerM: 375_000,
+      cachedPerM: 37_500,
+      outputPerM: 1_875_000,
+    },
+    {
+      model: 'gemini-3.7-flash',
+      tier: 'batch',
+      context: 'le200k',
+      inputPerM: 375_000,
+      cachedPerM: 37_500,
+      outputPerM: 1_875_000,
+    },
+    {
+      model: 'gemini-3.6-flash',
+      tier: 'standard',
+      context: 'le200k',
+      inputPerM: 750_000,
+      cachedPerM: 75_000,
+      outputPerM: 3_750_000,
+    },
+    {
+      model: 'gemini-3.6-flash',
+      tier: 'flex',
+      context: 'le200k',
+      inputPerM: 375_000,
+      cachedPerM: 37_500,
+      outputPerM: 1_875_000,
     },
     {
       model: 'gemini-3.6-flash',
@@ -659,36 +710,71 @@ describe('per-tier golden table — published flex/batch cached rates', () => {
     },
   ]
 
-  it('prices 1M cached tokens at the published cached rate for every model × tier × context band', () => {
-    for (const row of PUBLISHED) {
-      const inputTokens = row.context === 'gt200k' ? 200_001 : 100_000
-      const usage = makeUsage({
-        inputTokens,
-        cachedInputTokens: inputTokens,
-        outputTokens: 0,
-      })
-      const cost = computeCost(row.model, usage, row.tier)
-      const expectedCached = Math.round((inputTokens * row.cachedPerM) / 1_000_000)
-      expect(cost.microUsd, `${row.model} ${row.tier} ${row.context}`).toBe(
-        expectedCached,
-      )
-      expect(
-        cost.details.cached,
-        `${row.model} ${row.tier} ${row.context} cached lane`,
-      ).toBe(expectedCached)
-      expect(cost.details.input).toBe(0)
-      expect(cost.confidence).toBe('exact')
+  const PREMIUM_MODELS = new Set(['gemini-2.5-pro', 'gemini-3.1-pro-preview'])
 
-      const resolved = resolveGeminiRates(row.model, row.tier)
-      expect(resolved, `${row.model} ${row.tier}`).toBeDefined()
-      const band = row.context === 'gt200k' ? resolved!.gt200k! : resolved!
-      expect(band.inputPerM).toBe(row.inputPerM)
-      expect(band.cachedPerM).toBe(row.cachedPerM)
-      expect(band.outputPerM).toBe(row.outputPerM)
+  it('pins a published row for every model and tier, with both premium bands where applicable', () => {
+    for (const model of Object.keys(GEMINI_PRICING)) {
+      for (const tier of GEMINI_PRICED_TIERS) {
+        expect(
+          PUBLISHED.filter((row) => row.model === model && row.tier === tier).map(
+            (row) => row.context,
+          ),
+          `${model} ${tier}`,
+        ).toEqual(PREMIUM_MODELS.has(model) ? ['le200k', 'gt200k'] : ['le200k'])
+      }
     }
   })
 
-  it('does not halve flex cached tokens on the five models whose page keeps the standard cached rate', () => {
+  it('prices cached, uncached, and output lanes against each published row on both sides of 200k', () => {
+    for (const row of PUBLISHED) {
+      const contexts =
+        row.context === 'gt200k' || PREMIUM_MODELS.has(row.model)
+          ? [row.context]
+          : (['le200k', 'gt200k'] as const)
+      for (const context of contexts) {
+        const inputTokens = context === 'gt200k' ? 200_001 : 100_000
+        const outputTokens = 1_000
+        const expectedOutput = Math.round((outputTokens * row.outputPerM) / 1_000_000)
+        for (const cached of [false, true]) {
+          const usage = makeUsage({
+            inputTokens,
+            cachedInputTokens: cached ? inputTokens : 0,
+            outputTokens,
+          })
+          const cost = computeCost(row.model, usage, row.tier)
+          const expectedInput = cached
+            ? 0
+            : Math.round((inputTokens * row.inputPerM) / 1_000_000)
+          const expectedCached = cached
+            ? Math.round((inputTokens * row.cachedPerM) / 1_000_000)
+            : 0
+          expect(
+            cost.details,
+            `${row.model} ${row.tier} ${context} cached=${cached}`,
+          ).toEqual({
+            input: expectedInput,
+            cached: expectedCached,
+            output: expectedOutput,
+            tools: 0,
+          })
+          expect(cost.microUsd).toBe(expectedInput + expectedCached + expectedOutput)
+          expect(cost.confidence).toBe('exact')
+        }
+
+        const resolved = resolveGeminiRates(row.model, row.tier)
+        expect(resolved, `${row.model} ${row.tier}`).toBeDefined()
+        const band =
+          context === 'gt200k' && PREMIUM_MODELS.has(row.model)
+            ? resolved!.gt200k!
+            : resolved!
+        expect(band.inputPerM).toBe(row.inputPerM)
+        expect(band.cachedPerM).toBe(row.cachedPerM)
+        expect(band.outputPerM).toBe(row.outputPerM)
+      }
+    }
+  })
+
+  it('does not halve flex cached tokens on the four models whose page keeps the standard cached rate', () => {
     const models = [
       'gemini-2.5-pro',
       'gemini-2.5-flash',

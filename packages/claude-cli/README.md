@@ -62,14 +62,26 @@ would break subscription-based Claude Code auth and defeat the entire point
 of this package (working with **zero** API-key configuration). The full
 invariant argv (never caller-configurable) is:
 
+The quotes below illustrate argument boundaries; the runner passes an argv
+array directly without a shell.
+
 ```
 -p --output-format json --safe-mode --tools "" --disable-slash-commands --no-session-persistence --settings '{"switchModelsOnFlag":false}'
 ```
 
-`--settings` disables the CLI's silent model switch on a safety flag. If
-`modelUsage` names any model other than the requested id, the adapter throws
-`LlmError` kind `server` (not retryable) naming both ids. `stop_reason:
-"refusal"` is `content_filter`.
+`--settings` requests that the CLI disable silent model switches on a safety
+flag; the CLI does not provide strict validation for this setting. Enforcement
+comes from the post-run `modelUsage` check: a successful response must report
+the requested id and no other model. Any other model id throws
+`LlmError` kind `server` (not retryable). A successful envelope with
+`stop_reason: "refusal"` returns `finishReason: 'content_filter'` and preserves
+its billed usage; an error envelope throws `content_filter`.
+
+P-A1 was captured on 2026-09-26 with Claude Code 2.1.282: the invariant argv
+and `--json-schema` completed for all four registered ids, and each success
+envelope contained only its requested id as a `modelUsage` key. The sanitized
+responses are in `src/__fixtures__/model-refresh-p-a1.json`. The full installed CLI version and
+envelope shape are runtime dependencies; an absent `modelUsage` fails closed.
 
 `--model`, `--effort`, `--system-prompt`, and `--json-schema` are appended
 from the request when applicable; the prompt itself is always sent over

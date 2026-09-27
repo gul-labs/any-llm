@@ -91,14 +91,6 @@ const RESERVED_GOOGLE_PROVIDER_OPTION_KEYS = new Set([
   '_responseJsonSchema',
 ])
 
-const GOOGLE_SEARCH_SUPPORTED_MODELS = new Set([
-  'gemini-2.5-flash',
-  'gemini-2.5-flash-lite',
-  'gemini-2.5-pro',
-  'gemini-3.1-flash-lite',
-  'gemini-3.1-pro-preview',
-])
-
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -182,13 +174,19 @@ function parseGoogleSafetySetting(
   }
 }
 
-function mapGoogleProviderOptions(
-  googleOpts: unknown,
-  model: string,
-  structuredOutputRequested: boolean,
-  descriptorGrounding: boolean | undefined,
-  structuredOutputWithTools: boolean | undefined,
-): Partial<GeminiDispatchConfig> & { flexFallback?: boolean } {
+function mapGoogleProviderOptions({
+  googleOpts,
+  model,
+  structuredOutputRequested,
+  descriptorGrounding,
+  structuredOutputWithTools,
+}: {
+  googleOpts: unknown
+  model: string
+  structuredOutputRequested: boolean
+  descriptorGrounding: boolean | undefined
+  structuredOutputWithTools: boolean | undefined
+}): Partial<GeminiDispatchConfig> & { flexFallback?: boolean } {
   if (googleOpts === undefined) {
     return {}
   }
@@ -297,11 +295,7 @@ function mapGoogleProviderOptions(
     }
 
     const tools = googleOpts['tools'].map((tool) => parseGoogleTool(tool, model))
-    const groundingSupported =
-      descriptorGrounding === true ||
-      (descriptorGrounding === undefined && GOOGLE_SEARCH_SUPPORTED_MODELS.has(model))
-
-    if (!groundingSupported) {
+    if (descriptorGrounding !== true) {
       throw badGoogleProviderOptions(
         `providerOptions.google.tools is not supported for model "${model}".`,
       )
@@ -591,6 +585,19 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
 
       const warnings: Warning[] = []
       const model = req.model
+      const descriptor = req.modelDescriptor
+      if (descriptor?.model !== model || descriptor.provider !== 'google') {
+        throw new LlmError(`No matching Google model descriptor for "${model}".`, {
+          kind: 'bad_request',
+          retryable: false,
+        })
+      }
+      if (req.transientProviderState !== undefined) {
+        throw new LlmError(`Model "${model}" does not admit transientProviderState.`, {
+          kind: 'bad_request',
+          retryable: false,
+        })
+      }
 
       // ------------------------------------------------------------------
       // 1. Map messages → contents
@@ -629,13 +636,10 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       // Service tier (FLEX or STANDARD)
       // Real SDK: GenerateContentConfig.serviceTier = ServiceTier enum ("flex"|"standard")
       const explicit = (genConfig as { serviceTier?: 'flex' | 'standard' }).serviceTier
-      const supported = req.modelDescriptor?.capabilities?.serviceTiers
+      const supported = descriptor.capabilities?.serviceTiers
       if (explicit !== undefined) {
         // caller explicitly chose a tier — reject if the model can't honour it
-        if (
-          req.modelDescriptor !== undefined &&
-          (supported === undefined || !supported.includes(explicit))
-        ) {
+        if (supported === undefined || !supported.includes(explicit)) {
           throw new LlmError(
             `serviceTier "${explicit}" is not supported for model "${model}".`,
             { kind: 'bad_request', retryable: false },
@@ -649,7 +653,14 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       // ------------------------------------------------------------------
       const reasoning = genConfig.reasoning
       if (reasoning !== undefined) {
-        const reasoningApi = req.modelDescriptor?.capabilities?.reasoningApi
+        const reasoningApi = descriptor.capabilities?.reasoningApi
+
+        if (reasoning.effort === 'max') {
+          throw new LlmError(
+            `reasoning.effort "max" is not supported for model "${model}".`,
+            { kind: 'bad_request', retryable: false },
+          )
+        }
 
         if (reasoning.effort !== undefined && reasoning.budgetTokens !== undefined) {
           throw new LlmError(
@@ -661,6 +672,15 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         if (reasoningApi === 'budget') {
           // gemini-2.5* → thinkingBudget. `xhigh` is not a Gemini thinking
           // budget — reject rather than invent a token count.
+          if (
+            reasoning.effort === 'none' &&
+            descriptor.capabilities?.admittedReasoningEfforts?.includes('none') !== true
+          ) {
+            throw new LlmError(
+              `reasoning.effort "none" is not supported for model "${model}".`,
+              { kind: 'bad_request', retryable: false },
+            )
+          }
           if (reasoning.effort === 'xhigh') {
             throw new LlmError(
               `reasoning.effort "xhigh" is not supported for model "${model}".`,
@@ -688,11 +708,9 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
           }
 
           // Real SDK ThinkingLevel enum: "LOW" | "MEDIUM" | "HIGH" | "MINIMAL".
-          // `none` maps to MINIMAL. Emit it only when the descriptor admits
-          // `none`. A missing effort list still emits MINIMAL so descriptors
-          // that have not declared an effort set keep the previous level mapping.
-          const admitted = req.modelDescriptor?.capabilities?.admittedReasoningEfforts
-          const admitsNone = admitted === undefined || admitted.includes('none')
+          // `none` maps to MINIMAL only when the descriptor admits it.
+          const admitted = descriptor.capabilities?.admittedReasoningEfforts
+          const admitsNone = admitted?.includes('none') === true
           let thinkingLevel: string | undefined
           if (reasoning.effort !== undefined) {
             switch (reasoning.effort) {
@@ -716,7 +734,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
                 break
               case 'xhigh':
                 throw new LlmError(
-                  `reasoning.effort "xhigh" is not supported for model "${model}".`,
+                  `reasoning.effort "${reasoning.effort}" is not supported for model "${model}".`,
                   { kind: 'bad_request', retryable: false },
                 )
               default:
@@ -742,7 +760,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       const structuredOutputRequested = req.outputJsonSchema !== undefined
       if (structuredOutputRequested) {
         const nativeStructuredOutput =
-          req.modelDescriptor?.capabilities?.nativeStructuredOutput !== false
+          descriptor.capabilities?.nativeStructuredOutput !== false
 
         if (nativeStructuredOutput) {
           config.responseMimeType = 'application/json'
@@ -755,13 +773,13 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       // ------------------------------------------------------------------
       // 5. providerOptions.google → explicit allowlisted mapping
       // ------------------------------------------------------------------
-      const googleProviderConfig = mapGoogleProviderOptions(
-        genConfig.providerOptions?.['google'],
+      const googleProviderConfig = mapGoogleProviderOptions({
+        googleOpts: genConfig.providerOptions?.['google'],
         model,
         structuredOutputRequested,
-        req.modelDescriptor?.capabilities?.grounding,
-        req.modelDescriptor?.capabilities?.structuredOutputWithTools,
-      )
+        descriptorGrounding: descriptor.capabilities?.grounding,
+        structuredOutputWithTools: descriptor.capabilities?.structuredOutputWithTools,
+      })
       if (googleProviderConfig.cachedContent !== undefined) {
         config.cachedContent = googleProviderConfig.cachedContent
       }
@@ -991,9 +1009,23 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         clearTierTimeout()
       }
 
+      // The Gemini Developer API echoes the tier actually served in usage
+      // metadata. Prefer that over the requested tier, including on success
+      // after a provider-side tier change, so pricing uses the correct lane.
+      const echoedTier = response.usageMetadata?.serviceTier
+      if (typeof echoedTier === 'string' && echoedTier.length > 0) {
+        if (config.serviceTier !== undefined && echoedTier !== config.serviceTier) {
+          warnings.push({
+            type: 'other',
+            message: `google: requested serviceTier "${config.serviceTier}" but provider served "${echoedTier}"; billing uses the served tier.`,
+          })
+        }
+        servedServiceTier = echoedTier
+      }
+
       // ------------------------------------------------------------------
-      // 8. Blocked response check
-      //    promptFeedback.blockReason set OR no candidates → content_filter
+      // 8. Blocked response check. A candidate-less HTTP 200 without a
+      // blockReason is a provider failure, not evidence of a safety block.
       // ------------------------------------------------------------------
       const hasBlockReason = response.promptFeedback?.blockReason !== undefined
       const hasCandidates =
@@ -1001,10 +1033,14 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
 
       if (hasBlockReason || !hasCandidates) {
         const reason = response.promptFeedback?.blockReason ?? 'NO_CANDIDATES'
-        throw new LlmError(`Gemini response blocked: ${reason}`, {
-          kind: 'content_filter',
-          retryable: false,
+        throw new LlmError(`Gemini response has no usable candidate: ${reason}`, {
+          kind: hasBlockReason ? 'content_filter' : 'server',
+          retryable: !hasBlockReason,
           provider: 'google',
+          ...(response.usageMetadata !== undefined
+            ? { usage: mapUsage(response.usageMetadata) }
+            : {}),
+          ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
         })
       }
 
@@ -1013,18 +1049,26 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       // ------------------------------------------------------------------
       const candidates = response.candidates
       if (candidates === undefined || candidates.length === 0) {
-        throw new LlmError('Gemini response blocked: NO_CANDIDATES', {
-          kind: 'content_filter',
-          retryable: false,
+        throw new LlmError('Gemini response has no usable candidate: NO_CANDIDATES', {
+          kind: 'server',
+          retryable: true,
           provider: 'google',
+          ...(response.usageMetadata !== undefined
+            ? { usage: mapUsage(response.usageMetadata) }
+            : {}),
+          ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
         })
       }
       const candidate = candidates[0]
       if (candidate === undefined) {
-        throw new LlmError('Gemini response blocked: NO_CANDIDATES', {
-          kind: 'content_filter',
-          retryable: false,
+        throw new LlmError('Gemini response has no usable candidate: NO_CANDIDATES', {
+          kind: 'server',
+          retryable: true,
           provider: 'google',
+          ...(response.usageMetadata !== undefined
+            ? { usage: mapUsage(response.usageMetadata) }
+            : {}),
+          ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
         })
       }
       const parts = candidate.content?.parts ?? []

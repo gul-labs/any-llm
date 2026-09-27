@@ -40,6 +40,7 @@ function makeResolvedReq(overrides: Partial<ResolvedRequest> = {}): ResolvedRequ
     model: 'gemini-2.5-pro',
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
     config: { serviceTier: 'flex' },
+    modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-pro')!,
     ...overrides,
   }
 }
@@ -187,6 +188,28 @@ describe('usage mapping', () => {
 // ---------------------------------------------------------------------------
 
 describe('service tier', () => {
+  it('uses the provider-echoed served tier when it differs from the request', async () => {
+    const response = fakeGeminiResponse({ text: 'ok' }) as GeminiResponseShape
+    response.usageMetadata = { ...response.usageMetadata, serviceTier: 'standard' }
+    const client = makeFakeGemini(response)
+    const result = await geminiAdapter({ client }).run(
+      makeResolvedReq({
+        config: {
+          serviceTier: 'flex',
+          providerOptions: { google: { flexFallback: false } },
+        },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.servedServiceTier).toBe('standard')
+    expect(result.usage.raw).toMatchObject({ serviceTier: 'standard' })
+    expect(result.warnings).toEqual([
+      expect.objectContaining({
+        message: expect.stringContaining('provider served "standard"'),
+      }),
+    ])
+  })
+
   it('sends serviceTier="flex" when config.serviceTier is flex', async () => {
     const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
     const adapter = geminiAdapter({ client })
@@ -491,19 +514,20 @@ describe('reasoning mapping', () => {
     expect(call?.config?.thinkingConfig?.thinkingBudget).toBe(4096)
   })
 
-  it('maps none effort to thinkingBudget=0 for gemini-2.5', async () => {
+  it('maps admitted none effort to thinkingBudget=0 for gemini-2.5-flash', async () => {
     const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
     const adapter = geminiAdapter({ client })
 
     await adapter.run(
       makeResolvedReq({
-        model: 'gemini-2.5-pro',
+        model: 'gemini-2.5-flash',
         modelDescriptor: makeGoogleDescriptor({
-          model: 'gemini-2.5-pro',
+          model: 'gemini-2.5-flash',
           capabilities: {
             reasoning: true,
             structuredOutput: true,
             reasoningApi: 'budget',
+            admittedReasoningEfforts: ['none', 'low', 'medium', 'high'],
             serviceTiers: ['flex', 'standard'],
           },
         }),
@@ -600,6 +624,24 @@ describe('reasoning mapping', () => {
         ),
       ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
     }
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('rejects none on a budget model whose descriptor does not admit it', async () => {
+    const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
+    const adapter = geminiAdapter({ client })
+    const descriptor = geminiModelDescriptors.find((d) => d.model === 'gemini-2.5-pro')!
+
+    await expect(
+      adapter.run(
+        makeResolvedReq({
+          model: 'gemini-2.5-pro',
+          modelDescriptor: descriptor,
+          config: { reasoning: { effort: 'none' } },
+        }),
+        FAKE_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
     expect(client.calls).toHaveLength(0)
   })
 
@@ -768,6 +810,10 @@ describe('reasoning mapping', () => {
       adapter.run(
         makeResolvedReq({
           model: 'gemini-future-model',
+          modelDescriptor: makeGoogleDescriptor({
+            model: 'gemini-future-model',
+            capabilities: { serviceTiers: ['flex', 'standard'] },
+          }),
           config: { serviceTier: 'flex', reasoning: { effort: 'medium' } },
         }),
         FAKE_CTX,
@@ -934,7 +980,7 @@ describe('blocked responses', () => {
     await expect(adapter.run(makeResolvedReq(), FAKE_CTX)).rejects.toThrow(LlmError)
   })
 
-  it('throws LlmError content_filter when candidates array is empty (no blockReason)', async () => {
+  it('treats an empty candidate list without blockReason as retryable', async () => {
     // Response with empty candidates and no promptFeedback
     const client = makeFakeGemini({
       candidates: [],
@@ -943,17 +989,19 @@ describe('blocked responses', () => {
 
     const err = await adapter.run(makeResolvedReq(), FAKE_CTX).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(LlmError)
-    expect((err as LlmError).kind).toBe('content_filter')
+    expect((err as LlmError).kind).toBe('server')
+    expect((err as LlmError).retryable).toBe(true)
   })
 
-  it('throws LlmError content_filter when candidates is undefined', async () => {
+  it('preserves metered usage when candidates are undefined', async () => {
     const client = makeFakeGemini({
       usageMetadata: { promptTokenCount: 10 },
     })
     const adapter = geminiAdapter({ client })
 
     await expect(adapter.run(makeResolvedReq(), FAKE_CTX)).rejects.toMatchObject({
-      kind: 'content_filter',
+      kind: 'server',
+      usage: { inputTokens: 10, outputTokens: 0 },
     })
   })
 })
@@ -1258,6 +1306,7 @@ describe('message role mapping', () => {
           { role: 'user', parts: [{ kind: 'text', text: 'How are you?' }] },
         ],
         config: { serviceTier: 'flex' },
+        modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-pro')!,
       },
       FAKE_CTX,
     )
@@ -1433,6 +1482,45 @@ describe('full-stack integration', () => {
     // Error record should still be persisted (fail-closed call, fail-open sink)
     expect(sink.records).toHaveLength(1)
     expect(sink.last()?.status).toBe('content_filter')
+  })
+
+  it('records billed usage and cost for a candidate-less HTTP 200', async () => {
+    const fakeClient = makeFakeGemini({
+      candidates: [],
+      usageMetadata: {
+        promptTokenCount: 25,
+        thoughtsTokenCount: 113,
+        totalTokenCount: 138,
+        serviceTier: 'flex',
+      },
+    })
+    const sink = new RecordingSink()
+    const client = createClient({
+      adapters: [geminiAdapter({ client: fakeClient })],
+      pricingSources: { google: geminiPricingSource() },
+      modelRegistry: defaultGeminiRegistry,
+      sink,
+    })
+
+    await expect(
+      client.generate(
+        {
+          provider: 'google',
+          model: 'gemini-3.8-flash',
+          messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Return JSON' }] }],
+          config: { serviceTier: 'flex' },
+        },
+        { auth: { apiKey: 'test-key' } },
+      ),
+    ).rejects.toMatchObject({ kind: 'server', retryable: true })
+
+    const record = sink.last()!
+    expect(record.status).toBe('api_error')
+    expect(record.inputTokens).toBe(25)
+    expect(record.outputTokens).toBe(113)
+    expect(record.thinkingTokens).toBe(113)
+    expect(record.servedServiceTier).toBe('flex')
+    expect(record.costMicroUsd).toBeGreaterThan(0)
   })
 })
 
@@ -1865,40 +1953,96 @@ describe('transport timeout (httpOptions.timeout)', () => {
 // ---------------------------------------------------------------------------
 
 describe('grounding — model-aware tool guard', () => {
-  it('allows structured output + googleSearch only when the descriptor admits it', async () => {
-    const model = 'gemini-3.1-pro-preview'
-    const client = makeFakeGemini(
-      fakeGeminiResponse({ structuredJson: '{"winner":"Spain"}' }),
-    )
+  it.each([
+    'gemini-3.5-flash-lite',
+    'gemini-3.6-flash',
+    'gemini-3.7-flash',
+    'gemini-3.8-flash',
+  ])('allows googleSearch on %s with its descriptor', async (model) => {
+    const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
     const adapter = geminiAdapter({ client })
-    const descriptor = geminiModelDescriptors.find((d) => d.model === model)!
-    expect(descriptor.capabilities?.structuredOutputWithTools).toBe(true)
-
-    const result = await adapter.run(
+    await adapter.run(
       makeResolvedReq({
         model,
-        modelDescriptor: descriptor,
-        outputJsonSchema: {
-          type: 'object',
-          properties: { winner: { type: 'string' } },
-          required: ['winner'],
-          additionalProperties: false,
-        },
-        config: {
-          serviceTier: 'flex',
-          providerOptions: { google: { tools: [{ googleSearch: {} }] } },
-        },
+        modelDescriptor: defaultGeminiRegistry.resolve('google', model)!,
+        config: { providerOptions: { google: { tools: [{ googleSearch: {} }] } } },
       }),
       FAKE_CTX,
     )
-
-    expect(result.rawStructured).toEqual({ winner: 'Spain' })
-    const call = client.calls[0] as {
-      config?: { responseMimeType?: string; tools?: unknown[] }
-    }
-    expect(call?.config?.responseMimeType).toBe('application/json')
-    expect(call?.config?.tools).toEqual([{ googleSearch: {} }])
+    const call = client.calls[0] as { config?: { tools?: unknown[] } }
+    expect(call.config?.tools).toEqual([{ googleSearch: {} }])
   })
+
+  it('rejects a direct adapter request without a descriptor', async () => {
+    const adapter = geminiAdapter({
+      client: makeFakeGemini(fakeGeminiResponse({ text: 'ok' })),
+    })
+    const request = makeResolvedReq()
+    delete request.modelDescriptor
+    await expect(adapter.run(request, FAKE_CTX)).rejects.toMatchObject({
+      kind: 'bad_request',
+      retryable: false,
+    })
+  })
+
+  it('rejects a descriptor for another model before sending the request', async () => {
+    const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
+    const adapter = geminiAdapter({ client })
+    await expect(
+      adapter.run(
+        makeResolvedReq({
+          model: 'gemini-2.5-pro',
+          modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-3.8-flash')!,
+        }),
+        FAKE_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request' })
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it.each([
+    'gemini-3.1-pro-preview',
+    'gemini-3.8-flash',
+    'gemini-3.7-flash',
+    'gemini-3.6-flash',
+    'gemini-3.5-flash-lite',
+    'gemini-3.1-flash-lite',
+  ])(
+    'allows structured output + googleSearch on %s when the descriptor admits it',
+    async (model) => {
+      const client = makeFakeGemini(
+        fakeGeminiResponse({ structuredJson: '{"winner":"Spain"}' }),
+      )
+      const adapter = geminiAdapter({ client })
+      const descriptor = geminiModelDescriptors.find((d) => d.model === model)!
+      expect(descriptor.capabilities?.structuredOutputWithTools).toBe(true)
+
+      const result = await adapter.run(
+        makeResolvedReq({
+          model,
+          modelDescriptor: descriptor,
+          outputJsonSchema: {
+            type: 'object',
+            properties: { winner: { type: 'string' } },
+            required: ['winner'],
+            additionalProperties: false,
+          },
+          config: {
+            serviceTier: 'flex',
+            providerOptions: { google: { tools: [{ googleSearch: {} }] } },
+          },
+        }),
+        FAKE_CTX,
+      )
+
+      expect(result.rawStructured).toEqual({ winner: 'Spain' })
+      const call = client.calls[0] as {
+        config?: { responseMimeType?: string; tools?: unknown[] }
+      }
+      expect(call?.config?.responseMimeType).toBe('application/json')
+      expect(call?.config?.tools).toEqual([{ googleSearch: {} }])
+    },
+  )
 
   it('rejects structured output + googleSearch when the descriptor does not admit it', async () => {
     const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
@@ -2388,6 +2532,10 @@ describe('google function calling', () => {
       adapter.run(
         makeResolvedReq({
           tools: [{ name: 'f', description: 'd', inputJsonSchema: { type: 'object' } }],
+          modelDescriptor: makeGoogleDescriptor({
+            model: 'gemini-2.5-pro',
+            capabilities: { serviceTiers: ['flex', 'standard'], functionCalling: false },
+          }),
         }),
         FAKE_CTX,
       ),

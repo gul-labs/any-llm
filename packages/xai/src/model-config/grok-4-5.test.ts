@@ -23,6 +23,10 @@ describe('Grok45ConfigSchema', () => {
     expect(result.success).toBe(false)
   })
 
+  it('admits live-verified priority', () => {
+    expect(Grok45ConfigSchema.safeParse({ serviceTier: 'priority' }).success).toBe(true)
+  })
+
   it.each(['flex', 'fast', 'standard'] as const)(
     'rejects serviceTier=%s',
     (serviceTier) => {
@@ -30,11 +34,6 @@ describe('Grok45ConfigSchema', () => {
       expect(result.success).toBe(false)
     },
   )
-
-  it('accepts serviceTier=priority', () => {
-    const result = Grok45ConfigSchema.safeParse({ serviceTier: 'priority' })
-    expect(result.success).toBe(true)
-  })
 
   it('rejects reasoning.budgetTokens', () => {
     const result = Grok45ConfigSchema.safeParse({

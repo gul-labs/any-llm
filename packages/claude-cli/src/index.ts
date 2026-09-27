@@ -49,5 +49,4 @@ export {
   ClaudeHaiku45ConfigSchema,
   CLAUDE_CLI_MODEL_IDS,
   CLAUDE_CLI_EFFORTS,
-  DELETED_CLAUDE_CLI_MODEL_IDS,
 } from './models.js'

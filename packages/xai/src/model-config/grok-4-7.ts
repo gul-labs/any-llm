@@ -3,8 +3,9 @@
  *
  * Same Responses-API surface as grok-4.6: `reasoning.effort` of
  * `'low' | 'medium' | 'high' | 'xhigh'` and `serviceTier: 'priority'`.
- * Shaped from the grok-4.6 contract. P-X3 was not captured, so these
- * comments do not claim a 2026-09-25 live probe. `'none'` stays rejected.
+ * Shaped from the grok-4.6 contract. The 2026-09-25 priority success and
+ * effort-none rejection and P-X3 encrypted-reasoning multi-turn replay are
+ * fixture-backed. `'none'` stays rejected.
  * Unknown tiers (`flex`, `standard`, `batch`) are rejected.
  *
  * @module

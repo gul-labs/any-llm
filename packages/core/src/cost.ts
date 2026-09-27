@@ -72,7 +72,8 @@ export interface CostRatesLookup {
  * This predicate operates purely on the generic {@link ModelRates} shape
  * (which core already owns), so it stays in core rather than moving with the
  * provider-specific rates table + lookup walk. Providers whose long-context
- * boundary is `>=` (xAI) own their own selector and do not call this function.
+ * boundary is `>=` (xAI) select the band first, then pass only its flat rates
+ * to this function through `computeCost`.
  */
 function selectRates(
   rates: ModelRates,
@@ -142,7 +143,7 @@ export function computeCost(
     const standardRates = tier !== undefined ? rates(model, undefined) : undefined
     const unpricedReason =
       standardRates !== undefined
-        ? `Unknown service tier "${tier}" for model "${model}"; refusing to guess a pricing multiplier.`
+        ? `Unpriced service tier "${tier}" for model "${model}"; no concrete rate is available.`
         : `Unknown model "${model}"; no pricing entry found.`
     return {
       microUsd: null,

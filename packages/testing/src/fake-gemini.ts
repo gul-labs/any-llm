@@ -55,6 +55,7 @@ export interface GeminiUsageMetadataLike {
   cachedContentTokenCount?: number
   thoughtsTokenCount?: number
   totalTokenCount?: number
+  serviceTier?: string
 }
 
 /**

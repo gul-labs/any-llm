@@ -53,6 +53,8 @@ export interface ModelDescriptor {
      */
     structuredOutputWithTools?: boolean
     functionCalling?: boolean
+    /** Requires exact prior wire input/output for stateless conversation replay. */
+    statelessReasoningReplay?: boolean
     serviceTiers?: readonly string[]
   }
   /** Zod runtime schema for the full per-model config contract. */

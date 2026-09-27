@@ -166,5 +166,10 @@ drop. Only `-m <model>`, `-c model_reasoning_effort=<effort>`,
 `--output-schema`, `-o`, `-C <scratchDir>`, and the final positional prompt
 argument vary per call.
 
+Smoke-tested on 2026-09-25 with `codex-cli 0.157.0`: `codex exec` accepted
+`--strict-config` together with `-c model_reasoning_effort=max` and
+`gpt-6-luna`, then completed a read-only prompt. Older local CLI builds may
+need an upgrade before using this dev-only adapter.
+
 `turn.completed.usage` may include `cache_write_input_tokens`. The JSONL
 parser keeps unknown keys and does not map that field onto `Usage`.

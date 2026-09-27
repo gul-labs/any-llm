@@ -52,7 +52,7 @@ Additional review findings that constrain the design (not new product gaps to "f
 
 - xAI invalid API key = HTTP **400** + structured body prefix `Incorrect API key provided` → `invalid_auth` (already shipped; runtime matches **prefix only** — the SDK may drop `code`. Docs currently claim `code` + prefix; fix that drift).
 - xAI content policy = HTTP **403** + structured body prefix `Content violates usage guidelines` → `content_filter` (this change).
-- Gemini safety = HTTP **200** + `promptFeedback.blockReason` / no candidates → `content_filter` (already shipped; not an HTTP overlay).
+- Gemini safety = HTTP **200** + `promptFeedback.blockReason` → `content_filter` (not an HTTP overlay). A candidate-less 200 without a block reason is a retryable `server` error with metered usage recorded when reported.
 
 Core stays provider-agnostic. It does **not** grow xAI string prefixes. It **must** stop documenting 403 as definitionally auth.
 

@@ -1,0 +1,112 @@
+{
+  "status": 200,
+  "source": "P-X1 live 2026-09-26 x-users with grok-4.7 and x_search",
+  "sanitization": "Selected response fields; intermediate reasoning, public search payloads and tool-call items omitted. Usage block is verbatim.",
+  "body": {
+    "model": "grok-4.7",
+    "usage": {
+      "input_tokens": 19958,
+      "input_tokens_details": {
+        "cached_tokens": 11264
+      },
+      "output_tokens": 767,
+      "output_tokens_details": {
+        "reasoning_tokens": 652
+      },
+      "total_tokens": 20725,
+      "num_sources_used": 0,
+      "num_server_side_tools_used": 4,
+      "cost_in_usd_ticks": 1476220000,
+      "server_side_tool_usage_details": {
+        "web_search_calls": 0,
+        "x_search_calls": 4,
+        "x_posts_fetched": 0,
+        "x_users_fetched": 12,
+        "code_interpreter_calls": 0,
+        "file_search_calls": 0,
+        "mcp_calls": 0,
+        "document_search_calls": 0,
+        "image_generation_calls": 0
+      },
+      "context_details": {
+        "input_tokens": 5096,
+        "output_tokens": 230
+      }
+    },
+    "service_tier": "default",
+    "status": "completed",
+    "store": false,
+    "output": [
+      {
+        "type": "message",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "The x_user_search for @xai returned related accounts such as @XaiabP and @XAI_GAMES, but not an exact match for that handle in the top results.",
+            "logprobs": [],
+            "annotations": [
+              {
+                "type": "url_citation",
+                "url": "https://x.com/i/user/1111948244953657345",
+                "start_index": 0,
+                "end_index": 0,
+                "title": "https://x.com/i/user/1111948244953657345"
+              },
+              {
+                "type": "url_citation",
+                "url": "https://x.com/i/user/1351271303823585282",
+                "start_index": 0,
+                "end_index": 0,
+                "title": "https://x.com/i/user/1351271303823585282"
+              },
+              {
+                "type": "url_citation",
+                "url": "https://x.com/i/user/1617551279928000517",
+                "start_index": 0,
+                "end_index": 0,
+                "title": "https://x.com/i/user/1617551279928000517"
+              },
+              {
+                "type": "url_citation",
+                "url": "https://x.com/i/user/103159434",
+                "start_index": 0,
+                "end_index": 0,
+                "title": "https://x.com/i/user/103159434"
+              },
+              {
+                "type": "url_citation",
+                "url": "https://x.com/i/user/1912644073896206336",
+                "start_index": 0,
+                "end_index": 0,
+                "title": "https://x.com/i/user/1912644073896206336"
+              },
+              {
+                "type": "url_citation",
+                "url": "https://x.com/i/user/1495989282636722177",
+                "start_index": 0,
+                "end_index": 0,
+                "title": "https://x.com/i/user/1495989282636722177"
+              },
+              {
+                "type": "url_citation",
+                "url": "https://x.com/i/user/803596156102025217",
+                "start_index": 0,
+                "end_index": 0,
+                "title": "https://x.com/i/user/803596156102025217"
+              },
+              {
+                "type": "url_citation",
+                "url": "https://x.com/i/user/919222095103500294",
+                "start_index": 0,
+                "end_index": 0,
+                "title": "https://x.com/i/user/919222095103500294"
+              }
+            ]
+          }
+        ],
+        "status": "completed"
+      }
+    ]
+  }
+}

@@ -49,7 +49,9 @@ const GOOD_USAGE: Usage = {
 
 const PRICING = makeTestPricingSource(
   {
-    'gemini-2.5-flash': { inputPerM: 300_000, cachedPerM: 30_000, outputPerM: 2_500_000 },
+    'gemini-2.5-flash': {
+      standard: { inputPerM: 300_000, cachedPerM: 30_000, outputPerM: 2_500_000 },
+    },
   },
   'test-pricing-1',
 )

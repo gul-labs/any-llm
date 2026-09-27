@@ -154,6 +154,58 @@ function makeClient(
 // ---------------------------------------------------------------------------
 
 describe('engine — success path', () => {
+  it('forwards provider continuation state without persisting it', async () => {
+    const requestState = { model: 'gemini-2.5-pro', encrypted_content: 'request-secret' }
+    const responseState = {
+      model: 'gemini-2.5-pro',
+      encrypted_content: 'response-secret',
+    }
+    const adapter = new FakeAdapter(
+      'google',
+      makeSuccessResult({ transientProviderState: responseState }),
+    )
+    const { client, sink } = makeClient({
+      adapters: [adapter],
+      modelRegistry: createModelRegistry([
+        makePermissiveTestDescriptor({
+          model: 'gemini-2.5-pro',
+          provider: 'google',
+          capabilities: { statelessReasoningReplay: true },
+        }),
+      ]),
+    })
+    const result = await client.generate(
+      {
+        provider: 'google',
+        model: 'gemini-2.5-pro',
+        messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hi' }] }],
+        transientProviderState: requestState,
+      },
+      { auth: TEST_AUTH },
+    )
+
+    expect(adapter.calls[0]?.transientProviderState).toEqual(requestState)
+    expect(result.transientProviderState).toEqual(responseState)
+    expect(JSON.stringify(sink.last())).not.toContain('request-secret')
+    expect(JSON.stringify(sink.last())).not.toContain('response-secret')
+  })
+
+  it('rejects continuation state for a model without that capability', async () => {
+    const { client, adapter } = makeClient()
+    await expect(
+      client.generate(
+        {
+          provider: 'google',
+          model: 'gemini-2.5-pro',
+          messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hi' }] }],
+          transientProviderState: { input: [] },
+        },
+        { auth: TEST_AUTH },
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
+    expect(adapter.calls).toHaveLength(0)
+  })
+
   it('returns usage, cost, latency and writes exactly one ok record', async () => {
     const { client, sink, clock } = makeClient()
     clock.set(1_000)
@@ -1906,7 +1958,12 @@ describe('engine — reconcile loop (callId/attemptId/telemetry)', () => {
       async run(_req: ResolvedRequest, _ctx: AdapterCtx): Promise<AdapterResult> {
         callCount++
         if (callCount === 1) {
-          throw new LlmError('transient', { kind: 'server', retryable: true })
+          throw new LlmError('billed but no candidate', {
+            kind: 'server',
+            retryable: true,
+            usage: GOOD_USAGE,
+            servedServiceTier: 'flex',
+          })
         }
         return makeSuccessResult()
       },
@@ -1939,6 +1996,10 @@ describe('engine — reconcile loop (callId/attemptId/telemetry)', () => {
     const failedRecord = sink.records[0]!
     const successRecord = sink.records[1]!
     expect(successRecord.status).toBe('ok')
+    expect(failedRecord.inputTokens).toBe(GOOD_USAGE.inputTokens)
+    expect(failedRecord.outputTokens).toBe(GOOD_USAGE.outputTokens)
+    expect(failedRecord.servedServiceTier).toBe('flex')
+    expect(failedRecord.costMicroUsd).toBeGreaterThan(0)
 
     // callId is stable across both attempts
     expect(result.callId).toBe(failedRecord.callId)

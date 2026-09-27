@@ -35,11 +35,6 @@ export type XaiProviderOptions = {
   tools?: Array<XaiWebSearchTool | XaiXSearchTool>
   /** xAI-only; Gemini has no parallel-tool knob. */
   parallelToolCalls?: boolean
-  /**
-   * Prior Responses `reasoning` items to replay unchanged on `store: false`.
-   * grok-4.7 returns `encrypted_content`; the adapter does not reshape it.
-   */
-  reasoningItems?: Array<Record<string, unknown>>
 }
 
 declare module '@gullabs/core' {

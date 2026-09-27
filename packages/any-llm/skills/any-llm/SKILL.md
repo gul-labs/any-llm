@@ -158,10 +158,9 @@ const result = await client.generate(
 )
 ```
 
-`grok-4.5` admits `reasoning.effort` `'low' | 'medium' | 'high'` and
-`serviceTier: 'priority'`. `grok-4.6` and `grok-4.7` admit
-`'low' | 'medium' | 'high' | 'xhigh'` and `serviceTier: 'priority'` (2× list
-price). `'none'` is rejected. No `topK`.
+`grok-4.5` admits `reasoning.effort` `'low' | 'medium' | 'high'`.
+`grok-4.6` and `grok-4.7` also admit `'xhigh'`. All three admit
+`serviceTier: 'priority'` (2× list price). `'none'` is rejected. No `topK`.
 
 ## xAI structured-output schemas vs. OpenAI-strict / codex-cli schemas
 
@@ -537,14 +536,14 @@ config: {
 }
 ```
 
-`ReasoningEffort` is `'none' | 'low' | 'medium' | 'high' | 'xhigh'`. Admitted values
+`ReasoningEffort` is `'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'`. Admitted values
 are per-model. Two provider APIs exist under the hood: Gemini 2.5 models take a
 token `budgetTokens`; Gemini 3.x / Gemma 4 / xAI take a discrete `effort` level.
 
 Use the model-native boundary directly:
 
-- Gemini 2.5: `reasoning.budgetTokens` or admitted `reasoning.effort` (not `xhigh`)
-- Gemini 3 / Gemma 4: `reasoning.effort` (not `xhigh`)
+- Gemini 2.5: `reasoning.budgetTokens` or admitted `reasoning.effort` (not `xhigh` or `max`)
+- Gemini 3 / Gemma 4: `reasoning.effort` (not `xhigh` or `max`)
 - xAI `grok-4.5`: `reasoning.effort` `'low' | 'medium' | 'high'`
 - xAI `grok-4.6` and `grok-4.7`: `reasoning.effort` `'low' | 'medium' | 'high' | 'xhigh'`
 
@@ -556,7 +555,7 @@ Registered Google ids: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-l
 Exact model reminders:
 
 - `gemini-3.1-pro-preview`, `gemini-3.7-flash`, and `gemini-3.8-flash` do **not** admit `effort: 'none'`
-- Explicit-cache floors: 4096 on `gemini-3.1-pro-preview`, `gemini-3.6-flash`, `gemini-3.7-flash`, and `gemini-3.8-flash`; 2048 on Gemini 2.5, `gemini-3.1-flash-lite`, and `gemini-3.5-flash-lite` (P-G5 not captured for the two Flash-Lite ids)
+- Explicit-cache floors: 1024 on all six registered Gemini 3.x ids, live-verified on 2026-09-26 by a 103-token rejection and exact 1024-token create; 2048 remains configured on Gemini 2.5.
 - Gemma 4 is binary: only `effort: 'none'` or `effort: 'high'`
 - Omit `serviceTier` for provider-standard; set `flex` explicitly
 - `priority` remains rejected by the library even though Google documents it
@@ -576,9 +575,8 @@ Optional preflight gate: pass `preflight` to the constructor to refuse a cache
 `create()` — including through `getOrCreate()` and its coalesced in-flight path —
 when the token-bearing payload (`model` + `contents` + `systemInstruction` only;
 `ttl` and `displayName` are excluded) doesn't clear a minimum token count. This
-mirrors the selected model's explicit-caching minimum (4096 on
-`gemini-3.1-pro-preview` and Gemini 3.6/3.7/3.8 Flash; 2048 on Gemini 2.5 and
-the Flash-Lite ids) without hard-coding it into the store.
+mirrors the selected model's explicit-caching minimum (1024 on Gemini 3.x;
+2048 on Gemini 2.5) without hard-coding it into the store.
 
 ```ts
 import { GoogleCacheStore } from '@gullabs/google'
@@ -586,7 +584,7 @@ import { GoogleCacheStore } from '@gullabs/google'
 const cacheStore = new GoogleCacheStore({
   auth: { apiKey: myResolvedGeminiKey },
   preflight: {
-    minTokens: 2048,
+    minTokens: 1024,
     // Receives genai-native Content[]/Content|string — NOT the library's
     // Message[] shape; there is no automatic conversion. Hosts building from
     // Message[] should call client.countTokens separately instead.

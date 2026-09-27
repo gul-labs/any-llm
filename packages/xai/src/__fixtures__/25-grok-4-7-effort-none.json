@@ -1,0 +1,8 @@
+{
+  "status": 400,
+  "source": "2026-09-25 live probe-g47-none.json",
+  "body": {
+    "code": "invalid-argument",
+    "error": "This model does not support `reasoning_effort` value `none`."
+  }
+}

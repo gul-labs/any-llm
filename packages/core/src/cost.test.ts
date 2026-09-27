@@ -3,7 +3,7 @@
  * @gullabs/core.
  *
  * Core has zero pricing tables of its own: every test here supplies a small
- * synthetic rates table + tier-factor map as explicit parameters, proving the
+ * synthetic concrete-rate lookup as an explicit parameter, proving the
  * seam is genuinely provider-neutral. Gemini-specific pricing assertions
  * (real published rates, `geminiPricingSource`) live in
  * `packages/google/src/pricing.test.ts`.
@@ -326,7 +326,7 @@ describe('computeCost — edge cases', () => {
 
     expect(result.microUsd).toBeNull()
     expect(result.unpricedReason).toContain('some-future-model-xyz')
-    expect(result.unpricedReason).not.toContain('Unknown service tier')
+    expect(result.unpricedReason).not.toContain('Unpriced service tier')
   })
 
   it('names the model when the standard-tier probe fails, and the tier when it prices', () => {
@@ -361,7 +361,7 @@ describe('computeCost — edge cases', () => {
     )
     expect(unknownTier.microUsd).toBeNull()
     expect(unknownTier.unpricedReason).toBe(
-      'Unknown service tier "enterprise-super-tier" for model "priced-model"; refusing to guess a pricing multiplier.',
+      'Unpriced service tier "enterprise-super-tier" for model "priced-model"; no concrete rate is available.',
     )
     expect(seen).toEqual([
       ['gemma-4-31b-it', 'standard'],
@@ -418,7 +418,7 @@ describe('computeCost — edge cases', () => {
     expect(costVersioned.confidence).toBe('exact')
   })
 
-  it('rates lookup is invoked exactly once per computeCost call', () => {
+  it('rates lookup is invoked once on the priced path', () => {
     let calls = 0
     const countingLookup: CostRatesLookup = (model, tier) => {
       calls++

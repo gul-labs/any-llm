@@ -1,0 +1,216 @@
+{
+  "source": "P-G1/G4/G5/G7/G8 live Google Developer API probes 2026-09-26 using paid development keys",
+  "sanitization": "Selected status, usage, error, and output fields; keys, request metadata, thought signatures, and raw responses omitted. Cache resources were deleted after success.",
+  "minimalReasoning": {
+    "gemini-3.7-flash": {
+      "status": 400,
+      "errorStatus": "INVALID_ARGUMENT",
+      "message": "Thinking level MINIMAL is not supported for this model. Please retry with other thinking level."
+    },
+    "gemini-3.8-flash": {
+      "status": 400,
+      "errorStatus": "INVALID_ARGUMENT",
+      "message": "Thinking level MINIMAL is not supported for this model. Please retry with other thinking level."
+    }
+  },
+  "structuredSearch": {
+    "gemini-3.1-flash-lite": {
+      "status": 200,
+      "json": {
+        "answer": "OK"
+      },
+      "usageServiceTier": "standard",
+      "searchPrompt": {
+        "status": 200,
+        "json": {
+          "answer": "Gemini 3.8 Flash was released on September 1, 2026. It is designed for long-horizon software engineering, autonomous agents, and complex enterprise workflows, delivering substantial improvements over the 3.7 Flash model.",
+          "source": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQEt19xdcsrRShiCZIE_Pf5l0P8XHM3GSysjxDX7VPHzbE8UFJ7lJZd9vGzYXrjMcQMLCdmH5Zqwva8wpBH23x7ioFlTlaldpHO-5Co4gvIksS3ZfykYlS9pYsfb3IcygMQ-9MiU"
+        },
+        "groundingMetadataPresent": false
+      }
+    },
+    "gemini-3.5-flash-lite": {
+      "status": 200,
+      "json": {
+        "answer": "OK"
+      },
+      "usageServiceTier": "standard",
+      "searchPrompt": {
+        "status": 200,
+        "json": {
+          "answer": "The Gemini API release notes from September 22, 2026 announced the general availability (GA) of Gemini 3.8 Flash TTS and Gemini 3.8 Flash-Lite TTS, along with the new Gemini API Voices endpoint. Additionally, updates for Gemini 3.8 Flash include updating the model ID to gemini-3.8-flash, removing deprecated sampling parameters (temperature, top_p, top_k), replacing thinking_budget with the string enum thinking_level, and removing candidate_count.",
+          "source": "https://ai.google.dev/gemini-api/docs/release-notes"
+        },
+        "groundingMetadataPresent": false
+      }
+    },
+    "gemini-3.6-flash": {
+      "status": 200,
+      "json": {
+        "answer": "OK"
+      },
+      "usageServiceTier": "standard",
+      "searchPrompt": {
+        "status": 200,
+        "json": {
+          "answer": "Google released Gemini 3.8 Flash and 3.8 Flash Cyber on September 2, 2026, featuring major improvements in software engineering, agentic workflows, and multi-step reasoning over 3.7 Flash. It is available at $0.75 per million input tokens and $3.75 per million output tokens, with subsequent general availability and Gemini 3.8 Flash TTS released on September 23, 2026.",
+          "source": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQGrrIVtBIr44oLH0TsQPES02kEcW_Xxfk5IKg4bknXZykWYq3cxrvyXuXu_QPPlM6vK9F5gOValBZMuzUsu-tkIqa8cdeG6kpZygSEXQSutb9wgDgQvpPifvJmDYIUs5bjyzhKMI4-7GfwjSpWpHHu7aQIlYiwXbwDmEgLBGa-MJXBcaswa7SdfuPvtEH09_NOktblmLEsgyLQaeK8="
+        },
+        "groundingMetadataPresent": false
+      }
+    },
+    "gemini-3.7-flash": {
+      "status": 200,
+      "json": {
+        "answer": "OK"
+      },
+      "usageServiceTier": "standard",
+      "searchPrompt": {
+        "status": 200,
+        "json": {
+          "answer": "Gemini 3.8 Flash was released as generally available (GA) as the model gemini-3.8-flash. It is Google's most intelligent Flash model, engineered for long-horizon software engineering, autonomous agents, and complex enterprise workflows.",
+          "source": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQFrDJvVmpBN8jU5s4uInIkISdcFPjxsip9M4e_vRITzuJwg0GM8KSwcVhUvA1RJToSJ1mc_z3uCgfklLwFuHZDyAXe-gRJ6JXdFRD00Z99nH_BWV98C7pULY-cWpt868hUbWH62"
+        },
+        "groundingMetadataPresent": false
+      }
+    },
+    "gemini-3.1-pro-preview": {
+      "status": 200,
+      "json": {
+        "answer": "OK"
+      },
+      "usageServiceTier": "standard"
+    },
+    "gemini-3.8-flash": {
+      "status": 200,
+      "json": {
+        "answer": "OK"
+      },
+      "usageServiceTier": "standard",
+      "initialNoCandidate": {
+        "status": 200,
+        "candidateCount": 0,
+        "thoughtsTokenCount": 113
+      }
+    }
+  },
+  "cacheMinimum": {
+    "gemini-3.1-flash-lite": {
+      "below": {
+        "tokens": 103,
+        "status": 400,
+        "message": "Cached content is too small. total_token_count=103, min_total_token_count=1024"
+      },
+      "at": {
+        "tokens": 1024,
+        "status": 200,
+        "usageTokens": 1024
+      }
+    },
+    "gemini-3.1-pro-preview": {
+      "below": {
+        "tokens": 103,
+        "status": 400,
+        "message": "Cached content is too small. total_token_count=103, min_total_token_count=1024"
+      },
+      "at": {
+        "tokens": 1024,
+        "status": 200,
+        "usageTokens": 1024
+      }
+    },
+    "gemini-3.5-flash-lite": {
+      "below": {
+        "tokens": 103,
+        "status": 400,
+        "message": "Cached content is too small. total_token_count=103, min_total_token_count=1024"
+      },
+      "at": {
+        "tokens": 1024,
+        "status": 200,
+        "usageTokens": 1024
+      }
+    },
+    "gemini-3.6-flash": {
+      "below": {
+        "tokens": 103,
+        "status": 400,
+        "message": "Cached content is too small. total_token_count=103, min_total_token_count=1024"
+      },
+      "at": {
+        "tokens": 1024,
+        "status": 200,
+        "usageTokens": 1024
+      }
+    },
+    "gemini-3.7-flash": {
+      "below": {
+        "tokens": 103,
+        "status": 400,
+        "message": "Cached content is too small. total_token_count=103, min_total_token_count=1024"
+      },
+      "at": {
+        "tokens": 1024,
+        "status": 200,
+        "usageTokens": 1024
+      }
+    },
+    "gemini-3.8-flash": {
+      "below": {
+        "tokens": 103,
+        "status": 400,
+        "message": "Cached content is too small. total_token_count=103, min_total_token_count=1024"
+      },
+      "at": {
+        "tokens": 1024,
+        "status": 200,
+        "usageTokens": 1024
+      }
+    }
+  },
+  "flexTier": {
+    "gemini-3.5-flash-lite": {
+      "status": 200,
+      "usageServiceTier": "flex"
+    },
+    "gemini-3.6-flash": {
+      "status": 200,
+      "usageServiceTier": "flex"
+    },
+    "gemini-3.7-flash": {
+      "status": 200,
+      "usageServiceTier": "flex"
+    },
+    "gemini-3.8-flash": {
+      "status": 200,
+      "usageServiceTier": "flex"
+    }
+  },
+  "twoFiveAccess": {
+    "devA-gemini-2.5-flash-lite": {
+      "status": 200,
+      "usageServiceTier": "standard"
+    },
+    "devA-gemini-2.5-flash": {
+      "status": 200,
+      "usageServiceTier": "standard"
+    },
+    "devA-gemini-2.5-pro": {
+      "status": 200,
+      "usageServiceTier": "standard"
+    },
+    "devB-gemini-2.5-flash-lite": {
+      "status": 404,
+      "errorStatus": "NOT_FOUND",
+      "message": "This model models/gemini-2.5-flash-lite is no longer available to new users. Please update your code to use models/gemini-3.5-flash-lite for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started)."
+    },
+    "devB-gemini-2.5-flash": {
+      "status": 200,
+      "usageServiceTier": "standard"
+    },
+    "devB-gemini-2.5-pro": {
+      "status": 200,
+      "usageServiceTier": "standard"
+    }
+  }
+}

@@ -33,20 +33,11 @@ export const CLAUDE_CLI_MODEL_IDS: readonly ClaudeCliModelId[] = [
   'claude-haiku-4-5-20251001',
 ]
 
-/** Deleted ids. Resolve returns undefined; there is no alias. */
-export const DELETED_CLAUDE_CLI_MODEL_IDS = ['claude-fable-5', 'claude-opus-4-8'] as const
-
 /**
  * Reasoning effort levels admitted by the `claude` CLI's `--effort` flag.
  *
- * A strict superset of `@gullabs/core`'s `ReasoningEffort` union (which is
- * `'none' | 'low' | 'medium' | 'high' | 'xhigh'`) — `'max'` is the extra
- * value the CLI supports that core's engine-level type does not know about.
- * Because of this mismatch, `admittedReasoningEfforts` (typed
- * `ReadonlyArray<ReasoningEffort>` in `ModelDescriptor.capabilities`) is
- * intentionally OMITTED below rather than cast — this package's own zod
- * schema is the sole validator for `reasoning.effort`, so the field is
- * advisory-only and safe to skip.
+ * The CLI admits `low` through `max` on Fable, Opus, and Sonnet. Haiku drops
+ * `--effort`, so its descriptor advertises an empty admitted set.
  */
 export const CLAUDE_CLI_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
@@ -130,7 +121,9 @@ export const claudeCliModelDescriptors: ModelDescriptor[] = CLAUDE_CLI_MODEL_IDS
       capabilities: {
         structuredOutput: true,
         nativeStructuredOutput: true,
-        reasoningApi: 'level',
+        ...(id !== 'claude-haiku-4-5-20251001' ? { reasoningApi: 'level' as const } : {}),
+        admittedReasoningEfforts:
+          id === 'claude-haiku-4-5-20251001' ? [] : CLAUDE_CLI_EFFORTS,
         sampling: 'fixed',
         vision: false,
       },

@@ -11,9 +11,11 @@
  */
 
 /**
- * Per-model rate entry (all values in µUSD per million tokens, STANDARD tier).
+ * Concrete rate entry for one model and service tier (µUSD per million tokens).
  *
- * `gt200k` (when present) applies when GROSS input tokens > 200,000.
+ * The provider that owns the table selects the long-context boundary.
+ * Core's `computeCost` uses `> 200,000`; xAI selects its own `>= 200,000` band
+ * before calling core.
  */
 export interface ModelRates {
   /** µUSD per million input tokens (text/img/vid; billable = gross − cached). */
@@ -22,7 +24,7 @@ export interface ModelRates {
   cachedPerM: number
   /** µUSD per million output tokens (thinking is folded in). */
   outputPerM: number
-  /** Optional high-tier rates for long-context (GROSS input > 200k). */
+  /** Optional provider-owned long-context rates. */
   gt200k?: {
     inputPerM: number
     cachedPerM: number

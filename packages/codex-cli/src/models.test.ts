@@ -9,7 +9,6 @@ import { assertRegistryInvariants } from '@gullabs/testing'
 import {
   CODEX_CLI_MODEL_IDS,
   CODEX_CLI_REASONING_EFFORTS,
-  DELETED_CODEX_CLI_MODEL_IDS,
   Gpt6SolConfigSchema,
   codexCliModelDescriptors,
   codexCliRegistry,
@@ -75,9 +74,12 @@ describe('codex-cli config schemas', () => {
 })
 
 describe('deleted codex-cli model ids', () => {
-  it.each(DELETED_CODEX_CLI_MODEL_IDS)('resolve(%s) is undefined', (id) => {
-    expect(codexCliRegistry.resolve('codex-cli', id)).toBeUndefined()
-  })
+  it.each(['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark'])(
+    'resolve(%s) is undefined',
+    (id) => {
+      expect(codexCliRegistry.resolve('codex-cli', id)).toBeUndefined()
+    },
+  )
 
   it('registers no gpt-5 id', () => {
     for (const descriptor of codexCliModelDescriptors) {
@@ -99,6 +101,9 @@ describe('codexCliRegistry', () => {
       const descriptor = codexCliRegistry.resolve('codex-cli', id)
       expect(descriptor).toBeDefined()
       expect(descriptor?.provider).toBe('codex-cli')
+      expect(descriptor?.capabilities?.admittedReasoningEfforts).toEqual(
+        CODEX_CLI_REASONING_EFFORTS,
+      )
     }
   })
 

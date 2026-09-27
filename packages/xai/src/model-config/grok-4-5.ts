@@ -55,17 +55,11 @@ export const Grok45ConfigSchema = z
           'grok-4.5 effort-level reasoning configuration. No budgetTokens field — ' +
           'xAI uses level-style reasoning, not token budgets.',
       }),
-    serviceTier: z
-      .literal('priority')
-      .optional()
-      .meta({
-        title: 'Service Tier',
-        description:
-          'xAI priority processing for grok-4.5 (Responses `service_tier: ' +
-          '"priority"`). Live-verified 2026-09-25 at 2× every token type, ' +
-          'cached included. "fast" is an alias and is not admitted. ' +
-          'Omitted requests stay on xAI default.',
-      }),
+    serviceTier: z.literal('priority').optional().meta({
+      title: 'Service Tier',
+      description:
+        'xAI priority processing for grok-4.5, billed at 2× on input, cached input, and output tokens. Live-verified 2026-09-25.',
+    }),
     timeoutMs: z.number().int().positive().optional().meta({
       title: 'Timeout',
       description: 'Logical request timeout in milliseconds.',

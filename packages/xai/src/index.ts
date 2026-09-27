@@ -31,6 +31,8 @@ export type {
   XaiInputFilePart,
   XaiInputContentPart,
   XaiInputItem,
+  XaiRequestInputItem,
+  XaiReplayState,
   XaiTextFormat,
   XaiResponseCreateParams,
   XaiReasoningSummaryPart,

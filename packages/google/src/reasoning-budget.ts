@@ -1,7 +1,7 @@
 import type { ReasoningEffort } from '@gullabs/core'
 
 export const GOOGLE_REASONING_EFFORT_BUDGET: Record<
-  Exclude<ReasoningEffort, 'xhigh'>,
+  Exclude<ReasoningEffort, 'xhigh' | 'max'>,
   number
 > = {
   none: 0,

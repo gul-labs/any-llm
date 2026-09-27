@@ -189,6 +189,10 @@ enumerating every version string in the pricing table.
   silence (a missing `cost` field) would make unpriced calls invisible.
 - Separating the pricing snapshot from the adapter means price corrections never require an
   adapter release.
+- The current provider pricing table is not a historical-rate archive. Removing a model
+  from the current catalog also removes its current pricing entry. Persisted costs remain
+  frozen; a correction or backfill for an older row must use the rate snapshot identified
+  by that row's `pricingVersion`, not reprice it against the latest package's table.
 
 ---
 
@@ -945,7 +949,7 @@ ADR-006)
 Model identity was a flat string: the registry, router, and pricing lookup were keyed by bare
 model id, and the provider was _derived_ (registry descriptor → `provider/model` slash-string
 parse → `'unknown'` fallback, with a single-adapter routing bypass). The CLI dev providers
-register bare ids like `gpt-5.4` and `claude-sonnet-5`; a future `openai`/`anthropic` API
+register bare ids like `gpt-6-sol` and `claude-sonnet-5`; a future `openai`/`anthropic` API
 provider registering the same ids would collide in both routing and cost lookup. The same bare
 model must be able to exist under multiple providers with different config schemas.
 
@@ -1058,24 +1062,22 @@ false })`; a plugin contributing a descriptor whose `provider` does not match it
 
    Unknown/unrecognized tiers resolve to unpriced, not a mapped default — this is a
    provider-general pattern, not a Google-specific quirk. `computeCost` in `packages/core/src/cost.ts`
-   treats a _defined_ tier absent from the caller-supplied `tierFactors` map as unpriced (with
-   `Cost.unpricedReason` naming the tier), never silently coerced to `standard`. `packages/xai/src/
-pricing.ts`'s `computeXaiCost` is a second, independent example of the same pattern: xAI has no
-   service-tier concept at all, so `computeXaiCost` treats _any_ defined `tier` as unpriced
-   (`unpricedReason: 'Unknown service tier "..."; xai has no service tiers, refusing to guess a
-pricing multiplier.'`) while `undefined` (no tier requested) prices normally — proving the
-   reject-don't-map tier convention is a core contract, not a Google special case.
+   asks the provider's lookup for concrete `(model, tier)` rates. A defined tier that the lookup
+   does not price returns `microUsd: null` with `Cost.unpricedReason` naming the tier; it is never
+   silently coerced to standard. `packages/xai/src/pricing.ts` independently prices its documented
+   `priority` and `default` tiers and rejects other defined values. The provider owns tier meaning;
+   core applies no multiplier.
 
 4. **All Google knowledge moved to `packages/google`.** `packages/core/src` exports zero Google/
    Gemini/Gemma-named symbols (verified by grepping `packages/core/src` for `Google|Gemini|Gemma`:
    every remaining hit is a code comment or a test asserting the _absence_ of these symbols from the
    public surface, e.g. `packages/core/src/index.surface.test.ts`'s
    `removedGoogleProviderOptions`/`removedGoogleSafetySetting`/`removedGoogleSearchTool` checks).
-   `computeCost` (`packages/core/src/cost.ts`) is a pure, parameterized function — it takes `rates`
-   (a `CostRatesLookup`), `tierFactors`, and `pricingVersion` as explicit arguments instead of
-   reading a module-level Gemini table. `packages/google/src/cost.ts`'s `geminiPricingSource` wraps
-   it, supplying `packages/google/src/pricing.ts`'s `GEMINI_PRICING` table, `TIER_FACTOR` map, and
-   `pricingVersion` as those parameters — core carries zero Gemini pricing knowledge. `ClientConfig.
+   `computeCost` (`packages/core/src/cost.ts`) is a pure, parameterized function — it takes a
+   `CostRatesLookup` that returns concrete per-tier rates and a `pricingVersion` instead of reading
+   a module-level Gemini table. `packages/google/src/cost.ts`'s `geminiPricingSource` wraps it,
+   resolving rates from `GEMINI_PRICING` and passing the provider-owned `pricingVersion` — core
+   carries zero Gemini pricing knowledge. `ClientConfig.
 modelRegistry` (`packages/core/src/engine.ts`) is a required field (`modelRegistry: ModelRegistry`,
    no `?`) — there is no default registry inside core for `createClient` to fall back to; every host
    must supply one, typically via `composeProviders`.
@@ -1129,7 +1131,7 @@ _packaging_ — types, composition, and core's own export surface — provider-s
     `packages/core/src/engine.ts`; the Gemini per-model schema enforces the equivalent constraint.
   - `packages/core/src` exports zero Google-named symbols. Moved to `packages/google`: `Google
 ProviderOptions`, `GoogleSafetySetting`, `GoogleSearchTool`, the Gemini/Gemma model descriptors,
-    the per-model config schemas, `GEMINI_PRICING`, `TIER_FACTOR`, `geminiPricingSource`, and the
+    the per-model config schemas, `GEMINI_PRICING`, `geminiPricingSource`, and the
     default Gemini/Gemma model registry.
   - `ClientConfig.modelRegistry` is now a required field; there is no core-side default registry.
   - New core exports: `ProviderPlugin`, `composeProviders`, `ProviderOptionsMap`.
@@ -1639,7 +1641,7 @@ policy would be framework magic this library explicitly refuses.
    without `tools`. Tool names must be unique. `toolChoice.name` must be a
    member of `tools`.
 6. **Adapters gate on `capabilities.functionCalling`.** Gemini models: true.
-   Gemma: absent until verified. grok-4.5 / grok-4.6: true. CLI adapters
+   Gemma: absent until verified. grok-4.5 / grok-4.6 / grok-4.7: true. CLI adapters
    `bad_request` `tools` and the new part kinds.
 7. **Google mix:** `LlmRequest.tools` + `providerOptions.google.tools`
    (googleSearch) is reject-always until a model is fixture-verified.

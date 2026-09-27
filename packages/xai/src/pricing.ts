@@ -11,17 +11,17 @@
  * `computeCost` prices tokens only. `PricingSource` is provider-scoped by
  * contract (see `packages/core/src/ports.ts`).
  *
- * **Long-context tier.** grok-4.5 / grok-4.6 charge a premium when the GROSS
- * input token count is at or above 200,000. xAI defines
- * `long_context_threshold` as the token count at or above which long-context
- * prices apply, and the live listing returns 200000. Selected by
+ * **Long-context tier.** grok-4.5 / grok-4.6 / grok-4.7 charge a premium when the GROSS
+ * input token count is at or above 200,000. xAI's current pricing page
+ * (https://docs.x.ai/developers/pricing) explicitly labels the band
+ * "Long context ≥ 200k tokens"; the live listing returns 200000. Selected by
  * `inputTokens` (incl. cached), not by billable input. Core's selector is
  * strictly greater than 200,000; this module owns the `>=` predicate.
  *
- * **Service tiers.** grok-4.5 and grok-4.6 admit `'priority'` at 2× on every
- * token type, cached included (grok-4.6 live-verified 2026-08-12 by fixture
- * `12-grok-4-6-xhigh-priority.json`; grok-4.5 live-verified 2026-09-25 at
- * 2.0×). `'fast'` is an alias and is not admitted. `'default'` (the value
+ * **Service tiers.** grok-4.5, grok-4.6, and grok-4.7 admit `'priority'` at 2×
+ * on every token type, cached included. The 4.5 tier was live-verified
+ * 2026-09-25; the 4.6 tier is pinned by fixture 12. `'fast'` is an alias and
+ * is not admitted. `'default'` (the value
  * xAI echoes when no priority is served) and `undefined` (no tier requested)
  * price at the standard list. Any other defined tier is unpriced
  * (reject-don't-map).
@@ -31,7 +31,9 @@
  * (divide the raw integer by 10,000 to get USD per million tokens): e.g.
  * `grok-4.6`'s raw `prompt_text_token_price: 20000` ÷ 10,000 = $2.00/M.
  *
- * Verified against `/v1/models` on 2026-08-12. Prior snapshot
+ * Grok 4.5/4.6 rates were verified against `/v1/models` on 2026-08-12.
+ * Grok 4.7 rates are published in xAI's 2026-09-21 release notes:
+ * https://docs.x.ai/developers/release-notes. Prior snapshot
  * `xai-2026-07-09` priced grok-4.5 cached input at $0.50 / $1.00; the live
  * listing now reports $0.30 / $0.60.
  *
@@ -42,7 +44,7 @@ import { computeCost } from '@gullabs/core'
 import type { Cost, CostRatesLookup, PricingSource, Usage } from '@gullabs/core'
 
 /** Identifies this pricing snapshot — bump the date when rates change. */
-export const xaiPricingVersion = 'xai-2026-08-24' as const
+export const xaiPricingVersion = 'xai-2026-09-25' as const
 
 /**
  * Tool rates in µUSD per unit.
@@ -67,7 +69,7 @@ const XAI_TOOL_COUNTER_KEYS = [
   'x_users_fetched',
 ] as const
 
-/** Counters an x_search request must report. A missing one unprices the call. */
+/** Counters needed for a computed x_search tool fee. */
 export const X_SEARCH_ITEM_COUNTERS = ['x_posts_fetched', 'x_users_fetched'] as const
 
 const LONG_CONTEXT_THRESHOLD = 200_000
@@ -119,7 +121,6 @@ export const XAI_PRICING: Readonly<Record<string, XaiModelRates>> = Object.freez
       cachedPerM: 600_000,
       outputPerM: 12_000_000,
     },
-    // Live-verified 2026-09-25: priority is 2.0× on every token type, cached included.
     priorityFactor: 2,
   },
   // ── grok-4.6 ──  $2.00/$6.00 (<200k), $4.00/$12.00 (>=200k); cached $0.50/$1.00
@@ -156,13 +157,13 @@ export const XAI_PRICING: Readonly<Record<string, XaiModelRates>> = Object.freez
 /**
  * Look up rates for a model — EXACT match only.
  *
- * Deliberately no prefix matching (unlike core's Gemini lookup): xAI aliases
+ * Deliberately no prefix matching: xAI aliases
  * such as `grok-4.5-latest` would otherwise prefix-match `grok-4.5` and
  * silently reintroduce the alias behavior the model registry rejects. An id
  * that is not an exact `XAI_PRICING` key is unpriced.
  */
 function lookupRates(model: string): XaiModelRates | undefined {
-  return XAI_PRICING[model]
+  return Object.hasOwn(XAI_PRICING, model) ? XAI_PRICING[model] : undefined
 }
 
 /**
@@ -242,7 +243,8 @@ function scaleRates(rates: XaiModelRates, factor: number): XaiModelRates {
  *    `details.input + details.cached + details.output + details.tools === microUsd`.
  * 7. Tool lanes: `web_search_calls` per call; x_search is
  *    `x_posts_fetched` × $5/1k + `x_users_fetched` × $10/1k. A missing
- *    x_search item counter unprices the whole call (`microUsd: null`).
+ *    item counter leaves the call unpriced; the provider's billed ticks remain
+ *    in `usage.details` for reconciliation outside this rate snapshot.
  *    File-ref still sets `attachment_search_unpinned` and the call is
  *    estimated — the counter name is not pinned (P-X2).
  */
@@ -269,6 +271,8 @@ export function computeXaiCost(model: string, usage: Usage, tier?: string): Cost
     xSearchRequested &&
     X_SEARCH_ITEM_COUNTERS.some((key) => typeof usage.details[key] !== 'number')
   if (missingXSearchCounter || usage.details['server_tools_missing'] === 1) {
+    // A live billed total is retained on Usage for reconciliation. It is not
+    // a cost derived from this frozen rate snapshot, so do not put it in Cost.
     return {
       microUsd: null,
       usd: null,

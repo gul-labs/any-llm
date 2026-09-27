@@ -85,6 +85,7 @@ describe('grok46ModelDescriptor', () => {
       sampling: 'tunable',
       caching: { explicit: false, minTokens: 0 },
       grounding: true,
+      structuredOutputWithTools: true,
       functionCalling: true,
       serviceTiers: ['priority'],
     })

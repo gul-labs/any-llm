@@ -64,7 +64,7 @@ export interface ClaudeCliEnvelope {
   total_cost_usd?: number
   num_turns?: number
   usage?: ClaudeCliUsageShape
-  /** Per-model usage. Every key must equal the requested model id. */
+  /** Per-model usage, checked for an exact requested-model match on success. */
   modelUsage?: Record<string, unknown>
   [key: string]: unknown
 }
@@ -113,6 +113,8 @@ function mapFinishReason(stopReason: string | undefined): FinishReason | undefin
   switch (stopReason) {
     case 'end_turn':
       return 'stop'
+    case 'refusal':
+      return 'content_filter'
     case 'tool_use':
       // The CLI's own final answer, not a caller-visible tool call — treat
       // as a successful completion for our purposes.
@@ -210,8 +212,18 @@ function looksRateLimited(text: string): boolean {
 }
 
 function assertServedModel(envelope: ClaudeCliEnvelope, requestedModel: string): void {
-  const modelUsage = envelope.modelUsage
-  if (modelUsage === undefined) return
+  const modelUsage: unknown = envelope.modelUsage
+  if (
+    modelUsage === null ||
+    typeof modelUsage !== 'object' ||
+    Array.isArray(modelUsage)
+  ) {
+    throw new LlmError('claude CLI did not report a valid modelUsage object.', {
+      kind: 'server',
+      retryable: false,
+      provider: 'claude-cli',
+    })
+  }
   for (const served of Object.keys(modelUsage)) {
     if (served !== requestedModel) {
       throw new LlmError(
@@ -219,6 +231,12 @@ function assertServedModel(envelope: ClaudeCliEnvelope, requestedModel: string):
         { kind: 'server', retryable: false, provider: 'claude-cli' },
       )
     }
+  }
+  if (!Object.hasOwn(modelUsage, requestedModel)) {
+    throw new LlmError(
+      `claude CLI did not report the requested model "${requestedModel}" in modelUsage.`,
+      { kind: 'server', retryable: false, provider: 'claude-cli' },
+    )
   }
 }
 
@@ -329,6 +347,34 @@ export function claudeCliAdapter(opts?: ClaudeCliAdapterOptions): ProviderAdapte
       const warnings: Warning[] = []
       const model = req.model
       const config = req.config
+
+      if (
+        req.modelDescriptor?.model !== model ||
+        req.modelDescriptor.provider !== 'claude-cli'
+      ) {
+        throw new LlmError(`No matching Claude model descriptor for "${model}".`, {
+          kind: 'bad_request',
+          retryable: false,
+          provider: 'claude-cli',
+        })
+      }
+      if (req.transientProviderState !== undefined) {
+        throw new LlmError(`Model "${model}" does not admit transientProviderState.`, {
+          kind: 'bad_request',
+          retryable: false,
+          provider: 'claude-cli',
+        })
+      }
+      if (
+        config.reasoning !== undefined &&
+        req.modelDescriptor.capabilities?.reasoningApi === undefined
+      ) {
+        throw new LlmError(`Model "${model}" does not admit reasoning.`, {
+          kind: 'bad_request',
+          retryable: false,
+          provider: 'claude-cli',
+        })
+      }
 
       // ------------------------------------------------------------------
       // 2. Prompt serialization (throws bad_request on non-text parts).
@@ -446,10 +492,6 @@ export function claudeCliAdapter(opts?: ClaudeCliAdapterOptions): ProviderAdapte
         envelope = JSON.parse(result.stdout) as ClaudeCliEnvelope
       } catch {
         envelope = undefined
-      }
-
-      if (envelope?.stop_reason === 'refusal') {
-        throw classifyRunFailure(envelope, result)
       }
 
       if (

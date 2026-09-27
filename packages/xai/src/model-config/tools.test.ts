@@ -154,6 +154,12 @@ const INVALID_TOOLS: Array<{ name: string; config: unknown }> = [
     },
   },
   {
+    name: 'reasoning replay without an output/input seam',
+    config: {
+      providerOptions: { xai: { reasoningItems: [{ type: 'reasoning' }] } },
+    },
+  },
+  {
     name: 'both allowed and excluded X handles',
     config: {
       providerOptions: {
@@ -219,6 +225,12 @@ describe.each([
         },
       }).success,
     ).toBe(true)
+  })
+
+  it('rejects replay state in persisted generation config', () => {
+    const config = { providerOptions: { xai: { replayState: { model: 'grok-4.7' } } } }
+    expect(schema.safeParse(config).success).toBe(false)
+    expect(jsonSchemaAccepts(toConfigJsonSchema(schema), config)).toBe(false)
   })
 
   it.each(INVALID_TOOLS)('Zod and JSON Schema both reject $name', ({ config }) => {

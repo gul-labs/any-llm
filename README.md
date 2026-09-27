@@ -134,7 +134,7 @@ The key is redacted from persisted records and logs. Vertex AI is not in this tr
 - **Side effects fail-open.** A broken sink, logger, or pricing source cannot fail the LLM call. Rate-limiter rejection is the one exception — backpressure is real.
 - **No network in tests.** Use [`@gullabs/testing`](./packages/testing).
 
-Gemini 2.5 uses `reasoning.budgetTokens`. Gemini 3 / Gemma built-ins use `reasoning.effort`. `gemini-3.1-pro-preview`, `gemini-3.7-flash`, and `gemini-3.8-flash` do not admit `effort: 'none'`. Omit `serviceTier` for provider default; set `flex` only when you want that lane. Google `priority` is documented upstream and still rejected here. The adapter records the requested tier; it does not read `usageMetadata.serviceTier`.
+Gemini 2.5 uses `reasoning.budgetTokens`. Gemini 3 / Gemma built-ins use `reasoning.effort`. `gemini-3.1-pro-preview`, `gemini-3.7-flash`, and `gemini-3.8-flash` do not admit `effort: 'none'`. Omit `serviceTier` for provider default; set `flex` only when you want that lane. Google `priority` is documented upstream and still rejected here. The adapter records the provider's `usageMetadata.serviceTier` echo when present and falls back to the dispatched tier when absent.
 
 Registered Google ids: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemma-4-31b-it`, `gemma-4-26b-a4b-it`. Deleted, with no alias: `gemini-3-flash-preview` and `gemini-3.5-flash` (migrate to `gemini-3.6-flash`).
 

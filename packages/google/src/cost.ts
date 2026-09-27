@@ -3,7 +3,7 @@
  *
  * Provides `geminiPricingSource` — a factory returning a `PricingSource` port
  * implementation backed by the frozen Gemini pricing snapshot ({@link
- * GEMINI_PRICING}). Walks the rates table (exact-then-longest-prefix match),
+ * GEMINI_PRICING}). Uses exact priced model identifiers,
  * resolves the concrete per-tier rates, and delegates the arithmetic to
  * `@gullabs/core`'s `computeCost`. Core itself carries zero Gemini pricing
  * knowledge and applies no tier multiplier.

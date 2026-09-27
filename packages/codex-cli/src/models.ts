@@ -33,24 +33,14 @@ export const CODEX_CLI_MODEL_IDS: readonly CodexCliModelId[] = [
   'gpt-6-luna',
 ]
 
-/** Deleted ids. Resolve returns undefined; there is no alias. */
-export const DELETED_CODEX_CLI_MODEL_IDS = [
-  'gpt-5.5',
-  'gpt-5.4',
-  'gpt-5.4-mini',
-  'gpt-5.3-codex-spark',
-] as const
-
 // ---------------------------------------------------------------------------
-// Reasoning effort — deliberately NOT core's ReasoningEffort
+// Reasoning effort
 // ---------------------------------------------------------------------------
 
 /**
  * Codex CLI's `model_reasoning_effort` levels.
  *
- * Distinct from core's `ReasoningEffort`
- * (`'none'|'low'|'medium'|'high'|'xhigh'`): Codex admits `'xhigh'` and
- * `'max'`, and does not admit `'none'`. `'ultra'` is a CLI delegation switch,
+ * Codex admits `low` through `max`, but not core's `'none'`. `'ultra'` is a CLI delegation switch,
  * not a server reasoning level, so it is excluded.
  */
 export const CODEX_CLI_REASONING_EFFORTS = [
@@ -125,10 +115,7 @@ const CONFIG_SCHEMA_BY_ID: Record<CodexCliModelId, z.ZodType> = {
 /**
  * `ModelDescriptor[]` for every Codex CLI model.
  *
- * `admittedReasoningEfforts` is deliberately omitted from `capabilities`:
- * this package's Zod schema is the sole validator for `reasoning.effort`
- * (codex does not admit `'none'`). `createModelRegistry`'s invariant only
- * checks for the presence of `configSchema`/`configJsonSchema`/`validateConfig`.
+ * The descriptor and strict Zod schema expose the same admitted effort set.
  */
 export const codexCliModelDescriptors: ModelDescriptor[] = CODEX_CLI_MODEL_IDS.map(
   (id): ModelDescriptor => {
@@ -140,6 +127,7 @@ export const codexCliModelDescriptors: ModelDescriptor[] = CODEX_CLI_MODEL_IDS.m
         structuredOutput: true,
         nativeStructuredOutput: true,
         reasoningApi: 'level',
+        admittedReasoningEfforts: CODEX_CLI_REASONING_EFFORTS,
         sampling: 'fixed',
         vision: false,
       },
