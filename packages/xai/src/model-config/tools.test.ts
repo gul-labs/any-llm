@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest'
 import { toConfigJsonSchema } from '@gullabs/core'
 import { Grok45ConfigSchema } from './grok-4-5.js'
 import { Grok46ConfigSchema } from './grok-4-6.js'
+import { Grok47ConfigSchema } from './grok-4-7.js'
 
 function jsonSchemaAccepts(schema: unknown, value: unknown): boolean {
   return validateJsonSchema(schema, value).ok
@@ -153,6 +154,12 @@ const INVALID_TOOLS: Array<{ name: string; config: unknown }> = [
     },
   },
   {
+    name: 'reasoning replay without an output/input seam',
+    config: {
+      providerOptions: { xai: { reasoningItems: [{ type: 'reasoning' }] } },
+    },
+  },
+  {
     name: 'both allowed and excluded X handles',
     config: {
       providerOptions: {
@@ -198,6 +205,7 @@ const INVALID_TOOLS: Array<{ name: string; config: unknown }> = [
 describe.each([
   ['grok-4.5', Grok45ConfigSchema],
   ['grok-4.6', Grok46ConfigSchema],
+  ['grok-4.7', Grok47ConfigSchema],
 ] as const)('%s tools schema / JSON Schema parity', (_model, schema) => {
   it('accepts [web], [x], and [web, x]', () => {
     expect(
@@ -217,6 +225,12 @@ describe.each([
         },
       }).success,
     ).toBe(true)
+  })
+
+  it('rejects replay state in persisted generation config', () => {
+    const config = { providerOptions: { xai: { replayState: { model: 'grok-4.7' } } } }
+    expect(schema.safeParse(config).success).toBe(false)
+    expect(jsonSchemaAccepts(toConfigJsonSchema(schema), config)).toBe(false)
   })
 
   it.each(INVALID_TOOLS)('Zod and JSON Schema both reject $name', ({ config }) => {

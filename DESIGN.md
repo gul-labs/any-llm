@@ -176,13 +176,14 @@ recommended `validateStructuredResult` + Standard Schema v1 pattern.
 
 ### Grounding and Conflict Guard
 
-Grounding is requested via `providerOptions.google.tools: [{ googleSearch: {} }]`. The
-`providerOptions.google` object is merged after typed-field mapping; transport/abort scaffolding
-(`abortSignal`, `httpOptions`) is applied afterward, and caller-supplied `httpOptions` still wins. After the merge, the adapter checks whether any tool entry has a
-`googleSearch` or `googleSearchRetrieval` key. If so and `req.outputJsonSchema` is also set, the
-adapter throws `LlmError('bad_request', retryable: false)` immediately — Gemini does not support
-grounding combined with `responseSchema`. When grounding is active, `candidate.groundingMetadata`
-is captured alongside `promptFeedback` into `result.providerMetadata`.
+Grounding is requested via `providerOptions.google.tools: [{ googleSearch: {} }]`.
+The adapter validates this strict allowlist before dispatch; `googleSearchRetrieval`
+is not admitted. With `req.outputJsonSchema`, the descriptor must set
+`structuredOutputWithTools`. All six registered Gemini 3.x models set that flag
+after the 2026-09-26 live probes. A successful structured response does not
+guarantee Search ran: those probes did not return `groundingMetadata` when
+Search was requested. When present, `candidate.groundingMetadata` is captured
+alongside `promptFeedback` in `result.providerMetadata`.
 
 ### Transport Timeout
 
@@ -198,8 +199,10 @@ The adapter sets `config.httpOptions.timeout`:
 
 The adapter wraps the entire SDK call (client construction + `generateContent`) in a single
 try/catch. `classifyError` converts SDK errors; the adapter re-throws as `LlmError` tagged with
-`provider: 'google'`. Blocked responses (`promptFeedback.blockReason` set, or no candidates)
-are thrown as `LlmError('content_filter', retryable: false)` rather than returning a result.
+`provider: 'google'`. A response with `promptFeedback.blockReason` is a
+non-retryable `content_filter`. A candidate-less 200 without a block reason is
+a retryable `server` error; its reported usage and cost are recorded on the
+failed attempt.
 
 ### Thought Text Extraction
 
@@ -251,9 +254,11 @@ that excluded `providerOptions` and let the adapter re-check after merge. Gemini
 have `sampling: 'fixed'` and reject `temperature`, `topP`, `topK` at call time.
 
 **Grounding.** Requested via `providerOptions.google.tools: [{ googleSearch: {} }]`. The adapter
-captures `candidate.groundingMetadata` into `result.providerMetadata`. Grounding and structured
-output (`output.jsonSchema`) are mutually exclusive; the adapter enforces this with a `bad_request`
-error before the SDK call.
+captures `candidate.groundingMetadata` into `result.providerMetadata`. Grounding plus
+`output.jsonSchema` is admitted only when `structuredOutputWithTools` is set
+(all six registered Gemini 3.x models). Other models fail with `bad_request`
+before the SDK call. A successful structured response may omit grounding
+metadata, so callers needing auditable citations must check it explicitly.
 
 **Flex transport timeout.** The adapter sets `config.httpOptions.timeout` automatically:
 1 500 000 ms (25 minutes) for Flex calls without `timeoutMs`, and `timeoutMs + 5 000 ms` when
@@ -352,18 +357,26 @@ and throw `invalid_auth` (with a message pointing at the CLI login command) othe
 Model descriptors and config schemas for both packages live in `packages/claude-cli/src` and
 `packages/codex-cli/src`, not `packages/core/src/model-config/`. This is a deliberate deviation
 from the Gemini precedent: dev-only models must never appear on the production core surface, so a
-host importing only `@gullabs/core` + `@gullabs/google` never sees `claude-fable-5` or
-`gpt-5.4-mini` in its registry. Each package still satisfies the same onboarding invariants
+host importing only `@gullabs/core` + `@gullabs/google` never sees `claude-fable-5-1` or
+`gpt-6-sol` in its registry. Each package still satisfies the same onboarding invariants
 (strict zod config schema, `configJsonSchema`, `validateConfig`) as core's own descriptors.
 
 Config schemas are `z.strictObject`, per the reject-don't-map rule: no `temperature`, `topP`,
 `topK`, or `stopSequences` fields exist at all, because CLIs don't accept sampling params — an
 unknown key is rejected outright, never silently dropped or clamped.
 
-- **claude-cli** models: `claude-fable-5`, `claude-opus-4-8`, `claude-sonnet-5`,
-  `claude-haiku-4-5-20251001`. `reasoning.effort`: `low | medium | high | xhigh | max`.
-- **codex-cli** models: `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex-spark`.
-  `reasoning.effort`: `low | medium | high | xhigh`.
+- **claude-cli** models: `claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5`,
+  `claude-haiku-4-5-20251001`. Fable 5.1, Opus 5.5, and Sonnet 5 admit
+  `reasoning.effort`: `low | medium | high | xhigh | max`. Haiku 4.5 has no
+  reasoning key.
+- **codex-cli** models: `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`.
+  `reasoning.effort`: `low | medium | high | xhigh | max`. No `gpt-5*` id is registered.
+
+Registered Google ids: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`,
+`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
+`gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemma-4-31b-it`,
+`gemma-4-26b-a4b-it`. `gemini-3-flash-preview` and `gemini-3.5-flash` do not resolve.
+xAI ids: `grok-4.5`, `grok-4.6`, `grok-4.7`.
 
 ### Adapter-owned invariant flags
 
@@ -371,7 +384,7 @@ Both CLIs are invoked with a fixed argv the caller cannot override, to keep the 
 non-interactive and isolated from the host's other CLI state:
 
 - **claude**: `-p --output-format json --safe-mode --tools "" --disable-slash-commands
---no-session-persistence`. `--safe-mode`, not `--bare` — `--bare` also disables OAuth/keychain
+--no-session-persistence --settings '{"switchModelsOnFlag":false}'`. `--safe-mode`, not `--bare` — `--bare` also disables OAuth/keychain
   auth, which would break subscription login; `--safe-mode` isolates context/tool access while
   leaving auth intact.
 - **codex**: `exec --json --ephemeral --skip-git-repo-check --ignore-user-config --ignore-rules

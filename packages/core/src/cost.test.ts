@@ -3,7 +3,7 @@
  * @gullabs/core.
  *
  * Core has zero pricing tables of its own: every test here supplies a small
- * synthetic rates table + tier-factor map as explicit parameters, proving the
+ * synthetic concrete-rate lookup as an explicit parameter, proving the
  * seam is genuinely provider-neutral. Gemini-specific pricing assertions
  * (real published rates, `geminiPricingSource`) live in
  * `packages/google/src/pricing.test.ts`.
@@ -30,10 +30,13 @@ import type { Usage } from './types.js'
 // Synthetic fixtures — deliberately NOT real provider pricing data.
 // ---------------------------------------------------------------------------
 
-const TEST_TIER_FACTOR: Readonly<Record<string, number>> = Object.freeze({
-  standard: 1,
-  flex: 0.5,
-  batch: 0.5,
+/** Concrete per-tier multipliers the synthetic lookup applies. Flex and batch
+ * halve every lane, including cached — a provider that publishes a different
+ * cached rate supplies that rate from its own lookup instead. */
+const TEST_TIER_RATES: Readonly<Record<string, ModelRates>> = Object.freeze({
+  standard: { inputPerM: 1, cachedPerM: 1, outputPerM: 1 },
+  flex: { inputPerM: 0.5, cachedPerM: 0.5, outputPerM: 0.5 },
+  batch: { inputPerM: 0.5, cachedPerM: 0.5, outputPerM: 0.5 },
 })
 
 const TEST_PRICING_VERSION = 'test-pricing-2026-01-01'
@@ -56,32 +59,54 @@ const TEST_RATES: Readonly<Record<string, ModelRates>> = Object.freeze({
   },
 })
 
-/** Exact-then-longest-prefix lookup against {@link TEST_RATES}. */
-const lookupTestRates: CostRatesLookup = (model: string): ModelRates | undefined => {
-  const exact = TEST_RATES[model]
-  if (exact !== undefined) return exact
-
-  let bestKey = ''
-  let bestRates: ModelRates | undefined
-  for (const key of Object.keys(TEST_RATES)) {
-    if (model.startsWith(key) && key.length > bestKey.length) {
-      bestKey = key
-      bestRates = TEST_RATES[key]
+function scaleRates(rates: ModelRates, factor: ModelRates): ModelRates {
+  const scaled: ModelRates = {
+    inputPerM: rates.inputPerM * factor.inputPerM,
+    cachedPerM: rates.cachedPerM * factor.cachedPerM,
+    outputPerM: rates.outputPerM * factor.outputPerM,
+  }
+  if (rates.gt200k !== undefined) {
+    scaled.gt200k = {
+      inputPerM: rates.gt200k.inputPerM * factor.inputPerM,
+      cachedPerM: rates.gt200k.cachedPerM * factor.cachedPerM,
+      outputPerM: rates.gt200k.outputPerM * factor.outputPerM,
     }
   }
-  return bestRates
+  return scaled
 }
 
-/** computeCost, pre-bound to the synthetic rates/tier-factor/version above. */
+/** Exact-then-longest-prefix lookup. `undefined` and `'standard'` return the
+ * table as stored; a known discount tier returns concrete scaled rates; any
+ * other defined tier is unpriced. */
+const lookupTestRates: CostRatesLookup = (
+  model: string,
+  tier: string | undefined,
+): ModelRates | undefined => {
+  const key = tier ?? 'standard'
+  const factor = TEST_TIER_RATES[key]
+  if (factor === undefined) return undefined
+
+  const exact = TEST_RATES[model]
+  const base =
+    exact ??
+    (() => {
+      let bestKey = ''
+      let bestRates: ModelRates | undefined
+      for (const rateKey of Object.keys(TEST_RATES)) {
+        if (model.startsWith(rateKey) && rateKey.length > bestKey.length) {
+          bestKey = rateKey
+          bestRates = TEST_RATES[rateKey]
+        }
+      }
+      return bestRates
+    })()
+  if (base === undefined) return undefined
+  return key === 'standard' ? base : scaleRates(base, factor)
+}
+
+/** computeCost, pre-bound to the synthetic rates/version above. */
 function cost(model: string, usage: Usage, tier?: string) {
-  return computeCost(
-    model,
-    usage,
-    tier,
-    lookupTestRates,
-    TEST_TIER_FACTOR,
-    TEST_PRICING_VERSION,
-  )
+  return computeCost(model, usage, tier, lookupTestRates, TEST_PRICING_VERSION)
 }
 
 /** Build a minimal Usage with the open details map and raw blob. */
@@ -295,6 +320,57 @@ describe('computeCost — edge cases', () => {
     expect(result.confidence).toBe('exact')
   })
 
+  it('unknown model with a defined tier names the model, not the tier', () => {
+    const usage = makeUsage({ inputTokens: 10_000, outputTokens: 500 })
+    const result = cost('some-future-model-xyz', usage, 'standard')
+
+    expect(result.microUsd).toBeNull()
+    expect(result.unpricedReason).toContain('some-future-model-xyz')
+    expect(result.unpricedReason).not.toContain('Unpriced service tier')
+  })
+
+  it('names the model when the standard-tier probe fails, and the tier when it prices', () => {
+    const usage = makeUsage({ inputTokens: 1_000, outputTokens: 100 })
+    const seen: Array<[string, string | undefined]> = []
+    const lookup: CostRatesLookup = (model, tier) => {
+      seen.push([model, tier])
+      if (model === 'priced-model' && (tier === undefined || tier === 'standard')) {
+        return { inputPerM: 1, cachedPerM: 1, outputPerM: 1 }
+      }
+      return undefined
+    }
+
+    const unknown = computeCost(
+      'gemma-4-31b-it',
+      usage,
+      'standard',
+      lookup,
+      TEST_PRICING_VERSION,
+    )
+    const unknownTier = computeCost(
+      'priced-model',
+      usage,
+      'enterprise-super-tier',
+      lookup,
+      TEST_PRICING_VERSION,
+    )
+
+    expect(unknown.microUsd).toBeNull()
+    expect(unknown.unpricedReason).toBe(
+      'Unknown model "gemma-4-31b-it"; no pricing entry found.',
+    )
+    expect(unknownTier.microUsd).toBeNull()
+    expect(unknownTier.unpricedReason).toBe(
+      'Unpriced service tier "enterprise-super-tier" for model "priced-model"; no concrete rate is available.',
+    )
+    expect(seen).toEqual([
+      ['gemma-4-31b-it', 'standard'],
+      ['gemma-4-31b-it', undefined],
+      ['priced-model', 'enterprise-super-tier'],
+      ['priced-model', undefined],
+    ])
+  })
+
   it('unknown (but defined) service tier → unpriced, never silently mapped to standard', () => {
     const usage = makeUsage({ inputTokens: 10_000, outputTokens: 500 })
     const result = cost('acme-large', usage, 'enterprise-super-tier')
@@ -317,10 +393,10 @@ describe('computeCost — edge cases', () => {
     expect(costUndefined.unpricedReason).toBeUndefined()
   })
 
-  it('known tiers (standard/flex/batch) all price; flex/batch apply the tier-factor discount', () => {
+  it('known tiers (standard/flex/batch) all price; flex/batch apply the concrete tier rates', () => {
     const usage = makeUsage({ inputTokens: 10_000, outputTokens: 500 })
 
-    for (const tier of Object.keys(TEST_TIER_FACTOR)) {
+    for (const tier of Object.keys(TEST_TIER_RATES)) {
       const result = cost('acme-large', usage, tier)
       expect(result.microUsd).not.toBeNull()
       expect(result.confidence).toBe('exact')
@@ -342,21 +418,15 @@ describe('computeCost — edge cases', () => {
     expect(costVersioned.confidence).toBe('exact')
   })
 
-  it('rates lookup is invoked exactly once per computeCost call', () => {
+  it('rates lookup is invoked once on the priced path', () => {
     let calls = 0
-    const countingLookup: CostRatesLookup = (model) => {
+    const countingLookup: CostRatesLookup = (model, tier) => {
       calls++
+      expect(tier).toBeUndefined()
       return TEST_RATES[model]
     }
     const usage = makeUsage({ inputTokens: 10_000, outputTokens: 500 })
-    computeCost(
-      'acme-flat',
-      usage,
-      undefined,
-      countingLookup,
-      TEST_TIER_FACTOR,
-      TEST_PRICING_VERSION,
-    )
+    computeCost('acme-flat', usage, undefined, countingLookup, TEST_PRICING_VERSION)
 
     expect(calls).toBe(1)
   })

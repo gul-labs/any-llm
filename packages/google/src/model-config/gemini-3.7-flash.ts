@@ -1,27 +1,27 @@
 import { z } from 'zod'
 
-export const Gemini3FlashPreviewConfigSchema = z
+export const Gemini37FlashConfigSchema = z
   .union([
     z.strictObject({
       maxOutputTokens: z.number().int().positive().optional().meta({
         title: 'Max Output Tokens',
-        description: 'Maximum output token cap for gemini-3-flash-preview.',
+        description: 'Maximum output token cap for gemini-3.7-flash.',
       }),
       stopSequences: z.array(z.string()).max(5).optional().meta({
         title: 'Stop Sequences',
-        description: 'Up to five stop sequences for gemini-3-flash-preview.',
+        description: 'Up to five stop sequences for gemini-3.7-flash.',
       }),
       serviceTier: z.literal('flex').meta({
         title: 'Service Tier',
-        description: 'Explicit flex tier for gemini-3-flash-preview.',
+        description: 'Explicit flex tier for gemini-3.7-flash.',
       }),
       reasoning: z
         .union([
           z.strictObject({
-            effort: z.enum(['none', 'low', 'medium', 'high']).meta({
+            effort: z.enum(['low', 'medium', 'high']).meta({
               title: 'Reasoning Effort',
               description:
-                'Reasoning effort for gemini-3-flash-preview; none maps to minimal thinking.',
+                'Reasoning effort for gemini-3.7-flash. none is not admitted; thinkingLevel MINIMAL is never emitted.',
             }),
             includeThoughts: z.boolean().optional().meta({
               title: 'Include Thoughts',
@@ -38,7 +38,7 @@ export const Gemini3FlashPreviewConfigSchema = z
         .optional()
         .meta({
           title: 'Reasoning',
-          description: 'Gemini 3 Flash Preview thinkingLevel configuration.',
+          description: 'Gemini 3.7 Flash thinkingLevel configuration.',
         }),
       timeoutMs: z.number().int().positive().optional().meta({
         title: 'Timeout',
@@ -83,7 +83,7 @@ export const Gemini3FlashPreviewConfigSchema = z
                 .optional()
                 .meta({
                   title: 'Tools',
-                  description: 'Allowlisted Google tools for gemini-3-flash-preview.',
+                  description: 'Allowlisted Google tools for gemini-3.7-flash.',
                 }),
               httpOptions: z
                 .strictObject({
@@ -106,36 +106,35 @@ export const Gemini3FlashPreviewConfigSchema = z
             .optional()
             .meta({
               title: 'Google Provider Options',
-              description:
-                'Allowlisted Google provider options for gemini-3-flash-preview.',
+              description: 'Allowlisted Google provider options for gemini-3.7-flash.',
             }),
         })
         .optional()
         .meta({
           title: 'Provider Options',
-          description: 'Provider-specific options accepted for gemini-3-flash-preview.',
+          description: 'Provider-specific options accepted for gemini-3.7-flash.',
         }),
     }),
     z.strictObject({
       maxOutputTokens: z.number().int().positive().optional().meta({
         title: 'Max Output Tokens',
-        description: 'Maximum output token cap for gemini-3-flash-preview.',
+        description: 'Maximum output token cap for gemini-3.7-flash.',
       }),
       stopSequences: z.array(z.string()).max(5).optional().meta({
         title: 'Stop Sequences',
-        description: 'Up to five stop sequences for gemini-3-flash-preview.',
+        description: 'Up to five stop sequences for gemini-3.7-flash.',
       }),
       serviceTier: z.literal('standard').optional().meta({
         title: 'Service Tier',
-        description: 'Standard tier or omitted tier for gemini-3-flash-preview.',
+        description: 'Standard tier or omitted tier for gemini-3.7-flash.',
       }),
       reasoning: z
         .union([
           z.strictObject({
-            effort: z.enum(['none', 'low', 'medium', 'high']).meta({
+            effort: z.enum(['low', 'medium', 'high']).meta({
               title: 'Reasoning Effort',
               description:
-                'Reasoning effort for gemini-3-flash-preview; none maps to minimal thinking.',
+                'Reasoning effort for gemini-3.7-flash. none is not admitted; thinkingLevel MINIMAL is never emitted.',
             }),
             includeThoughts: z.boolean().optional().meta({
               title: 'Include Thoughts',
@@ -152,7 +151,7 @@ export const Gemini3FlashPreviewConfigSchema = z
         .optional()
         .meta({
           title: 'Reasoning',
-          description: 'Gemini 3 Flash Preview thinkingLevel configuration.',
+          description: 'Gemini 3.7 Flash thinkingLevel configuration.',
         }),
       timeoutMs: z.number().int().positive().optional().meta({
         title: 'Timeout',
@@ -197,7 +196,7 @@ export const Gemini3FlashPreviewConfigSchema = z
                 .optional()
                 .meta({
                   title: 'Tools',
-                  description: 'Allowlisted Google tools for gemini-3-flash-preview.',
+                  description: 'Allowlisted Google tools for gemini-3.7-flash.',
                 }),
               httpOptions: z
                 .strictObject({
@@ -215,20 +214,19 @@ export const Gemini3FlashPreviewConfigSchema = z
             .optional()
             .meta({
               title: 'Google Provider Options',
-              description:
-                'Allowlisted Google provider options for gemini-3-flash-preview.',
+              description: 'Allowlisted Google provider options for gemini-3.7-flash.',
             }),
         })
         .optional()
         .meta({
           title: 'Provider Options',
-          description: 'Provider-specific options accepted for gemini-3-flash-preview.',
+          description: 'Provider-specific options accepted for gemini-3.7-flash.',
         }),
     }),
   ])
   .meta({
-    title: 'Gemini3FlashPreviewConfig',
+    title: 'Gemini37FlashConfig',
     description:
-      'Strict generateContent config for model gemini-3-flash-preview. Level reasoning, fixed sampling, flex/standard tiers, structured output, grounding, priced.',
+      'Strict generateContent config for model gemini-3.7-flash. Level reasoning, fixed sampling, flex/standard tiers, structured output, grounding, priced.',
     examples: [{ serviceTier: 'flex', reasoning: { effort: 'medium' } }],
   })

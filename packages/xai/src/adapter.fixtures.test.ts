@@ -6,20 +6,30 @@
  * adapter maps each recorded real-world shape correctly end-to-end.
  *
  * Fixtures live in `./__fixtures__/` and were captured against the live
- * xAI Responses API (grok-4.5 on 2026-07-09; grok-4.6 on 2026-08-12), then
+ * xAI Responses API (grok-4.5 on 2026-07-09, grok-4.6 on 2026-08-12,
+ * grok-4.7 on 2026-09-25), then
  * grepped clean of any Authorization/Bearer/API-key-shaped strings before
  * being copied into this package.
  *
  * @module
  */
 
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
+import { createClient } from '@gullabs/core'
 import type { AdapterCtx, JsonValue, ResolvedRequest } from '@gullabs/core'
-import { makeFakeXai } from '@gullabs/testing'
+import { makeFakeXai, RecordingSink } from '@gullabs/testing'
 import { xaiAdapter, classifyXaiError } from './adapter.js'
-import { grok45ModelDescriptor, grok46ModelDescriptor } from './models.js'
+import type { XaiReplayState } from './client.js'
+import { computeXaiCost, xaiPricingSource } from './pricing.js'
+import {
+  grok45ModelDescriptor,
+  grok46ModelDescriptor,
+  grok47ModelDescriptor,
+  xaiRegistry,
+} from './models.js'
 import { makeTestDescriptor } from '../../core/src/test-model-descriptor.js'
 
 /** Read + JSON.parse a fixture file at test time (no resolveJsonModule needed). */
@@ -86,6 +96,8 @@ const grok46XhighPriorityFixture = loadFixture<FixtureCall>(
   '12-grok-4-6-xhigh-priority.json',
 )
 const grok46EffortNoneFixture = loadFixture<FixtureCall>('13-grok-4-6-effort-none.json')
+const grok47PriorityFixture = loadFixture<FixtureCall>('24-grok-4-7-priority.json')
+const grok47EffortNoneFixture = loadFixture<FixtureCall>('25-grok-4-7-effort-none.json')
 
 const FAKE_CTX: AdapterCtx = {
   auth: { apiKey: 'test-key' },
@@ -145,6 +157,27 @@ describe('fixture: 02-responses-minimal', () => {
       metadata: { system_fingerprint: 'fp_a39489019fa99b6e' },
     })
     expect(result.usage.raw).toEqual(minimalFixture.body['usage'])
+  })
+})
+
+describe('fixture: grok-4.5 priority (live 2026-09-25)', () => {
+  it('maps the served tier and reconciles the 2× bill', async () => {
+    const fixture = loadFixture<FixtureCall>('23-grok-4-5-priority.json')
+    const client = makeFakeXai(fixture.body as never)
+    const adapter = xaiAdapter({ client })
+    const result = await adapter.run(
+      makeResolvedReq({
+        model: 'grok-4.5',
+        config: { serviceTier: 'priority' },
+        modelDescriptor: grok45ModelDescriptor,
+      }),
+      FAKE_CTX,
+    )
+    expect(result.servedServiceTier).toBe('priority')
+    expect((client.calls[0] as { service_tier?: string }).service_tier).toBe('priority')
+    const cost = computeXaiCost('grok-4.5', result.usage, result.servedServiceTier)
+    expect(cost.usd).toBe(result.usage.details.cost_in_usd_ticks! * 1e-10)
+    expect(cost.confidence).toBe('exact')
   })
 })
 
@@ -541,6 +574,422 @@ describe('fixture: 18-structured-search', () => {
   })
 })
 
+describe('fixture: 19-x-search (pre-2026-09-21 billing policy)', () => {
+  it('retains billed ticks but leaves snapshot cost unpriced without item counters', async () => {
+    const fixture = loadFixture<FixtureCall>('19-x-search.json')
+    const adapter = xaiAdapter({ client: makeFakeXai(fixture.body as never) })
+    const result = await adapter.run(
+      {
+        provider: 'xai',
+        model: 'grok-4.6',
+        messages: [{ role: 'user', parts: [{ kind: 'text', text: 'search X' }] }],
+        config: { providerOptions: { xai: { tools: [{ type: 'x_search' }] } } },
+        modelDescriptor: grok46ModelDescriptor,
+      },
+      FAKE_CTX,
+    )
+    expect(result.usage.details.x_search_calls).toBe(2)
+    expect(result.usage.details.x_posts_fetched).toBeUndefined()
+    expect(result.usage.details.x_users_fetched).toBeUndefined()
+    expect(result.usage.details.server_tools_missing).toBe(1)
+    expect(result.usage.details.cost_in_usd_ticks).toBe(289_600_000)
+    const cost = computeXaiCost('grok-4.6', result.usage)
+    expect(cost.microUsd).toBeNull()
+    expect(cost.unpricedReason).toContain('x_posts_fetched')
+    expect(cost.confidence).toBe('estimated')
+  })
+})
+
+describe('fixtures: P-X1 live X Search item billing (2026-09-26)', () => {
+  it.each([
+    ['26-x-posts.json', 10, 0, 1_038_920_000],
+    ['27-x-users.json', 0, 12, 1_476_220_000],
+  ])(
+    'reconciles %s with the provider billed ticks',
+    async (name, posts, users, ticks) => {
+      const fixture = loadFixture<FixtureCall>(name)
+      expect(fixture.status).toBe(200)
+      const client = makeFakeXai(fixture.body as never)
+      const result = await xaiAdapter({ client }).run(
+        makeResolvedReq({
+          model: 'grok-4.7',
+          config: { providerOptions: { xai: { tools: [{ type: 'x_search' }] } } },
+          modelDescriptor: grok47ModelDescriptor,
+        }),
+        FAKE_CTX,
+      )
+      expect((client.calls[0] as { tools?: unknown }).tools).toEqual([
+        { type: 'x_search' },
+      ])
+      expect(result.usage.details).toMatchObject({
+        x_search_calls: 4,
+        x_posts_fetched: posts,
+        x_users_fetched: users,
+        cost_in_usd_ticks: ticks,
+      })
+      expect(result.usage.details.server_tools_missing).toBeUndefined()
+      const cost = computeXaiCost('grok-4.7', result.usage, result.servedServiceTier)
+      expect(cost.usd).toBe(ticks * 1e-10)
+      expect(cost.confidence).toBe('exact')
+    },
+  )
+})
+
+describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
+  it('replays a live assistant message and web-search item on the next turn', async () => {
+    const fixture = loadFixture<{
+      request: {
+        first_input: { content: [{ text: string }] }
+        next_input: { content: [{ text: string }] }
+        followup_input_length: number
+        followup_input_sha256: string
+      }
+      first: {
+        status: number
+        output: Array<Record<string, unknown>>
+        usage: Record<string, unknown>
+      }
+      second: {
+        status: number
+        output: Array<Record<string, unknown>>
+        usage: Record<string, unknown>
+      }
+    }>('30-grok-4-7-search-replay.json')
+    expect(fixture.first.status).toBe(200)
+    expect(fixture.second.status).toBe(200)
+    expect(fixture.first.output.some((item) => item['type'] === 'web_search_call')).toBe(
+      true,
+    )
+    expect(fixture.first.output.some((item) => item['type'] === 'message')).toBe(true)
+
+    const wireClient = makeFakeXai([
+      {
+        model: 'grok-4.7',
+        status: 'completed',
+        output: fixture.first.output,
+        usage: fixture.first.usage,
+      },
+      {
+        model: 'grok-4.7',
+        status: 'completed',
+        output: fixture.second.output,
+        usage: fixture.second.usage,
+      },
+    ] as never)
+    const adapter = xaiAdapter({ client: wireClient })
+    const first = await adapter.run(
+      makeResolvedReq({
+        model: 'grok-4.7',
+        modelDescriptor: grok47ModelDescriptor,
+        messages: [
+          {
+            role: 'user',
+            parts: [{ kind: 'text', text: fixture.request.first_input.content[0].text }],
+          },
+        ],
+        config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    const second = await adapter.run(
+      makeResolvedReq({
+        model: 'grok-4.7',
+        modelDescriptor: grok47ModelDescriptor,
+        transientProviderState: first.transientProviderState!,
+        messages: [
+          {
+            role: 'user',
+            parts: [{ kind: 'text', text: fixture.request.next_input.content[0].text }],
+          },
+        ],
+      }),
+      FAKE_CTX,
+    )
+    expect(second.text).toContain('Grok API')
+    const replayWire = wireClient.calls[1] as { input: unknown[]; tools?: unknown }
+    expect(replayWire.input).toEqual([
+      fixture.request.first_input,
+      ...fixture.first.output,
+      fixture.request.next_input,
+    ])
+    expect(replayWire.input).toHaveLength(fixture.request.followup_input_length)
+    expect(
+      createHash('sha256').update(JSON.stringify(replayWire.input)).digest('hex'),
+    ).toBe(fixture.request.followup_input_sha256)
+    expect(replayWire.tools).toBeUndefined()
+  })
+
+  it('continues a function result through the public client without losing reasoning', async () => {
+    const fixture = loadFixture<{ first: FixtureCall; second: FixtureCall }>(
+      '28-grok-4-7-replay.json',
+    )
+    const wireClient = makeFakeXai([
+      fixture.first.body as never,
+      fixture.second.body as never,
+    ])
+    const sink = new RecordingSink()
+    const client = createClient({
+      adapters: [xaiAdapter({ client: wireClient })],
+      pricingSources: { xai: xaiPricingSource() },
+      modelRegistry: xaiRegistry,
+      sink,
+    })
+    const tool = {
+      name: 'add_numbers',
+      description: 'Add two integers',
+      inputJsonSchema: {
+        type: 'object',
+        properties: { a: { type: 'integer' }, b: { type: 'integer' } },
+        required: ['a', 'b'],
+        additionalProperties: false,
+      },
+    }
+    const first = await client.generate(
+      {
+        provider: 'xai',
+        model: 'grok-4.7',
+        tools: [tool],
+        messages: [
+          {
+            role: 'user',
+            parts: [
+              {
+                kind: 'text',
+                text: 'Use add_numbers to add 2 and 3, then answer with the result.',
+              },
+            ],
+          },
+        ],
+      },
+      { auth: { apiKey: 'test-key' } },
+    )
+    const call = first.toolCalls?.[0]
+    expect(call).toBeDefined()
+    const second = await client.generate(
+      {
+        provider: 'xai',
+        model: 'grok-4.7',
+        tools: [tool],
+        transientProviderState: first.transientProviderState!,
+        messages: [
+          {
+            role: 'user',
+            parts: [
+              {
+                kind: 'tool-result',
+                toolCallId: call!.toolCallId,
+                toolName: call!.toolName,
+                result: 5,
+              },
+            ],
+          },
+        ],
+      },
+      { auth: { apiKey: 'test-key' } },
+    )
+    expect(second.text).toBe('The result is 5.')
+    expect((wireClient.calls[1] as { input: unknown[] }).input).toEqual([
+      ...(first.transientProviderState as unknown as XaiReplayState).input,
+      { type: 'function_call_output', call_id: call!.toolCallId, output: '5' },
+    ])
+    expect(sink.records).toHaveLength(2)
+    expect(JSON.stringify(sink.records)).not.toContain('encrypted_content')
+  })
+
+  it('round trips the original reasoning and function-call output in order', async () => {
+    const fixture = loadFixture<{ first: FixtureCall; second: FixtureCall }>(
+      '28-grok-4-7-replay.json',
+    )
+    expect(fixture.first.status).toBe(200)
+    expect(fixture.second.status).toBe(200)
+    const originalOutput = fixture.first.body['output'] as Array<Record<string, unknown>>
+    expect(originalOutput.map((item) => item['type'])).toEqual([
+      'reasoning',
+      'function_call',
+    ])
+    expect(originalOutput[0]?.['encrypted_content']).toEqual(expect.any(String))
+    const tool = {
+      name: 'add_numbers',
+      description: 'Add two integers',
+      inputJsonSchema: {
+        type: 'object',
+        properties: { a: { type: 'integer' }, b: { type: 'integer' } },
+        required: ['a', 'b'],
+        additionalProperties: false,
+      },
+    }
+    const userMessage = {
+      role: 'user' as const,
+      parts: [
+        {
+          kind: 'text' as const,
+          text: 'Use add_numbers to add 2 and 3, then answer with the result.',
+        },
+      ],
+    }
+    const firstResult = await xaiAdapter({
+      client: makeFakeXai(fixture.first.body as never),
+    }).run(
+      makeResolvedReq({
+        model: 'grok-4.7',
+        messages: [userMessage],
+        tools: [tool],
+        modelDescriptor: grok47ModelDescriptor,
+      }),
+      FAKE_CTX,
+    )
+    const replay = firstResult.transientProviderState as unknown as XaiReplayState
+    expect(replay.input.slice(1)).toEqual(originalOutput)
+    expect(JSON.stringify(firstResult.providerMetadata)).not.toContain(
+      'encrypted_content',
+    )
+    const call = firstResult.toolCalls?.[0]
+    expect(call).toBeDefined()
+    const client = makeFakeXai(fixture.second.body as never)
+    const secondResult = await xaiAdapter({ client }).run(
+      makeResolvedReq({
+        model: 'grok-4.7',
+        messages: [
+          {
+            role: 'user',
+            parts: [
+              {
+                kind: 'tool-result',
+                toolCallId: call!.toolCallId,
+                toolName: call!.toolName,
+                result: 5,
+              },
+            ],
+          },
+        ],
+        tools: [tool],
+        transientProviderState: replay as unknown as JsonValue,
+        modelDescriptor: grok47ModelDescriptor,
+      }),
+      FAKE_CTX,
+    )
+    expect(secondResult.text).toBe('The result is 5.')
+    const wire = client.calls[0] as { input: unknown[]; store: boolean }
+    expect(wire.store).toBe(false)
+    expect(wire.input).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: 'Use add_numbers to add 2 and 3, then answer with the result.',
+          },
+        ],
+      },
+      ...replay.input.slice(1),
+      { type: 'function_call_output', call_id: call!.toolCallId, output: '5' },
+    ])
+    expect(
+      (secondResult.transientProviderState as unknown as XaiReplayState).input,
+    ).toEqual([...wire.input, ...(fixture.second.body['output'] as unknown[])])
+
+    const nextState = secondResult.transientProviderState as unknown as XaiReplayState
+    const thirdFixture = loadFixture<
+      FixtureCall & {
+        request: {
+          next_input: { role: 'user'; content: [{ type: 'input_text'; text: string }] }
+          followup_input_length: number
+          followup_input_sha256: string
+          followup_tools_omitted: boolean
+        }
+      }
+    >('31-grok-4-7-third-turn.json')
+    expect(thirdFixture.status).toBe(200)
+    const thirdClient = makeFakeXai(thirdFixture.body as never)
+    const thirdResult = await xaiAdapter({ client: thirdClient }).run(
+      makeResolvedReq({
+        model: 'grok-4.7',
+        modelDescriptor: grok47ModelDescriptor,
+        transientProviderState: nextState as unknown as JsonValue,
+        messages: [
+          {
+            role: 'user',
+            parts: [
+              { kind: 'text', text: thirdFixture.request.next_input.content[0].text },
+            ],
+          },
+        ],
+      }),
+      FAKE_CTX,
+    )
+    expect(thirdResult.text).toContain('sum of 2 and 3')
+    const thirdWire = thirdClient.calls[0] as { input: unknown[]; tools?: unknown }
+    expect(thirdWire.input).toEqual([...nextState.input, thirdFixture.request.next_input])
+    expect(thirdWire.input).toHaveLength(thirdFixture.request.followup_input_length)
+    expect(
+      createHash('sha256').update(JSON.stringify(thirdWire.input)).digest('hex'),
+    ).toBe(thirdFixture.request.followup_input_sha256)
+    expect(thirdFixture.request.followup_tools_omitted).toBe(true)
+    expect(thirdWire.tools).toBeUndefined()
+  })
+
+  it('keeps reasoning before assistant text and a function call in mixed output', async () => {
+    const fixture = loadFixture<{ first: FixtureCall; second: FixtureCall }>(
+      '28-grok-4-7-replay.json',
+    )
+    const body = structuredClone(fixture.first.body)
+    const original = body['output'] as Array<Record<string, unknown>>
+    const mixed = [
+      original[0],
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'I will calculate it.' }],
+      },
+      original[1],
+    ]
+    body['output'] = mixed
+    const user = {
+      role: 'user' as const,
+      parts: [{ kind: 'text' as const, text: '2+3?' }],
+    }
+    const first = await xaiAdapter({ client: makeFakeXai(body as never) }).run(
+      makeResolvedReq({
+        model: 'grok-4.7',
+        modelDescriptor: grok47ModelDescriptor,
+        messages: [user],
+      }),
+      FAKE_CTX,
+    )
+    const state = first.transientProviderState as unknown as XaiReplayState
+    expect(state.input.slice(1)).toEqual(mixed)
+    const call = first.toolCalls?.[0]
+    expect(call).toBeDefined()
+    const client = makeFakeXai(fixture.second.body as never)
+    await xaiAdapter({ client }).run(
+      makeResolvedReq({
+        model: 'grok-4.7',
+        modelDescriptor: grok47ModelDescriptor,
+        transientProviderState: state as unknown as JsonValue,
+        messages: [
+          {
+            role: 'user',
+            parts: [
+              {
+                kind: 'tool-result',
+                toolCallId: call!.toolCallId,
+                toolName: call!.toolName,
+                result: 5,
+              },
+            ],
+          },
+        ],
+      }),
+      FAKE_CTX,
+    )
+    expect((client.calls[0] as { input: unknown[] }).input).toEqual([
+      state.input[0],
+      ...mixed,
+      { type: 'function_call_output', call_id: call!.toolCallId, output: '5' },
+    ])
+  })
+})
+
 describe('fixture: 20-grok-4-5-effort-medium', () => {
   it('maps the live medium-effort 200', async () => {
     const fixture = loadFixture<FixtureCall>('20-grok-4-5-effort-medium.json')
@@ -600,6 +1049,57 @@ describe('fixture: 21-function-call-first', () => {
     expect(result.finishReason).toBe('tool_calls')
     expect(result.toolCalls?.[0]?.toolName).toBe('get_temperature')
     expect(result.toolCalls?.[0]?.toolCallId).toMatch(/^call-/)
+  })
+})
+
+describe('fixtures: live grok-4.7 priority and rejected effort', () => {
+  it('maps the live priority response and dispatches the admitted tier', async () => {
+    expect(grok47PriorityFixture.status).toBe(200)
+    const client = makeFakeXai(grok47PriorityFixture.body as never)
+    const adapter = xaiAdapter({ client })
+    const result = await adapter.run(
+      makeResolvedReq({
+        model: 'grok-4.7',
+        config: { serviceTier: 'priority' },
+        modelDescriptor: grok47ModelDescriptor,
+      }),
+      FAKE_CTX,
+    )
+    expect(result.model).toBe('grok-4.7')
+    expect(result.text).toBe('OK')
+    expect(result.servedServiceTier).toBe('priority')
+    const billedTicks = (
+      grok47PriorityFixture.body['usage'] as { cost_in_usd_ticks: number }
+    ).cost_in_usd_ticks
+    expect(
+      computeXaiCost(result.model, result.usage, result.servedServiceTier).usd,
+    ).toBeCloseTo(billedTicks * 1e-10, 10)
+    const call = client.calls[0] as { model?: string; service_tier?: string }
+    expect(call.model).toBe('grok-4.7')
+    expect(call.service_tier).toBe('priority')
+  })
+
+  it('rejects grok-4.7 effort none before dispatch', async () => {
+    expect(grok47EffortNoneFixture.status).toBe(400)
+    expect(
+      classifyXaiError({
+        status: grok47EffortNoneFixture.status,
+        error: grok47EffortNoneFixture.body,
+      }).kind,
+    ).toBe('bad_request')
+    const client = makeFakeXai(grok47PriorityFixture.body as never)
+    const adapter = xaiAdapter({ client })
+    await expect(
+      adapter.run(
+        makeResolvedReq({
+          model: 'grok-4.7',
+          config: { reasoning: { effort: 'none' } },
+          modelDescriptor: grok47ModelDescriptor,
+        }),
+        FAKE_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request' })
+    expect(client.calls).toHaveLength(0)
   })
 })
 

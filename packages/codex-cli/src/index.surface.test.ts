@@ -21,8 +21,14 @@ describe('@gullabs/codex-cli package surface', () => {
     expect(typeof codexCliProvider).toBe('function')
   })
 
-  it('codexCliRegistry.resolve("gpt-5.4-mini") is defined', () => {
-    expect(codexCliRegistry.resolve('codex-cli', 'gpt-5.4-mini')).toBeDefined()
+  it('codexCliRegistry.resolve("gpt-6-sol") is defined', () => {
+    expect(codexCliRegistry.resolve('codex-cli', 'gpt-6-sol')).toBeDefined()
+  })
+
+  it('deleted gpt-5 ids do not resolve', () => {
+    for (const id of ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.3-codex-spark']) {
+      expect(codexCliRegistry.resolve('codex-cli', id)).toBeUndefined()
+    }
   })
 
   it('toOpenAiStrictOutputSchema is a function', () => {

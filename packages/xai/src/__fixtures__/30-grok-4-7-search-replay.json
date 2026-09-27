@@ -1,0 +1,169 @@
+{
+  "source": "P-X3 follow-up live grok-4.7 store:false replay of assistant message and web_search_call, 2026-09-26",
+  "sanitization": "Selected response fields only; no credentials or account identifiers. Response output items are verbatim to preserve replay shape.",
+  "request": {
+    "model": "grok-4.7",
+    "store": false,
+    "first_input": {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Use web search to open https://docs.x.ai and report the current homepage title in one sentence."
+        }
+      ]
+    },
+    "next_input": {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Thanks. Summarize the title in five words."
+        }
+      ]
+    },
+    "followup_tools_omitted": true,
+    "followup_input_length": 7,
+    "followup_input_sha256": "575038dee77e4e5abd1f25de4be18f9431ef82d5879c318663cb7ca0014191ad"
+  },
+  "first": {
+    "status": 200,
+    "output": [
+      {
+        "id": "rs_cb4ce4dd-c73c-9973-920f-3b82afc7ca5d",
+        "summary": [
+          {
+            "text": "The user wants me to use web search to open https://docs.x.ai and report the current homepage title in one sentence.\n",
+            "type": "summary_text"
+          }
+        ],
+        "type": "reasoning",
+        "status": "completed",
+        "encrypted_content": "VAyb3COBLb/WZBylvN5Sa/OQhjIALk91AbfVrrWYkmmJC6R71cW2TBc0gRk2DTC1+58eP4bHHvCUFJQzuHo9pAuRSlJkFAKN35CwBMP5jlCF4Jhummpvp4tiB2KvlPuOMzFNvLRlXQo/9SFcWUIFq1xiS4Qxz8sdWT0/mLUw6/zeiO7jZCTkIgzD8GWwg02Xhr4xq9FyLxQ0ZfJ+lEHYf2h3vDn/55iMBD02IIyTPq6rU02xtJxxVCCsXagFg8dKv6I/uJ/X38ie/xQNSlq7zYO+B9Zo1d0ttImC0U4dfJv48I1TpaKTuXccJnBKrbRmNzjtbAfsGkwn0ZQXnxgoP8tx6mCc+mw6qSwxjVWslUXjkI/B0S8y92wZLSwTl5v1Q7ZBHqvZoPr40ZLYl3QWFg"
+      },
+      {
+        "id": "ws_cb4ce4dd-c73c-9973-920f-3b82afc7ca5d_call-8e889061-8cfe-4fd7-8f4b-fcbaf38aa4c9-0",
+        "type": "web_search_call",
+        "status": "completed",
+        "action": {
+          "type": "open_page",
+          "url": "https://docs.x.ai"
+        }
+      },
+      {
+        "id": "tco_cb4ce4dd-c73c-9973-920f-3b82afc7ca5d_call-8e889061-8cfe-4fd7-8f4b-fcbaf38aa4c9-0",
+        "summary": [],
+        "type": "reasoning",
+        "status": "completed",
+        "encrypted_content": "tco_cb4ce4dd-c73c-9973-920f-3b82afc7ca5d_call-8e889061-8cfe-4fd7-8f4b-fcbaf38aa4c9-0_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"
+      },
+      {
+        "id": "rs_cb4ce4dd-c73c-9973-920f-3b82afc7ca5d",
+        "summary": [],
+        "type": "reasoning",
+        "status": "completed",
+        "encrypted_content": "ahffKCC9TVUt/kNfhlI2Se5l1FYi/qgjaaiyKOBG7/PJUwkYZA4vHrTnUocASf+Hy/3czr/S2ZtpvJL4dwNcbC3/JMFBymMnyuhn+ahVB0t5pFwnD3uhdzy9P8SAiGX3I6eEzDqemWqqbQBseyW1QUqmxfvywq9iUn/WuFrowMId63qZS6M33RimwY87Tds0WVorj4sX+NxNKOGmwlgh64nGj8Kp5znwUDuxRKa6pq20GIhYT2HoJWirxd+QGLpWBzmQcbtkOE1QaXwhxo7AkNKMqn1qfxCGT44nY6inoMkBbLGYQEuYHWOe7CJtxK6NKC+eTR4uVABV41ObuOWphGI/e2vdPBAmZqjGVnZp4iR6WHJYYzNr9a+E9QvtiKPlHbPfMLdck8zYkshpPK66LR6eIB2c9WZTJid9ue+JgBCq7QmhzD8UzvygxDx4quXp/oxHb+M8ekL6BmkZnBq41Q"
+      },
+      {
+        "content": [
+          {
+            "type": "output_text",
+            "text": "The current homepage title of https://docs.x.ai is \u201cGrok API Documentation | SpaceXAI Docs\u201d. [[1]](https://docs.x.ai)",
+            "logprobs": [],
+            "annotations": [
+              {
+                "type": "url_citation",
+                "url": "https://docs.x.ai",
+                "start_index": 93,
+                "end_index": 117,
+                "title": "1"
+              }
+            ]
+          }
+        ],
+        "id": "msg_cb4ce4dd-c73c-9973-920f-3b82afc7ca5d",
+        "role": "assistant",
+        "type": "message",
+        "status": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 6990,
+      "input_tokens_details": {
+        "cached_tokens": 1408
+      },
+      "output_tokens": 208,
+      "output_tokens_details": {
+        "reasoning_tokens": 151
+      },
+      "total_tokens": 7198,
+      "num_sources_used": 0,
+      "num_server_side_tools_used": 1,
+      "cost_in_usd_ticks": 181160000,
+      "server_side_tool_usage_details": {
+        "web_search_calls": 1,
+        "x_search_calls": 0,
+        "x_posts_fetched": 0,
+        "x_users_fetched": 0,
+        "code_interpreter_calls": 0,
+        "file_search_calls": 0,
+        "mcp_calls": 0,
+        "document_search_calls": 0,
+        "image_generation_calls": 0
+      },
+      "context_details": {
+        "input_tokens": 4438,
+        "output_tokens": 128
+      }
+    }
+  },
+  "second": {
+    "status": 200,
+    "output": [
+      {
+        "id": "rs_b93275e0-07d9-9aba-b2aa-1e0a871b6565",
+        "summary": [
+          {
+            "text": "The user wants me to summarize the title in five words. The title was \"Grok API Documentation | SpaceXAI Docs\". That's already a short title. They want a five-word summary.\n",
+            "type": "summary_text"
+          }
+        ],
+        "type": "reasoning",
+        "status": "completed",
+        "encrypted_content": "X6KKld9voecqln1PoHFgt2MRtq5Rdgwh8bawTo0pECpcRZOa4t39fZbkgX2BtckoPs3E09+OfOKO7rUn1tE3schcWpli4iZByW3vLhOc/RJ1/tfFJ6z63fHljTJX2cw52PHMP7O4GSH7Ckj/NjJ/fCvHD6ayKhCNhAWKu7ABXoUnHvI7/XjRC4Gl+MOrMLsHIgCr+BBIOYEwqk5TDlmcwjRtCKL8lhA01HNkz5jKSbM2NtSUX/KWiebq5w/5FQEU6pNLTavvXpuFnSEFMrTId8MOqT8GzcnigNN5id+9y2g5Wjz2GkIgZDM/F7AQ9MFbB3JcZ/WEGmz8o6GLuiEDj8nKkeOEG7W5e6rwJSM"
+      },
+      {
+        "content": [
+          {
+            "type": "output_text",
+            "text": "Grok API documentation from SpaceXAI.",
+            "logprobs": [],
+            "annotations": []
+          }
+        ],
+        "id": "msg_b93275e0-07d9-9aba-b2aa-1e0a871b6565",
+        "role": "assistant",
+        "type": "message",
+        "status": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 3565,
+      "input_tokens_details": {
+        "cached_tokens": 1408
+      },
+      "output_tokens": 67,
+      "output_tokens_details": {
+        "reasoning_tokens": 58
+      },
+      "total_tokens": 3632,
+      "num_sources_used": 0,
+      "num_server_side_tools_used": 0,
+      "cost_in_usd_ticks": 54200000,
+      "context_details": {
+        "input_tokens": 3565,
+        "output_tokens": 76
+      }
+    }
+  }
+}

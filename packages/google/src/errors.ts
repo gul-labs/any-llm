@@ -64,6 +64,20 @@ function isGoogleTransportError(rawErr: unknown): boolean {
   return false
 }
 
+/** The SDK serializes structured Gemini API errors into ApiError.message. */
+function isGoogleModelNotFound(rawErr: unknown): boolean {
+  if (!(rawErr instanceof Error)) return false
+  if ((rawErr as Error & { status?: unknown }).status !== 404) return false
+  try {
+    const parsed = JSON.parse(rawErr.message) as {
+      error?: { code?: unknown; status?: unknown }
+    }
+    return parsed.error?.code === 404 && parsed.error.status === 'NOT_FOUND'
+  } catch {
+    return false
+  }
+}
+
 /** Optional extra fields threaded onto the returned {@link LlmError}. */
 export interface ClassifyGoogleErrorExtra {
   /** Service tier actually attempted by the provider when known. */
@@ -92,9 +106,14 @@ export function classifyGoogleError(
 ): LlmError {
   const base = classifyError(rawErr)
   const reclassifyAsTransport = base.kind === 'unknown' && isGoogleTransportError(rawErr)
+  const reclassifyAsBadRequest = base.kind === 'unknown' && isGoogleModelNotFound(rawErr)
 
   return new LlmError(base.message, {
-    kind: reclassifyAsTransport ? 'server' : base.kind,
+    kind: reclassifyAsTransport
+      ? 'server'
+      : reclassifyAsBadRequest
+        ? 'bad_request'
+        : base.kind,
     retryable: reclassifyAsTransport ? true : base.retryable,
     ...(base.httpStatus !== undefined ? { httpStatus: base.httpStatus } : {}),
     ...(base.retryAfterMs !== undefined ? { retryAfterMs: base.retryAfterMs } : {}),

@@ -947,6 +947,7 @@ function buildErrorRecord(
   externalId: string | undefined,
   authKeyId: string | undefined,
   toolNames: string[] | undefined,
+  cost?: Cost,
 ): ReturnType<typeof buildRecord> {
   return buildRecord({
     callId,
@@ -958,6 +959,7 @@ function buildErrorRecord(
     provider,
     model,
     usage,
+    ...(cost !== undefined ? { cost } : {}),
     latencyMs,
     ...(queueDelayMs !== undefined ? { queueDelayMs } : {}),
     // buildRecord overrides status from error.kind via errorKindToStatus.
@@ -1310,6 +1312,9 @@ export function createClient(config: ClientConfig): Client {
       model: request.model,
       messages: request.messages,
       config: resolvedConfig,
+      ...(request.transientProviderState !== undefined
+        ? { transientProviderState: request.transientProviderState }
+        : {}),
       ...(request.system !== undefined ? { system: request.system } : {}),
       ...(request.output?.jsonSchema !== undefined
         ? { outputJsonSchema: request.output.jsonSchema }
@@ -1598,6 +1603,9 @@ export function createClient(config: ClientConfig): Client {
           ...(adapterResult.providerMetadata !== undefined
             ? { providerMetadata: adapterResult.providerMetadata }
             : {}),
+          ...(adapterResult.transientProviderState !== undefined
+            ? { transientProviderState: adapterResult.transientProviderState }
+            : {}),
         }
         return result
       } catch (rawErr) {
@@ -1612,6 +1620,29 @@ export function createClient(config: ClientConfig): Client {
 
         // Classify error (LlmError passes through unchanged).
         const err = classifyError(rawErr)
+
+        // Some providers return a billed HTTP 200 with no usable output. Keep
+        // that attempt's usage and snapshot cost even though it is retryable.
+        const failureUsage =
+          err.usage !== undefined
+            ? normalizeUsage(err.usage).usage
+            : (normalizedResult?.usage ?? EMPTY_USAGE)
+        let failureCost = cost
+        if (err.usage !== undefined) {
+          try {
+            const source = pricingSources[provider]
+            failureCost = source?.price(
+              effectiveReq.modelDescriptor?.pricingFamily ?? effectiveReq.model,
+              failureUsage,
+              err.servedServiceTier ?? effectiveReq.config.serviceTier,
+            )
+          } catch (costErr) {
+            ctx.logger.warn(
+              { callId: ctx.callId, error: String(costErr) },
+              'llm.call.cost.failed',
+            )
+          }
+        }
 
         // Build postmortem record with whatever we know.
         // `dispatchStartMs` is only set immediately before `adapter.run()` is
@@ -1631,7 +1662,7 @@ export function createClient(config: ClientConfig): Client {
           effectiveReq.model,
           request.metadata,
           effectiveReq.config,
-          normalizedResult?.usage ?? EMPTY_USAGE,
+          failureUsage,
           latencyMs,
           queueDelayMs,
           attemptStartMs,
@@ -1640,6 +1671,7 @@ export function createClient(config: ClientConfig): Client {
           request.externalId,
           authKeyIdOf(callAuth),
           request.tools?.map((t) => t.name),
+          failureCost,
         )
 
         // Sink error record — fail-open.
@@ -1895,7 +1927,10 @@ export function createClient(config: ClientConfig): Client {
               message: 'tool-result parts are only valid on user messages.',
             })
           }
-          if (!seenCallIds.includes(part.toolCallId)) {
+          if (
+            request.transientProviderState === undefined &&
+            !seenCallIds.includes(part.toolCallId)
+          ) {
             issues.push({
               path: `messages.${mi}.parts.${pi}.toolCallId`,
               message: `tool-result toolCallId "${part.toolCallId}" does not match a prior tool-call.`,
@@ -1940,6 +1975,15 @@ export function createClient(config: ClientConfig): Client {
       if (descriptor.provider !== request.provider) {
         throw new LlmError(
           `Registry returned a descriptor for provider "${descriptor.provider}" when provider "${request.provider}" (model "${request.model}") was requested — refusing to validate against a mismatched provider.`,
+          { kind: 'bad_request', retryable: false },
+        )
+      }
+      if (
+        request.transientProviderState !== undefined &&
+        descriptor.capabilities?.statelessReasoningReplay !== true
+      ) {
+        throw new LlmError(
+          `Model "${request.model}" does not admit transientProviderState.`,
           { kind: 'bad_request', retryable: false },
         )
       }

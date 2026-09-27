@@ -1,0 +1,12 @@
+{
+  "source": "P-X2 2026-09-26 live xAI ZDR development key",
+  "sanitization": "Only HTTP statuses and provider error strings; no credentials or file contents.",
+  "fileUpload": {
+    "status": 403,
+    "error": "File uploads are not available under Zero Data Retention."
+  },
+  "publicFileUrl": {
+    "status": 400,
+    "error": "File content is currently unsupported for ZDR customers."
+  }
+}

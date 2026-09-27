@@ -10,7 +10,7 @@
 1. Call **provider-hosted models** through self-contained provider packages composed via
    `composeProviders` (ADR-023): `@gullabs/google` over `@google/genai` (Gemini with Flex where
    supported; Gemma without Gemini-only Flex assumptions), `@gullabs/xai` over the `openai`
-   SDK's Responses API (grok-4.5, grok-4.6), plus the dev-only CLI providers (`@gullabs/claude-cli`,
+   SDK's Responses API (grok-4.5, grok-4.6, grok-4.7), plus the dev-only CLI providers (`@gullabs/claude-cli`,
    `@gullabs/codex-cli`). The core engine ships zero provider knowledge.
 2. **Record token usage** (input / output / cached / **thinking**).
 3. Capture **thinking** — thinking _token usage_ always; the provider-returned _thought-summary
@@ -45,9 +45,9 @@ Seams are present; machinery is intentionally small.
 packages/
   core/       @gullabs/core       # types, ports, engine, callsite, computeCost, errors, record  (no provider deps)
   google/     @gullabs/google     # googleProvider: geminiAdapter over @google/genai + model configs + pricing  (peerDep @google/genai)
-  xai/        @gullabs/xai        # xaiProvider: grok-4.5 / grok-4.6 over the openai SDK's Responses API  (peerDep openai)
-  claude-cli/ @gullabs/claude-cli # dev-only provider over a local claude CLI session (never production)
-  codex-cli/  @gullabs/codex-cli  # dev-only provider over a local codex CLI session (never production)
+  xai/        @gullabs/xai        # xaiProvider: grok-4.5 / grok-4.6 / grok-4.7 over the openai SDK's Responses API  (peerDep openai)
+  claude-cli/ @gullabs/claude-cli # dev-only: claude-fable-5-1, claude-opus-5-5, claude-sonnet-5, claude-haiku-4-5-20251001
+  codex-cli/  @gullabs/codex-cli  # dev-only: gpt-6-astra, gpt-6-sol, gpt-6-luna
   any-llm/    @gullabs/any-llm    # batteries-included facade: re-exports core + google
   drizzle/    @gullabs/drizzle    # reference llm_calls schema + drizzleUsageSink  (peerDep drizzle-orm)
   quota/      @gullabs/quota      # provider quota middleware
@@ -371,8 +371,11 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
   `output.jsonSchema` → `responseSchema` (`responseMimeType:'application/json'`) only when native
   structured output is enabled; `providerOptions.google.*` is a strict per-model allowlist mapped
   field-by-field onto the SDK call, not forwarded verbatim.
-- Routes Gemini 2.5/3.x and two API-verified Gemma 4 models (`gemma-4-31b-it`,
-  `gemma-4-26b-a4b-it`). Both Gemma 4 descriptors support multimodal parts, native structured
+- Routes Gemini 2.5 (`gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`),
+  Gemini 3.x (`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
+  `gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`), and two API-verified Gemma 4
+  models (`gemma-4-31b-it`, `gemma-4-26b-a4b-it`). `gemini-3-flash-preview` and
+  `gemini-3.5-flash` do not resolve. Both Gemma 4 descriptors support multimodal parts, native structured
   output, grounding, and thinking (thinkingLevel). They do not support Gemini Flex or pricing.
 - Usage: read `usageMetadata` → `promptTokenCount`→inputTokens, `candidatesTokenCount`→outputTokens,
   `cachedContentTokenCount`→cachedInputTokens, `thoughtsTokenCount`→thinkingTokens; copy whole object
@@ -387,10 +390,10 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
 ## xAI adapter (`@gullabs/xai`)
 
 - `xaiAdapter(): ProviderAdapter` over the `openai` SDK's Responses API pointed at
-  `https://api.x.ai/v1` (peerDep `openai@^6`), API-key auth only. Ships `grok-4.5`
-  and `grok-4.6` (level reasoning; 4.6 admits `low | medium | high | xhigh` and
-  `serviceTier: 'priority'`; native structured output via `text.format`, vision, automatic
-  caching + `providerOptions.xai.promptCacheKey`, live-verified pricing incl. the >200k
+  `https://api.x.ai/v1` (peerDep `openai@^6`), API-key auth only. Ships `grok-4.5`,
+  `grok-4.6`, and `grok-4.7` (level reasoning; all three admit `serviceTier: 'priority'`,
+  while 4.6 and 4.7 also admit `xhigh`; native structured output via `text.format`, vision, automatic
+  caching + `providerOptions.xai.promptCacheKey`, pricing incl. the ≥200k
   long-context tier). Same contract as the Google adapter: strict per-model schema,
   reject-don't-map, GROSS usage, never persists/loops. Full details in
   `packages/xai/README.md`.

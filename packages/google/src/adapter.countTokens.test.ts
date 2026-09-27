@@ -12,6 +12,7 @@ import { describe, it, expect } from 'vitest'
 import type { AdapterCtx, TokenCountRequest, Message } from '@gullabs/core'
 import { makeFakeGemini } from '@gullabs/testing'
 import { geminiAdapter, mapMessagesToGeminiContents } from './adapter.js'
+import { defaultGeminiRegistry } from './models.js'
 
 const FAKE_CTX: AdapterCtx = {
   auth: { apiKey: 'test-key' },
@@ -180,6 +181,7 @@ describe('geminiAdapter.countTokens — message-mapping parity with run()', () =
         model: 'gemini-2.5-pro',
         messages,
         config: {},
+        modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-pro')!,
       },
       FAKE_CTX,
     )
@@ -202,7 +204,14 @@ describe('geminiAdapter.countTokens — message-mapping parity with run()', () =
     const countAdapter = geminiAdapter({ client: countClient })
 
     await runAdapter.run(
-      { provider: 'google', model: 'gemini-2.5-pro', messages, system, config: {} },
+      {
+        provider: 'google',
+        model: 'gemini-2.5-pro',
+        messages,
+        system,
+        config: {},
+        modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-pro')!,
+      },
       FAKE_CTX,
     )
     await countAdapter.countTokens!(makeCountReq({ messages, system }), FAKE_CTX)

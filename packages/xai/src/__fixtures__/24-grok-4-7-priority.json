@@ -1,0 +1,56 @@
+{
+  "status": 200,
+  "source": "2026-09-25 live probe-g47-priority.json",
+  "sanitization": "Selected response fields; encrypted_content omitted from reasoning item. Not a P-X3 replay fixture.",
+  "body": {
+    "model": "grok-4.7",
+    "output": [
+      {
+        "id": "rs_244e44e7-16a2-9daf-b694-ecdfa2729f9d",
+        "summary": [
+          {
+            "text": "The user said: \"Reply with the single word OK.\"\n",
+            "type": "summary_text"
+          }
+        ],
+        "type": "reasoning",
+        "status": "completed"
+      },
+      {
+        "content": [
+          {
+            "type": "output_text",
+            "text": "OK",
+            "logprobs": [],
+            "annotations": []
+          }
+        ],
+        "id": "msg_244e44e7-16a2-9daf-b694-ecdfa2729f9d",
+        "role": "assistant",
+        "type": "message",
+        "status": "completed"
+      }
+    ],
+    "usage": {
+      "input_tokens": 1532,
+      "input_tokens_details": {
+        "cached_tokens": 0
+      },
+      "output_tokens": 54,
+      "output_tokens_details": {
+        "reasoning_tokens": 53
+      },
+      "total_tokens": 1586,
+      "num_sources_used": 0,
+      "num_server_side_tools_used": 0,
+      "cost_in_usd_ticks": 67760000,
+      "context_details": {
+        "input_tokens": 1532,
+        "output_tokens": 63
+      }
+    },
+    "service_tier": "priority",
+    "status": "completed",
+    "store": false
+  }
+}

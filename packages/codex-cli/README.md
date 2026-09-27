@@ -24,15 +24,15 @@ actual use; not required to build or test this package.
 
 ## Key exports
 
-| Export                                          | Description                                                                                |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `codexCliAdapter(opts?)`                        | Builds the `ProviderAdapter` (`id: 'codex-cli'`).                                          |
-| `CodexCliAdapterOptions`                        | `{ runner?, codexPath?, maxConcurrency? }`.                                                |
-| `createCodexCliRunner(codexPath?)`              | Real `node:child_process`-backed `CodexCliRunner`.                                         |
-| `CodexCliRunner` / `CodexCliRunResult`          | The subprocess seam interface, for injecting fakes.                                        |
-| `codexCliModelDescriptors` / `codexCliRegistry` | `ModelDescriptor[]` / `ModelRegistry` for the 4 supported models.                          |
-| `CODEX_CLI_MODEL_IDS`                           | `'gpt-5.5' \| 'gpt-5.4' \| 'gpt-5.4-mini' \| 'gpt-5.3-codex-spark'`.                       |
-| `CODEX_CLI_REASONING_EFFORTS`                   | `['low', 'medium', 'high', 'xhigh']` (note: no `'none'`, unlike core's `ReasoningEffort`). |
+| Export                                          | Description                                                                   |
+| ----------------------------------------------- | ----------------------------------------------------------------------------- |
+| `codexCliAdapter(opts?)`                        | Builds the `ProviderAdapter` (`id: 'codex-cli'`).                             |
+| `CodexCliAdapterOptions`                        | `{ runner?, codexPath?, maxConcurrency? }`.                                   |
+| `createCodexCliRunner(codexPath?)`              | Real `node:child_process`-backed `CodexCliRunner`.                            |
+| `CodexCliRunner` / `CodexCliRunResult`          | The subprocess seam interface, for injecting fakes.                           |
+| `codexCliModelDescriptors` / `codexCliRegistry` | `ModelDescriptor[]` / `ModelRegistry` for the 3 supported models.             |
+| `CODEX_CLI_MODEL_IDS`                           | `'gpt-6-astra' \| 'gpt-6-sol' \| 'gpt-6-luna'`. No `gpt-5*` id is registered. |
+| `CODEX_CLI_REASONING_EFFORTS`                   | `['low', 'medium', 'high', 'xhigh', 'max']`. No `'none'`, no `'ultra'`.       |
 
 ## Quick example
 
@@ -45,7 +45,7 @@ const client = createClient({ adapters: [codexCliAdapter()] })
 const result = await client.generate(
   {
     provider: 'codex-cli',
-    model: 'gpt-5.4-mini',
+    model: 'gpt-6-sol',
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
   },
   { auth: { cliSession: true } },
@@ -159,7 +159,17 @@ The adapter runs an in-process semaphore around `runner.run`, defaulting to
 ### Argv is adapter-owned
 
 The invariant flags (`--json --ephemeral --skip-git-repo-check
---ignore-user-config --ignore-rules --sandbox read-only -c
-approval_policy=never --color never`) are never caller-configurable. Only
-`-m <model>`, `-c model_reasoning_effort=<effort>`, `--output-schema`, `-o`,
-`-C <scratchDir>`, and the final positional prompt argument vary per call.
+--ignore-user-config --ignore-rules --sandbox read-only --strict-config -c
+approval_policy=never --color never`) are never caller-configurable.
+`--strict-config` turns a mistyped `-c` key into exit 1 instead of a silent
+drop. Only `-m <model>`, `-c model_reasoning_effort=<effort>`,
+`--output-schema`, `-o`, `-C <scratchDir>`, and the final positional prompt
+argument vary per call.
+
+Smoke-tested on 2026-09-25 with `codex-cli 0.157.0`: `codex exec` accepted
+`--strict-config` together with `-c model_reasoning_effort=max` and
+`gpt-6-luna`, then completed a read-only prompt. Older local CLI builds may
+need an upgrade before using this dev-only adapter.
+
+`turn.completed.usage` may include `cache_write_input_tokens`. The JSONL
+parser keeps unknown keys and does not map that field onto `Usage`.

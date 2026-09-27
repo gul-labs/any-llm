@@ -158,11 +158,9 @@ const result = await client.generate(
 )
 ```
 
-`grok-4.5`'s `reasoning.effort` admits only `'low' | 'high'` (`Grok45ConfigSchema`).
-`grok-4.6` admits `'low' | 'medium' | 'high' | 'xhigh'` (live-verified 2026-08-12);
-`'none'` is rejected. `grok-4.6` also admits `serviceTier: 'priority'` (2× list
-price, confirmed by live `cost_in_usd_ticks`). `grok-4.5` still rejects every
-`serviceTier`. No `topK`.
+`grok-4.5` admits `reasoning.effort` `'low' | 'medium' | 'high'`.
+`grok-4.6` and `grok-4.7` also admit `'xhigh'`. All three admit
+`serviceTier: 'priority'` (2× list price). `'none'` is rejected. No `topK`.
 
 ## xAI structured-output schemas vs. OpenAI-strict / codex-cli schemas
 
@@ -367,7 +365,7 @@ Treat model config as descriptor-owned:
 ```ts
 import { defaultGeminiRegistry } from '@gullabs/google'
 
-const descriptor = defaultGeminiRegistry.resolve('google', 'gemini-3.5-flash')
+const descriptor = defaultGeminiRegistry.resolve('google', 'gemini-3.6-flash')
 if (!descriptor) throw new Error('unknown model')
 
 // UI/forms:
@@ -538,23 +536,32 @@ config: {
 }
 ```
 
-`ReasoningEffort` is `'none' | 'low' | 'medium' | 'high' | 'xhigh'`. Admitted values
+`ReasoningEffort` is `'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'`. Admitted values
 are per-model. Two provider APIs exist under the hood: Gemini 2.5 models take a
 token `budgetTokens`; Gemini 3.x / Gemma 4 / xAI take a discrete `effort` level.
 
 Use the model-native boundary directly:
 
-- Gemini 2.5: `reasoning.budgetTokens` or admitted `reasoning.effort` (not `xhigh`)
-- Gemini 3 / Gemma 4: `reasoning.effort` (not `xhigh`)
-- xAI `grok-4.5`: `reasoning.effort` `'low' | 'high'`
-- xAI `grok-4.6`: `reasoning.effort` `'low' | 'medium' | 'high' | 'xhigh'`
+- Gemini 2.5: `reasoning.budgetTokens` or admitted `reasoning.effort` (not `xhigh` or `max`)
+- Gemini 3 / Gemma 4: `reasoning.effort` (not `xhigh` or `max`)
+- xAI `grok-4.5`: `reasoning.effort` `'low' | 'medium' | 'high'`
+- xAI `grok-4.6` and `grok-4.7`: `reasoning.effort` `'low' | 'medium' | 'high' | 'xhigh'`
+
+Registered Google ids: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`,
+`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
+`gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemma-4-31b-it`,
+`gemma-4-26b-a4b-it`. `gemini-3-flash-preview` and `gemini-3.5-flash` do not resolve.
 
 Exact model reminders:
 
-- `gemini-3.1-pro-preview` does **not** admit `effort: 'none'`
+- `gemini-3.1-pro-preview`, `gemini-3.7-flash`, and `gemini-3.8-flash` do **not** admit `effort: 'none'`
+- Explicit-cache floors: 1024 on all six registered Gemini 3.x ids, live-verified on 2026-09-26 by a 103-token rejection and exact 1024-token create; 2048 remains configured on Gemini 2.5.
 - Gemma 4 is binary: only `effort: 'none'` or `effort: 'high'`
 - Omit `serviceTier` for provider-standard; set `flex` explicitly
 - `priority` remains rejected by the library even though Google documents it
+- July 21, 2026: Google deprecated sampling parameters `temperature`, `top_p`, and `top_k`. Gemini 3.x schemas already omit them. Gemini 2.5 and Gemma stay tunable.
+- September 18, 2026: Gemini 2.5 access is restricted to projects that already used 2.5. The three 2.5 ids stay registered.
+- xAI long-context rates apply at gross input `>= 200_000` (`long_context_threshold` is inclusive).
 
 ## Context caching — `GoogleCacheStore`
 
@@ -568,8 +575,8 @@ Optional preflight gate: pass `preflight` to the constructor to refuse a cache
 `create()` — including through `getOrCreate()` and its coalesced in-flight path —
 when the token-bearing payload (`model` + `contents` + `systemInstruction` only;
 `ttl` and `displayName` are excluded) doesn't clear a minimum token count. This
-mirrors Gemini's own explicit-caching minimum (2048 tokens on 3.x) without
-hard-coding it into the store.
+mirrors the selected model's explicit-caching minimum (1024 on Gemini 3.x;
+2048 on Gemini 2.5) without hard-coding it into the store.
 
 ```ts
 import { GoogleCacheStore } from '@gullabs/google'
@@ -577,7 +584,7 @@ import { GoogleCacheStore } from '@gullabs/google'
 const cacheStore = new GoogleCacheStore({
   auth: { apiKey: myResolvedGeminiKey },
   preflight: {
-    minTokens: 2048,
+    minTokens: 1024,
     // Receives genai-native Content[]/Content|string — NOT the library's
     // Message[] shape; there is no automatic conversion. Hosts building from
     // Message[] should call client.countTokens separately instead.

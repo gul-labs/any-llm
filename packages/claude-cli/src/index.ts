@@ -43,8 +43,10 @@ export type {
 export { claudeCliModelDescriptors, claudeCliRegistry } from './models.js'
 export type { ClaudeCliModelId } from './models.js'
 export {
-  ClaudeFable5ConfigSchema,
-  ClaudeOpus48ConfigSchema,
+  ClaudeFable51ConfigSchema,
+  ClaudeOpus55ConfigSchema,
   ClaudeSonnet5ConfigSchema,
   ClaudeHaiku45ConfigSchema,
+  CLAUDE_CLI_MODEL_IDS,
+  CLAUDE_CLI_EFFORTS,
 } from './models.js'

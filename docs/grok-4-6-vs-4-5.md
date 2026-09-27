@@ -9,7 +9,7 @@ can be live-verified instead of guessed. **Whether any host application
 should flip production traffic is out of scope here** — that is a host
 decision.
 
-## Current library fact (landed 2026-08-12)
+## Historical library fact (as of 2026-08-24)
 
 `@gullabs/xai` registers two canonical models: `grok-4.5` and `grok-4.6`.
 No aliases. Adding 4.6 was a new `ModelDescriptor` + pricing key + live
@@ -21,9 +21,10 @@ verification, not a rename of 4.5.
   (live-verified 2026-08-24). `'none'` and `'xhigh'` stay rejected.
 - `grok-4.6` admits `low|medium|high|xhigh` and `serviceTier: 'priority'`
   only. `'none'` and `'flex'` are rejected.
-- Pricing snapshot `xai-2026-08-24`: 4.5 $2 / $0.30 cached / $6 (≤200k)
-  and $4 / $0.60 / $12 (>200k); 4.6 $2 / $0.50 / $6 and $4 / $1 / $12.
-  Priority is 2×, confirmed by live `cost_in_usd_ticks` on fixture 12.
+- Pricing snapshot `xai-2026-08-24`: 4.5 $2 / $0.30 cached / $6 (<200k)
+  and $4 / $0.60 / $12 (≥200k); 4.6 $2 / $0.50 / $6 and $4 / $1 / $12.
+  The 2× priority rate is documented on xAI's pricing page; fixture 12
+  confirms it for grok-4.6 only. Grok 4.5's recorded probe rejected the tier.
   List rates pinned to `__fixtures__/14-v1-models-pricing.json`.
 
 ### Library fact as of launch-day research (pre-implementation)
@@ -85,24 +86,24 @@ announcement.
 
 ## Specs
 
-|                                 | Grok 4.5                                                                                                                                                                     | Grok 4.6                                           |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| Released                        | API ~2026-07-08; news 2026-07-16                                                                                                                                             | **2026-08-12**                                     |
-| Model id                        | `grok-4.5`                                                                                                                                                                   | `grok-4.6`                                         |
-| Aliases (provider `/v1/models`) | `grok-4.5-latest`, `grok-build-latest`                                                                                                                                       | none (`aliases: []` in fixture 14, 2026-08-12)     |
-| Context                         | 500k                                                                                                                                                                         | 500k                                               |
-| Knowledge cutoff                | 2026-02-01                                                                                                                                                                   | 2026-02-01                                         |
-| Modalities                      | text + image in → text out                                                                                                                                                   | same                                               |
-| Reasoning                       | always on; `low` / `medium` / `high` in current docs. **This library’s 2026-07-09 live probe: only `low` \| `high` accepted.** Docs say `xhigh` on 4.5 falls back to `high`. | same + native **`xhigh`** (live 200 on fixture 12) |
-| Default effort (vendor)         | `high`                                                                                                                                                                       | `high`                                             |
-| Structured output               | Responses `text.format` `json_schema`                                                                                                                                        | claimed same family; **not live-probed here**      |
-| Tools                           | function calling; server tools extra                                                                                                                                         | same                                               |
-| Vision                          | jpg/png ≤20 MiB                                                                                                                                                              | same (docs)                                        |
-| Caching                         | automatic; `prompt_cache_key`                                                                                                                                                | same                                               |
-| Regions                         | us-east-1, us-west-2; no EU                                                                                                                                                  | same                                               |
-| Rate limits (docs base)         | 150 RPS / 50M TPM                                                                                                                                                            | same                                               |
-| Batch                           | not listed                                                                                                                                                                   | not listed                                         |
-| Vendor speed claim              | **80 TPS**                                                                                                                                                                   | “most intelligent **and fastest**” — no TPS number |
+|                                 | Grok 4.5                                                                                                                | Grok 4.6                                           |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| Released                        | API ~2026-07-08; news 2026-07-16                                                                                        | **2026-08-12**                                     |
+| Model id                        | `grok-4.5`                                                                                                              | `grok-4.6`                                         |
+| Aliases (provider `/v1/models`) | `grok-4.5-latest`, `grok-build-latest`                                                                                  | none (`aliases: []` in fixture 14, 2026-08-12)     |
+| Context                         | 500k                                                                                                                    | 500k                                               |
+| Knowledge cutoff                | 2026-02-01                                                                                                              | 2026-02-01                                         |
+| Modalities                      | text + image in → text out                                                                                              | same                                               |
+| Reasoning                       | always on; schema admits `low` / `medium` / `high` (live-verified 2026-08-24). `xhigh` stays rejected (D2, 2026-09-25). | same + native **`xhigh`** (live 200 on fixture 12) |
+| Default effort (vendor)         | `high`                                                                                                                  | `high`                                             |
+| Structured output               | Responses `text.format` `json_schema`                                                                                   | claimed same family; **not live-probed here**      |
+| Tools                           | function calling; server tools extra                                                                                    | same                                               |
+| Vision                          | jpg/png ≤20 MiB                                                                                                         | same (docs)                                        |
+| Caching                         | automatic; `prompt_cache_key`                                                                                           | same                                               |
+| Regions                         | us-east-1, us-west-2; no EU                                                                                             | same                                               |
+| Rate limits (docs base)         | 150 RPS / 50M TPM                                                                                                       | same                                               |
+| Batch                           | not listed                                                                                                              | not listed                                         |
+| Vendor speed claim              | **80 TPS**                                                                                                              | “most intelligent **and fastest**” — no TPS number |
 
 Launch promo (product, not API list price): 2× included usage in Grok Build
 and Cursor for the first week after 2026-08-12.
@@ -111,7 +112,7 @@ and Cursor for the first week after 2026-08-12.
 
 Long-context rates apply to **the entire request** once prompt tokens
 reach ≥ 200k. This library selects `gt200k` when **gross** `inputTokens`
-(including cached) is **strictly greater than** 200,000.
+(including cached) is **at or above** 200,000.
 
 ### Official docs table (crawled 2026-08-12)
 
@@ -153,8 +154,9 @@ Other billing (both models, official):
 - Server-side tools (web search, X search, code execution) are typically
   ~$5 / 1k calls plus tokens. File attachments still implicitly enable
   `attachment_search` (see `packages/xai/README.md`).
-- As of 2026-08-12 the adapter admits `serviceTier: 'priority'` on
-  `grok-4.6` only. `grok-4.5` still rejects every `serviceTier`.
+- As of 2026-09-25 the adapter admits `serviceTier: 'priority'` on
+  `grok-4.5`, `grok-4.6`, and `grok-4.7`. The new Grok 4.5 live probe
+  echoed `priority` and billed exactly 2× the standard list.
 
 ### Consumer (not this library)
 

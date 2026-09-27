@@ -8,10 +8,12 @@
  */
 
 import { tmpdir } from 'node:os'
+import { readFileSync } from 'node:fs'
 import { describe, it, expect, vi } from 'vitest'
 import { LlmError } from '@gullabs/core'
 import type { AdapterCtx, ResolvedRequest } from '@gullabs/core'
 import { claudeCliAdapter } from './adapter.js'
+import { claudeCliRegistry } from './models.js'
 import type { ClaudeCliEnvelope } from './adapter.js'
 import type {
   ClaudeCliRunner,
@@ -20,7 +22,8 @@ import type {
 } from './runner.js'
 
 // ---------------------------------------------------------------------------
-// Fixtures — captured verbatim from a real `claude -p ... --output-format json` run
+// Synthetic envelopes for narrow contract tests. The separate P-A1 fixture
+// below retains selected verbatim fields from four live CLI responses.
 // ---------------------------------------------------------------------------
 
 const PLAIN_ENVELOPE: ClaudeCliEnvelope = {
@@ -38,6 +41,7 @@ const PLAIN_ENVELOPE: ClaudeCliEnvelope = {
     cache_read_input_tokens: 0,
     output_tokens: 30,
   },
+  modelUsage: { 'claude-haiku-4-5-20251001': { inputTokens: 3605, outputTokens: 30 } },
 }
 
 const STRUCTURED_ENVELOPE: ClaudeCliEnvelope = {
@@ -55,6 +59,17 @@ const STRUCTURED_ENVELOPE: ClaudeCliEnvelope = {
     cache_read_input_tokens: 0,
     output_tokens: 195,
   },
+  modelUsage: { 'claude-haiku-4-5-20251001': { inputTokens: 10, outputTokens: 195 } },
+}
+
+const pA1Fixture = JSON.parse(
+  readFileSync(
+    new URL('./__fixtures__/model-refresh-p-a1.json', import.meta.url),
+    'utf8',
+  ),
+) as {
+  schema: NonNullable<ResolvedRequest['outputJsonSchema']>
+  responses: Record<string, ClaudeCliEnvelope>
 }
 
 // ---------------------------------------------------------------------------
@@ -82,11 +97,13 @@ function envelopeResult(envelope: ClaudeCliEnvelope): ClaudeCliRunResult {
 }
 
 function makeResolvedReq(overrides: Partial<ResolvedRequest> = {}): ResolvedRequest {
+  const model = overrides.model ?? 'claude-haiku-4-5-20251001'
   return {
     provider: 'claude-cli',
-    model: 'claude-haiku-4-5-20251001',
+    model,
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Say exactly: hi' }] }],
     config: {},
+    modelDescriptor: claudeCliRegistry.resolve('claude-cli', model)!,
     ...overrides,
   }
 }
@@ -205,15 +222,45 @@ describe('happy path: structured output', () => {
 // Argv construction
 // ---------------------------------------------------------------------------
 
+describe('P-A1 live CLI envelopes', () => {
+  for (const model of [
+    'claude-fable-5-1',
+    'claude-opus-5-5',
+    'claude-sonnet-5',
+    'claude-haiku-4-5-20251001',
+  ]) {
+    it(`maps ${model} with model switching disabled and JSON schema`, async () => {
+      const captured = pA1Fixture.responses[model]
+      expect(captured).toBeDefined()
+      expect(Object.keys(captured?.modelUsage ?? {})).toEqual([model])
+      const { runner, calls } = makeFakeRunner(() => envelopeResult(captured!))
+      const result = await claudeCliAdapter({ runner }).run(
+        makeResolvedReq({ model, outputJsonSchema: pA1Fixture.schema }),
+        CLI_SESSION_CTX,
+      )
+      expect(result.model).toBe(model)
+      expect(result.rawStructured).toEqual({ answer: 'OK' })
+      expect(calls[0]?.args).toContain('{"switchModelsOnFlag":false}')
+      expect(calls[0]?.args).toContain('--json-schema')
+    })
+  }
+})
+
 describe('argv construction', () => {
   it('builds the exact invariant + mapped argv in order', async () => {
-    const { runner, calls } = makeFakeRunner(() => envelopeResult(PLAIN_ENVELOPE))
+    const { runner, calls } = makeFakeRunner(() =>
+      envelopeResult({
+        ...PLAIN_ENVELOPE,
+        modelUsage: { 'claude-sonnet-5': { inputTokens: 10, outputTokens: 195 } },
+      }),
+    )
     const adapter = claudeCliAdapter({ runner })
 
     await adapter.run(
       makeResolvedReq({
+        model: 'claude-sonnet-5',
         system: 'be terse',
-        config: { reasoning: { effort: 'high' } },
+        config: { reasoning: { effort: 'max' } },
         outputJsonSchema: { type: 'object', properties: {} },
       }),
       CLI_SESSION_CTX,
@@ -228,10 +275,12 @@ describe('argv construction', () => {
       '',
       '--disable-slash-commands',
       '--no-session-persistence',
+      '--settings',
+      '{"switchModelsOnFlag":false}',
       '--model',
-      'claude-haiku-4-5-20251001',
+      'claude-sonnet-5',
       '--effort',
-      'high',
+      'max',
       '--system-prompt',
       'be terse',
       '--json-schema',
@@ -257,6 +306,140 @@ describe('argv construction', () => {
     expect(calls[0]?.args).not.toContain('--effort')
     expect(calls[0]?.args).not.toContain('--system-prompt')
     expect(calls[0]?.args).not.toContain('--json-schema')
+  })
+
+  it('rejects reasoning for Haiku before invoking the CLI', async () => {
+    const { runner, calls } = makeFakeRunner(() => envelopeResult(PLAIN_ENVELOPE))
+    const adapter = claudeCliAdapter({ runner })
+
+    await expect(
+      adapter.run(
+        makeResolvedReq({ config: { reasoning: { effort: 'high' } } }),
+        CLI_SESSION_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request' })
+    expect(calls).toHaveLength(0)
+  })
+
+  it('rejects a descriptor for another model before invoking the CLI', async () => {
+    const { runner, calls } = makeFakeRunner(() => envelopeResult(PLAIN_ENVELOPE))
+    const adapter = claudeCliAdapter({ runner })
+    await expect(
+      adapter.run(
+        makeResolvedReq({
+          modelDescriptor: claudeCliRegistry.resolve('claude-cli', 'claude-sonnet-5')!,
+          config: { reasoning: { effort: 'high' } },
+        }),
+        CLI_SESSION_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request' })
+    expect(calls).toHaveLength(0)
+  })
+
+  it('throws server when modelUsage names a different model', async () => {
+    const switched: ClaudeCliEnvelope = {
+      ...PLAIN_ENVELOPE,
+      modelUsage: { 'claude-opus-5': { input_tokens: 1 } },
+    }
+    const { runner } = makeFakeRunner(() => envelopeResult(switched))
+    const adapter = claudeCliAdapter({ runner })
+
+    await expect(
+      adapter.run(makeResolvedReq({ model: 'claude-fable-5-1' }), CLI_SESSION_CTX),
+    ).rejects.toMatchObject({
+      kind: 'server',
+      retryable: false,
+    })
+  })
+
+  it('rejects a Haiku helper beside the requested model', async () => {
+    const response: ClaudeCliEnvelope = {
+      ...PLAIN_ENVELOPE,
+      modelUsage: {
+        'claude-fable-5-1': { inputTokens: 10, outputTokens: 3 },
+        'claude-haiku-4-5-20251001': { inputTokens: 2, outputTokens: 1 },
+      },
+    }
+    const { runner } = makeFakeRunner(() => envelopeResult(response))
+    const adapter = claudeCliAdapter({ runner })
+
+    await expect(
+      adapter.run(makeResolvedReq({ model: 'claude-fable-5-1' }), CLI_SESSION_CTX),
+    ).rejects.toMatchObject({ kind: 'server', retryable: false })
+  })
+
+  it('rejects helper-only modelUsage without the requested model', async () => {
+    const response: ClaudeCliEnvelope = {
+      ...PLAIN_ENVELOPE,
+      modelUsage: { 'claude-haiku-4-5-20251001': { inputTokens: 2 } },
+    }
+    const { runner } = makeFakeRunner(() => envelopeResult(response))
+    const adapter = claudeCliAdapter({ runner })
+
+    await expect(
+      adapter.run(makeResolvedReq({ model: 'claude-fable-5-1' }), CLI_SESSION_CTX),
+    ).rejects.toMatchObject({ kind: 'server', retryable: false })
+  })
+
+  it('rejects a success envelope without modelUsage', async () => {
+    const response: ClaudeCliEnvelope = { ...PLAIN_ENVELOPE }
+    delete response.modelUsage
+    const { runner } = makeFakeRunner(() => envelopeResult(response))
+    const adapter = claudeCliAdapter({ runner })
+
+    await expect(adapter.run(makeResolvedReq(), CLI_SESSION_CTX)).rejects.toMatchObject({
+      kind: 'server',
+      retryable: false,
+    })
+  })
+
+  it('names both ids when modelUsage mismatches', async () => {
+    const switched: ClaudeCliEnvelope = {
+      ...PLAIN_ENVELOPE,
+      modelUsage: { 'claude-opus-5': { input_tokens: 1 } },
+    }
+    const { runner } = makeFakeRunner(() => envelopeResult(switched))
+    const adapter = claudeCliAdapter({ runner })
+
+    await expect(
+      adapter.run(makeResolvedReq({ model: 'claude-fable-5-1' }), CLI_SESSION_CTX),
+    ).rejects.toThrow(
+      /claude-opus-5[\s\S]*claude-fable-5-1|claude-fable-5-1[\s\S]*claude-opus-5/,
+    )
+  })
+
+  it('returns a successful refusal with content_filter and billed usage', async () => {
+    const refused: ClaudeCliEnvelope = {
+      ...PLAIN_ENVELOPE,
+      is_error: false,
+      stop_reason: 'refusal',
+    }
+    const { runner } = makeFakeRunner(() => envelopeResult(refused))
+    const adapter = claudeCliAdapter({ runner })
+
+    const result = await adapter.run(makeResolvedReq(), CLI_SESSION_CTX)
+    expect(result.finishReason).toBe('content_filter')
+    expect(result.usage.inputTokens).toBeGreaterThan(0)
+    expect(result.usage.outputTokens).toBeGreaterThan(0)
+  })
+
+  it('classifies stop_reason refusal as content_filter', async () => {
+    const refused: ClaudeCliEnvelope = {
+      ...PLAIN_ENVELOPE,
+      is_error: true,
+      stop_reason: 'refusal',
+    }
+    const { runner } = makeFakeRunner(() => ({
+      stdout: JSON.stringify(refused),
+      stderr: '',
+      exitCode: 1,
+    }))
+    const adapter = claudeCliAdapter({ runner })
+
+    await expect(adapter.run(makeResolvedReq(), CLI_SESSION_CTX)).rejects.toMatchObject({
+      kind: 'content_filter',
+      retryable: false,
+    })
   })
 })
 

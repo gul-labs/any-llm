@@ -30,6 +30,26 @@ describe('classifyGoogleError', () => {
     expect(result.retryable).toBe(false)
   })
 
+  it('classifies a structured Gemini NOT_FOUND model-access response as bad_request', () => {
+    const err = new Error(
+      JSON.stringify({
+        error: {
+          code: 404,
+          status: 'NOT_FOUND',
+          message: 'This model is no longer available to new users.',
+        },
+      }),
+    ) as Error & { status: number }
+    err.status = 404
+    const result = classifyGoogleError(err)
+    expect(result).toMatchObject({
+      kind: 'bad_request',
+      retryable: false,
+      httpStatus: 404,
+      provider: 'google',
+    })
+  })
+
   it('classifies undici "fetch failed" TypeError as retryable server, not unknown', () => {
     const result = classifyGoogleError(new TypeError('fetch failed'))
     expect(result.kind).toBe('server')

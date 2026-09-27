@@ -402,12 +402,13 @@ describe('engine + middleware — integration', () => {
   const PRICING = makeTestPricingSource(
     {
       'gemini-2.5-pro': {
-        inputPerM: 1_250_000,
-        cachedPerM: 125_000,
-        outputPerM: 10_000_000,
+        standard: {
+          inputPerM: 1_250_000,
+          cachedPerM: 125_000,
+          outputPerM: 10_000_000,
+        },
       },
     },
-    { standard: 1 },
     'test-pricing-1',
   )
   const TEST_REGISTRY = createModelRegistry([

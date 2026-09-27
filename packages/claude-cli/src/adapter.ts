@@ -64,6 +64,8 @@ export interface ClaudeCliEnvelope {
   total_cost_usd?: number
   num_turns?: number
   usage?: ClaudeCliUsageShape
+  /** Per-model usage, checked for an exact requested-model match on success. */
+  modelUsage?: Record<string, unknown>
   [key: string]: unknown
 }
 
@@ -111,6 +113,8 @@ function mapFinishReason(stopReason: string | undefined): FinishReason | undefin
   switch (stopReason) {
     case 'end_turn':
       return 'stop'
+    case 'refusal':
+      return 'content_filter'
     case 'tool_use':
       // The CLI's own final answer, not a caller-visible tool call — treat
       // as a successful completion for our purposes.
@@ -207,10 +211,47 @@ function looksRateLimited(text: string): boolean {
   return /rate limit|429/i.test(text)
 }
 
+function assertServedModel(envelope: ClaudeCliEnvelope, requestedModel: string): void {
+  const modelUsage: unknown = envelope.modelUsage
+  if (
+    modelUsage === null ||
+    typeof modelUsage !== 'object' ||
+    Array.isArray(modelUsage)
+  ) {
+    throw new LlmError('claude CLI did not report a valid modelUsage object.', {
+      kind: 'server',
+      retryable: false,
+      provider: 'claude-cli',
+    })
+  }
+  for (const served of Object.keys(modelUsage)) {
+    if (served !== requestedModel) {
+      throw new LlmError(
+        `claude CLI served model "${served}" but the request asked for "${requestedModel}".`,
+        { kind: 'server', retryable: false, provider: 'claude-cli' },
+      )
+    }
+  }
+  if (!Object.hasOwn(modelUsage, requestedModel)) {
+    throw new LlmError(
+      `claude CLI did not report the requested model "${requestedModel}" in modelUsage.`,
+      { kind: 'server', retryable: false, provider: 'claude-cli' },
+    )
+  }
+}
+
 function classifyRunFailure(
   envelope: ClaudeCliEnvelope | undefined,
   result: ClaudeCliRunResult,
 ): LlmError {
+  if (envelope?.stop_reason === 'refusal') {
+    return new LlmError('claude CLI refused the prompt (stop_reason: refusal).', {
+      kind: 'content_filter',
+      retryable: false,
+      provider: 'claude-cli',
+    })
+  }
+
   const combinedText = `${envelope?.subtype ?? ''} ${result.stderr}`
 
   if (looksAuthy(combinedText)) {
@@ -307,6 +348,34 @@ export function claudeCliAdapter(opts?: ClaudeCliAdapterOptions): ProviderAdapte
       const model = req.model
       const config = req.config
 
+      if (
+        req.modelDescriptor?.model !== model ||
+        req.modelDescriptor.provider !== 'claude-cli'
+      ) {
+        throw new LlmError(`No matching Claude model descriptor for "${model}".`, {
+          kind: 'bad_request',
+          retryable: false,
+          provider: 'claude-cli',
+        })
+      }
+      if (req.transientProviderState !== undefined) {
+        throw new LlmError(`Model "${model}" does not admit transientProviderState.`, {
+          kind: 'bad_request',
+          retryable: false,
+          provider: 'claude-cli',
+        })
+      }
+      if (
+        config.reasoning !== undefined &&
+        req.modelDescriptor.capabilities?.reasoningApi === undefined
+      ) {
+        throw new LlmError(`Model "${model}" does not admit reasoning.`, {
+          kind: 'bad_request',
+          retryable: false,
+          provider: 'claude-cli',
+        })
+      }
+
       // ------------------------------------------------------------------
       // 2. Prompt serialization (throws bad_request on non-text parts).
       // ------------------------------------------------------------------
@@ -329,6 +398,8 @@ export function claudeCliAdapter(opts?: ClaudeCliAdapterOptions): ProviderAdapte
         '',
         '--disable-slash-commands',
         '--no-session-persistence',
+        '--settings',
+        '{"switchModelsOnFlag":false}',
       ]
 
       args.push('--model', model)
@@ -430,6 +501,8 @@ export function claudeCliAdapter(opts?: ClaudeCliAdapterOptions): ProviderAdapte
       ) {
         throw classifyRunFailure(envelope, result)
       }
+
+      assertServedModel(envelope, model)
 
       // ------------------------------------------------------------------
       // 6. Map result → AdapterResult.

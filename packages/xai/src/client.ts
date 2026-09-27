@@ -95,7 +95,13 @@ export interface XaiFunctionCallOutputInputItem {
 }
 
 export type XaiRequestInputItem =
-  XaiInputItem | XaiFunctionCallInputItem | XaiFunctionCallOutputInputItem
+  XaiInputItem | XaiFunctionCallInputItem | XaiFunctionCallOutputInputItem | XaiOutputItem
+
+/** Full wire history for stateless continuation. */
+export interface XaiReplayState {
+  model: string
+  input: XaiRequestInputItem[]
+}
 
 /**
  * Structured-output text-format request shape.

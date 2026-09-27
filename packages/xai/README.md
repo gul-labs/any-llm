@@ -14,28 +14,30 @@ xAI has no first-party TypeScript SDK. xAI's own quickstart recommends using the
 
 ## Key exports
 
-| Export                  | What it is                                                                                              |
-| ----------------------- | ------------------------------------------------------------------------------------------------------- |
-| `xaiProvider(opts?)`    | `ProviderPlugin` factory — bundles the adapter, `grok-4.5` / `grok-4.6` descriptors, and pricing source |
-| `xaiAdapter(opts?)`     | Creates the `ProviderAdapter` for xAI                                                                   |
-| `XaiAdapterOptions`     | `{ client?: XaiClientLike }` — inject a pre-built or fake client                                        |
-| `XaiClientLike`         | Structural interface the adapter depends on (satisfied by real SDK and fakes)                           |
-| `buildXaiClient(auth)`  | Builds the real `openai`-SDK-backed client from `AuthMaterial`, pointed at xAI's base URL               |
-| `classifyXaiError(err)` | Classifies a raw thrown error into a typed `LlmError`, including xAI's 400-for-auth quirk               |
-| `grok45ModelDescriptor` | The `grok-4.5` `ModelDescriptor`                                                                        |
-| `grok46ModelDescriptor` | The `grok-4.6` `ModelDescriptor`                                                                        |
-| `xaiModelDescriptors`   | Every model descriptor this package contributes (`grok-4.5`, `grok-4.6`)                                |
-| `xaiRegistry`           | Pre-built `ModelRegistry` over `xaiModelDescriptors`                                                    |
-| `xaiPricingSource()`    | Built-in xAI `PricingSource` port implementation, backed by `XAI_PRICING`                               |
-| `XAI_PRICING`           | Frozen xAI pricing snapshot (µUSD per million tokens)                                                   |
-| `XaiModelRates`         | Per-model rate entry type (`inputPerM`, `cachedPerM`, `outputPerM`, optional `gt200k`)                  |
-| `Grok45ConfigSchema`    | Strict Zod config schema for `grok-4.5`                                                                 |
-| `Grok46ConfigSchema`    | Strict Zod config schema for `grok-4.6`                                                                 |
-| `XaiProviderOptions`    | `{ promptCacheKey? }` — typed `providerOptions.xai` extension shape                                     |
-| `XaiFileStore`          | Files API store: upload (TTL), get, list, idempotent delete, content                                    |
-| `XaiFileHandle`         | `{ id, filename?, bytes?, expiresAt?, … }` returned by the store                                        |
-| `FileDeleteOptions`     | `{ failClosed?, signal? }` — opt-in fail-closed delete for durable release gates                        |
-| `XAI_FILE_TTL_*`        | TTL bounds (`3600`…`2592000` seconds) and `XAI_FILE_MAX_BYTES` (48 MiB)                                 |
+| Export                  | What it is                                                                                                           |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `xaiProvider(opts?)`    | `ProviderPlugin` factory — bundles the adapter, `grok-4.5` / `grok-4.6` / `grok-4.7` descriptors, and pricing source |
+| `xaiAdapter(opts?)`     | Creates the `ProviderAdapter` for xAI                                                                                |
+| `XaiAdapterOptions`     | `{ client?: XaiClientLike }` — inject a pre-built or fake client                                                     |
+| `XaiClientLike`         | Structural interface the adapter depends on (satisfied by real SDK and fakes)                                        |
+| `buildXaiClient(auth)`  | Builds the real `openai`-SDK-backed client from `AuthMaterial`, pointed at xAI's base URL                            |
+| `classifyXaiError(err)` | Classifies a raw thrown error into a typed `LlmError`, including xAI's 400-for-auth quirk                            |
+| `grok45ModelDescriptor` | The `grok-4.5` `ModelDescriptor`                                                                                     |
+| `grok46ModelDescriptor` | The `grok-4.6` `ModelDescriptor`                                                                                     |
+| `grok47ModelDescriptor` | The `grok-4.7` `ModelDescriptor`                                                                                     |
+| `xaiModelDescriptors`   | Every model descriptor this package contributes (`grok-4.5`, `grok-4.6`, `grok-4.7`)                                 |
+| `xaiRegistry`           | Pre-built `ModelRegistry` over `xaiModelDescriptors`                                                                 |
+| `xaiPricingSource()`    | Built-in xAI `PricingSource` port implementation, backed by `XAI_PRICING`                                            |
+| `XAI_PRICING`           | Frozen xAI pricing snapshot (µUSD per million tokens)                                                                |
+| `XaiModelRates`         | Per-model rate entry type (`inputPerM`, `cachedPerM`, `outputPerM`, optional `gt200k`)                               |
+| `Grok45ConfigSchema`    | Strict Zod config schema for `grok-4.5`                                                                              |
+| `Grok46ConfigSchema`    | Strict Zod config schema for `grok-4.6`                                                                              |
+| `Grok47ConfigSchema`    | Strict Zod config schema for `grok-4.7`                                                                              |
+| `XaiProviderOptions`    | Typed `providerOptions.xai` shape for cache key, search tools, and parallel calls                                    |
+| `XaiFileStore`          | Files API store: upload (TTL), get, list, idempotent delete, content                                                 |
+| `XaiFileHandle`         | `{ id, filename?, bytes?, expiresAt?, … }` returned by the store                                                     |
+| `FileDeleteOptions`     | `{ failClosed?, signal? }` — opt-in fail-closed delete for durable release gates                                     |
+| `XAI_FILE_TTL_*`        | TTL bounds (`3600`…`2592000` seconds) and `XAI_FILE_MAX_BYTES` (48 MiB)                                              |
 
 ## Quick example
 
@@ -123,18 +125,19 @@ const replay = await client.generate(
 // replay.text — model answer after the host dispatched the tool
 ```
 
-## grok-4.5 and grok-4.6
+## grok-4.5, grok-4.6, and grok-4.7
 
-The default registry ships two canonical models (500k token context window each). They route through this adapter and support:
+The default registry ships three canonical models (500k token context window each). They route through this adapter and support:
 
 - **Reasoning** — level-api (`reasoningApi: 'level'`), mapped to the Responses API `reasoning.effort` field. There is no `budgetTokens` field (xAI uses level-style reasoning) — passing it throws `bad_request`. The schema does not set a default effort; if `reasoning` is omitted, no `reasoning` field is sent and xAI's own server-side default (`high`) applies.
   - `grok-4.5`: `admittedReasoningEfforts: ['low', 'medium', 'high']` (live-verified 2026-08-24; `'medium'` is now accepted). `'none'` and `'xhigh'` are rejected. `'none'` remains rejected ("reasoning cannot be disabled").
-  - `grok-4.6`: `admittedReasoningEfforts: ['low', 'medium', 'high', 'xhigh']` (live-verified 2026-08-12). `'none'` is rejected by the live API.
+  - `grok-4.6` and `grok-4.7`: `admittedReasoningEfforts: ['low', 'medium', 'high', 'xhigh']`. `'none'` is rejected.
 - **Structured output** — native. `output.jsonSchema` maps to the Responses API's `text.format` field with `{ type: 'json_schema', name, schema, strict: true }`, **not** `response_format` — this differs from OpenAI's own convention for the same underlying concept.
+- **Structured output with built-in search** — admitted on `grok-4.6`, as captured in fixture 18. The adapter rejects this combination on descriptors without `structuredOutputWithTools`.
 - **`strict: true` performs no OpenAI-style compile-time schema validation, as of the 2026-07-09 live probes.** 2026-07-09 live verification against the real xAI Responses API — 13 single-variant probes plus 1 combined probe (14 calls total, all accepted HTTP 200; the combined probe is recorded as fixture `10-non-strict-schema-accepted.json`) — verified that `text.format` with `strict: true` accepted every one of the following schema shapes that OpenAI's own strict mode rejects at compile time: schemas (root and nested) missing `additionalProperties: false`; properties omitted from `required` (optional properties); `format`, `minLength`, `pattern`, and `default` keywords; `anyOf`; `$defs`/`$ref`; `enum`/`const`; and nullable unions (`type: [T, 'null']`). `strict: false` on the same surface showed no observed behavioral divergence from `strict: true`. This adapter forwards schemas to xAI verbatim — no rewriting, no preflight validation, and no injection of `additionalProperties: false` or `required` completion — so OpenAI-strict schema rewriting (including `@gullabs/codex-cli`'s `toOpenAiStrictOutputSchema` helper) is unnecessary for xai as of that verification date. (Reject-don't-map still applies to genuinely invalid input the xai schema/types layer itself rejects; this note is only about strict-mode compile-time schema-shape enforcement.) `packages/xai/src/__fixtures__/10-non-strict-schema-accepted.json` records one live example combining three of these — missing root `additionalProperties: false`, an optional property, and a `format` keyword — in a single accepted call.
 - **Sampling** — `temperature` and `topP` are forwarded verbatim. No `topK`.
 - **No penalties/stop** — `presence_penalty`, `frequency_penalty`, and `stop` are not in the config schema at all; xAI hard-rejects these on reasoning models, so the schema never admits them (reject-don't-map).
-- **Service tiers** — `grok-4.5` admits none; setting `serviceTier` throws `bad_request`. `grok-4.6` admits `serviceTier: 'priority'` only (Responses `service_tier: "priority"`, live-verified 2026-08-12). `'flex'` / `'standard'` / `'batch'` are rejected — xAI silently remaps unknown tiers to `default`, so this library never forwards them.
+- **Service tiers** — all three models admit `serviceTier: 'priority'` (Responses `service_tier: "priority"`, billed at 2×). Grok 4.5 was captured live on 2026-09-25 and Grok 4.6 on 2026-08-12. `'flex'` / `'standard'` / `'batch'` are rejected — xAI silently remaps unknown tiers to `default`, so this library never forwards them.
 
 ## Files store (`XaiFileStore`)
 
@@ -181,13 +184,42 @@ try {
 | ZDR teams                   | New uploads and `file_id` attachments are blocked by xAI; errors mention Zero Data Retention when detectable                                                                                                  |
 | Max size                    | 48 MiB (conservative vs docs 48–50 MB)                                                                                                                                                                        |
 
-**Billing note:** attaching files on Responses implicitly enables xAI's `attachment_search` agentic tool. Live 2026-08-24 pins `web_search_calls` and `x_search_calls` in `usage.server_side_tool_usage_details` (flattened into `usage.details`). The attachment_search counter is **not** live-pinned (ZDR blocks file attach on this key); a `file-ref` call sets synthetic `usage.details.attachment_search_unpinned = 1` and `Cost.confidence: 'estimated'` — it is never reported as exact `$0`. `server_tools_requested = 1` is adapter-owned. Missing expected web/X counters → `tools: 0`, `estimated`, plus an adapter warning.
+**Hidden input tokens:** grok-4.5, grok-4.6, and grok-4.7 bill about 1.3k hidden input tokens per request (1,532 for a one-line prompt versus 208 in July; cached on repeats).
+
+**grok-4.7 replay:** the adapter sends `store: false`. Each result returns
+`result.transientProviderState`, containing the complete wire input and
+response output in provider order, including opaque `encrypted_content`,
+messages, and server-tool items. Pass that object unchanged as
+`request.transientProviderState` on the next request. This state is not written
+to the call ledger. It is returned even for one-shot calls and can contain the
+full prompt, inline media, and encrypted reasoning. Strip it before logging or
+caching a whole result; store it securely only when continuation is needed.
+When passing state, provide only new user or tool-result messages; the state
+already contains prior turns. Use the new state returned by each subsequent
+result. The adapter rejects assistant history alongside state, an empty new
+message list, an unknown tool-result id, or a mismatched model. Without state,
+a request starts a fresh conversation and may include text-only assistant
+examples; function-call history requires state. Live fixtures
+`28-grok-4-7-replay.json`, `30-grok-4-7-search-replay.json`, and
+`31-grok-4-7-third-turn.json` cover function replay and follow-ups that replay
+assistant message and web-search items.
+
+**Billing note:** attaching files on Responses implicitly enables xAI's `attachment_search` agentic tool. `web_search_calls` is billed per call. Since 2026-09-21, x_search is billed from `x_posts_fetched` and `x_users_fetched`, not `x_search_calls`. The attachment_search counter is **not** live-pinned (P-X2); a `file-ref` call sets synthetic `usage.details.attachment_search_unpinned = 1` and `Cost.confidence: 'estimated'`. When a required server-tool counter is absent, the snapshot cost is unpriced (`microUsd: null`) rather than understating an unknown fee. The provider's billed `cost_in_usd_ticks` remains in raw usage for separate reconciliation; it is not represented as a rate-snapshot-derived `Cost`.
+
+Fixture `19-x-search.json` was captured on 2026-08-24, before the billing
+change. It has only `x_search_calls`; the fixture test retains its actual
+billed total in usage but leaves snapshot cost unpriced.
+Live 2026-09-26 fixtures `26-x-posts.json` and `27-x-users.json` pin both
+item counters, including explicit zero counts, and reconcile snapshot cost to
+the provider's billed ticks. P-X2 attachment counter verification remains
+blocked: the available Zero Data Retention key returned 403 for file upload
+and 400 for a public URL attachment (`29-attachment-zdr-blocked.json`).
 
 **Host tests:** `@gullabs/testing` exports `FakeXaiFileStore` (in-memory upload/get/delete with optional TTL clock and `failClosed`).
 
 ## Vision constraints
 
-Both models accept image input as an `inline-media` or `file-uri` `Part`, and document attachments as a `file-ref` `Part`:
+All three models accept image input as an `inline-media` or `file-uri` `Part`, and document attachments as a `file-ref` `Part`:
 
 - **`inline-media`** — only `image/jpeg` and `image/png` are accepted; anything else throws `bad_request`. The decoded payload must be at most 20 MiB (xAI's documented inline-image ceiling); larger images throw `bad_request` before the request is sent.
 - **`file-uri`** — only accepted when the URI is a public `http(s)://` URL **and** the declared `mimeType` is jpg/png. A provider-hosted URI from another provider — for example a Gemini Files API URI (`https://generativelanguage.googleapis.com/...`) — is technically `https://` but is not dereferenceable by xAI and is not portable across providers. The adapter rejects it rather than trying to map or proxy it (reject-don't-map).
@@ -200,23 +232,26 @@ xAI caching is automatic — there is no explicit cache-create/cache-store API c
 
 ## Pricing
 
-`XAI_PRICING` is a frozen, versioned snapshot (`xaiPricingVersion: 'xai-2026-08-24'`) — a point-in-time capture from `/v1/models`, not a live lookup (ADR-005). Rates are in µUSD per million tokens. Tool invocations add `Cost.details.tools` (`microUsd = input + cached + output + tools`):
+`XAI_PRICING` is a frozen, versioned snapshot (`xaiPricingVersion: 'xai-2026-09-25'`) — a point-in-time capture from `/v1/models`, not a live lookup (ADR-005). Rates are in µUSD per million tokens. Tool invocations add `Cost.details.tools` (`microUsd = input + cached + output + tools`):
 
-| Counter (raw `usage.details` key) | Rate       |
-| --------------------------------- | ---------- |
-| `web_search_calls`                | $5 / 1,000 |
-| `x_search_calls`                  | $5 / 1,000 |
+| Counter (raw `usage.details` key) | Rate                 |
+| --------------------------------- | -------------------- |
+| `web_search_calls`                | $5 / 1,000 calls     |
+| `x_posts_fetched`                 | $5 / 1,000 posts     |
+| `x_users_fetched`                 | $10 / 1,000 profiles |
 
 Enable Live Search with `providerOptions.xai.tools` (`web_search` / `x_search`). Citations land on `result.citations`. `countTokens` uses `POST /v1/tokenize-text` and returns `accuracy: 'lower-bound'` (text parts only; media / file parts are `bad_request`).
 
 | Model      | Tier                         | Input   | Cached input | Output   |
 | ---------- | ---------------------------- | ------- | ------------ | -------- |
-| `grok-4.5` | standard (≤200k gross input) | $2.00/M | $0.30/M      | $6.00/M  |
-| `grok-4.5` | `gt200k` (>200k gross input) | $4.00/M | $0.60/M      | $12.00/M |
-| `grok-4.6` | standard (≤200k gross input) | $2.00/M | $0.50/M      | $6.00/M  |
-| `grok-4.6` | `gt200k` (>200k gross input) | $4.00/M | $1.00/M      | $12.00/M |
+| `grok-4.5` | standard (<200k gross input) | $2.00/M | $0.30/M      | $6.00/M  |
+| `grok-4.5` | `gt200k` (≥200k gross input) | $4.00/M | $0.60/M      | $12.00/M |
+| `grok-4.6` | standard (<200k gross input) | $2.00/M | $0.50/M      | $6.00/M  |
+| `grok-4.6` | `gt200k` (≥200k gross input) | $4.00/M | $1.00/M      | $12.00/M |
+| `grok-4.7` | standard (<200k gross input) | $2.00/M | $0.50/M      | $6.00/M  |
+| `grok-4.7` | `gt200k` (≥200k gross input) | $4.00/M | $1.00/M      | $12.00/M |
 
-The `gt200k` long-context tier is selected by **gross** `inputTokens` (including cached), not billable input — strictly greater than 200,000 tokens, mirroring core's `selectRates` convention. The adapter now surfaces the echoed Responses `service_tier` (`'default'` or `'priority'`), so `price()` receives that served value instead of `undefined`. Custom xAI `PricingSource` implementations must price `'default'` at the standard list. Built-in `xaiPricingSource().price()` prices `grok-4.6` + `tier: 'priority'` at 2× every token type after the cache discount: uncached standard-list 2× is confirmed by fixture `12-grok-4-6-xhigh-priority.json` `cost_in_usd_ticks`; cached and `gt200k` legs follow the official 2×-after-cache-discount rule. Any other defined tier (including `priority` on `grok-4.5`) is unpriced (`microUsd: null`). Standard list rates are pinned to `packages/xai/src/__fixtures__/14-v1-models-pricing.json` (live `GET /v1/models` 2026-08-12).
+The `gt200k` long-context tier is selected by **gross** `inputTokens` (including cached), not billable input — at or above 200,000 tokens (`long_context_threshold`), as stated on [xAI's pricing page](https://docs.x.ai/developers/pricing). The adapter surfaces the echoed Responses `service_tier` (`'default'` or `'priority'`), so `price()` receives that served value instead of `undefined`. Custom xAI `PricingSource` implementations must price `'default'` at the standard list. Built-in `xaiPricingSource().price()` prices priority at 2× every token type after the cache discount. Fixture `23-grok-4-5-priority.json` confirms Grok 4.5's 2× total, and fixture `12-grok-4-6-xhigh-priority.json` confirms Grok 4.6; cached and `gt200k` legs follow the official 2×-after-cache-discount rule. `fast` is not admitted. Any other defined tier is unpriced (`microUsd: null`). Grok 4.5/4.6 list rates are pinned to `packages/xai/src/__fixtures__/14-v1-models-pricing.json` (live `GET /v1/models` 2026-08-12); Grok 4.7 rates come from the [September 21 release notes](https://docs.x.ai/developers/release-notes).
 
 ## EU unavailability
 
@@ -238,7 +273,7 @@ xAI's own `/v1/models` listing surfaces `grok-4.5-latest` and `grok-build-latest
 
 - `providerOptions.xai.promptCacheKey` → `prompt_cache_key`
 - `reasoning.effort` → `reasoning.effort` (per-model admitted set)
-- `serviceTier: 'priority'` → `service_tier: 'priority'` (`grok-4.6` only)
+- `serviceTier: 'priority'` → `service_tier: 'priority'` (all three models)
 - `output.jsonSchema` → `text.format: { type: 'json_schema', name, schema, strict: true }`
 - Usage: `usage.input_tokens` → `inputTokens`, `usage.output_tokens` → `outputTokens` (both already GROSS on xAI, unlike Gemini's sub-field summation); numeric extras (`num_sources_used`, `cost_in_usd_ticks`, etc.) surface into `usage.details` under their raw names, and the full raw payload is always in `usage.raw`
 - Errors: HTTP status is a hint. `classifyXaiError` inspects the STRUCTURED parsed body only — never free-form `Error.message`. Two recorded overlays: HTTP **400** whose body starts with `"Incorrect API key provided"` (prefix only; the SDK may drop `code`) → `invalid_auth`; HTTP **403** whose body starts with `"Content violates usage guidelines"` (e.g. `SAFETY_CHECK_TYPE_*`) → `content_filter`. A bare 403 without that body stays `invalid_auth`. Any other 400, `429`→`rate_limited`, `5xx`→`server`, and timeouts fall through to `@gullabs/core`'s generic `classifyError`.

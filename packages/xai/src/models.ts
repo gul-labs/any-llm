@@ -1,7 +1,7 @@
 /**
  * Model descriptor + registry for @gullabs/xai.
  *
- * Ships two canonical models: `grok-4.5` and `grok-4.6`. xAI aliases
+ * Ships `grok-4.5`, `grok-4.6`, and `grok-4.7`. xAI aliases
  * (`grok-4.5-latest`, `grok-build-latest`) visible in `/v1/models` are
  * intentionally NOT registered (reject-don't-map). `grok-4.6` has no
  * aliases as of the 2026-08-12 `/v1/models` listing.
@@ -18,9 +18,11 @@ import {
 
 import { Grok45ConfigSchema } from './model-config/grok-4-5.js'
 import { Grok46ConfigSchema } from './model-config/grok-4-6.js'
+import { Grok47ConfigSchema } from './model-config/grok-4-7.js'
 
 export { Grok45ConfigSchema } from './model-config/grok-4-5.js'
 export { Grok46ConfigSchema } from './model-config/grok-4-6.js'
+export { Grok47ConfigSchema } from './model-config/grok-4-7.js'
 
 export const grok45ModelDescriptor: ModelDescriptor = {
   model: 'grok-4.5',
@@ -38,7 +40,7 @@ export const grok45ModelDescriptor: ModelDescriptor = {
     caching: { explicit: false, minTokens: 0 },
     grounding: true,
     functionCalling: true,
-    // No serviceTiers key — grok-4.5 has no admitted service-tier vocabulary.
+    serviceTiers: ['priority'],
   },
   configSchema: Grok45ConfigSchema,
   configJsonSchema: toConfigJsonSchema(Grok45ConfigSchema),
@@ -60,6 +62,7 @@ export const grok46ModelDescriptor: ModelDescriptor = {
     sampling: 'tunable',
     caching: { explicit: false, minTokens: 0 },
     grounding: true,
+    structuredOutputWithTools: true,
     functionCalling: true,
     serviceTiers: ['priority'],
   },
@@ -68,10 +71,35 @@ export const grok46ModelDescriptor: ModelDescriptor = {
   validateConfig: zodToStandardSchema(Grok46ConfigSchema),
 }
 
+export const grok47ModelDescriptor: ModelDescriptor = {
+  model: 'grok-4.7',
+  provider: 'xai',
+  pricingFamily: 'grok-4.7',
+  capabilities: {
+    reasoning: true,
+    reasoningApi: 'level',
+    admittedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    structuredOutput: true,
+    nativeStructuredOutput: true,
+    vision: true,
+    audioInput: false,
+    sampling: 'tunable',
+    caching: { explicit: false, minTokens: 0 },
+    grounding: true,
+    functionCalling: true,
+    statelessReasoningReplay: true,
+    serviceTiers: ['priority'],
+  },
+  configSchema: Grok47ConfigSchema,
+  configJsonSchema: toConfigJsonSchema(Grok47ConfigSchema),
+  validateConfig: zodToStandardSchema(Grok47ConfigSchema),
+}
+
 /** Every model descriptor `@gullabs/xai` contributes. */
 export const xaiModelDescriptors: ModelDescriptor[] = [
   grok45ModelDescriptor,
   grok46ModelDescriptor,
+  grok47ModelDescriptor,
 ]
 
 export const xaiRegistry: ModelRegistry = createModelRegistry(xaiModelDescriptors)

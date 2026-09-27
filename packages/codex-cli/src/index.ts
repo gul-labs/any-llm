@@ -14,7 +14,7 @@
  * const result = await client.generate(
  *   {
  *     provider: 'codex-cli',
- *     model: 'gpt-5.4-mini',
+ *     model: 'gpt-6-sol',
  *     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
  *   },
  *   { auth: { cliSession: true } },
@@ -38,9 +38,8 @@ export {
   codexCliRegistry,
   CODEX_CLI_MODEL_IDS,
   CODEX_CLI_REASONING_EFFORTS,
-  Gpt55ConfigSchema,
-  Gpt54ConfigSchema,
-  Gpt54MiniConfigSchema,
-  Gpt53CodexSparkConfigSchema,
+  Gpt6AstraConfigSchema,
+  Gpt6SolConfigSchema,
+  Gpt6LunaConfigSchema,
 } from './models.js'
 export type { CodexCliModelId, CodexCliReasoningEffort } from './models.js'

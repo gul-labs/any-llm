@@ -133,6 +133,22 @@ paths to other repos.
 
 ---
 
+## Model refresh deferrals (2026-09-25)
+
+- **2027-01-01 Gemini intro-price re-snapshot.** `gemini-3.6-flash`, `gemini-3.7-flash`, and `gemini-3.8-flash` ship at the published intro rates $0.75 / $0.075 / $3.75 per million (input / cached / output). On 2027-01-01 those become $1.50 / $0.15 / $7.50. Re-snapshot `GEMINI_PRICING` and bump `pricingVersion` before that date. The owner chose a dated backlog item instead of date-windowed pricing (plan D1).
+- Gemini `priority` tier. P-G7 captured a `usageMetadata.serviceTier` flex echo and the adapter now reads served tier. Priority still needs live admission, pricing, and downgrade accounting before the schema admits it.
+- Other Gemini features: built-in tools beyond `googleSearch` (URL context, Maps, code execution, file search); `media_resolution: ultra_high`; `gemini-3.1-pro-preview-customtools`.
+- xAI models not in this refresh: grok-4.3, the grok-4.20 family (including multi-agent), grok-build-0.1.
+- xAI tools not supported: code execution, collections, remote MCP.
+- xAI US regional endpoint (1.1×).
+- Undocumented xAI ids (`grok-4.5-cloud`, `grok-4.5-sp`, `grok-orca-oa0917`) are never registered.
+- Vision on the CLI providers (`codex exec -i`; `claude -p --input-format stream-json`).
+- Non-text models (image, video, TTS, STT, live, music, embeddings).
+- P-G5 completed 2026-09-26: cache create at 1024 tokens succeeded, 103 tokens failed with `min_total_token_count=1024`, on all six registered Gemini 3.x ids.
+- P-X2 blocked by the current xAI Zero Data Retention key: file upload returned 403 and public URL attachment returned 400. A non-ZDR key is needed to pin the `attachment_search` usage counter, price it at $10/1k, and delete `attachment_search_unpinned`.
+- P-X3 completed 2026-09-26: live grok-4.7 `store: false` two-turn function call captured the encrypted reasoning item; `result.transientProviderState` and `request.transientProviderState` preserve the full wire history while the next request supplies only new messages. The state stays out of ledger rows. Fixture `28-grok-4-7-replay.json` pins the round trip.
+- P-X1 completed 2026-09-26: live posts-only and users-only X Search responses emitted both item counters, including explicit zeroes, and snapshot cost reconciled to billed ticks. Fixtures `26-x-posts.json` and `27-x-users.json` pin the behavior. The 2026-08-24 fixture predates per-item billing; its billed ticks remain in usage while snapshot cost is unpriced.
+
 ## Optional later (not ticketed)
 
 - Tool-invocation fee Cost lane for xAI server tools (`attachment_search`, etc.) once

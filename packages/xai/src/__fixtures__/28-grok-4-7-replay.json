@@ -1,0 +1,108 @@
+{
+  "source": "P-X3 live grok-4.7 store:false function call and exact adapter-shaped replay 2026-09-26",
+  "sanitization": "Selected response fields; no credentials, IDs outside the synthetic call, or unrelated provider metadata. Reasoning output item including encrypted_content is verbatim.",
+  "first": {
+    "status": 200,
+    "body": {
+      "model": "grok-4.7",
+      "usage": {
+        "input_tokens": 1635,
+        "input_tokens_details": {
+          "cached_tokens": 1408
+        },
+        "output_tokens": 40,
+        "output_tokens_details": {
+          "reasoning_tokens": 25
+        },
+        "total_tokens": 1675,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 13980000,
+        "context_details": {
+          "input_tokens": 1635,
+          "output_tokens": 45
+        }
+      },
+      "output": [
+        {
+          "id": "rs_fd47f1ce-92c9-9540-92a2-9bda264a8a83",
+          "summary": [
+            {
+              "text": "The user wants me to use the add_numbers tool to add 2 and 3, then answer with the result.",
+              "type": "summary_text"
+            }
+          ],
+          "type": "reasoning",
+          "status": "completed",
+          "encrypted_content": "h3dBUeVBp5tl6j7HBBiKGfrb4mkI1CxlXF6ykCDNicIG1Sl3tdJ7W/M3/qCb4qCIqm/QVVz8OY6yLXBXMWWCQ/eS5zN1P7yFUYWfmJBGanIroWkyWDB6ris1MqwP/CGu7B7ytdzpNhTWfqvXik/AMtVT7v86fg"
+        },
+        {
+          "arguments": "{\"a\":2,\"b\":3}",
+          "call_id": "call-d680b564-ca90-40be-93eb-5fa744d77901-0",
+          "name": "add_numbers",
+          "type": "function_call",
+          "id": "fc_fd47f1ce-92c9-9540-92a2-9bda264a8a83_0",
+          "status": "completed"
+        }
+      ],
+      "service_tier": "default",
+      "status": "completed",
+      "store": false
+    }
+  },
+  "second": {
+    "status": 200,
+    "body": {
+      "model": "grok-4.7",
+      "usage": {
+        "input_tokens": 1684,
+        "input_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "output_tokens": 19,
+        "output_tokens_details": {
+          "reasoning_tokens": 13
+        },
+        "total_tokens": 1703,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 9860000,
+        "context_details": {
+          "input_tokens": 1684,
+          "output_tokens": 27
+        }
+      },
+      "output": [
+        {
+          "id": "rs_9b830cd8-cb36-9667-979f-cdccba951c34",
+          "summary": [
+            {
+              "text": "The tool returned 5. I should answer with the result.",
+              "type": "summary_text"
+            }
+          ],
+          "type": "reasoning",
+          "status": "completed",
+          "encrypted_content": "DuVPKYhPlf0jMVZcGrUYECNSyXyAQ963BdPGMSHiUs7ekJUzFYJrN86Mv6huLGrwPOR4BPwqNR49hjtxXDvlWxI/UQXrLZKKs0iXFySHlwpl"
+        },
+        {
+          "content": [
+            {
+              "type": "output_text",
+              "text": "The result is 5.",
+              "logprobs": [],
+              "annotations": []
+            }
+          ],
+          "id": "msg_9b830cd8-cb36-9667-979f-cdccba951c34",
+          "role": "assistant",
+          "type": "message",
+          "status": "completed"
+        }
+      ],
+      "service_tier": "default",
+      "status": "completed",
+      "store": false
+    }
+  }
+}

@@ -13,6 +13,7 @@ import { describe, it, expect } from 'vitest'
 import type { Usage } from '@gullabs/core'
 import {
   computeXaiCost,
+  selectXaiRates,
   xaiPricingSource,
   xaiPricingVersion,
   XAI_PRICING,
@@ -106,16 +107,39 @@ describe('computeXaiCost — standard tier', () => {
   })
 })
 
-describe('computeXaiCost — >200k gt200k boundary', () => {
-  it('applies standard rates at exactly 200,000 gross input tokens', () => {
+describe('selectXaiRates — >=200k boundary', () => {
+  const rates = XAI_PRICING['grok-4.5']!
+
+  it('returns the base band at 199_999 and gt200k at 200_000 and 200_001', () => {
+    expect(selectXaiRates(rates, 199_999)).toEqual({
+      inputPerM: rates.inputPerM,
+      cachedPerM: rates.cachedPerM,
+      outputPerM: rates.outputPerM,
+    })
+    expect(selectXaiRates(rates, 200_000)).toBe(rates.gt200k)
+    expect(selectXaiRates(rates, 200_001)).toBe(rates.gt200k)
+  })
+})
+
+describe('computeXaiCost — >=200k gt200k boundary', () => {
+  it('applies standard rates at 199,999 gross input tokens', () => {
+    const usage = makeUsage({
+      inputTokens: 199_999,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+    })
+    const cost = computeXaiCost('grok-4.5', usage)
+    expect(cost.details.input).toBe(Math.round((199_999 * 2_000_000) / 1_000_000))
+  })
+
+  it('applies gt200k rates at exactly 200,000 gross input tokens', () => {
     const usage = makeUsage({
       inputTokens: 200_000,
       outputTokens: 100,
       cachedInputTokens: 0,
     })
     const cost = computeXaiCost('grok-4.5', usage)
-    // standard inputPerM = 2_000_000 -> inputCost = round(200000 * 2_000_000 / 1e6) = 400_000
-    expect(cost.details.input).toBe(400_000)
+    expect(cost.details.input).toBe(Math.round((200_000 * 4_000_000) / 1_000_000))
   })
 
   it('applies gt200k rates at 200,001 gross input tokens', () => {
@@ -176,11 +200,14 @@ describe('computeXaiCost — unpriced paths', () => {
     expect(cost.unpricedReason).toMatch(/flex/)
   })
 
-  it('returns microUsd: null when priority is supplied for grok-4.5', () => {
+  it('prices live-verified grok-4.5 priority at 2× and rejects fast', () => {
     const usage = makeUsage({ inputTokens: 100, outputTokens: 50 })
-    const cost = computeXaiCost('grok-4.5', usage, 'priority')
-    expect(cost.microUsd).toBeNull()
-    expect(cost.unpricedReason).toMatch(/priority/)
+    const priority = computeXaiCost('grok-4.5', usage, 'priority')
+    const standard = computeXaiCost('grok-4.5', usage)
+    expect(priority.microUsd).toBe((standard.microUsd as number) * 2)
+    const fast = computeXaiCost('grok-4.5', usage, 'fast')
+    expect(fast.microUsd).toBeNull()
+    expect(fast.unpricedReason).toMatch(/fast/)
   })
 
   it('prices grok-4.6 priority at 2× the standard list', () => {
@@ -288,6 +315,34 @@ describe('computeXaiCost vs live cost_in_usd_ticks', () => {
 })
 
 describe('xaiPricingSource', () => {
+  it('prices grok-4.7 at the 4.6 list, including the 200k boundary and priority', () => {
+    const below = computeXaiCost(
+      'grok-4.7',
+      makeUsage({ inputTokens: 199_999, outputTokens: 0 }),
+    )
+    const at = computeXaiCost(
+      'grok-4.7',
+      makeUsage({ inputTokens: 200_000, outputTokens: 0 }),
+    )
+    expect(below.microUsd).toBe(Math.round((199_999 * 2_000_000) / 1_000_000))
+    expect(at.microUsd).toBe(Math.round((200_000 * 4_000_000) / 1_000_000))
+    const cached = computeXaiCost(
+      'grok-4.7',
+      makeUsage({ inputTokens: 1_000, cachedInputTokens: 1_000, outputTokens: 0 }),
+    )
+    expect(cached.details.cached).toBe(Math.round((1_000 * 500_000) / 1_000_000))
+    const priority = computeXaiCost(
+      'grok-4.7',
+      makeUsage({ inputTokens: 1_000, outputTokens: 1_000 }),
+      'priority',
+    )
+    const standard = computeXaiCost(
+      'grok-4.7',
+      makeUsage({ inputTokens: 1_000, outputTokens: 1_000 }),
+    )
+    expect(priority.microUsd).toBe((standard.microUsd as number) * 2)
+  })
+
   it('hasModel is true for grok-4.5 / grok-4.6 and false for an unknown model', () => {
     const source = xaiPricingSource()
     expect(source.hasModel('grok-4.5')).toBe(true)
@@ -299,6 +354,12 @@ describe('xaiPricingSource', () => {
     const source = xaiPricingSource()
     expect(source.hasModel('grok-4.5-latest')).toBe(false)
     expect(source.hasModel('grok-build-latest')).toBe(false)
+    expect(source.hasModel('constructor')).toBe(false)
+    expect(source.hasModel('toString')).toBe(false)
+    expect(
+      source.price('constructor', makeUsage({ inputTokens: 1, outputTokens: 1 }))
+        .microUsd,
+    ).toBeNull()
   })
 
   it('listModels returns the XAI_PRICING keys', () => {
@@ -308,6 +369,7 @@ describe('xaiPricingSource', () => {
 
   it('version matches xaiPricingVersion', () => {
     expect(xaiPricingSource().version).toBe(xaiPricingVersion)
+    expect(xaiPricingVersion).toBe('xai-2026-09-25')
   })
 
   it('price() delegates to computeXaiCost', () => {
@@ -318,18 +380,20 @@ describe('xaiPricingSource', () => {
 })
 
 describe('computeXaiCost — tool lanes (live-pinned 2026-08-24)', () => {
-  it('prices web_search_calls and x_search_calls at $5/1k', () => {
+  it('prices web_search_calls at $5/1k and x_search by fetched items', () => {
     const usage: Usage = {
       inputTokens: 1000,
       outputTokens: 0,
       details: {
         web_search_calls: 2,
-        x_search_calls: 1,
+        x_posts_fetched: 44,
+        x_users_fetched: 3,
       },
       raw: null,
     }
     const cost = computeXaiCost('grok-4.5', usage)
-    expect(cost.details.tools).toBe(15_000)
+    // $5/1k = 5_000 µUSD per unit. 2 web calls + 44 posts + 3 profiles.
+    expect(cost.details.tools).toBe(2 * 5_000 + 44 * 5_000 + 3 * 10_000)
     expect(cost.confidence).toBe('exact')
     expect(
       cost.details.input + cost.details.cached + cost.details.output + cost.details.tools,
@@ -368,20 +432,82 @@ describe('computeXaiCost — tool lanes (live-pinned 2026-08-24)', () => {
     expect(cost.confidence).toBe('exact')
   })
 
-  it('server_tools_missing → estimated even if another counter is present', () => {
+  it('server_tools_missing unprices the call even if another counter is present', () => {
     const usage: Usage = {
       inputTokens: 1000,
       outputTokens: 0,
       details: {
         server_tools_requested: 1,
         server_tools_missing: 1,
-        x_search_calls: 2,
+        x_posts_fetched: 2,
+        x_users_fetched: 0,
       },
       raw: null,
     }
     const cost = computeXaiCost('grok-4.5', usage)
-    expect(cost.details.tools).toBe(0)
+    expect(cost.microUsd).toBeNull()
     expect(cost.confidence).toBe('estimated')
+    expect(cost.unpricedReason).toMatch(/missing/i)
+  })
+
+  it.each([{ x_posts_fetched: 4 }, { x_users_fetched: 1 }, {}])(
+    'x_search with a missing item counter unprices the call (%j)',
+    (counters) => {
+      const usage: Usage = {
+        inputTokens: 1000,
+        outputTokens: 0,
+        details: {
+          server_tools_requested: 1,
+          x_search_requested: 1,
+          ...counters,
+        },
+        raw: null,
+      }
+      const cost = computeXaiCost('grok-4.5', usage)
+      expect(cost.microUsd).toBeNull()
+      expect(cost.unpricedReason).toMatch(/x_posts_fetched|x_users_fetched/)
+    },
+  )
+
+  it('does not substitute billed ticks for missing snapshot tool counters', () => {
+    const usage: Usage = {
+      inputTokens: 1000,
+      outputTokens: 0,
+      details: {
+        server_tools_requested: 1,
+        x_search_requested: 1,
+        cost_in_usd_ticks: 10_000,
+      },
+      raw: null,
+    }
+    const cost = computeXaiCost('grok-4.5', usage)
+    expect(cost.microUsd).toBeNull()
+    expect(cost.confidence).toBe('estimated')
+  })
+
+  it('x_search with both item counters at zero is exact and adds no tool cost', () => {
+    const usage: Usage = {
+      inputTokens: 1000,
+      outputTokens: 0,
+      details: {
+        server_tools_requested: 1,
+        x_search_requested: 1,
+        x_posts_fetched: 0,
+        x_users_fetched: 0,
+      },
+      raw: null,
+    }
+    const cost = computeXaiCost('grok-4.5', usage)
+    expect(cost.microUsd).not.toBeNull()
+    expect(cost.details.tools).toBe(0)
+    expect(cost.confidence).toBe('exact')
+  })
+
+  it('grok-4.5 rejects fast as a priced tier', () => {
+    const usage = makeUsage({ inputTokens: 100, outputTokens: 10 })
+    const cost = computeXaiCost('grok-4.5', usage, 'fast')
+    expect(cost.microUsd).toBeNull()
+    expect(cost.unpricedReason).toMatch(/fast/)
   })
 
   it('file-ref attachment_search_unpinned → estimated even with web counters', () => {

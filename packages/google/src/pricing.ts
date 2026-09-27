@@ -4,27 +4,28 @@
  * All rates are in **micro-USD per million tokens** (µUSD/M).
  * To get the cost for N tokens: `cost_µUSD = N * ratePerM / 1_000_000`.
  *
- * **Service tiers.** Rates below are STANDARD-tier. Google's **Batch** tier is a
- * flat 50% discount on standard, and **Flex** matches Batch pricing. The cost
- * engine applies the {@link TIER_FACTOR} multiplier — this snapshot stores
- * standard rates only.
+ * **Service tiers.** Each model stores concrete `standard`, `flex`, and
+ * `batch` rates transcribed from Google's pricing page. Flex and batch are
+ * not a flat 50% of standard: on several models the cached lane stays at the
+ * standard cached rate (or a published rate that is not half). A tier that
+ * is not one of those three is unpriced (reject-don't-map). `priority` is
+ * intentionally absent — it needs downgrade accounting and is a backlog item.
  *
- * **Long-context tier.** Gemini Pro models charge a premium when the GROSS input
- * token count exceeds 200,000. Selected by `inputTokens` (incl. cached), not by
- * billable input.
+ * **Long-context tier.** Gemini Pro models charge a premium when the GROSS
+ * input token count exceeds 200,000. Selected by `inputTokens` (incl. cached),
+ * not by billable input. Core's selector uses `> 200_000`.
  *
  * **Thinking tokens.** Already inside `outputTokens` (GROSS convention) and
- * billed at the standard output rate — no separate thinking lane.
+ * billed at the output rate — no separate thinking lane.
  *
- * **Modality caveat (v1 = text).** Gemini 2.5 Flash / Flash-Lite charge a higher
- * INPUT rate for audio tokens than for text/image/video. v1 is text-only and uses
- * the text/img/vid input rate. Per-modality input pricing is a deferred seam
- * (see DESIGN.md) — revisit when audio input is supported.
+ * **Modality caveat (v1 = text).** Gemini 2.5 Flash / Flash-Lite / 3.1
+ * Flash-Lite charge a higher INPUT rate for audio tokens
+ * than for text/image/video. v1 is text-only and uses the text/img/vid input
+ * rate. Per-modality input pricing is a deferred seam (see DESIGN.md).
  *
- * Re-verified against https://ai.google.dev/gemini-api/docs/pricing on 2026-08-12.
- * Existing registered-model standard rates were unchanged from the 2026-06-28
- * snapshot. `gemini-3.6-flash` appears on that page but is not a registered
- * model in this package.
+ * Re-verified against https://ai.google.dev/gemini-api/docs/pricing on
+ * 2026-09-25. Standard token rates for already-registered models were
+ * unchanged from the 2026-08-12 snapshot; flex/batch cached rates were not.
  *
  * @module
  */
@@ -38,92 +39,155 @@ import type { ModelRates } from '@gullabs/core'
  * core concept — it lives here (not `@gullabs/core`) alongside the rates it
  * dates.
  */
-export const pricingVersion = 'gemini-2026-08-12' as const
+export const pricingVersion = 'gemini-2026-09-25' as const
+
+/** Tiers this snapshot prices. Anything else is unpriced. */
+export const GEMINI_PRICED_TIERS = ['standard', 'flex', 'batch'] as const
+
+export type GeminiPricedTier = (typeof GEMINI_PRICED_TIERS)[number]
+
+/** Concrete per-tier rates for one model. */
+export interface GeminiTierRates {
+  standard: ModelRates
+  flex: ModelRates
+  batch: ModelRates
+}
+
+function tiers(
+  standard: ModelRates,
+  flex: ModelRates,
+  batch: ModelRates,
+): GeminiTierRates {
+  return Object.freeze({ standard, flex, batch })
+}
 
 /**
- * Service-tier price multipliers. Batch and Flex are a flat 50% of standard
- * (per Google's pricing page: "Batch API — 50% cost reduction"; Flex matches Batch).
+ * Frozen Gemini pricing snapshot (per-1M in µUSD), keyed by model id, then
+ * by priced tier. Every number is transcribed from the pricing page.
  *
- * `serviceTier` is an opaque, provider-defined string end-to-end — this map is
- * the *only* place a tier name is resolved to a multiplier. A tier key not
- * present here is never coerced to `standard`: `computeCost` (`@gullabs/core`)
- * treats that as an unpriced call (reject-don't-map), not a mapping to this
- * table's default. `undefined` (no tier requested) is the one case that
- * legitimately defaults to `standard` — that is documented default behavior,
- * not a guess.
+ * Keys are exact priced model identifiers. Unlisted variants are unpriced.
+ *
+ * Source: https://ai.google.dev/gemini-api/docs/pricing (re-verified 2026-09-25).
  */
-export const TIER_FACTOR: Readonly<Record<string, number>> = Object.freeze({
-  standard: 1,
-  flex: 0.5,
-  batch: 0.5,
+export const GEMINI_PRICING: Readonly<Record<string, GeminiTierRates>> = Object.freeze({
+  // Gemini 2.5 Pro. Flex/batch cached equals standard on both context bands.
+  'gemini-2.5-pro': tiers(
+    {
+      inputPerM: 1_250_000,
+      cachedPerM: 125_000,
+      outputPerM: 10_000_000,
+      gt200k: { inputPerM: 2_500_000, cachedPerM: 250_000, outputPerM: 15_000_000 },
+    },
+    {
+      inputPerM: 625_000,
+      cachedPerM: 125_000,
+      outputPerM: 5_000_000,
+      gt200k: { inputPerM: 1_250_000, cachedPerM: 250_000, outputPerM: 7_500_000 },
+    },
+    {
+      inputPerM: 625_000,
+      cachedPerM: 125_000,
+      outputPerM: 5_000_000,
+      gt200k: { inputPerM: 1_250_000, cachedPerM: 250_000, outputPerM: 7_500_000 },
+    },
+  ),
+
+  // Gemini 2.5 Flash. Flex/batch cached stays $0.03.
+  'gemini-2.5-flash': tiers(
+    { inputPerM: 300_000, cachedPerM: 30_000, outputPerM: 2_500_000 },
+    { inputPerM: 150_000, cachedPerM: 30_000, outputPerM: 1_250_000 },
+    { inputPerM: 150_000, cachedPerM: 30_000, outputPerM: 1_250_000 },
+  ),
+
+  // Gemini 2.5 Flash-Lite. Flex/batch cached stays $0.01.
+  'gemini-2.5-flash-lite': tiers(
+    { inputPerM: 100_000, cachedPerM: 10_000, outputPerM: 400_000 },
+    { inputPerM: 50_000, cachedPerM: 10_000, outputPerM: 200_000 },
+    { inputPerM: 50_000, cachedPerM: 10_000, outputPerM: 200_000 },
+  ),
+
+  // Gemini 3.1 Flash-Lite. Flex/batch cached is the published $0.0125.
+  'gemini-3.1-flash-lite': tiers(
+    { inputPerM: 250_000, cachedPerM: 25_000, outputPerM: 1_500_000 },
+    { inputPerM: 125_000, cachedPerM: 12_500, outputPerM: 750_000 },
+    { inputPerM: 125_000, cachedPerM: 12_500, outputPerM: 750_000 },
+  ),
+
+  // Gemini 3.8 / 3.7 / 3.6 Flash intro rates (2026-09-25). Flex/batch cached
+  // is half of the intro cached rate. Re-snapshot on 2027-01-01.
+  'gemini-3.8-flash': tiers(
+    { inputPerM: 750_000, cachedPerM: 75_000, outputPerM: 3_750_000 },
+    { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
+    { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
+  ),
+  'gemini-3.7-flash': tiers(
+    { inputPerM: 750_000, cachedPerM: 75_000, outputPerM: 3_750_000 },
+    { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
+    { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
+  ),
+  'gemini-3.6-flash': tiers(
+    { inputPerM: 750_000, cachedPerM: 75_000, outputPerM: 3_750_000 },
+    { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
+    { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
+  ),
+
+  // Gemini 3.5 Flash-Lite. Flex/batch cached is the published $0.02, not half of $0.03.
+  'gemini-3.5-flash-lite': tiers(
+    { inputPerM: 300_000, cachedPerM: 30_000, outputPerM: 2_500_000 },
+    { inputPerM: 150_000, cachedPerM: 20_000, outputPerM: 1_250_000 },
+    { inputPerM: 150_000, cachedPerM: 20_000, outputPerM: 1_250_000 },
+  ),
+
+  // Gemini 3.1 Pro Preview. Flex/batch cached equals standard on both bands.
+  'gemini-3.1-pro-preview': tiers(
+    {
+      inputPerM: 2_000_000,
+      cachedPerM: 200_000,
+      outputPerM: 12_000_000,
+      gt200k: { inputPerM: 4_000_000, cachedPerM: 400_000, outputPerM: 18_000_000 },
+    },
+    {
+      inputPerM: 1_000_000,
+      cachedPerM: 200_000,
+      outputPerM: 6_000_000,
+      gt200k: { inputPerM: 2_000_000, cachedPerM: 400_000, outputPerM: 9_000_000 },
+    },
+    {
+      inputPerM: 1_000_000,
+      cachedPerM: 200_000,
+      outputPerM: 6_000_000,
+      gt200k: { inputPerM: 2_000_000, cachedPerM: 400_000, outputPerM: 9_000_000 },
+    },
+  ),
 })
 
 /**
- * Frozen Gemini pricing snapshot (STANDARD tier; per-1M in µUSD).
- *
- * Keys are model-string prefixes / exact identifiers used in routing. The cost
- * engine matches exact first, then longest-prefix (see `lookupRates` in
- * `cost.ts`).
- *
- * Source: https://ai.google.dev/gemini-api/docs/pricing (re-verified 2026-08-12).
+ * Concrete rates for `(model, tier)`. `undefined` tier is standard. A defined
+ * tier this snapshot does not price returns `undefined`.
  */
-export const GEMINI_PRICING: Readonly<Record<string, ModelRates>> = Object.freeze({
-  // ── Gemini 2.5 Pro ──  $1.25/$10 (≤200k), $2.50/$15 (>200k); cached $0.125/$0.25
-  'gemini-2.5-pro': {
-    inputPerM: 1_250_000,
-    cachedPerM: 125_000,
-    outputPerM: 10_000_000,
-    gt200k: {
-      inputPerM: 2_500_000,
-      cachedPerM: 250_000,
-      outputPerM: 15_000_000,
-    },
-  },
+function isPricedGeminiTier(tier: string): tier is GeminiPricedTier {
+  return (GEMINI_PRICED_TIERS as readonly string[]).includes(tier)
+}
 
-  // ── Gemini 2.5 Flash ──  input $0.30 (text), output $2.50, cached $0.03
-  'gemini-2.5-flash': {
-    inputPerM: 300_000,
-    cachedPerM: 30_000,
-    outputPerM: 2_500_000,
-  },
+function lookupGeminiTierRates(
+  model: string,
+  tier?: string,
+): GeminiTierRates | undefined {
+  const entry = Object.hasOwn(GEMINI_PRICING, model) ? GEMINI_PRICING[model] : undefined
+  if (entry === undefined) return undefined
+  // Only the three published tiers are priced. Inherited names such as
+  // `constructor` and `toString` must not pass this check.
+  if (tier !== undefined && !isPricedGeminiTier(tier)) return undefined
+  return entry
+}
 
-  // ── Gemini 2.5 Flash-Lite ──  input $0.10 (text), output $0.40, cached $0.01
-  'gemini-2.5-flash-lite': {
-    inputPerM: 100_000,
-    cachedPerM: 10_000,
-    outputPerM: 400_000,
-  },
-
-  // ── Gemini 3.5 Flash ──  input $1.50, output $9.00, cached $0.15
-  'gemini-3.5-flash': {
-    inputPerM: 1_500_000,
-    cachedPerM: 150_000,
-    outputPerM: 9_000_000,
-  },
-
-  // ── Gemini 3.1 Flash-Lite ──  input $0.25 (text), output $1.50, cached $0.025
-  'gemini-3.1-flash-lite': {
-    inputPerM: 250_000,
-    cachedPerM: 25_000,
-    outputPerM: 1_500_000,
-  },
-
-  // ── Gemini 3.1 Pro (preview) ──  $2.00/$12 (≤200k), $4.00/$18 (>200k); cached $0.20/$0.40
-  'gemini-3.1-pro-preview': {
-    inputPerM: 2_000_000,
-    cachedPerM: 200_000,
-    outputPerM: 12_000_000,
-    gt200k: {
-      inputPerM: 4_000_000,
-      cachedPerM: 400_000,
-      outputPerM: 18_000_000,
-    },
-  },
-
-  // ── Gemini 3 Flash (preview) ──  input $0.50, output $3.00, cached $0.05 (90% discount)
-  'gemini-3-flash-preview': {
-    inputPerM: 500_000,
-    cachedPerM: 50_000,
-    outputPerM: 3_000_000,
-  },
-})
+/** Resolve the concrete {@link ModelRates} `computeCost` should apply. */
+export function resolveGeminiRates(
+  model: string,
+  tier: string | undefined,
+): ModelRates | undefined {
+  const entry = lookupGeminiTierRates(model, tier)
+  if (entry === undefined) return undefined
+  const key = tier ?? 'standard'
+  return entry[key as GeminiPricedTier]
+}

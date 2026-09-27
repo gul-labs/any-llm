@@ -7,14 +7,18 @@
 import { describe, it, expect } from 'vitest'
 import { assertRegistryInvariants } from '@gullabs/testing'
 import {
+  CLAUDE_CLI_EFFORTS,
+  ClaudeFable51ConfigSchema,
+  ClaudeHaiku45ConfigSchema,
+  ClaudeOpus55ConfigSchema,
+  ClaudeSonnet5ConfigSchema,
   claudeCliModelDescriptors,
   claudeCliRegistry,
-  ClaudeHaiku45ConfigSchema,
 } from './models.js'
 
 const EXPECTED_MODEL_IDS = [
-  'claude-fable-5',
-  'claude-opus-4-8',
+  'claude-fable-5-1',
+  'claude-opus-5-5',
   'claude-sonnet-5',
   'claude-haiku-4-5-20251001',
 ] as const
@@ -26,18 +30,31 @@ describe('config schema', () => {
   })
 
   it('rejects a bad effort value', () => {
-    const result = ClaudeHaiku45ConfigSchema.safeParse({
+    const result = ClaudeSonnet5ConfigSchema.safeParse({
       reasoning: { effort: 'extreme' },
     })
     expect(result.success).toBe(false)
   })
 
-  it('accepts a valid config', () => {
+  it('rejects a reasoning key on Haiku 4.5', () => {
     const result = ClaudeHaiku45ConfigSchema.safeParse({
       reasoning: { effort: 'high' },
-      timeoutMs: 60_000,
     })
-    expect(result.success).toBe(true)
+    expect(result.success).toBe(false)
+  })
+
+  it.each([
+    ['claude-fable-5-1', ClaudeFable51ConfigSchema],
+    ['claude-opus-5-5', ClaudeOpus55ConfigSchema],
+    ['claude-sonnet-5', ClaudeSonnet5ConfigSchema],
+  ] as const)('%s accepts low through max and rejects none', (id, schema) => {
+    const descriptor = claudeCliRegistry.resolve('claude-cli', id)
+    expect(descriptor?.configSchema).toBe(schema)
+    expect(descriptor?.capabilities?.admittedReasoningEfforts).toEqual(CLAUDE_CLI_EFFORTS)
+    for (const effort of CLAUDE_CLI_EFFORTS) {
+      expect(schema.safeParse({ reasoning: { effort } }).success).toBe(true)
+    }
+    expect(schema.safeParse({ reasoning: { effort: 'none' } }).success).toBe(false)
   })
 
   it('accepts an empty config', () => {
@@ -67,11 +84,24 @@ describe('registry', () => {
     expect(descriptor?.provider).toBe('claude-cli')
   })
 
-  it('validateConfig accepts a valid config via the Standard Schema surface', () => {
+  it.each(['claude-fable-5', 'claude-opus-4-8'])('resolve(%s) is undefined', (id) => {
+    expect(claudeCliRegistry.resolve('claude-cli', id)).toBeUndefined()
+  })
+
+  it('does not advertise a reasoning control for Haiku 4.5', () => {
     const descriptor = claudeCliRegistry.resolve(
       'claude-cli',
       'claude-haiku-4-5-20251001',
     )
+    expect(descriptor?.capabilities?.reasoningApi).toBeUndefined()
+    expect(descriptor?.capabilities?.admittedReasoningEfforts).toEqual([])
+    expect(
+      descriptor?.configSchema.safeParse({ reasoning: { effort: 'high' } }).success,
+    ).toBe(false)
+  })
+
+  it('validateConfig accepts a valid config via the Standard Schema surface', () => {
+    const descriptor = claudeCliRegistry.resolve('claude-cli', 'claude-sonnet-5')
     const result = descriptor?.validateConfig['~standard'].validate({
       reasoning: { effort: 'medium' },
     })

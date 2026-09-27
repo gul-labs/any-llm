@@ -9,6 +9,7 @@
 
 import { describe, it, expect, vi } from 'vitest'
 import { writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { LlmError } from '@gullabs/core'
 import type { ResolvedRequest, AdapterCtx, Message } from '@gullabs/core'
 import { codexCliAdapter } from './adapter.js'
@@ -87,7 +88,7 @@ const FAKE_CTX: AdapterCtx = {
 function makeResolvedReq(overrides: Partial<ResolvedRequest> = {}): ResolvedRequest {
   return {
     provider: 'codex-cli',
-    model: 'gpt-5.4-mini',
+    model: 'gpt-6-sol',
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Say exactly: hi' }] }],
     config: {},
     ...overrides,
@@ -109,7 +110,7 @@ describe('happy path: plain text', () => {
     const result = await adapter.run(makeResolvedReq(), FAKE_CTX)
 
     expect(result.text).toBe('hi')
-    expect(result.model).toBe('gpt-5.4-mini')
+    expect(result.model).toBe('gpt-6-sol')
     expect(result.finishReason).toBe('stop')
     expect(result.providerMetadata).toEqual({
       threadId: '019f435f-4756-7242-98ab-d536aa30e739',
@@ -464,7 +465,7 @@ describe('usage mapping', () => {
 // ---------------------------------------------------------------------------
 
 describe('argv construction', () => {
-  it('includes every invariant flag', async () => {
+  it('builds the exact ordered argv for a plain call', async () => {
     const { runner, calls } = makeFakeRunner(async () => ({
       stdout: PLAIN_JSONL,
       stderr: '',
@@ -473,8 +474,9 @@ describe('argv construction', () => {
     const adapter = codexCliAdapter({ runner })
     await adapter.run(makeResolvedReq(), FAKE_CTX)
 
-    const args = calls[0]?.args ?? []
-    for (const flag of [
+    const cwd = calls[0]?.opts.cwd
+    expect(cwd).toBeDefined()
+    expect(calls[0]?.args).toEqual([
       'exec',
       '--json',
       '--ephemeral',
@@ -483,13 +485,19 @@ describe('argv construction', () => {
       '--ignore-rules',
       '--sandbox',
       'read-only',
-    ]) {
-      expect(args).toContain(flag)
-    }
-    expect(args).toContain('-c')
-    expect(args).toContain('approval_policy=never')
-    expect(args).toContain('--color')
-    expect(args).toContain('never')
+      '--strict-config',
+      '-C',
+      cwd,
+      '-c',
+      'approval_policy=never',
+      '--color',
+      'never',
+      '-m',
+      'gpt-6-sol',
+      '-o',
+      join(cwd!, 'output.json'),
+      'Say exactly: hi',
+    ])
   })
 
   it('passes -C <scratchDir> matching the runner cwd', async () => {
@@ -517,7 +525,7 @@ describe('argv construction', () => {
     const adapter = codexCliAdapter({ runner })
     await adapter.run(
       makeResolvedReq({
-        config: { reasoning: { effort: 'high' } },
+        config: { reasoning: { effort: 'max' } },
         outputJsonSchema: { type: 'object', properties: {}, additionalProperties: false },
       }),
       FAKE_CTX,
@@ -525,8 +533,8 @@ describe('argv construction', () => {
 
     const args = calls[0]?.args ?? []
     const mIndex = args.indexOf('-m')
-    expect(args[mIndex + 1]).toBe('gpt-5.4-mini')
-    expect(args).toContain('model_reasoning_effort=high')
+    expect(args[mIndex + 1]).toBe('gpt-6-sol')
+    expect(args).toContain('model_reasoning_effort=max')
     expect(args).toContain('--output-schema')
     expect(args).toContain('-o')
     // The prompt is the final positional argument.

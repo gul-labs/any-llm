@@ -16,7 +16,7 @@ import {
 } from './models.js'
 import { xaiPricingSource } from './pricing.js'
 
-const EXPECTED_XAI_MODEL_IDS = ['grok-4.5', 'grok-4.6'] as const
+const EXPECTED_XAI_MODEL_IDS = ['grok-4.5', 'grok-4.6', 'grok-4.7'] as const
 
 describe('grok45ModelDescriptor', () => {
   it('is keyed by provider "xai" and model "grok-4.5"', () => {
@@ -39,7 +39,7 @@ describe('grok45ModelDescriptor', () => {
       grounding: true,
       functionCalling: true,
     })
-    expect(grok45ModelDescriptor.capabilities?.serviceTiers).toBeUndefined()
+    expect(grok45ModelDescriptor.capabilities?.serviceTiers).toEqual(['priority'])
   })
 
   it('configJsonSchema is structurally derived from Grok45ConfigSchema', () => {
@@ -54,6 +54,7 @@ describe('grok45ModelDescriptor', () => {
         'topP',
         'maxOutputTokens',
         'reasoning',
+        'serviceTier',
         'timeoutMs',
         'providerOptions',
       ]),
@@ -84,6 +85,7 @@ describe('grok46ModelDescriptor', () => {
       sampling: 'tunable',
       caching: { explicit: false, minTokens: 0 },
       grounding: true,
+      structuredOutputWithTools: true,
       functionCalling: true,
       serviceTiers: ['priority'],
     })
@@ -119,13 +121,24 @@ describe('xaiModelDescriptors', () => {
       descriptors: xaiModelDescriptors,
       expectedModelIds: EXPECTED_XAI_MODEL_IDS,
       pricingSource: xaiPricingSource(),
-      adapterFixtureModelIds: ['grok-4.5', 'grok-4.6'],
-      negativeContractFixtureModelIds: ['grok-4.5', 'grok-4.6'],
+      adapterFixtureModelIds: ['grok-4.5', 'grok-4.6', 'grok-4.7'],
+      negativeContractFixtureModelIds: ['grok-4.5', 'grok-4.6', 'grok-4.7'],
     })
   })
 })
 
 describe('xaiRegistry', () => {
+  it('resolves grok-4.7 with priority and xhigh', () => {
+    const grok47 = xaiRegistry.resolve('xai', 'grok-4.7')
+    expect(grok47?.capabilities?.serviceTiers).toEqual(['priority'])
+    expect(grok47?.capabilities?.admittedReasoningEfforts).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+    ])
+  })
+
   it('resolves (xai, grok-4.5) and (xai, grok-4.6)', () => {
     const grok45 = xaiRegistry.resolve('xai', 'grok-4.5')
     expect(grok45).toBeDefined()

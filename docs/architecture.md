@@ -442,8 +442,12 @@ Core owns only the generic registry machinery (`ModelDescriptor`, `ModelRegistry
 exports its own descriptor arrays and a ready-to-use registry; `@gullabs/google` exports
 `geminiModelDescriptors`, `gemmaModelDescriptors`, and `defaultGeminiRegistry` (built from
 `createModelRegistry([...geminiModelDescriptors, ...gemmaModelDescriptors])` in
-`packages/google/src/models.ts`). It covers current Gemini 2.5/3.x model families plus two
-API-verified Gemma 4 models: `gemma-4-31b-it` and `gemma-4-26b-a4b-it`. Hosts wire it in
+`packages/google/src/models.ts`). Registered Google ids:
+`gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`,
+`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
+`gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemma-4-31b-it`,
+`gemma-4-26b-a4b-it`. `gemini-3-flash-preview` and `gemini-3.5-flash` do not
+resolve. Hosts wire it in
 explicitly via `composeProviders`, e.g. `composeProviders([googleProvider()])`, which flattens
 every plugin's `modelDescriptors` into `ClientConfig.modelRegistry` — nothing is auto-populated
 into `createClient` without that call. Hosts can also supply `ClientConfig.modelRegistry`
@@ -619,7 +623,9 @@ and extra providers are still out of v1 machinery.
 breaking change to the engine.
 
 **Additional providers.** Shipped today: `@gullabs/google` (Gemini and Gemma), `@gullabs/xai`
-(grok-4.5 / grok-4.6), and the dev-only CLI providers. The provider-plugin shape (ADR-023) means an
+(grok-4.5 / grok-4.6 / grok-4.7), and the dev-only CLI providers
+(`claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`;
+`gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`). The provider-plugin shape (ADR-023) means an
 Anthropic or OpenAI API provider is a new self-contained package composed via
 `composeProviders` — zero core edits. Multi-adapter setups work today: the default router
 matches `req.provider` against adapter ids directly, one adapter configured or ten.

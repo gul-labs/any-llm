@@ -16,13 +16,21 @@ const TEST_AUTH = { apiKey: 'test-key' }
 const PRICING = makeTestPricingSource(
   {
     'gemini-2.5-pro': {
-      inputPerM: 1_250_000,
-      cachedPerM: 125_000,
-      outputPerM: 10_000_000,
+      standard: {
+        inputPerM: 1_250_000,
+        cachedPerM: 125_000,
+        outputPerM: 10_000_000,
+      },
+      flex: {
+        inputPerM: 625_000,
+        cachedPerM: 62_500,
+        outputPerM: 5_000_000,
+      },
     },
-    'gemini-2.5-flash': { inputPerM: 300_000, cachedPerM: 30_000, outputPerM: 2_500_000 },
+    'gemini-2.5-flash': {
+      standard: { inputPerM: 300_000, cachedPerM: 30_000, outputPerM: 2_500_000 },
+    },
   },
-  { standard: 1, flex: 0.5 },
   'test-pricing-1',
 )
 const TEST_REGISTRY = createModelRegistry([

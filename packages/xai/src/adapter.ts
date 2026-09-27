@@ -24,6 +24,8 @@ import type {
   TokenCount,
 } from '@gullabs/core'
 import { buildXaiClient, requireApiKey } from './client.js'
+import { xaiRegistry } from './models.js'
+import { X_SEARCH_ITEM_COUNTERS } from './pricing.js'
 import type {
   XaiClientLike,
   XaiResponseCreateParams,
@@ -33,6 +35,7 @@ import type {
   XaiUsageShape,
   XaiMessageOutputItem,
   XaiReasoningOutputItem,
+  XaiReplayState,
 } from './client.js'
 
 // ---------------------------------------------------------------------------
@@ -215,6 +218,26 @@ function mapXaiProviderOptions(
   return mapped
 }
 
+function parseXaiReplayState(value: unknown, model: string): XaiReplayState | undefined {
+  if (value === undefined) return undefined
+  if (
+    !isPlainRecord(value) ||
+    value['model'] !== model ||
+    !Array.isArray(value['input']) ||
+    value['input'].length === 0 ||
+    value['input'].some(
+      (item) =>
+        !isPlainRecord(item) ||
+        (typeof item['type'] !== 'string' && typeof item['role'] !== 'string'),
+    )
+  ) {
+    throw badXaiRequest(
+      `transientProviderState must contain the full xAI wire input for model "${model}".`,
+    )
+  }
+  return value as unknown as XaiReplayState
+}
+
 function mapXaiSearchTools(
   tools: unknown,
   model: string,
@@ -320,7 +343,7 @@ const CANONICALLY_MAPPED_USAGE_KEYS = new Set([
  * extras (e.g. `context_details`) belong to `AdapterResult.providerMetadata`
  * (see the adapter) and the full raw payload always lands in `Usage.raw`
  * verbatim. Tool invocation fees are billed in `Cost.details.tools` from the
- * live-pinned counters (`web_search_calls`, `x_search_calls`).
+ * live-pinned counters (`web_search_calls`, `x_posts_fetched`, `x_users_fetched`).
  */
 function mapUsage(usage: XaiUsageShape): Usage {
   const inputTokens = usage.input_tokens
@@ -344,10 +367,10 @@ function mapUsage(usage: XaiUsageShape): Usage {
     }
   }
 
-  // Live 2026-08-24: per-tool invocation counters live in the nested
-  // `server_side_tool_usage_details` object (web_search_calls, x_search_calls,
-  // document_search_calls, …). Flatten numeric members under their raw names
-  // so pricing can read them from Usage.details.
+  // The 2026-08-24 capture located per-call counters in the nested
+  // `server_side_tool_usage_details` object. xAI's 2026-09-22 X Search docs
+  // added the per-item `x_posts_fetched` and `x_users_fetched` names there.
+  // Flatten numeric members under their raw names for provider pricing.
   const toolUsage = usage['server_side_tool_usage_details']
   if (isPlainRecord(toolUsage)) {
     for (const [key, value] of Object.entries(toolUsage)) {
@@ -633,13 +656,75 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
 
       const warnings: Warning[] = []
       const model = req.model
+      if (
+        req.modelDescriptor !== undefined &&
+        (req.modelDescriptor.model !== model || req.modelDescriptor.provider !== 'xai')
+      ) {
+        throw badXaiRequest(`Mismatched xAI model descriptor for "${model}".`)
+      }
+      if (
+        xaiRegistry.resolve('xai', model)?.capabilities?.statelessReasoningReplay ===
+          true &&
+        req.modelDescriptor?.capabilities?.statelessReasoningReplay !== true
+      ) {
+        throw badXaiRequest(
+          `A matching xAI model descriptor with statelessReasoningReplay is required for "${model}".`,
+        )
+      }
       const genConfig = req.config
+      const xaiProviderConfig = mapXaiProviderOptions(
+        genConfig.providerOptions?.['xai'],
+        model,
+      )
 
       // ------------------------------------------------------------------
       // 1. Map messages → input
       // ------------------------------------------------------------------
-      const input: XaiRequestInputItem[] = []
+      const replayRequired =
+        req.modelDescriptor?.capabilities?.statelessReasoningReplay === true
+      const replayState = parseXaiReplayState(req.transientProviderState, model)
+      if (replayState !== undefined && !replayRequired) {
+        throw badXaiRequest(
+          `transientProviderState requires a statelessReasoningReplay model descriptor for "${model}".`,
+        )
+      }
+      if (replayState !== undefined && req.messages.length === 0) {
+        throw badXaiRequest(
+          `Stateless conversation replay for model "${model}" requires new messages to append.`,
+        )
+      }
+      const input: XaiRequestInputItem[] = [...(replayState?.input ?? [])]
+      const replayCallIds = new Set(
+        replayState?.input
+          .filter((item) => isPlainRecord(item) && item['type'] === 'function_call')
+          .map((item) => (isPlainRecord(item) ? item['call_id'] : undefined))
+          .filter((id): id is string => typeof id === 'string') ?? [],
+      )
+      const replayedResultIds = new Set(
+        replayState?.input
+          .filter(
+            (item) => isPlainRecord(item) && item['type'] === 'function_call_output',
+          )
+          .map((item) => (isPlainRecord(item) ? item['call_id'] : undefined))
+          .filter((id): id is string => typeof id === 'string') ?? [],
+      )
       for (const msg of req.messages) {
+        if (replayState !== undefined && msg.role === 'assistant') {
+          throw badXaiRequest(
+            `New messages for model "${model}" cannot contain assistant history when transientProviderState is supplied.`,
+          )
+        }
+        if (
+          replayRequired &&
+          replayState === undefined &&
+          msg.parts.some(
+            (part) => part.kind === 'tool-call' || part.kind === 'tool-result',
+          )
+        ) {
+          throw badXaiRequest(
+            `Function-call history for model "${model}" requires transientProviderState from the prior result.`,
+          )
+        }
         const contentParts: XaiInputContentPart[] = []
         for (const part of msg.parts) {
           if (part.kind === 'tool-call') {
@@ -658,6 +743,16 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
             continue
           }
           if (part.kind === 'tool-result') {
+            if (
+              replayState !== undefined &&
+              (!replayCallIds.has(part.toolCallId) ||
+                replayedResultIds.has(part.toolCallId))
+            ) {
+              throw badXaiRequest(
+                `Tool result "${part.toolCallId}" must match an unanswered function call in transientProviderState.`,
+              )
+            }
+            replayedResultIds.add(part.toolCallId)
             if (contentParts.length > 0) {
               input.push({
                 role: msg.role === 'assistant' ? 'assistant' : 'user',
@@ -680,7 +775,6 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
           })
         }
       }
-
       // ------------------------------------------------------------------
       // 2. Build request params
       // ------------------------------------------------------------------
@@ -709,11 +803,9 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
         params.max_output_tokens = genConfig.maxOutputTokens
       }
 
-      // serviceTier — descriptor-driven. grok-4.5 admits none (live 2026-07-09
-      // rejected `service_tier`). grok-4.6 admits `'priority'` only
-      // (live-verified 2026-08-12: `priority` is echoed; `flex` is silently
-      // remapped to `default` by xAI, so this adapter rejects it rather
-      // than forwarding a no-op).
+      // serviceTier — descriptor-driven. All three registered models admit
+      // priority (4.5 live-verified 2026-09-25; 4.6 on 2026-08-12).
+      // xAI silently remaps flex to default, so the strict schemas reject it.
       const admittedTiers = req.modelDescriptor?.capabilities?.serviceTiers
       if (genConfig.serviceTier !== undefined) {
         if (
@@ -754,9 +846,9 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
 
         if (reasoning.effort !== undefined) {
           const effort = reasoning.effort
-          if (effort === 'none') {
+          if (effort === 'none' || effort === 'max') {
             throw badXaiRequest(
-              `reasoning.effort "none" is not supported for xai model "${model}".`,
+              `reasoning.effort "${effort}" is not supported for xai model "${model}".`,
             )
           }
           const admitted = req.modelDescriptor?.capabilities?.admittedReasoningEfforts
@@ -792,22 +884,31 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       // ------------------------------------------------------------------
       // 5. providerOptions.xai → prompt_cache_key
       // ------------------------------------------------------------------
-      const xaiProviderConfig = mapXaiProviderOptions(
-        genConfig.providerOptions?.['xai'],
-        model,
-      )
       if (xaiProviderConfig.promptCacheKey !== undefined) {
         params.prompt_cache_key = xaiProviderConfig.promptCacheKey
       }
 
-      const hasFileRef = req.messages.some((msg) =>
-        msg.parts.some((part) => part.kind === 'file-ref'),
+      const hasFileRef = input.some(
+        (item) =>
+          isPlainRecord(item) &&
+          Array.isArray(item['content']) &&
+          item['content'].some(
+            (part) => isPlainRecord(part) && part['type'] === 'input_file',
+          ),
       )
       const searchTools = xaiProviderConfig.tools
       if (searchTools !== undefined) {
         if (req.modelDescriptor?.capabilities?.grounding !== true) {
           throw badXaiRequest(
             `providerOptions.xai.tools requires capabilities.grounding on the model descriptor for "${model}".`,
+          )
+        }
+        if (
+          structuredOutputRequested &&
+          req.modelDescriptor.capabilities.structuredOutputWithTools !== true
+        ) {
+          throw badXaiRequest(
+            `Structured output with providerOptions.xai.tools is not supported for model "${model}".`,
           )
         }
         params.tools = searchTools
@@ -934,6 +1035,11 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       )
       if (expectedToolCounters.length > 0 || hasFileRef) {
         usage.details['server_tools_requested'] = 1
+        if (
+          xaiProviderConfig.tools?.some((tool) => tool['type'] === 'x_search') === true
+        ) {
+          usage.details['x_search_requested'] = 1
+        }
         const missing = expectedToolCounters.filter((key) => !(key in usage.details))
         if (missing.length > 0) {
           usage.details['server_tools_missing'] = 1
@@ -941,7 +1047,7 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
             type: 'other',
             message: `xai: server tools were requested but usage is missing counters [${missing.join(
               ', ',
-            )}]; tool cost will be estimated.`,
+            )}]; the call is unpriced.`,
           })
         }
         if (hasFileRef) {
@@ -970,6 +1076,18 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       if (isPlainRecord(response.metadata)) {
         providerMeta['metadata'] = response.metadata as unknown as JsonValue
       }
+      let transientProviderState: JsonValue | undefined
+      if (replayRequired) {
+        // Preserve every provider output item in wire order. This includes
+        // messages and encrypted server-tool items that normalized Message
+        // cannot represent. The next request appends only new user/tool-result
+        // messages; callers do not repeat normalized history with state.
+        const state: XaiReplayState = {
+          model,
+          input: [...params.input, ...response.output],
+        }
+        transientProviderState = state as unknown as JsonValue
+      }
 
       // Surface the echoed tier verbatim. xAI can remap (flex → default);
       // discarding non-priority values would let the engine fall back to the
@@ -992,6 +1110,7 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
         ...(Object.keys(providerMeta).length > 0
           ? { providerMetadata: providerMeta }
           : {}),
+        ...(transientProviderState !== undefined ? { transientProviderState } : {}),
         ...(citations.length > 0 ? { citations } : {}),
         ...(toolCalls.length > 0 ? { toolCalls, finishReason: 'tool_calls' } : {}),
       }
@@ -1069,9 +1188,8 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
   }
 }
 
-/** Live-pinned 2026-08-24 counter names from `usage.server_side_tool_usage_details`. */
+/** Counter names from `usage.server_side_tool_usage_details`. */
 const WEB_SEARCH_COUNTER = 'web_search_calls'
-const X_SEARCH_COUNTER = 'x_search_calls'
 function expectedServerToolCounters(
   tools: Array<Record<string, unknown>> | undefined,
   _hasFileRef: boolean,
@@ -1080,7 +1198,7 @@ function expectedServerToolCounters(
   if (tools !== undefined) {
     for (const tool of tools) {
       if (tool['type'] === 'web_search') keys.push(WEB_SEARCH_COUNTER)
-      if (tool['type'] === 'x_search') keys.push(X_SEARCH_COUNTER)
+      if (tool['type'] === 'x_search') keys.push(...X_SEARCH_ITEM_COUNTERS)
     }
   }
   return keys

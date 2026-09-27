@@ -67,31 +67,23 @@ function mulberry32(seed: number): () => number {
 // ---------------------------------------------------------------------------
 
 const TEST_RATES = {
-  'gemini-2.5-pro': { inputPerM: 1_250_000, cachedPerM: 125_000, outputPerM: 10_000_000 },
-  'gemini-2.5-flash': { inputPerM: 300_000, cachedPerM: 30_000, outputPerM: 2_500_000 },
-  'gemini-2.5-flash-lite': {
-    inputPerM: 100_000,
-    cachedPerM: 10_000,
-    outputPerM: 400_000,
+  'gemini-2.5-pro': {
+    standard: { inputPerM: 1_250_000, cachedPerM: 125_000, outputPerM: 10_000_000 },
   },
-  'gemini-3.5-flash': {
-    inputPerM: 1_500_000,
-    cachedPerM: 150_000,
-    outputPerM: 9_000_000,
+  'gemini-2.5-flash': {
+    standard: { inputPerM: 300_000, cachedPerM: 30_000, outputPerM: 2_500_000 },
+  },
+  'gemini-2.5-flash-lite': {
+    standard: { inputPerM: 100_000, cachedPerM: 10_000, outputPerM: 400_000 },
   },
   'gemini-3.1-flash-lite': {
-    inputPerM: 250_000,
-    cachedPerM: 25_000,
-    outputPerM: 1_500_000,
+    standard: { inputPerM: 250_000, cachedPerM: 25_000, outputPerM: 1_500_000 },
   },
   'gemini-3.1-pro-preview': {
-    inputPerM: 2_000_000,
-    cachedPerM: 200_000,
-    outputPerM: 12_000_000,
+    standard: { inputPerM: 2_000_000, cachedPerM: 200_000, outputPerM: 12_000_000 },
   },
 }
-const TEST_TIER_FACTOR = { standard: 1, flex: 0.5, batch: 0.5 }
-const PRICING = makeTestPricingSource(TEST_RATES, TEST_TIER_FACTOR, 'test-pricing-1')
+const PRICING = makeTestPricingSource(TEST_RATES, 'test-pricing-1')
 const TEST_REGISTRY = createModelRegistry(
   Object.keys(TEST_RATES).map((model) =>
     makePermissiveTestDescriptor({ model, provider: 'google' }),
@@ -826,7 +818,6 @@ describe('surface-stress: cost property', () => {
     'gemini-2.5-pro',
     'gemini-2.5-flash',
     'gemini-2.5-flash-lite',
-    'gemini-3.5-flash',
     'gemini-3.1-flash-lite',
     'gemini-3.1-pro-preview',
     'gemini-2.5-pro-001', // prefix match → gemini-2.5-pro

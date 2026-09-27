@@ -1,0 +1,63 @@
+{
+  "status": 200,
+  "source": "P-X1 live 2026-09-26 x-posts with grok-4.7 and x_search",
+  "sanitization": "Selected response fields; intermediate reasoning, public search payloads and tool-call items omitted. Usage block is verbatim.",
+  "body": {
+    "model": "grok-4.7",
+    "usage": {
+      "input_tokens": 27315,
+      "input_tokens_details": {
+        "cached_tokens": 9344
+      },
+      "output_tokens": 2213,
+      "output_tokens_details": {
+        "reasoning_tokens": 2066
+      },
+      "total_tokens": 29528,
+      "num_sources_used": 0,
+      "num_server_side_tools_used": 4,
+      "cost_in_usd_ticks": 1038920000,
+      "server_side_tool_usage_details": {
+        "web_search_calls": 0,
+        "x_search_calls": 4,
+        "x_posts_fetched": 10,
+        "x_users_fetched": 0,
+        "code_interpreter_calls": 0,
+        "file_search_calls": 0,
+        "mcp_calls": 0,
+        "document_search_calls": 0,
+        "image_generation_calls": 0
+      },
+      "context_details": {
+        "input_tokens": 8322,
+        "output_tokens": 215
+      }
+    },
+    "service_tier": "default",
+    "status": "completed",
+    "store": false,
+    "output": [
+      {
+        "type": "message",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "A recent post from the @xai account states that Grok Build is now installed in Railway sandboxes. [[1]](https://x.com/SpaceXAI/status/2072738598663946648)",
+            "logprobs": [],
+            "annotations": [
+              {
+                "type": "url_citation",
+                "url": "https://x.com/SpaceXAI/status/2072738598663946648",
+                "start_index": 98,
+                "end_index": 154,
+                "title": "1"
+              }
+            ]
+          }
+        ],
+        "status": "completed"
+      }
+    ]
+  }
+}

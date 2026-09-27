@@ -12,7 +12,13 @@ import { LlmError, createClient } from '@gullabs/core'
 import type { ResolvedRequest, AdapterCtx, ModelDescriptor } from '@gullabs/core'
 import { fakeXaiResponse, makeFakeXai, RecordingSink } from '@gullabs/testing'
 import { xaiAdapter, classifyXaiError } from './adapter.js'
-import { xaiRegistry, grok45ModelDescriptor } from './models.js'
+import { computeXaiCost } from './pricing.js'
+import {
+  xaiRegistry,
+  grok45ModelDescriptor,
+  grok46ModelDescriptor,
+  grok47ModelDescriptor,
+} from './models.js'
 import { makeTestDescriptor } from '../../core/src/test-model-descriptor.js'
 
 // ---------------------------------------------------------------------------
@@ -318,6 +324,21 @@ describe('reasoning effort mapping', () => {
 // ---------------------------------------------------------------------------
 
 describe('structured output', () => {
+  it('rejects built-in search with structured output without descriptor admission', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ structuredJson: '{}' }))
+    await expect(
+      xaiAdapter({ client }).run(
+        makeResolvedReq({
+          modelDescriptor: grok45ModelDescriptor,
+          outputJsonSchema: { type: 'object' },
+          config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
+        }),
+        FAKE_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
+    expect(client.calls).toHaveLength(0)
+  })
+
   it('sends text.format.type==="json_schema" (not response_format) and parses rawStructured', async () => {
     const client = makeFakeXai(
       fakeXaiResponse({ structuredJson: '{"name":"Bob","age":30}' }),
@@ -1328,7 +1349,7 @@ describe('xai function calling', () => {
     const result = await adapter.run(
       makeResolvedReq({
         model: 'grok-4.6',
-        modelDescriptor: grok45ModelDescriptor,
+        modelDescriptor: grok46ModelDescriptor,
         tools: [tool],
         toolChoice: { name: 'get_temperature' },
       }),
@@ -1351,6 +1372,183 @@ describe('xai function calling', () => {
       },
     ])
     expect(call.tool_choice).toEqual({ type: 'function', name: 'get_temperature' })
+  })
+
+  it('rejects assistant history alongside grok-4.7 continuation state', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ text: '59F' }))
+    const adapter = xaiAdapter({ client })
+    await expect(
+      adapter.run(
+        makeResolvedReq({
+          model: 'grok-4.7',
+          modelDescriptor: grok47ModelDescriptor,
+          transientProviderState: {
+            model: 'grok-4.7',
+            input: [{ role: 'user', content: [{ type: 'input_text', text: 'temp?' }] }],
+          },
+          tools: [tool],
+          messages: [
+            { role: 'user', parts: [{ kind: 'text', text: 'temp?' }] },
+            {
+              role: 'assistant',
+              parts: [
+                {
+                  kind: 'tool-call',
+                  toolCallId: 'call-1',
+                  toolName: 'get_temperature',
+                  args: { location: 'SF' },
+                },
+              ],
+            },
+            {
+              role: 'user',
+              parts: [
+                {
+                  kind: 'tool-result',
+                  toolCallId: 'call-1',
+                  toolName: 'get_temperature',
+                  result: { temperature: 59 },
+                },
+              ],
+            },
+          ],
+        }),
+        FAKE_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request' })
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('accepts text-only assistant examples in a fresh grok-4.7 request', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ text: 'Paris' }))
+    await xaiAdapter({ client }).run(
+      makeResolvedReq({
+        model: 'grok-4.7',
+        modelDescriptor: grok47ModelDescriptor,
+        messages: [
+          { role: 'user', parts: [{ kind: 'text', text: '2+2?' }] },
+          { role: 'assistant', parts: [{ kind: 'text', text: '4' }] },
+          { role: 'user', parts: [{ kind: 'text', text: 'Capital of France?' }] },
+        ],
+      }),
+      FAKE_CTX,
+    )
+    expect((client.calls[0] as { input: unknown[] }).input).toHaveLength(3)
+  })
+
+  it('rejects grok-4.7 function-call history without encrypted replay state', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ text: '59F' }))
+    await expect(
+      xaiAdapter({ client }).run(
+        makeResolvedReq({
+          model: 'grok-4.7',
+          modelDescriptor: grok47ModelDescriptor,
+          messages: [
+            { role: 'user', parts: [{ kind: 'text', text: 'temp?' }] },
+            {
+              role: 'assistant',
+              parts: [
+                {
+                  kind: 'tool-call',
+                  toolCallId: 'call-1',
+                  toolName: 'get_temperature',
+                  args: { location: 'SF' },
+                },
+              ],
+            },
+            {
+              role: 'user',
+              parts: [
+                {
+                  kind: 'tool-result',
+                  toolCallId: 'call-1',
+                  toolName: 'get_temperature',
+                  result: { temperature: 59 },
+                },
+              ],
+            },
+          ],
+        }),
+        FAKE_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request' })
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('requires a descriptor for direct grok-4.7 calls', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
+    await expect(
+      xaiAdapter({ client }).run(makeResolvedReq({ model: 'grok-4.7' }), FAKE_CTX),
+    ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('rejects a direct grok-4.7 descriptor that disables required replay', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
+    await expect(
+      xaiAdapter({ client }).run(
+        makeResolvedReq({
+          model: 'grok-4.7',
+          modelDescriptor: makeXaiDescriptor({
+            model: 'grok-4.7',
+            capabilities: { statelessReasoningReplay: false },
+          }),
+        }),
+        FAKE_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('keeps replayed file attachments in the estimated tool-cost lane', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ text: 'Summary' }))
+    const result = await xaiAdapter({ client }).run(
+      makeResolvedReq({
+        model: 'grok-4.7',
+        modelDescriptor: grok47ModelDescriptor,
+        transientProviderState: {
+          model: 'grok-4.7',
+          input: [
+            { role: 'user', content: [{ type: 'input_file', file_id: 'file_abc' }] },
+          ],
+        },
+        messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Summarize it.' }] }],
+      }),
+      FAKE_CTX,
+    )
+    expect(result.usage.details.attachment_search_unpinned).toBe(1)
+    expect(computeXaiCost('grok-4.7', result.usage).confidence).toBe('estimated')
+  })
+
+  it('rejects an unknown tool result against replay state', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ text: 'Summary' }))
+    await expect(
+      xaiAdapter({ client }).run(
+        makeResolvedReq({
+          model: 'grok-4.7',
+          modelDescriptor: grok47ModelDescriptor,
+          transientProviderState: {
+            model: 'grok-4.7',
+            input: [{ role: 'user', content: [{ type: 'input_text', text: 'Hi' }] }],
+          },
+          messages: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  kind: 'tool-result',
+                  toolCallId: 'missing',
+                  toolName: 'get_temperature',
+                  result: 1,
+                },
+              ],
+            },
+          ],
+        }),
+        FAKE_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request' })
+    expect(client.calls).toHaveLength(0)
   })
 
   it('replays tool-call and tool-result as store:false input items', async () => {
@@ -1651,6 +1849,42 @@ describe('xai Live Search tools', () => {
     expect(result.usage.details.web_search_calls).toBe(1)
     expect(result.usage.details.server_tools_requested).toBe(1)
     expect(result.warnings).toEqual([])
+  })
+
+  it('expects x_posts_fetched and x_users_fetched when x_search is requested', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 8, outputTokens: 2 })
+    response.usage['server_side_tool_usage_details'] = {
+      x_posts_fetched: 44,
+      x_users_fetched: 3,
+    }
+    const adapter = xaiAdapter({ client: makeFakeXai(response) })
+    const result = await adapter.run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'x_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.usage.details.x_search_requested).toBe(1)
+    expect(result.usage.details.x_posts_fetched).toBe(44)
+    expect(result.usage.details.x_users_fetched).toBe(3)
+    expect(result.usage.details.server_tools_missing).toBeUndefined()
+  })
+
+  it('marks the call unpriced when an x_search item counter is absent', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 8, outputTokens: 2 })
+    response.usage['server_side_tool_usage_details'] = { x_posts_fetched: 1 }
+    const adapter = xaiAdapter({ client: makeFakeXai(response) })
+    const result = await adapter.run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'x_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.usage.details.server_tools_missing).toBe(1)
+    expect(result.warnings[0]?.message).toContain('x_users_fetched')
+    expect(result.warnings[0]?.message).toContain('unpriced')
   })
 
   it('warns when requested tool counters are missing', async () => {

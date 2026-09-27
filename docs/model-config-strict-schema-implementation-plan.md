@@ -10,6 +10,11 @@ Gemini/Gemma schemas now live in `@gullabs/google` (not `@gullabs/core`), and
 `flexFallback` or to core-owned model schemas reflect the layout at the time of
 writing.
 
+The model references below are also a historical freeze. The 2026-09-25
+refresh deleted `gemini-3.5-flash` and `gemini-3-flash-preview`; see
+[`model-config-provider-evidence.md`](./model-config-provider-evidence.md#2026-09-25-refresh)
+for the current catalog.
+
 Draft plan for implementation after `docs/model-config-strict-schema-design.md`.
 
 Inputs:

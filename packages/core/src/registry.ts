@@ -46,7 +46,15 @@ export interface ModelDescriptor {
     sampling?: 'tunable' | 'fixed'
     caching?: { explicit: boolean; minTokens: number }
     grounding?: boolean
+    /**
+     * Structured output combined with provider built-in tools (Google:
+     * `googleSearch`). Absent or false means the adapter must reject that
+     * combination. The adapter reads this flag and carries no per-model list.
+     */
+    structuredOutputWithTools?: boolean
     functionCalling?: boolean
+    /** Requires exact prior wire input/output for stateless conversation replay. */
+    statelessReasoningReplay?: boolean
     serviceTiers?: readonly string[]
   }
   /** Zod runtime schema for the full per-model config contract. */

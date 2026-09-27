@@ -122,6 +122,8 @@ export interface GeminiUsageMetadataShape {
   cachedContentTokenCount?: number
   thoughtsTokenCount?: number
   totalTokenCount?: number
+  /** Provider-echoed actual tier; can differ from the requested tier. */
+  serviceTier?: string
 }
 
 /**
