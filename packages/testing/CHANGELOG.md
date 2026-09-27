@@ -1,5 +1,13 @@
 # @gullabs/testing
 
+## 0.8.2
+
+### Patch Changes
+
+- 64942d1: Add `serviceTier` to the exported fake Gemini usage metadata type so host tests can simulate the provider's served-tier echo.
+- Updated dependencies [64942d1]
+  - @gullabs/core@0.15.0
+
 ## 0.8.1
 
 ### Patch Changes

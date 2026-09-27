@@ -1,5 +1,18 @@
 # @gullabs/any-llm
 
+## 0.11.0
+
+### Minor Changes
+
+- 64942d1: Refresh the facade's Google model catalog and pricing exports with Gemini 3.6–3.8 Flash and Gemini 3.5 Flash-Lite. The facade no longer re-exports `TIER_FACTOR`; use `resolveGeminiRates(model, tier)` for concrete rates.
+
+### Patch Changes
+
+- Updated dependencies [64942d1]
+- Updated dependencies [64942d1]
+  - @gullabs/core@0.15.0
+  - @gullabs/google@0.13.0
+
 ## 0.10.1
 
 ### Patch Changes
