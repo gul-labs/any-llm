@@ -1,5 +1,11 @@
 # @gullabs/any-llm
 
+## 0.11.1
+
+### Patch Changes
+
+- 0c49eb4: Raise the bundled `@google/genai` floor to `^2.24.0` (was `^2.23.0`). No API changes.
+
 ## 0.11.0
 
 ### Minor Changes
