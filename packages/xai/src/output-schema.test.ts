@@ -110,6 +110,12 @@ describe('assertXaiOutputJsonSchema', () => {
     ],
     ['unevaluatedItems', { unevaluatedItems: { type: 'STRING' } }, '`unevaluatedItems`'],
     ['contentSchema', { contentSchema: { type: 'STRING' } }, '`contentSchema`'],
+    ['additionalItems', { additionalItems: { type: 'STRING' } }, '`additionalItems`'],
+    [
+      'dependencies (schema form)',
+      { dependencies: { a: { nullable: true }, b: ['c'] } },
+      '`dependencies.a`',
+    ],
   ])('walks %s', (_name, schema, path) => {
     expect(rejection(schema as JsonValue).message).toContain(path)
   })
@@ -166,6 +172,18 @@ describe('assertXaiOutputJsonSchema', () => {
           label: { type: 'string', enum: ['OBJECT', 'nullable'], default: 'OBJECT' },
           sample: { type: 'object', examples: [{ type: 'STRING', nullable: true }] },
         },
+      }),
+    ).not.toThrow()
+  })
+
+  it('accepts draft-07 property-list dependencies and boolean subschemas', () => {
+    expect(() =>
+      assertXaiOutputJsonSchema({
+        type: 'object',
+        properties: { a: true, b: { type: 'string' } },
+        dependencies: { a: ['b'] },
+        additionalProperties: false,
+        items: false,
       }),
     ).not.toThrow()
   })

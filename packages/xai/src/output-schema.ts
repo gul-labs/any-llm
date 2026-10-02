@@ -35,6 +35,7 @@ const JSON_SCHEMA_TYPES = new Set([
 /** Keywords whose value is one subschema. */
 const SINGLE_SCHEMA_KEYWORDS = [
   'additionalProperties',
+  'additionalItems',
   'items',
   'contains',
   'not',
@@ -55,6 +56,9 @@ const SCHEMA_MAP_KEYWORDS = [
   'properties',
   'patternProperties',
   'dependentSchemas',
+  // Draft-07 `dependencies`: schema-valued entries are walked; array-valued
+  // entries are property-name lists and are skipped by the object check.
+  'dependencies',
   '$defs',
   'definitions',
 ] as const

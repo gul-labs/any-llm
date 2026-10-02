@@ -399,13 +399,13 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
   `packages/xai/README.md`.
 - `providerOptions.xai` is an allowlist; unknown keys are `bad_request`:
 
-  | key                 | wire                  | rule                                                                                                                                                     |
-  | ------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | `promptCacheKey`    | `prompt_cache_key`    | non-empty string                                                                                                                                         |
-  | `tools`             | `tools`               | `web_search` / `x_search`, at most one of each; needs `capabilities.grounding`                                                                           |
-  | `parallelToolCalls` | `parallel_tool_calls` | boolean                                                                                                                                                  |
-  | `toolChoice`        | `tool_choice`         | `'auto' \| 'required' \| 'none'` for the search tools only; needs non-empty `tools`; rejected with function tools or with the request-level `toolChoice` |
-  | `maxTurns`          | `max_turns`           | integer ≥ 1; needs non-empty `tools`; caps agentic turns, not searches; xAI did not enforce it as of 2026-10-02                                          |
+  | key                 | wire                  | rule                                                                                                                                                                  |
+  | ------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `promptCacheKey`    | `prompt_cache_key`    | non-empty string                                                                                                                                                      |
+  | `tools`             | `tools`               | `web_search` / `x_search`, at most one of each; needs `capabilities.grounding`                                                                                        |
+  | `parallelToolCalls` | `parallel_tool_calls` | boolean                                                                                                                                                               |
+  | `toolChoice`        | `tool_choice`         | `'auto' \| 'required' \| 'none'` for the search tools only; needs non-empty `tools`; rejected with function tools, file attachments or the request-level `toolChoice` |
+  | `maxTurns`          | `max_turns`           | integer ≥ 1; needs non-empty `tools`; caps agentic turns, not searches; xAI did not enforce it as of 2026-10-02                                                       |
 
 - xAI structured output takes standard JSON Schema. A nullable field lists `'null'` in `type`
   (`type: ['string', 'null']`). The OpenAPI `nullable` keyword and uppercase type names

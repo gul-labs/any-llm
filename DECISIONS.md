@@ -1678,9 +1678,12 @@ three neighbouring problems, all confirmed live on 2026-10-02 against
 1. **`providerOptions.xai.toolChoice: 'auto' | 'required' | 'none'`** maps to
    the Responses `tool_choice` and is **server-tool-only**. The adapter
    rejects it without a non-empty `providerOptions.xai.tools`, together with
-   function tools, and together with the request-level `toolChoice`. xAI
-   defines `required` as "at least one tool"; with a function tool declared
-   the option could not promise a search. Live: `required` ran 3 / 2 / 2
+   function tools, together with file attachments, and together with the
+   request-level `toolChoice`. xAI defines `required` as "at least one tool";
+   a declared function tool, or the `attachment_search` that a file
+   attachment implicitly enables, could satisfy it without a search. The
+   attachment case is inferred from xAI's docs, not live-probed (the ZDR key
+   blocks attachments). Live: `required` ran 3 / 2 / 2
    searches, `none` ran 0, on the three models.
 2. **`providerOptions.xai.maxTurns`** (integer ≥ 1, requires search tools)
    maps to the Responses `max_turns`
@@ -1697,7 +1700,8 @@ three neighbouring problems, all confirmed live on 2026-10-02 against
 3. **Zero-search accounting.** A response where no server tool ran reports
    `num_server_side_tools_used: 0` and omits `server_side_tool_usage_details`.
    The adapter treats that as an explicit zero: no missing-counter warning,
-   exact cost, no tool fee. Before this, every `none` call and every `auto`
+   exact cost, no tool fee. A zero that arrives with a counters object is
+   contradictory and keeps the missing-counter checks. Before this, every `none` call and every `auto`
    call that skipped the search was recorded as unpriced. When the field is
    absent, or non-zero without counters, the call stays unpriced.
 4. **Strict-schema dialect is rejected, never rewritten.** With

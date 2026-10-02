@@ -152,10 +152,6 @@ const INVALID_TOOLS: Array<{ name: string; config: unknown }> = [
     },
   },
   {
-    name: 'toolChoice without tools',
-    config: { providerOptions: { xai: { toolChoice: 'required' } } },
-  },
-  {
     name: 'toolChoice with empty tools',
     config: { providerOptions: { xai: { tools: [], toolChoice: 'required' } } },
   },
@@ -164,10 +160,6 @@ const INVALID_TOOLS: Array<{ name: string; config: unknown }> = [
     config: {
       providerOptions: { xai: { tools: [{ type: 'web_search' }], toolChoice: 'any' } },
     },
-  },
-  {
-    name: 'maxTurns without tools',
-    config: { providerOptions: { xai: { maxTurns: 2 } } },
   },
   {
     name: 'maxTurns below 1',

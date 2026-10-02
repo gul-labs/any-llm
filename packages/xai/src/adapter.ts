@@ -969,6 +969,14 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
               `providerOptions.xai.toolChoice applies to the server-side search tools only and cannot be combined with function tools for model "${model}".`,
             )
           }
+          // A file attachment implicitly enables xAI's `attachment_search`,
+          // which is a tool too: it could satisfy `required` without a web
+          // or X search. Not live-probed (the ZDR key blocks attachments).
+          if (hasFileRef) {
+            throw badXaiRequest(
+              `providerOptions.xai.toolChoice cannot be combined with file attachments for model "${model}"; xAI's implicit attachment_search would count as the tool call.`,
+            )
+          }
           params.tool_choice = xaiProviderConfig.toolChoice
         }
         // Forwarded verbatim per the Responses contract. It caps agentic
@@ -1103,8 +1111,11 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       // (live 2026-10-02, fixture 32: `tool_choice: 'none'`; the same shape
       // comes back when the model skips the search under `auto`). That is an
       // explicit zero, not a missing counter, so the call prices exactly
-      // with no tool cost.
-      const noServerToolRan = response.usage['num_server_side_tools_used'] === 0
+      // with no tool cost. A zero that arrives WITH a counters object is
+      // contradictory and keeps the missing-counter checks.
+      const noServerToolRan =
+        response.usage['num_server_side_tools_used'] === 0 &&
+        response.usage['server_side_tool_usage_details'] === undefined
       if ((expectedToolCounters.length > 0 || hasFileRef) && !noServerToolRan) {
         usage.details['server_tools_requested'] = 1
         if (
