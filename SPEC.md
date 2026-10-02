@@ -411,8 +411,8 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
   (`type: ['string', 'null']`). The OpenAPI `nullable` keyword and uppercase type names
   (`STRING`, `OBJECT`) are `bad_request` before dispatch; the adapter never rewrites a schema.
 - Search tools plus `output.jsonSchema` is admitted on all three models
-  (`structuredOutputWithTools`). A response reporting `num_server_side_tools_used: 0` prices
-  exactly with no tool fee. See ADR-030.
+  (`structuredOutputWithTools`). A response reporting `num_server_side_tools_used: 0` and no
+  `server_side_tool_usage_details` prices exactly with no tool fee. See ADR-030.
 
 ---
 
