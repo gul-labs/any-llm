@@ -25,6 +25,7 @@ import type {
 } from '@gullabs/core'
 import { buildXaiClient, requireApiKey } from './client.js'
 import { xaiRegistry } from './models.js'
+import { assertXaiOutputJsonSchema } from './output-schema.js'
 import { X_SEARCH_ITEM_COUNTERS } from './pricing.js'
 import type {
   XaiClientLike,
@@ -158,12 +159,22 @@ function mapPart(p: Part): XaiInputContentPart {
 // providerOptions.xai → explicit allowlisted mapping
 // ---------------------------------------------------------------------------
 
-const XAI_PROVIDER_OPTION_KEYS = new Set(['promptCacheKey', 'tools', 'parallelToolCalls'])
+const XAI_PROVIDER_OPTION_KEYS = new Set([
+  'promptCacheKey',
+  'tools',
+  'parallelToolCalls',
+  'toolChoice',
+  'maxTurns',
+])
+
+const XAI_SERVER_TOOL_CHOICES = new Set(['auto', 'required', 'none'])
 
 type MappedXaiProviderOptions = {
   promptCacheKey?: string
   tools?: Array<Record<string, unknown>>
   parallelToolCalls?: boolean
+  toolChoice?: 'auto' | 'required' | 'none'
+  maxTurns?: number
 }
 
 function mapXaiProviderOptions(
@@ -185,7 +196,7 @@ function mapXaiProviderOptions(
     throw badXaiRequest(
       `providerOptions.xai contains unsupported keys [${unknownKeys.join(
         ', ',
-      )}] for model "${model}". Allowed keys: promptCacheKey, tools, parallelToolCalls.`,
+      )}] for model "${model}". Allowed keys: promptCacheKey, tools, parallelToolCalls, toolChoice, maxTurns.`,
     )
   }
 
@@ -213,6 +224,36 @@ function mapXaiProviderOptions(
       )
     }
     mapped.parallelToolCalls = xaiOpts['parallelToolCalls']
+  }
+
+  const toolChoice = xaiOpts['toolChoice']
+  if (toolChoice !== undefined) {
+    if (typeof toolChoice !== 'string' || !XAI_SERVER_TOOL_CHOICES.has(toolChoice)) {
+      throw badXaiRequest(
+        `providerOptions.xai.toolChoice must be "auto", "required" or "none" for model "${model}".`,
+      )
+    }
+    if (mapped.tools === undefined || mapped.tools.length === 0) {
+      throw badXaiRequest(
+        `providerOptions.xai.toolChoice requires a non-empty providerOptions.xai.tools for model "${model}".`,
+      )
+    }
+    mapped.toolChoice = toolChoice as 'auto' | 'required' | 'none'
+  }
+
+  const maxTurns = xaiOpts['maxTurns']
+  if (maxTurns !== undefined) {
+    if (typeof maxTurns !== 'number' || !Number.isInteger(maxTurns) || maxTurns < 1) {
+      throw badXaiRequest(
+        `providerOptions.xai.maxTurns must be an integer >= 1 for model "${model}".`,
+      )
+    }
+    if (mapped.tools === undefined || mapped.tools.length === 0) {
+      throw badXaiRequest(
+        `providerOptions.xai.maxTurns requires a non-empty providerOptions.xai.tools for model "${model}".`,
+      )
+    }
+    mapped.maxTurns = maxTurns
   }
 
   return mapped
@@ -870,6 +911,7 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       const structuredOutputRequested = req.outputJsonSchema !== undefined
       if (structuredOutputRequested) {
         const schema = req.outputJsonSchema
+        assertXaiOutputJsonSchema(schema as JsonValue)
         const name =
           isPlainRecord(schema) &&
           typeof schema['title'] === 'string' &&
@@ -912,6 +954,37 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
           )
         }
         params.tools = searchTools
+        // Responses carries one request-wide `tool_choice`, and `required`
+        // means "at least one tool" — a function call would satisfy it. The
+        // option is therefore server-tool-only: it cannot promise a search
+        // once function tools are declared.
+        if (xaiProviderConfig.toolChoice !== undefined) {
+          if (req.toolChoice !== undefined) {
+            throw badXaiRequest(
+              `providerOptions.xai.toolChoice and toolChoice cannot both be set for model "${model}"; xAI accepts one tool_choice per request.`,
+            )
+          }
+          if (req.tools !== undefined && req.tools.length > 0) {
+            throw badXaiRequest(
+              `providerOptions.xai.toolChoice applies to the server-side search tools only and cannot be combined with function tools for model "${model}".`,
+            )
+          }
+          // A file attachment implicitly enables xAI's `attachment_search`,
+          // which is a tool too: it could satisfy `required` without a web
+          // or X search. Not live-probed (the ZDR key blocks attachments).
+          if (hasFileRef) {
+            throw badXaiRequest(
+              `providerOptions.xai.toolChoice cannot be combined with file attachments for model "${model}"; xAI's implicit attachment_search would count as the tool call.`,
+            )
+          }
+          params.tool_choice = xaiProviderConfig.toolChoice
+        }
+        // Forwarded verbatim per the Responses contract. It caps agentic
+        // turns, not individual searches, and the 2026-10-02 probes
+        // (fixture 33) showed the server not enforcing it yet.
+        if (xaiProviderConfig.maxTurns !== undefined) {
+          params.max_turns = xaiProviderConfig.maxTurns
+        }
       }
 
       if (req.tools !== undefined && req.tools.length > 0) {
@@ -1033,7 +1106,17 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
         xaiProviderConfig.tools,
         hasFileRef,
       )
-      if (expectedToolCounters.length > 0 || hasFileRef) {
+      // A response where no server tool ran reports
+      // `num_server_side_tools_used: 0` and omits the per-tool counters
+      // (live 2026-10-02, fixture 32: `tool_choice: 'none'`; the same shape
+      // comes back when the model skips the search under `auto`). That is an
+      // explicit zero, not a missing counter, so the call prices exactly
+      // with no tool cost. A zero that arrives WITH a counters object is
+      // contradictory and keeps the missing-counter checks.
+      const noServerToolRan =
+        response.usage['num_server_side_tools_used'] === 0 &&
+        response.usage['server_side_tool_usage_details'] === undefined
+      if ((expectedToolCounters.length > 0 || hasFileRef) && !noServerToolRan) {
         usage.details['server_tools_requested'] = 1
         if (
           xaiProviderConfig.tools?.some((tool) => tool['type'] === 'x_search') === true

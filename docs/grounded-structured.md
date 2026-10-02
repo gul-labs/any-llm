@@ -7,6 +7,27 @@ Treat the combination as an accepted request shape, not proof that Search ran
 or a source of normalized citations. If a workflow needs auditable citations,
 use the two-call recipe below and check the first call's grounding metadata.
 
+Live re-probe on 2026-10-02 (Developer API, one grounded question per model, with
+`responseSchema` and with `responseJsonSchema`):
+
+| model                    | Search ran with a schema?                        | `groundingMetadata` returned?  |
+| ------------------------ | ------------------------------------------------ | ------------------------------ |
+| `gemini-3.1-pro-preview` | yes                                              | only with `responseJsonSchema` |
+| `gemini-3.8-flash`       | yes (prompt tokens rose from 267 to 3.7k–5.2k)   | no                             |
+| `gemini-3.7-flash`       | probably (prompt tokens rose from 33 to 144–353) | no                             |
+| `gemini-3.6-flash`       | probably (prompt tokens rose from 33 to 216–532) | no                             |
+| `gemini-3.5-flash-lite`  | no (prompt tokens stayed at 33)                  | no                             |
+| `gemini-3.1-flash-lite`  | no on 3 of 4 calls                               | no                             |
+
+The same question without a schema returned `groundingMetadata` with four or five search
+queries. The adapter sends `responseSchema`. On the Flash-Lite models an accepted request
+with a schema usually means Search did not run at all, so do not attach a schema to a
+grounded call there. `BACKLOG.md` tracks the two open decisions.
+
+If you send a grounded call without a schema and want JSON back, say so in the prompt
+("respond with JSON only, no code fences"). The adapter returns the model's text unchanged;
+it does not strip fences or leading prose.
+
 The old `googleSearchRetrieval` tool name is not a compatibility alias. Use the
 documented `googleSearch` tool shape or the descriptor schema rejects the
 config.

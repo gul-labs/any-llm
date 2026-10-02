@@ -390,13 +390,29 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
 ## xAI adapter (`@gullabs/xai`)
 
 - `xaiAdapter(): ProviderAdapter` over the `openai` SDK's Responses API pointed at
-  `https://api.x.ai/v1` (peerDep `openai@^6`), API-key auth only. Ships `grok-4.5`,
+  `https://api.x.ai/v1` (peerDep `openai@^7`), API-key auth only. Ships `grok-4.5`,
   `grok-4.6`, and `grok-4.7` (level reasoning; all three admit `serviceTier: 'priority'`,
   while 4.6 and 4.7 also admit `xhigh`; native structured output via `text.format`, vision, automatic
   caching + `providerOptions.xai.promptCacheKey`, pricing incl. the ≥200k
   long-context tier). Same contract as the Google adapter: strict per-model schema,
   reject-don't-map, GROSS usage, never persists/loops. Full details in
   `packages/xai/README.md`.
+- `providerOptions.xai` is an allowlist; unknown keys are `bad_request`:
+
+  | key                 | wire                  | rule                                                                                                                                                                  |
+  | ------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `promptCacheKey`    | `prompt_cache_key`    | non-empty string                                                                                                                                                      |
+  | `tools`             | `tools`               | `web_search` / `x_search`, at most one of each; needs `capabilities.grounding`                                                                                        |
+  | `parallelToolCalls` | `parallel_tool_calls` | boolean                                                                                                                                                               |
+  | `toolChoice`        | `tool_choice`         | `'auto' \| 'required' \| 'none'` for the search tools only; needs non-empty `tools`; rejected with function tools, file attachments or the request-level `toolChoice` |
+  | `maxTurns`          | `max_turns`           | integer ≥ 1; needs non-empty `tools`; caps agentic turns, not searches; xAI did not enforce it as of 2026-10-02                                                       |
+
+- xAI structured output takes standard JSON Schema. A nullable field lists `'null'` in `type`
+  (`type: ['string', 'null']`). The OpenAPI `nullable` keyword and uppercase type names
+  (`STRING`, `OBJECT`) are `bad_request` before dispatch; the adapter never rewrites a schema.
+- Search tools plus `output.jsonSchema` is admitted on all three models
+  (`structuredOutputWithTools`). A response reporting `num_server_side_tools_used: 0` and no
+  `server_side_tool_usage_details` prices exactly with no tool fee. See ADR-030.
 
 ---
 

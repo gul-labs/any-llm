@@ -149,6 +149,16 @@ paths to other repos.
 - P-X3 completed 2026-09-26: live grok-4.7 `store: false` two-turn function call captured the encrypted reasoning item; `result.transientProviderState` and `request.transientProviderState` preserve the full wire history while the next request supplies only new messages. The state stays out of ledger rows. Fixture `28-grok-4-7-replay.json` pins the round trip.
 - P-X1 completed 2026-09-26: live posts-only and users-only X Search responses emitted both item counters, including explicit zeroes, and snapshot cost reconciled to billed ticks. Fixtures `26-x-posts.json` and `27-x-users.json` pin the behavior. The 2026-08-24 fixture predates per-item billing; its billed ticks remain in usage while snapshot cost is unpriced.
 
+## Follow-ups from the xAI server tool-choice release (2026-10-02)
+
+- **Gemini search + schema: owner decision needed.** Live re-probe on 2026-10-02 (table in `docs/grounded-structured.md`): with a schema attached, `gemini-3.1-flash-lite` and `gemini-3.5-flash-lite` did not run Search (prompt tokens unchanged, no `groundingMetadata`); the three Flash models appear to search but return no `groundingMetadata`; `gemini-3.1-pro-preview` returned `groundingMetadata` only when the request used `responseJsonSchema`, not `responseSchema`. Decide: (a) send `responseJsonSchema` instead of `responseSchema` when `googleSearch` is present, and (b) turn `structuredOutputWithTools` off for the two Flash-Lite models, where the accepted request silently does not search. Until then hosts that need grounding keep the schema off that route or use the two-call recipe.
+- **xAI `safety_identifier`.** New Responses request field (September 2026 release notes, <https://docs.x.ai/developers/faq/security>): an opaque, hashed end-user id. Candidate `providerOptions.xai.safetyIdentifier` for multi-tenant hosts on one key. Needs a live probe before admission.
+- **xAI `POST /v1/responses/compact`.** Documented transcript compaction (<https://docs.x.ai/developers/advanced-api-usage/context-compaction>). grok-4.7 replay resends the full wire input; compaction would be the cost control. Needs a design: a second endpoint plus an opaque `compaction` input item.
+- **xAI `include: ["no_inline_citations"]`.** Suppresses inline `[[N]](url)` links in the text (<https://docs.x.ai/developers/tools/citations>). Expose only if a host needs citation-free text.
+- **xAI `attachment_search` price.** The pricing page lists it at $5 per 1,000 calls (read 2026-10-02), not the $10 noted under P-X2 above. The counter name is still unpinned (ZDR key), so the lane stays estimated.
+- **xAI `max_turns` enforcement.** Exposed as `providerOptions.xai.maxTurns`; not enforced by xAI on 2026-10-02 (fixture 33, ADR-030). Re-probe when xAI changes the agentic loop, then update the README.
+- Not exposed on purpose (xAI docs mark them compatibility-only, unsupported, or silently ignored): `reasoning.summary`, function `strict`, `metadata`, `truncation`, `background`, `logprobs`, `search_parameters`, `service_tier: 'fast'`.
+
 ## Optional later (not ticketed)
 
 - Tool-invocation fee Cost lane for xAI server tools (`attachment_search`, etc.) once

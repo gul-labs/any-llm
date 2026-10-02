@@ -329,7 +329,13 @@ describe('structured output', () => {
     await expect(
       xaiAdapter({ client }).run(
         makeResolvedReq({
-          modelDescriptor: grok45ModelDescriptor,
+          modelDescriptor: {
+            ...grok45ModelDescriptor,
+            capabilities: {
+              ...grok45ModelDescriptor.capabilities,
+              structuredOutputWithTools: false,
+            },
+          },
           outputJsonSchema: { type: 'object' },
           config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
         }),
@@ -338,6 +344,30 @@ describe('structured output', () => {
     ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
     expect(client.calls).toHaveLength(0)
   })
+
+  it.each([grok45ModelDescriptor, grok46ModelDescriptor, grok47ModelDescriptor])(
+    'admits built-in search with structured output on $model',
+    async (modelDescriptor) => {
+      const client = makeFakeXai(fakeXaiResponse({ structuredJson: '{"a":1}' }))
+      const result = await xaiAdapter({ client }).run(
+        makeResolvedReq({
+          model: modelDescriptor.model,
+          modelDescriptor,
+          outputJsonSchema: { type: 'object' },
+          config: {
+            providerOptions: {
+              xai: { tools: [{ type: 'web_search' }], toolChoice: 'required' },
+            },
+          },
+        }),
+        FAKE_CTX,
+      )
+      expect(result.rawStructured).toEqual({ a: 1 })
+      const call = client.calls[0] as { tool_choice?: unknown; text?: unknown }
+      expect(call.tool_choice).toBe('required')
+      expect(call.text).toMatchObject({ format: { type: 'json_schema', strict: true } })
+    },
+  )
 
   it('sends text.format.type==="json_schema" (not response_format) and parses rawStructured', async () => {
     const client = makeFakeXai(
@@ -1991,5 +2021,418 @@ describe('xai Live Search tools', () => {
       kind: 'bad_request',
       message: expect.stringContaining('notAKey'),
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// providerOptions.xai.toolChoice — server-side search tools only
+// ---------------------------------------------------------------------------
+
+describe('providerOptions.xai.toolChoice', () => {
+  const functionTool = {
+    name: 'get_temperature',
+    description: 'Get the temperature for a city.',
+    inputJsonSchema: {
+      type: 'object',
+      properties: { city: { type: 'string' } },
+      required: ['city'],
+    },
+  }
+
+  async function runWithXaiOptions(
+    xai: Record<string, unknown>,
+    overrides: Partial<ResolvedRequest> = {},
+  ) {
+    const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
+    const run = xaiAdapter({ client }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: xai as never } },
+        ...overrides,
+      }),
+      FAKE_CTX,
+    )
+    return { client, run }
+  }
+
+  it.each(['required', 'auto', 'none'] as const)(
+    'forwards tool_choice "%s" with search tools and no function tools',
+    async (toolChoice) => {
+      const { client, run } = await runWithXaiOptions({
+        tools: [{ type: 'web_search' }],
+        toolChoice,
+      })
+      await run
+      const call = client.calls[0] as { tool_choice?: unknown; tools?: unknown }
+      expect(call.tool_choice).toBe(toolChoice)
+      expect(call.tools).toEqual([{ type: 'web_search' }])
+    },
+  )
+
+  it('sends no tool_choice when the option is absent', async () => {
+    const { client, run } = await runWithXaiOptions({ tools: [{ type: 'web_search' }] })
+    await run
+    expect('tool_choice' in (client.calls[0] as object)).toBe(false)
+  })
+
+  it('rejects toolChoice without tools', async () => {
+    const { client, run } = await runWithXaiOptions({ toolChoice: 'required' })
+    await expect(run).rejects.toMatchObject({
+      kind: 'bad_request',
+      message: expect.stringContaining('requires a non-empty providerOptions.xai.tools'),
+    })
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('rejects toolChoice with an empty tools array', async () => {
+    const { client, run } = await runWithXaiOptions({ tools: [], toolChoice: 'required' })
+    await expect(run).rejects.toMatchObject({
+      kind: 'bad_request',
+      message: expect.stringContaining('requires a non-empty providerOptions.xai.tools'),
+    })
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it.each(['REQUIRED', 'any', true, { type: 'function', name: 'x' }])(
+    'rejects the invalid toolChoice value %j',
+    async (toolChoice) => {
+      const { client, run } = await runWithXaiOptions({
+        tools: [{ type: 'web_search' }],
+        toolChoice,
+      })
+      await expect(run).rejects.toMatchObject({
+        kind: 'bad_request',
+        message: expect.stringContaining('must be "auto", "required" or "none"'),
+      })
+      expect(client.calls).toHaveLength(0)
+    },
+  )
+
+  it('rejects toolChoice together with function tools', async () => {
+    const { client, run } = await runWithXaiOptions(
+      { tools: [{ type: 'web_search' }], toolChoice: 'required' },
+      { tools: [functionTool] },
+    )
+    await expect(run).rejects.toMatchObject({
+      kind: 'bad_request',
+      message: expect.stringContaining('cannot be combined with function tools'),
+    })
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('rejects toolChoice together with the request-level toolChoice', async () => {
+    const { client, run } = await runWithXaiOptions(
+      { tools: [{ type: 'web_search' }], toolChoice: 'required' },
+      { tools: [functionTool], toolChoice: 'auto' },
+    )
+    await expect(run).rejects.toMatchObject({
+      kind: 'bad_request',
+      message: expect.stringContaining('cannot both be set'),
+    })
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('keeps the request-level toolChoice for mixed tools when the option is absent', async () => {
+    const { client, run } = await runWithXaiOptions(
+      { tools: [{ type: 'web_search' }] },
+      { tools: [functionTool], toolChoice: 'required' },
+    )
+    await run
+    const call = client.calls[0] as {
+      tool_choice?: unknown
+      tools: Array<{ type: string }>
+    }
+    expect(call.tool_choice).toBe('required')
+    expect(call.tools.map((t) => t.type)).toEqual(['web_search', 'function'])
+  })
+
+  it.each(['required', 'none', 'auto'] as const)(
+    'rejects toolChoice "%s" together with a file attachment',
+    async (toolChoice) => {
+      const { client, run } = await runWithXaiOptions(
+        { tools: [{ type: 'web_search' }], toolChoice },
+        {
+          messages: [
+            {
+              role: 'user',
+              parts: [
+                { kind: 'text', text: 'summarise' },
+                { kind: 'file-ref', fileId: 'file_123' },
+              ],
+            },
+          ],
+        },
+      )
+      await expect(run).rejects.toMatchObject({
+        kind: 'bad_request',
+        message: expect.stringContaining('cannot be combined with file attachments'),
+      })
+      expect(client.calls).toHaveLength(0)
+    },
+  )
+
+  it('names the field when the config schema rejects a value', async () => {
+    const llm = createClient({
+      adapters: [xaiAdapter({ client: makeFakeXai(fakeXaiResponse({ text: 'ok' })) })],
+      modelRegistry: xaiRegistry,
+      sink: new RecordingSink(),
+    })
+    const generate = (xai: Record<string, unknown>) =>
+      llm.generate(
+        {
+          provider: 'xai',
+          model: 'grok-4.5',
+          messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
+          config: { providerOptions: { xai: xai as never } },
+        },
+        { auth: { apiKey: 'test-key' } },
+      )
+    await expect(
+      generate({ tools: [{ type: 'web_search' }], toolChoice: 'bad' }),
+    ).rejects.toMatchObject({
+      kind: 'bad_request',
+      message: expect.stringContaining('providerOptions.xai.toolChoice'),
+    })
+    await expect(
+      generate({ tools: [{ type: 'web_search' }], maxTurns: 0 }),
+    ).rejects.toMatchObject({
+      kind: 'bad_request',
+      message: expect.stringContaining('providerOptions.xai.maxTurns'),
+    })
+    await expect(generate({ toolChoice: 'required' })).rejects.toMatchObject({
+      kind: 'bad_request',
+      message: expect.stringContaining('requires a non-empty providerOptions.xai.tools'),
+    })
+    await expect(generate({ maxTurns: 2 })).rejects.toMatchObject({
+      kind: 'bad_request',
+      message: expect.stringContaining('requires a non-empty providerOptions.xai.tools'),
+    })
+  })
+
+  it('lists toolChoice in the unknown-key message', async () => {
+    const { run } = await runWithXaiOptions({ notAKey: true })
+    await expect(run).rejects.toMatchObject({
+      kind: 'bad_request',
+      message: expect.stringContaining(
+        'Allowed keys: promptCacheKey, tools, parallelToolCalls, toolChoice, maxTurns.',
+      ),
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// providerOptions.xai.maxTurns
+// ---------------------------------------------------------------------------
+
+describe('providerOptions.xai.maxTurns', () => {
+  async function runWithXaiOptions(xai: Record<string, unknown>) {
+    const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
+    const run = xaiAdapter({ client }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: xai as never } },
+      }),
+      FAKE_CTX,
+    )
+    return { client, run }
+  }
+
+  it('forwards max_turns with search tools', async () => {
+    const { client, run } = await runWithXaiOptions({
+      tools: [{ type: 'web_search' }],
+      toolChoice: 'required',
+      maxTurns: 3,
+    })
+    await run
+    const call = client.calls[0] as { max_turns?: unknown; tool_choice?: unknown }
+    expect(call.max_turns).toBe(3)
+    expect(call.tool_choice).toBe('required')
+  })
+
+  it('sends no max_turns when the option is absent', async () => {
+    const { client, run } = await runWithXaiOptions({ tools: [{ type: 'web_search' }] })
+    await run
+    expect('max_turns' in (client.calls[0] as object)).toBe(false)
+  })
+
+  it.each([0, -1, 1.5, '2', Number.NaN, null])(
+    'rejects the invalid maxTurns value %j',
+    async (maxTurns) => {
+      const { client, run } = await runWithXaiOptions({
+        tools: [{ type: 'web_search' }],
+        maxTurns,
+      })
+      await expect(run).rejects.toMatchObject({
+        kind: 'bad_request',
+        message: expect.stringContaining('must be an integer >= 1'),
+      })
+      expect(client.calls).toHaveLength(0)
+    },
+  )
+
+  it.each([{ maxTurns: 2 }, { tools: [], maxTurns: 2 }])(
+    'rejects maxTurns without search tools: %j',
+    async (xai) => {
+      const { client, run } = await runWithXaiOptions(xai)
+      await expect(run).rejects.toMatchObject({
+        kind: 'bad_request',
+        message: expect.stringContaining(
+          'requires a non-empty providerOptions.xai.tools',
+        ),
+      })
+      expect(client.calls).toHaveLength(0)
+    },
+  )
+})
+
+// ---------------------------------------------------------------------------
+// Zero-search accounting
+// ---------------------------------------------------------------------------
+
+describe('search tools declared but no server tool ran', () => {
+  it('prices exactly with no warning when the provider reports zero tools used', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 1000, outputTokens: 100 })
+    response.usage['num_server_side_tools_used'] = 0
+    const result = await xaiAdapter({ client: makeFakeXai(response) }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: {
+          providerOptions: {
+            xai: {
+              tools: [{ type: 'web_search' }, { type: 'x_search' }],
+              toolChoice: 'none',
+            },
+          },
+        },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.warnings).toEqual([])
+    expect(result.usage.details.server_tools_missing).toBeUndefined()
+    expect(result.usage.details.num_server_side_tools_used).toBe(0)
+    const cost = computeXaiCost('grok-4.5', result.usage)
+    expect(cost.confidence).toBe('exact')
+    expect(cost.details.tools).toBe(0)
+    expect(cost.microUsd).toBe(2_000 + 600)
+  })
+
+  it('keeps the missing-counter state when a zero count arrives with counters', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 8, outputTokens: 2 })
+    response.usage['num_server_side_tools_used'] = 0
+    response.usage['server_side_tool_usage_details'] = { x_posts_fetched: 1 }
+    const result = await xaiAdapter({ client: makeFakeXai(response) }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'x_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.usage.details.server_tools_missing).toBe(1)
+    expect(result.warnings[0]?.message).toContain('x_users_fetched')
+    expect(computeXaiCost('grok-4.5', result.usage).microUsd).toBeNull()
+  })
+
+  it('keeps the attachment estimate when a zero count arrives with counters', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 8, outputTokens: 2 })
+    response.usage['num_server_side_tools_used'] = 0
+    response.usage['server_side_tool_usage_details'] = { web_search_calls: 0 }
+    const result = await xaiAdapter({ client: makeFakeXai(response) }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        messages: [{ role: 'user', parts: [{ kind: 'file-ref', fileId: 'file_123' }] }],
+      }),
+      FAKE_CTX,
+    )
+    expect(result.usage.details.attachment_search_unpinned).toBe(1)
+    expect(computeXaiCost('grok-4.5', result.usage).confidence).toBe('estimated')
+  })
+
+  it('prices a file-ref call exactly when the provider reports no tool ran', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 8, outputTokens: 2 })
+    response.usage['num_server_side_tools_used'] = 0
+    const result = await xaiAdapter({ client: makeFakeXai(response) }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        messages: [{ role: 'user', parts: [{ kind: 'file-ref', fileId: 'file_123' }] }],
+      }),
+      FAKE_CTX,
+    )
+    expect(result.usage.details.attachment_search_unpinned).toBeUndefined()
+    expect(computeXaiCost('grok-4.5', result.usage).confidence).toBe('exact')
+  })
+
+  it('still flags missing counters when the provider does not report a tool count', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 8, outputTokens: 2 })
+    const result = await xaiAdapter({ client: makeFakeXai(response) }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'x_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.usage.details.server_tools_missing).toBe(1)
+    expect(computeXaiCost('grok-4.5', result.usage).microUsd).toBeNull()
+  })
+
+  it('still flags missing counters when tools were used but details are absent', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 8, outputTokens: 2 })
+    response.usage['num_server_side_tools_used'] = 2
+    const result = await xaiAdapter({ client: makeFakeXai(response) }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.usage.details.server_tools_missing).toBe(1)
+    expect(result.warnings[0]?.message).toContain('web_search_calls')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Strict output schema dialect
+// ---------------------------------------------------------------------------
+
+describe('outputJsonSchema dialect preflight', () => {
+  it('rejects an OpenAPI nullable keyword before dispatch', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ text: '{}' }))
+    await expect(
+      xaiAdapter({ client }).run(
+        makeResolvedReq({
+          modelDescriptor: grok45ModelDescriptor,
+          outputJsonSchema: {
+            type: 'object',
+            properties: { employees: { type: 'string', nullable: true } },
+            required: ['employees'],
+          },
+        }),
+        FAKE_CTX,
+      ),
+    ).rejects.toMatchObject({
+      kind: 'bad_request',
+      provider: 'xai',
+      message: expect.stringContaining('properties.employees'),
+    })
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('sends a standard JSON Schema unchanged, by reference', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ text: '{"employees":null}' }))
+    const schema = {
+      type: 'object',
+      properties: { employees: { type: ['string', 'null'] } },
+      required: ['employees'],
+    }
+    const result = await xaiAdapter({ client }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        outputJsonSchema: schema,
+      }),
+      FAKE_CTX,
+    )
+    const sent = (client.calls[0] as { text: { format: { schema: unknown } } }).text
+      .format
+    expect(sent.schema).toBe(schema)
+    expect(result.rawStructured).toEqual({ employees: null })
   })
 })

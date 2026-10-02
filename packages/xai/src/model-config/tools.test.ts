@@ -86,7 +86,11 @@ function validateJsonSchema(schema: unknown, value: unknown): { ok: boolean } {
   }
   if (schema['type'] === 'boolean') return { ok: typeof value === 'boolean' }
   if (schema['type'] === 'number' || schema['type'] === 'integer') {
-    return { ok: typeof value === 'number' }
+    if (typeof value !== 'number') return { ok: false }
+    if (schema['type'] === 'integer' && !Number.isInteger(value)) return { ok: false }
+    const minimum = schema['minimum']
+    if (typeof minimum === 'number' && value < minimum) return { ok: false }
+    return { ok: true }
   }
   return { ok: true }
 }
@@ -145,6 +149,28 @@ const INVALID_TOOLS: Array<{ name: string; config: unknown }> = [
           tools: [{ type: 'web_search', bogus: true }],
         },
       },
+    },
+  },
+  {
+    name: 'toolChoice with empty tools',
+    config: { providerOptions: { xai: { tools: [], toolChoice: 'required' } } },
+  },
+  {
+    name: 'toolChoice outside auto / required / none',
+    config: {
+      providerOptions: { xai: { tools: [{ type: 'web_search' }], toolChoice: 'any' } },
+    },
+  },
+  {
+    name: 'maxTurns below 1',
+    config: {
+      providerOptions: { xai: { tools: [{ type: 'web_search' }], maxTurns: 0 } },
+    },
+  },
+  {
+    name: 'fractional maxTurns',
+    config: {
+      providerOptions: { xai: { tools: [{ type: 'web_search' }], maxTurns: 1.5 } },
     },
   },
   {
@@ -226,6 +252,24 @@ describe.each([
       }).success,
     ).toBe(true)
   })
+
+  it.each(['auto', 'required', 'none'])(
+    'Zod and JSON Schema both accept toolChoice "%s" with search tools',
+    (toolChoice) => {
+      const config = {
+        providerOptions: {
+          xai: {
+            tools: [{ type: 'web_search' }, { type: 'x_search' }],
+            toolChoice,
+            maxTurns: 3,
+            parallelToolCalls: true,
+          },
+        },
+      }
+      expect(schema.safeParse(config).success).toBe(true)
+      expect(jsonSchemaAccepts(toConfigJsonSchema(schema), config)).toBe(true)
+    },
+  )
 
   it('rejects replay state in persisted generation config', () => {
     const config = { providerOptions: { xai: { replayState: { model: 'grok-4.7' } } } }

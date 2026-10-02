@@ -35,6 +35,20 @@ export type XaiProviderOptions = {
   tools?: Array<XaiWebSearchTool | XaiXSearchTool>
   /** xAI-only; Gemini has no parallel-tool knob. */
   parallelToolCalls?: boolean
+  /**
+   * Responses API `tool_choice` for the server-side search tools; `required`
+   * forces at least one search. Requires `tools`, and cannot be combined
+   * with the request-level `toolChoice`.
+   */
+  toolChoice?: 'auto' | 'required' | 'none'
+  /**
+   * Responses API `max_turns`: the cap on agentic tool-calling turns for the
+   * server-side search tools. A turn can run several searches, so this is
+   * not a search count. Requires `tools`. As of 2026-10-02 xAI did not
+   * enforce it on grok-4.5 / 4.6 / 4.7; assert on
+   * `usage.details.web_search_calls` rather than trusting the cap.
+   */
+  maxTurns?: number
 }
 
 declare module '@gullabs/core' {

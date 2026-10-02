@@ -1,0 +1,301 @@
+{
+  "source": "Live 2026-10-02, POST /v1/responses with text.format json_schema strict:true and a prompt asking for null when unknown.",
+  "sanitization": "Request schema, usage and message items verbatim; reasoning items reduced to empty summaries.",
+  "nullable_keyword_grok_4_5": {
+    "status": 200,
+    "requestSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "employeeCount": {
+          "type": "string",
+          "nullable": true
+        },
+        "foundedYear": {
+          "type": "integer",
+          "nullable": true
+        }
+      },
+      "required": [
+        "name",
+        "employeeCount",
+        "foundedYear"
+      ],
+      "additionalProperties": false
+    },
+    "body": {
+      "model": "grok-4.5",
+      "status": "completed",
+      "store": false,
+      "usage": {
+        "input_tokens": 1645,
+        "input_tokens_details": {
+          "cached_tokens": 1408
+        },
+        "output_tokens": 186,
+        "output_tokens_details": {
+          "reasoning_tokens": 164
+        },
+        "total_tokens": 1831,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 20124000,
+        "context_details": {
+          "input_tokens": 1645,
+          "output_tokens": 193
+        }
+      },
+      "output": [
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "message",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "{\"name\":\"Zyqvorth Hollow Bakery\",\"employeeCount\":\"\"\n,\"foundedYear\":0}",
+              "annotations": []
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "nullable_keyword_grok_4_6": {
+    "status": 200,
+    "requestSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "employeeCount": {
+          "type": "string",
+          "nullable": true
+        },
+        "foundedYear": {
+          "type": "integer",
+          "nullable": true
+        }
+      },
+      "required": [
+        "name",
+        "employeeCount",
+        "foundedYear"
+      ],
+      "additionalProperties": false
+    },
+    "body": {
+      "model": "grok-4.6",
+      "status": "completed",
+      "store": false,
+      "usage": {
+        "input_tokens": 1645,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 312,
+        "output_tokens_details": {
+          "reasoning_tokens": 290
+        },
+        "total_tokens": 1957,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 51620000,
+        "context_details": {
+          "input_tokens": 1645,
+          "output_tokens": 319
+        }
+      },
+      "output": [
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "message",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "{\"name\":\"Zyqvorth Hollow Bakery\",\"employeeCount\":\"null\",\"foundedYear\":0}",
+              "annotations": []
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "nullable_keyword_grok_4_7": {
+    "status": 200,
+    "requestSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "employeeCount": {
+          "type": "string",
+          "nullable": true
+        },
+        "foundedYear": {
+          "type": "integer",
+          "nullable": true
+        }
+      },
+      "required": [
+        "name",
+        "employeeCount",
+        "foundedYear"
+      ],
+      "additionalProperties": false
+    },
+    "body": {
+      "model": "grok-4.7",
+      "status": "completed",
+      "store": false,
+      "usage": {
+        "input_tokens": 1645,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 136,
+        "output_tokens_details": {
+          "reasoning_tokens": 114
+        },
+        "total_tokens": 1781,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 41060000,
+        "context_details": {
+          "input_tokens": 1645,
+          "output_tokens": 145
+        }
+      },
+      "output": [
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "message",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "{\"name\":\"Zyqvorth Hollow Bakery\",\"employeeCount\":\"null\",\"foundedYear\":0}",
+              "annotations": []
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "null_type_union_grok_4_5": {
+    "status": 200,
+    "requestSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "employeeCount": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "foundedYear": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "employeeCount",
+        "foundedYear"
+      ],
+      "additionalProperties": false
+    },
+    "body": {
+      "model": "grok-4.5",
+      "status": "completed",
+      "store": false,
+      "usage": {
+        "input_tokens": 1643,
+        "input_tokens_details": {
+          "cached_tokens": 1536
+        },
+        "output_tokens": 170,
+        "output_tokens_details": {
+          "reasoning_tokens": 147
+        },
+        "total_tokens": 1813,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 16948000,
+        "context_details": {
+          "input_tokens": 1643,
+          "output_tokens": 177
+        }
+      },
+      "output": [
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "message",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "{\"name\": \"Zyqvorth Hollow Bakery\", \"employeeCount\": null, \"foundedYear\": null}",
+              "annotations": []
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "uppercase_types_grok_4_5": {
+    "status": 400,
+    "requestSchema": {
+      "type": "OBJECT",
+      "properties": {
+        "name": {
+          "type": "STRING"
+        },
+        "employeeCount": {
+          "type": "STRING",
+          "nullable": true
+        },
+        "foundedYear": {
+          "type": "INTEGER",
+          "nullable": true
+        }
+      },
+      "required": [
+        "name",
+        "employeeCount",
+        "foundedYear"
+      ],
+      "additionalProperties": false
+    },
+    "body": {
+      "code": "invalid-argument",
+      "error": "Invalid request content: Schema validation failed: [standard_violation] /properties/name/type: \"STRING\" is not valid under any of the schemas listed in the 'anyOf' keyword; [standard_violation] /properties/employeeCount/type: \"STRING\" is not valid under any of the schemas listed in the 'anyOf' keyword; [standard_violation] /properties/foundedYear/type: \"INTEGER\" is not valid under any of the schemas listed in the 'anyOf' keyword; [standard_violation] /type: \"OBJECT\" is not valid under any of the schemas listed in the 'anyOf' keyword"
+    }
+  }
+}

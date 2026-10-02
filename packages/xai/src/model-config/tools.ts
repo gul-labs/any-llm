@@ -102,6 +102,11 @@ export const XaiToolsSchema = z
       'xAI Live Search tools. At most one web_search and at most one x_search.',
   })
 
+/**
+ * `toolChoice` and `maxTurns` need a non-empty `tools`; the adapter enforces
+ * that dependency. Encoding it here as a union of shapes made zod report an
+ * invalid `toolChoice` value as an unrecognized key.
+ */
 export const XaiProviderOptionsSchema = z
   .strictObject({
     promptCacheKey: z
@@ -122,6 +127,29 @@ export const XaiProviderOptionsSchema = z
       title: 'Parallel Tool Calls',
       description: 'xAI Responses parallel_tool_calls. Not a generic contract field.',
     }),
+    toolChoice: z
+      .enum(['auto', 'required', 'none'])
+      .optional()
+      .meta({
+        title: 'Server Tool Choice',
+        description:
+          'xAI Responses `tool_choice` for the server-side search tools; `required` ' +
+          'forces at least one search, `none` disables them. Requires `tools`. Cannot ' +
+          'be combined with function tools, file attachments or the request-level ' +
+          'toolChoice.',
+      }),
+    maxTurns: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .meta({
+        title: 'Max Turns',
+        description:
+          'xAI Responses `max_turns`: cap on agentic tool-calling turns for the ' +
+          'server-side search tools. Requires `tools`. A turn can run several ' +
+          'searches. Not enforced by xAI as of 2026-10-02.',
+      }),
   })
   .meta({
     title: 'xAI Provider Options',

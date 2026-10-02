@@ -1659,3 +1659,72 @@ policy would be framework magic this library explicitly refuses.
 - Callers own dispatch and the next `generate` turn.
 - DESIGN.md un-reserves `tool-call` / `tool-result`.
 - P0 no-legacy: `FinishReason` widens without an alias.
+
+---
+
+## ADR-030: xAI server-side search controls — `toolChoice`, `maxTurns`, zero-search accounting, strict-schema dialect
+
+**Status:** Accepted (2026-10-02)
+
+**Context:**
+A host running grounded calls on `grok-4.5` saw the model skip the search on
+three of five replays of one request. The library could not send
+`tool_choice` unless function tools were declared. The same review turned up
+three neighbouring problems, all confirmed live on 2026-10-02 against
+`grok-4.5`, `grok-4.6` and `grok-4.7` (fixtures 32, 33 and 34).
+
+**Decision:**
+
+1. **`providerOptions.xai.toolChoice: 'auto' | 'required' | 'none'`** maps to
+   the Responses `tool_choice` and is **server-tool-only**. The adapter
+   rejects it without a non-empty `providerOptions.xai.tools`, together with
+   function tools, together with file attachments, and together with the
+   request-level `toolChoice`. xAI defines `required` as "at least one tool";
+   a declared function tool, or the `attachment_search` that a file
+   attachment implicitly enables, could satisfy it without a search. The
+   attachment case is inferred from xAI's docs, not live-probed (the ZDR key
+   blocks attachments). Live: `required` ran 3 / 2 / 2
+   searches, `none` ran 0, on the three models.
+2. **`providerOptions.xai.maxTurns`** (integer ≥ 1, requires search tools)
+   maps to the Responses `max_turns`
+   (<https://docs.x.ai/developers/rest-api-reference/inference/responses>:
+   "Maximum number of agentic tool calling turns allowed for this request").
+   It caps turns, not searches
+   (<https://docs.x.ai/developers/tools/tool-usage-details>).
+   **xAI did not enforce it on 2026-10-02**: with `max_turns: 1` the three
+   models ran 11–12, 10 and 17 searches over several rounds. The owner chose
+   to expose it anyway: it is a documented request field, the adapter
+   forwards the value verbatim, and hosts get the cap when xAI enforces it.
+   It is not a search-count or cost ceiling. `max_tool_calls` is a response
+   field only and is not exposed.
+3. **Zero-search accounting.** A response where no server tool ran reports
+   `num_server_side_tools_used: 0` and omits `server_side_tool_usage_details`.
+   The adapter treats that as an explicit zero: no missing-counter warning,
+   exact cost, no tool fee. A zero that arrives with a counters object is
+   contradictory and keeps the missing-counter checks. Before this, every `none` call and every `auto`
+   call that skipped the search was recorded as unpriced. When the field is
+   absent, or non-zero without counters, the call stays unpriced.
+4. **Strict-schema dialect is rejected, never rewritten.** With
+   `text.format.strict`, xAI accepts and ignores the OpenAPI `nullable`
+   keyword, so the model cannot return `null` and writes `""`, `0` or the
+   string `"null"`. Uppercase type names fail at xAI with HTTP 400. The
+   adapter rejects both before dispatch, at JSON Schema keyword positions
+   only, naming the path. A nullable field lists `'null'` in `type`.
+5. **Search + structured output is admitted on all three Grok models.**
+   `structuredOutputWithTools` was set only on `grok-4.6`; live calls with
+   forced search and a strict schema returned valid JSON on 4.5 and 4.7 too.
+6. **Tool pricing is unchanged.** Web search is $5 per 1,000 calls
+   (<https://docs.x.ai/developers/pricing>, read 2026-10-02). The forced and
+   zero-search calls on all three models reconcile with xAI's billed ticks
+   within whole-micro-USD rounding.
+
+**Consequences:**
+
+- Hosts budget searches in the prompt and assert on
+  `usage.details.web_search_calls`. An unbounded research call can cross
+  200k input tokens and pay long-context rates (a grok-4.7 probe: 362k input
+  tokens, about $1.07).
+- Hosts that emit Gemini-dialect schemas must convert them before routing to
+  xAI. The library offers no converter.
+- Fixture 33 pins the non-enforcement evidence. When a re-recorded fixture
+  shows enforcement, update the README and this ADR.
