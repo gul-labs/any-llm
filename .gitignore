@@ -14,3 +14,7 @@ coverage/
 !.env.example
 
 .research/
+
+# Local-only working files: plans that name private host projects, probe output,
+# handoff notes. Never committed; this repository is public.
+.private/

@@ -14,3 +14,10 @@ This codebase is greenfield until this rule is explicitly revised by the owner.
   that as a P0 blocker and revise the design.
 - Migration documentation may explain the new contract, but it must not introduce
   legacy APIs or compatibility layers.
+
+## Private working files
+
+This repository is public. Plans, probe output, and notes that name a host
+project, a customer, production data, or local paths go in `.private/`
+(gitignored), never under `docs/`. Public design records (`DECISIONS.md`,
+`SPEC.md`, `docs/`) describe hosts generically.
