@@ -144,6 +144,7 @@ export interface XaiResponseCreateParams {
   tools?: Array<Record<string, unknown>>
   /** `'auto' | 'required' | 'none'` or live-verified `{ type: 'function', name }`. */
   tool_choice?: string | { type: 'function'; name: string }
+  max_turns?: number
   parallel_tool_calls?: boolean
 }
 

@@ -102,27 +102,66 @@ export const XaiToolsSchema = z
       'xAI Live Search tools. At most one web_search and at most one x_search.',
   })
 
+const providerOptionFields = {
+  promptCacheKey: z
+    .string()
+    .min(1)
+    .optional()
+    .meta({
+      title: 'Prompt Cache Key',
+      description:
+        'xAI conversation-routing cache key — maps to Responses API ' +
+        '`prompt_cache_key`.',
+    }),
+  parallelToolCalls: z.boolean().optional().meta({
+    title: 'Parallel Tool Calls',
+    description: 'xAI Responses parallel_tool_calls. Not a generic contract field.',
+  }),
+}
+
+const toolsMeta = {
+  title: 'Live Search Tools',
+  description: 'xAI server-side web_search / x_search tools.',
+}
+
+/**
+ * Two shapes: `toolChoice` and `maxTurns` are only admitted together with
+ * `tools` (the tuple union is never empty), so the derived JSON Schema
+ * carries the dependency without a refinement.
+ */
 export const XaiProviderOptionsSchema = z
-  .strictObject({
-    promptCacheKey: z
-      .string()
-      .min(1)
-      .optional()
-      .meta({
-        title: 'Prompt Cache Key',
-        description:
-          'xAI conversation-routing cache key — maps to Responses API ' +
-          '`prompt_cache_key`.',
-      }),
-    tools: XaiToolsSchema.optional().meta({
-      title: 'Live Search Tools',
-      description: 'xAI server-side web_search / x_search tools.',
+  .union([
+    z.strictObject({
+      ...providerOptionFields,
+      tools: XaiToolsSchema.meta(toolsMeta),
+      toolChoice: z
+        .enum(['auto', 'required', 'none'])
+        .optional()
+        .meta({
+          title: 'Server Tool Choice',
+          description:
+            'xAI Responses `tool_choice` for the server-side search tools; `required` ' +
+            'forces at least one search, `none` disables them. Cannot be combined ' +
+            'with function tools or the request-level toolChoice.',
+        }),
+      maxTurns: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .meta({
+          title: 'Max Turns',
+          description:
+            'xAI Responses `max_turns`: cap on agentic tool-calling turns for the ' +
+            'server-side search tools. A turn can run several searches. Not enforced ' +
+            'by xAI as of 2026-10-02.',
+        }),
     }),
-    parallelToolCalls: z.boolean().optional().meta({
-      title: 'Parallel Tool Calls',
-      description: 'xAI Responses parallel_tool_calls. Not a generic contract field.',
+    z.strictObject({
+      ...providerOptionFields,
+      tools: XaiToolsSchema.optional().meta(toolsMeta),
     }),
-  })
+  ])
   .meta({
     title: 'xAI Provider Options',
     description: 'Allowlisted xAI provider options.',

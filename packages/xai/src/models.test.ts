@@ -37,6 +37,7 @@ describe('grok45ModelDescriptor', () => {
       sampling: 'tunable',
       caching: { explicit: false, minTokens: 0 },
       grounding: true,
+      structuredOutputWithTools: true,
       functionCalling: true,
     })
     expect(grok45ModelDescriptor.capabilities?.serviceTiers).toEqual(['priority'])
@@ -130,6 +131,7 @@ describe('xaiModelDescriptors', () => {
 describe('xaiRegistry', () => {
   it('resolves grok-4.7 with priority and xhigh', () => {
     const grok47 = xaiRegistry.resolve('xai', 'grok-4.7')
+    expect(grok47?.capabilities?.structuredOutputWithTools).toBe(true)
     expect(grok47?.capabilities?.serviceTiers).toEqual(['priority'])
     expect(grok47?.capabilities?.admittedReasoningEfforts).toEqual([
       'low',

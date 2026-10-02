@@ -23,6 +23,7 @@ import type { AdapterCtx, JsonValue, ResolvedRequest } from '@gullabs/core'
 import { makeFakeXai, RecordingSink } from '@gullabs/testing'
 import { xaiAdapter, classifyXaiError } from './adapter.js'
 import type { XaiReplayState } from './client.js'
+import { assertXaiOutputJsonSchema } from './output-schema.js'
 import { computeXaiCost, xaiPricingSource } from './pricing.js'
 import {
   grok45ModelDescriptor,
@@ -1122,5 +1123,232 @@ describe('fixture: 22-function-call-replay-store-false', () => {
       },
     )
     expect(result.text).toMatch(/59/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Live 2026-10-02: server tool choice, turn cap, strict-schema dialect
+// ---------------------------------------------------------------------------
+
+interface LiveCall extends FixtureCall {
+  request: Record<string, unknown>
+}
+
+const LIVE_MODELS = [
+  ['grok_4_5', grok45ModelDescriptor],
+  ['grok_4_6', grok46ModelDescriptor],
+  ['grok_4_7', grok47ModelDescriptor],
+] as const
+
+function billedTicks(call: FixtureCall): number {
+  return (call.body['usage'] as { cost_in_usd_ticks: number }).cost_in_usd_ticks
+}
+
+/** Snapshot cost vs provider ticks (1 tick = 1e-10 USD), within per-lane rounding. */
+function expectCostMatchesTicks(microUsd: number | null, ticks: number): void {
+  expect(microUsd).not.toBeNull()
+  expect(Math.abs((microUsd as number) - ticks / 10_000)).toBeLessThanOrEqual(2)
+}
+
+describe('fixture: 32-server-tool-choice (live 2026-10-02)', () => {
+  const fixture = loadFixture<Record<string, LiveCall>>('32-server-tool-choice.json')
+
+  it.each(LIVE_MODELS)(
+    'required_%s forces a search before the message and prices to the billed ticks',
+    async (key, modelDescriptor) => {
+      const call = fixture[`required_${key}`] as LiveCall
+      expect(call.status).toBe(200)
+      expect(call.request['tool_choice']).toBe('required')
+      const output = call.body['output'] as Array<{ type: string }>
+      const firstSearch = output.findIndex((item) => item.type === 'web_search_call')
+      const firstMessage = output.findIndex((item) => item.type === 'message')
+      expect(firstSearch).toBeGreaterThanOrEqual(0)
+      expect(firstSearch).toBeLessThan(firstMessage)
+
+      const client = makeFakeXai(call.body as never)
+      const result = await xaiAdapter({ client }).run(
+        makeResolvedReq({
+          model: modelDescriptor.model,
+          modelDescriptor,
+          config: {
+            providerOptions: {
+              xai: { tools: [{ type: 'web_search' }], toolChoice: 'required' },
+            },
+          },
+        }),
+        FAKE_CTX,
+      )
+      expect((client.calls[0] as { tool_choice?: unknown }).tool_choice).toBe('required')
+      expect(result.text).toContain('24')
+      expect(result.warnings).toEqual([])
+      expect(result.usage.details.web_search_calls).toBeGreaterThanOrEqual(1)
+      expect(result.usage.details.web_search_calls).toBe(
+        result.usage.details.num_server_side_tools_used,
+      )
+      const cost = computeXaiCost(
+        modelDescriptor.model,
+        result.usage,
+        result.servedServiceTier,
+      )
+      expect(cost.confidence).toBe('exact')
+      expect(cost.details.tools).toBe(result.usage.details.web_search_calls! * 5_000)
+      expectCostMatchesTicks(cost.microUsd, billedTicks(call))
+    },
+  )
+
+  it.each(LIVE_MODELS)(
+    'none_%s runs no search and still prices exactly',
+    async (key, modelDescriptor) => {
+      const call = fixture[`none_${key}`] as LiveCall
+      expect(call.status).toBe(200)
+      const usage = call.body['usage'] as Record<string, unknown>
+      expect(usage['num_server_side_tools_used']).toBe(0)
+      expect(usage['server_side_tool_usage_details']).toBeUndefined()
+
+      const result = await xaiAdapter({ client: makeFakeXai(call.body as never) }).run(
+        makeResolvedReq({
+          model: modelDescriptor.model,
+          modelDescriptor,
+          config: {
+            providerOptions: {
+              xai: { tools: [{ type: 'web_search' }], toolChoice: 'none' },
+            },
+          },
+        }),
+        FAKE_CTX,
+      )
+      expect(result.warnings).toEqual([])
+      expect(result.usage.details.web_search_calls).toBeUndefined()
+      expect(result.usage.details.server_tools_missing).toBeUndefined()
+      const cost = computeXaiCost(
+        modelDescriptor.model,
+        result.usage,
+        result.servedServiceTier,
+      )
+      expect(cost.confidence).toBe('exact')
+      expect(cost.details.tools).toBe(0)
+      expectCostMatchesTicks(cost.microUsd, billedTicks(call))
+    },
+  )
+
+  it.each(LIVE_MODELS)(
+    'structured_%s combines forced search with a strict schema',
+    async (key, modelDescriptor) => {
+      const call = fixture[`structured_${key}`] as LiveCall
+      expect(call.status).toBe(200)
+      const format = (call.request['text'] as { format: { schema: JsonValue } }).format
+      const result = await xaiAdapter({ client: makeFakeXai(call.body as never) }).run(
+        makeResolvedReq({
+          model: modelDescriptor.model,
+          modelDescriptor,
+          outputJsonSchema: format.schema,
+          config: {
+            providerOptions: {
+              xai: { tools: [{ type: 'web_search' }], toolChoice: 'required' },
+            },
+          },
+        }),
+        FAKE_CTX,
+      )
+      expect(result.rawStructured).toMatchObject({ version: '24' })
+      expect(result.usage.details.web_search_calls).toBeGreaterThanOrEqual(1)
+      expect(result.warnings).toEqual([])
+    },
+  )
+
+  it('keeps a forced server-call-first output in grok-4.7 replay state', async () => {
+    const call = fixture['required_grok_4_7'] as LiveCall
+    const result = await xaiAdapter({ client: makeFakeXai(call.body as never) }).run(
+      makeResolvedReq({
+        model: 'grok-4.7',
+        modelDescriptor: grok47ModelDescriptor,
+        config: {
+          providerOptions: {
+            xai: { tools: [{ type: 'web_search' }], toolChoice: 'required' },
+          },
+        },
+      }),
+      FAKE_CTX,
+    )
+    const state = result.transientProviderState as unknown as XaiReplayState
+    const types = (state.input as Array<{ type?: string }>).map((item) => item.type)
+    expect(types.indexOf('web_search_call')).toBeGreaterThan(0)
+    expect(types.indexOf('web_search_call')).toBeLessThan(types.lastIndexOf('message'))
+  })
+})
+
+describe('fixture: 33-max-turns-not-enforced (live 2026-10-02)', () => {
+  const fixture = loadFixture<Record<string, LiveCall>>('33-max-turns-not-enforced.json')
+  const cases = [
+    'grok_4_5_required',
+    'grok_4_5_auto',
+    'grok_4_5_max_turns_2',
+    'grok_4_6_required',
+    'grok_4_7_required',
+  ]
+
+  // Evidence pin, not adapter behaviour: xAI accepted `max_turns` and ran
+  // more search rounds than the cap. If a re-recorded fixture breaks this,
+  // xAI has started enforcing the field — update the README and DECISIONS.
+  it.each(cases)('%s ran more search rounds than max_turns', (name) => {
+    const call = fixture[name] as LiveCall & { body: { output_item_types: string[] } }
+    expect(call.status).toBe(200)
+    const maxTurns = call.request['max_turns'] as number
+    const types = call.body.output_item_types
+    const rounds = types.filter(
+      (type, index) =>
+        type === 'web_search_call' && types[index - 1] !== 'web_search_call',
+    ).length
+    expect(rounds).toBeGreaterThan(maxTurns)
+    const details = (call.body['usage'] as Record<string, Record<string, number>>)[
+      'server_side_tool_usage_details'
+    ]
+    expect(details?.['web_search_calls']).toBeGreaterThan(maxTurns)
+  })
+})
+
+describe('fixture: 34-strict-schema-dialect (live 2026-10-02)', () => {
+  interface SchemaCall extends FixtureCall {
+    requestSchema: JsonValue
+  }
+  const fixture = loadFixture<Record<string, SchemaCall>>('34-strict-schema-dialect.json')
+
+  function lastMessageJson(call: SchemaCall): Record<string, unknown> {
+    const output = call.body['output'] as Array<{
+      type: string
+      content?: Array<{ text: string }>
+    }>
+    const message = output.filter((item) => item.type === 'message').at(-1)
+    return JSON.parse(message?.content?.[0]?.text ?? '') as Record<string, unknown>
+  }
+
+  it.each(['grok_4_5', 'grok_4_6', 'grok_4_7'])(
+    'xAI accepted `nullable: true` on %s and the model could not answer null',
+    (model) => {
+      const call = fixture[`nullable_keyword_${model}`] as SchemaCall
+      expect(call.status).toBe(200)
+      const answer = lastMessageJson(call)
+      expect(answer['employeeCount']).not.toBeNull()
+      expect(answer['foundedYear']).not.toBeNull()
+      expect(() => assertXaiOutputJsonSchema(call.requestSchema)).toThrow(
+        /properties\.employeeCount/,
+      )
+    },
+  )
+
+  it('a null type union passes the preflight and returns real nulls', () => {
+    const call = fixture['null_type_union_grok_4_5'] as SchemaCall
+    expect(() => assertXaiOutputJsonSchema(call.requestSchema)).not.toThrow()
+    expect(lastMessageJson(call)).toMatchObject({
+      employeeCount: null,
+      foundedYear: null,
+    })
+  })
+
+  it('uppercase type names fail at xAI with 400; the preflight rejects them first', () => {
+    const call = fixture['uppercase_types_grok_4_5'] as SchemaCall
+    expect(call.status).toBe(400)
+    expect(JSON.stringify(call.body)).toContain('STRING')
+    expect(() => assertXaiOutputJsonSchema(call.requestSchema)).toThrow(/"OBJECT"/)
   })
 })

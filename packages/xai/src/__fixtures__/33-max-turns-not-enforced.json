@@ -1,0 +1,402 @@
+{
+  "source": "Live 2026-10-02, POST /v1/responses with web_search and max_turns: 1, store:false. xAI documents max_turns as the cap on agentic tool-calling turns; every call ran several search rounds anyway.",
+  "sanitization": "Request, usage and the ordered output item types only.",
+  "grok_4_5_required": {
+    "status": 200,
+    "request": {
+      "model": "grok-4.5",
+      "input": "Research the three largest competitors of Buffer (social media scheduling) and their current pricing. Be thorough.",
+      "tools": [
+        {
+          "type": "web_search"
+        }
+      ],
+      "tool_choice": "required",
+      "max_turns": 1
+    },
+    "body": {
+      "model": "grok-4.5",
+      "status": "completed",
+      "store": false,
+      "service_tier": "default",
+      "tool_choice": "required",
+      "usage": {
+        "input_tokens": 189085,
+        "input_tokens_details": {
+          "cached_tokens": 123648
+        },
+        "output_tokens": 2765,
+        "output_tokens_details": {
+          "reasoning_tokens": 389
+        },
+        "total_tokens": 191850,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 11,
+        "cost_in_usd_ticks": 2395584000,
+        "server_side_tool_usage_details": {
+          "web_search_calls": 11,
+          "x_search_calls": 0,
+          "x_posts_fetched": 0,
+          "x_users_fetched": 0,
+          "code_interpreter_calls": 0,
+          "file_search_calls": 0,
+          "mcp_calls": 0,
+          "document_search_calls": 0,
+          "image_generation_calls": 0
+        },
+        "context_details": {
+          "input_tokens": 65178,
+          "output_tokens": 2247
+        }
+      },
+      "output_item_types": [
+        "reasoning",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "message"
+      ]
+    }
+  },
+  "grok_4_5_auto": {
+    "status": 200,
+    "request": {
+      "model": "grok-4.5",
+      "input": "Research the three largest competitors of Buffer (social media scheduling) and their current pricing. Be thorough.",
+      "tools": [
+        {
+          "type": "web_search"
+        }
+      ],
+      "max_turns": 1
+    },
+    "body": {
+      "model": "grok-4.5",
+      "status": "completed",
+      "store": false,
+      "service_tier": "default",
+      "tool_choice": "auto",
+      "usage": {
+        "input_tokens": 177211,
+        "input_tokens_details": {
+          "cached_tokens": 113792
+        },
+        "output_tokens": 3157,
+        "output_tokens_details": {
+          "reasoning_tokens": 614
+        },
+        "total_tokens": 180368,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 12,
+        "cost_in_usd_ticks": 2399176000,
+        "server_side_tool_usage_details": {
+          "web_search_calls": 12,
+          "x_search_calls": 0,
+          "x_posts_fetched": 0,
+          "x_users_fetched": 0,
+          "code_interpreter_calls": 0,
+          "file_search_calls": 0,
+          "mcp_calls": 0,
+          "document_search_calls": 0,
+          "image_generation_calls": 0
+        },
+        "context_details": {
+          "input_tokens": 62887,
+          "output_tokens": 2363
+        }
+      },
+      "output_item_types": [
+        "reasoning",
+        "message",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "message",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "message",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "message",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "message"
+      ]
+    }
+  },
+  "grok_4_5_max_turns_2": {
+    "status": 200,
+    "request": {
+      "model": "grok-4.5",
+      "input": "Research the three largest competitors of Buffer (social media scheduling) and their current pricing. Be thorough.",
+      "tools": [
+        {
+          "type": "web_search"
+        }
+      ],
+      "tool_choice": "required",
+      "max_turns": 2
+    },
+    "body": {
+      "model": "grok-4.5",
+      "status": "completed",
+      "store": false,
+      "service_tier": "default",
+      "tool_choice": "required",
+      "usage": {
+        "input_tokens": 161364,
+        "input_tokens_details": {
+          "cached_tokens": 101760
+        },
+        "output_tokens": 3034,
+        "output_tokens_details": {
+          "reasoning_tokens": 500
+        },
+        "total_tokens": 164398,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 10,
+        "cost_in_usd_ticks": 2179400000,
+        "server_side_tool_usage_details": {
+          "web_search_calls": 10,
+          "x_search_calls": 0,
+          "x_posts_fetched": 0,
+          "x_users_fetched": 0,
+          "code_interpreter_calls": 0,
+          "file_search_calls": 0,
+          "mcp_calls": 0,
+          "document_search_calls": 0,
+          "image_generation_calls": 0
+        },
+        "context_details": {
+          "input_tokens": 59411,
+          "output_tokens": 2492
+        }
+      },
+      "output_item_types": [
+        "reasoning",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "message"
+      ]
+    }
+  },
+  "grok_4_6_required": {
+    "status": 200,
+    "request": {
+      "model": "grok-4.6",
+      "input": "Research the three largest competitors of Buffer (social media scheduling) and their current pricing. Be thorough.",
+      "tools": [
+        {
+          "type": "web_search"
+        }
+      ],
+      "tool_choice": "required",
+      "max_turns": 1
+    },
+    "body": {
+      "model": "grok-4.6",
+      "status": "completed",
+      "store": false,
+      "service_tier": "default",
+      "tool_choice": "required",
+      "usage": {
+        "input_tokens": 116031,
+        "input_tokens_details": {
+          "cached_tokens": 66304
+        },
+        "output_tokens": 3139,
+        "output_tokens_details": {
+          "reasoning_tokens": 1656
+        },
+        "total_tokens": 119170,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 10,
+        "cost_in_usd_ticks": 2014400000,
+        "server_side_tool_usage_details": {
+          "web_search_calls": 10,
+          "x_search_calls": 0,
+          "x_posts_fetched": 0,
+          "x_users_fetched": 0,
+          "code_interpreter_calls": 0,
+          "file_search_calls": 0,
+          "mcp_calls": 0,
+          "document_search_calls": 0,
+          "image_generation_calls": 0
+        },
+        "context_details": {
+          "input_tokens": 49528,
+          "output_tokens": 1948
+        }
+      },
+      "output_item_types": [
+        "reasoning",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "message"
+      ]
+    }
+  },
+  "grok_4_7_required": {
+    "status": 200,
+    "request": {
+      "model": "grok-4.7",
+      "input": "Research the three largest competitors of Buffer (social media scheduling) and their current pricing. Be thorough.",
+      "tools": [
+        {
+          "type": "web_search"
+        }
+      ],
+      "tool_choice": "required",
+      "max_turns": 1
+    },
+    "body": {
+      "model": "grok-4.7",
+      "status": "completed",
+      "store": false,
+      "service_tier": "default",
+      "tool_choice": "required",
+      "usage": {
+        "input_tokens": 361851,
+        "input_tokens_details": {
+          "cached_tokens": 171008
+        },
+        "output_tokens": 4034,
+        "output_tokens_details": {
+          "reasoning_tokens": 2313
+        },
+        "total_tokens": 365885,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 17,
+        "cost_in_usd_ticks": 10677880000,
+        "server_side_tool_usage_details": {
+          "web_search_calls": 17,
+          "x_search_calls": 0,
+          "x_posts_fetched": 0,
+          "x_users_fetched": 0,
+          "code_interpreter_calls": 0,
+          "file_search_calls": 0,
+          "mcp_calls": 0,
+          "document_search_calls": 0,
+          "image_generation_calls": 0
+        },
+        "context_details": {
+          "input_tokens": 109458,
+          "output_tokens": 2118
+        }
+      },
+      "output_item_types": [
+        "reasoning",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "web_search_call",
+        "web_search_call",
+        "reasoning",
+        "reasoning",
+        "reasoning",
+        "message"
+      ]
+    }
+  }
+}

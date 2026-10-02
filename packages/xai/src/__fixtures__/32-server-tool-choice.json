@@ -1,0 +1,1103 @@
+{
+  "source": "Live 2026-10-02, POST /v1/responses with web_search and tool_choice, store:false. One call per key.",
+  "sanitization": "Selected response fields. Reasoning items are reduced to empty summaries (encrypted content dropped); web_search_call items keep type and status only. Usage blocks and message items are verbatim.",
+  "required_grok_4_5": {
+    "status": 200,
+    "request": {
+      "model": "grok-4.5",
+      "input": "What is the latest stable Node.js LTS major version? Answer in one short sentence.",
+      "tools": [
+        {
+          "type": "web_search"
+        }
+      ],
+      "tool_choice": "required"
+    },
+    "body": {
+      "model": "grok-4.5",
+      "status": "completed",
+      "store": false,
+      "service_tier": "default",
+      "tool_choice": "required",
+      "usage": {
+        "input_tokens": 25741,
+        "input_tokens_details": {
+          "cached_tokens": 3968
+        },
+        "output_tokens": 315,
+        "output_tokens_details": {
+          "reasoning_tokens": 231
+        },
+        "total_tokens": 26056,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 3,
+        "cost_in_usd_ticks": 616264000,
+        "server_side_tool_usage_details": {
+          "web_search_calls": 3,
+          "x_search_calls": 0,
+          "x_posts_fetched": 0,
+          "x_users_fetched": 0,
+          "code_interpreter_calls": 0,
+          "file_search_calls": 0,
+          "mcp_calls": 0,
+          "document_search_calls": 0,
+          "image_generation_calls": 0
+        },
+        "context_details": {
+          "input_tokens": 10951,
+          "output_tokens": 81
+        }
+      },
+      "output": [
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "web_search_call",
+          "status": "completed"
+        },
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "web_search_call",
+          "status": "completed"
+        },
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "web_search_call",
+          "status": "completed"
+        },
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "message",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "The latest stable Node.js LTS major version is 24.[[1]](https://nodejs.org/en/download)",
+              "annotations": [
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/en/download",
+                  "start_index": 50,
+                  "end_index": 87,
+                  "title": "1"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "none_grok_4_5": {
+    "status": 200,
+    "request": {
+      "model": "grok-4.5",
+      "input": "What is the latest stable Node.js LTS major version? Answer in one short sentence.",
+      "tools": [
+        {
+          "type": "web_search"
+        }
+      ],
+      "tool_choice": "none"
+    },
+    "body": {
+      "model": "grok-4.5",
+      "status": "completed",
+      "store": false,
+      "service_tier": "default",
+      "tool_choice": "none",
+      "usage": {
+        "input_tokens": 2420,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 254,
+        "output_tokens_details": {
+          "reasoning_tokens": 241
+        },
+        "total_tokens": 2674,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 63640000,
+        "context_details": {
+          "input_tokens": 2420,
+          "output_tokens": 261
+        }
+      },
+      "output": [
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "message",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "The latest stable Node.js LTS major version is 22.",
+              "annotations": []
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "required_grok_4_6": {
+    "status": 200,
+    "request": {
+      "model": "grok-4.6",
+      "input": "What is the latest stable Node.js LTS major version? Answer in one short sentence.",
+      "tools": [
+        {
+          "type": "web_search"
+        }
+      ],
+      "tool_choice": "required"
+    },
+    "body": {
+      "model": "grok-4.6",
+      "status": "completed",
+      "store": false,
+      "service_tier": "default",
+      "tool_choice": "required",
+      "usage": {
+        "input_tokens": 15186,
+        "input_tokens_details": {
+          "cached_tokens": 2304
+        },
+        "output_tokens": 1304,
+        "output_tokens_details": {
+          "reasoning_tokens": 1243
+        },
+        "total_tokens": 16490,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 2,
+        "cost_in_usd_ticks": 447400000,
+        "server_side_tool_usage_details": {
+          "web_search_calls": 2,
+          "x_search_calls": 0,
+          "x_posts_fetched": 0,
+          "x_users_fetched": 0,
+          "code_interpreter_calls": 0,
+          "file_search_calls": 0,
+          "mcp_calls": 0,
+          "document_search_calls": 0,
+          "image_generation_calls": 0
+        },
+        "context_details": {
+          "input_tokens": 12776,
+          "output_tokens": 1079
+        }
+      },
+      "output": [
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "web_search_call",
+          "status": "completed"
+        },
+        {
+          "type": "web_search_call",
+          "status": "completed"
+        },
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "message",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "The latest stable Node.js LTS major version is 24.",
+              "annotations": [
+                {
+                  "type": "url_citation",
+                  "url": "https://versionlog.com/nodejs/26/",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://versionlog.com/nodejs/26/"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/en/blog/announcements/evolving-the-nodejs-release-schedule",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/en/blog/announcements/evolving-the-nodejs-release-schedule"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/en/blog",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/en/blog"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/en/download/current",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/en/download/current"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/fr/blog/release",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/fr/blog/release"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://endoflife.date/nodejs",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://endoflife.date/nodejs"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://www.issoh.co.jp/tech/details/17906/",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://www.issoh.co.jp/tech/details/17906/"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/en/about/previous-releases",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/en/about/previous-releases"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://releasealert.dev/chocolatey/nodejs-lts",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://releasealert.dev/chocolatey/nodejs-lts"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://www.osseva.io/eol/nodejs",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://www.osseva.io/eol/nodejs"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://raw.githubusercontent.com/nodejs/release/main/README.md",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://raw.githubusercontent.com/nodejs/release/main/README.md"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://www.linuxcompatible.org/story/nodejs-26100-releases-with-utildebounce-utilthrottle-and-cryptoparsepkcs12/",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://www.linuxcompatible.org/story/nodejs-26100-releases-with-utildebounce-utilthrottle-and-cryptoparsepkcs12/"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "none_grok_4_6": {
+    "status": 200,
+    "request": {
+      "model": "grok-4.6",
+      "input": "What is the latest stable Node.js LTS major version? Answer in one short sentence.",
+      "tools": [
+        {
+          "type": "web_search"
+        }
+      ],
+      "tool_choice": "none"
+    },
+    "body": {
+      "model": "grok-4.6",
+      "status": "completed",
+      "store": false,
+      "service_tier": "default",
+      "tool_choice": "none",
+      "usage": {
+        "input_tokens": 2420,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 498,
+        "output_tokens_details": {
+          "reasoning_tokens": 485
+        },
+        "total_tokens": 2918,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 78280000,
+        "context_details": {
+          "input_tokens": 2420,
+          "output_tokens": 505
+        }
+      },
+      "output": [
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "message",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "The latest stable Node.js LTS major version is 22.",
+              "annotations": []
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "required_grok_4_7": {
+    "status": 200,
+    "request": {
+      "model": "grok-4.7",
+      "input": "What is the latest stable Node.js LTS major version? Answer in one short sentence.",
+      "tools": [
+        {
+          "type": "web_search"
+        }
+      ],
+      "tool_choice": "required"
+    },
+    "body": {
+      "model": "grok-4.7",
+      "status": "completed",
+      "store": false,
+      "service_tier": "default",
+      "tool_choice": "required",
+      "usage": {
+        "input_tokens": 11552,
+        "input_tokens_details": {
+          "cached_tokens": 4352
+        },
+        "output_tokens": 373,
+        "output_tokens_details": {
+          "reasoning_tokens": 278
+        },
+        "total_tokens": 11925,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 2,
+        "cost_in_usd_ticks": 288140000,
+        "server_side_tool_usage_details": {
+          "web_search_calls": 2,
+          "x_search_calls": 0,
+          "x_posts_fetched": 0,
+          "x_users_fetched": 0,
+          "code_interpreter_calls": 0,
+          "file_search_calls": 0,
+          "mcp_calls": 0,
+          "document_search_calls": 0,
+          "image_generation_calls": 0
+        },
+        "context_details": {
+          "input_tokens": 8993,
+          "output_tokens": 268
+        }
+      },
+      "output": [
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "web_search_call",
+          "status": "completed"
+        },
+        {
+          "type": "web_search_call",
+          "status": "completed"
+        },
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "message",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "The latest stable Node.js LTS major version is 24. [[1]](https://nodejs.org/en/about/previous-releases) [[2]](https://raw.githubusercontent.com/nodejs/release/main/README.md)",
+              "annotations": [
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/en/about/previous-releases",
+                  "start_index": 51,
+                  "end_index": 103,
+                  "title": "1"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://raw.githubusercontent.com/nodejs/release/main/README.md",
+                  "start_index": 104,
+                  "end_index": 174,
+                  "title": "2"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "none_grok_4_7": {
+    "status": 200,
+    "request": {
+      "model": "grok-4.7",
+      "input": "What is the latest stable Node.js LTS major version? Answer in one short sentence.",
+      "tools": [
+        {
+          "type": "web_search"
+        }
+      ],
+      "tool_choice": "none"
+    },
+    "body": {
+      "model": "grok-4.7",
+      "status": "completed",
+      "store": false,
+      "service_tier": "default",
+      "tool_choice": "none",
+      "usage": {
+        "input_tokens": 2569,
+        "input_tokens_details": {
+          "cached_tokens": 1408
+        },
+        "output_tokens": 782,
+        "output_tokens_details": {
+          "reasoning_tokens": 769
+        },
+        "total_tokens": 3351,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 77180000,
+        "context_details": {
+          "input_tokens": 2569,
+          "output_tokens": 791
+        }
+      },
+      "output": [
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "message",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "The latest stable Node.js LTS major version is 22.",
+              "annotations": []
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "structured_grok_4_5": {
+    "status": 200,
+    "request": {
+      "model": "grok-4.5",
+      "input": "What is the latest stable Node.js LTS major version? Answer in one short sentence.",
+      "tools": [
+        {
+          "type": "web_search"
+        }
+      ],
+      "tool_choice": "required",
+      "text": {
+        "format": {
+          "type": "json_schema",
+          "name": "o",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "version",
+              "source"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true
+        }
+      }
+    },
+    "body": {
+      "model": "grok-4.5",
+      "status": "completed",
+      "store": false,
+      "service_tier": "default",
+      "tool_choice": "required",
+      "usage": {
+        "input_tokens": 7918,
+        "input_tokens_details": {
+          "cached_tokens": 3840
+        },
+        "output_tokens": 670,
+        "output_tokens_details": {
+          "reasoning_tokens": 628
+        },
+        "total_tokens": 8588,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 1,
+        "cost_in_usd_ticks": 183280000,
+        "server_side_tool_usage_details": {
+          "web_search_calls": 1,
+          "x_search_calls": 0,
+          "x_posts_fetched": 0,
+          "x_users_fetched": 0,
+          "code_interpreter_calls": 0,
+          "file_search_calls": 0,
+          "mcp_calls": 0,
+          "document_search_calls": 0,
+          "image_generation_calls": 0
+        },
+        "context_details": {
+          "input_tokens": 5451,
+          "output_tokens": 595
+        }
+      },
+      "output": [
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "web_search_call",
+          "status": "completed"
+        },
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "message",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "{\"version\":\"24\",\"source\":\"https://nodejs.org/en/blog\"}",
+              "annotations": [
+                {
+                  "type": "url_citation",
+                  "url": "https://endoflife.date/nodejs",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://endoflife.date/nodejs"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://www.linuxcompatible.org/story/nodejs-26100-releases-with-utildebounce-utilthrottle-and-cryptoparsepkcs12/",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://www.linuxcompatible.org/story/nodejs-26100-releases-with-utildebounce-utilthrottle-and-cryptoparsepkcs12/"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://raw.githubusercontent.com/nodejs/release/main/README.md",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://raw.githubusercontent.com/nodejs/release/main/README.md"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://www.issoh.co.jp/tech/details/17906/",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://www.issoh.co.jp/tech/details/17906/"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/en/blog",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/en/blog"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "structured_grok_4_6": {
+    "status": 200,
+    "request": {
+      "model": "grok-4.6",
+      "input": "What is the latest stable Node.js LTS major version? Answer in one short sentence.",
+      "tools": [
+        {
+          "type": "web_search"
+        }
+      ],
+      "tool_choice": "required",
+      "text": {
+        "format": {
+          "type": "json_schema",
+          "name": "o",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "version",
+              "source"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true
+        }
+      }
+    },
+    "body": {
+      "model": "grok-4.6",
+      "status": "completed",
+      "store": false,
+      "service_tier": "default",
+      "tool_choice": "required",
+      "usage": {
+        "input_tokens": 38688,
+        "input_tokens_details": {
+          "cached_tokens": 24576
+        },
+        "output_tokens": 1324,
+        "output_tokens_details": {
+          "reasoning_tokens": 1257
+        },
+        "total_tokens": 40012,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 3,
+        "cost_in_usd_ticks": 634560000,
+        "server_side_tool_usage_details": {
+          "web_search_calls": 3,
+          "x_search_calls": 0,
+          "x_posts_fetched": 0,
+          "x_users_fetched": 0,
+          "code_interpreter_calls": 0,
+          "file_search_calls": 0,
+          "mcp_calls": 0,
+          "document_search_calls": 0,
+          "image_generation_calls": 0
+        },
+        "context_details": {
+          "input_tokens": 15466,
+          "output_tokens": 416
+        }
+      },
+      "output": [
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "web_search_call",
+          "status": "completed"
+        },
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "web_search_call",
+          "status": "completed"
+        },
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "web_search_call",
+          "status": "completed"
+        },
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "message",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "{\"version\":\"24\",\"source\":\"nodejs.org\"}",
+              "annotations": [
+                {
+                  "type": "url_citation",
+                  "url": "https://www.issoh.co.jp/tech/details/17906/",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://www.issoh.co.jp/tech/details/17906/"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://raw.githubusercontent.com/nodejs/release/main/README.md",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://raw.githubusercontent.com/nodejs/release/main/README.md"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://www.linuxcompatible.org/story/nodejs-26100-releases-with-utildebounce-utilthrottle-and-cryptoparsepkcs12/",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://www.linuxcompatible.org/story/nodejs-26100-releases-with-utildebounce-utilthrottle-and-cryptoparsepkcs12/"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/en/blog",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/en/blog"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/en/about/previous-releases",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/en/about/previous-releases"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://endoflife.date/nodejs",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://endoflife.date/nodejs"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://releasealert.dev/chocolatey/nodejs-lts",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://releasealert.dev/chocolatey/nodejs-lts"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://versionlog.com/nodejs/26/",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://versionlog.com/nodejs/26/"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/fr/blog/release",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/fr/blog/release"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/en/blog/announcements/evolving-the-nodejs-release-schedule",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/en/blog/announcements/evolving-the-nodejs-release-schedule"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/en/download",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/en/download"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "structured_grok_4_7": {
+    "status": 200,
+    "request": {
+      "model": "grok-4.7",
+      "input": "What is the latest stable Node.js LTS major version? Answer in one short sentence.",
+      "tools": [
+        {
+          "type": "web_search"
+        }
+      ],
+      "tool_choice": "required",
+      "text": {
+        "format": {
+          "type": "json_schema",
+          "name": "o",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "version",
+              "source"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true
+        }
+      }
+    },
+    "body": {
+      "model": "grok-4.7",
+      "status": "completed",
+      "store": false,
+      "service_tier": "default",
+      "tool_choice": "required",
+      "usage": {
+        "input_tokens": 30612,
+        "input_tokens_details": {
+          "cached_tokens": 12800
+        },
+        "output_tokens": 1455,
+        "output_tokens_details": {
+          "reasoning_tokens": 1346
+        },
+        "total_tokens": 32067,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 4,
+        "cost_in_usd_ticks": 707540000,
+        "server_side_tool_usage_details": {
+          "web_search_calls": 4,
+          "x_search_calls": 0,
+          "x_posts_fetched": 0,
+          "x_users_fetched": 0,
+          "code_interpreter_calls": 0,
+          "file_search_calls": 0,
+          "mcp_calls": 0,
+          "document_search_calls": 0,
+          "image_generation_calls": 0
+        },
+        "context_details": {
+          "input_tokens": 19126,
+          "output_tokens": 494
+        }
+      },
+      "output": [
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "web_search_call",
+          "status": "completed"
+        },
+        {
+          "type": "web_search_call",
+          "status": "completed"
+        },
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "web_search_call",
+          "status": "completed"
+        },
+        {
+          "type": "web_search_call",
+          "status": "completed"
+        },
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "reasoning",
+          "summary": []
+        },
+        {
+          "type": "message",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "{\"version\":\"24\",\"source\":\"https://nodejs.org/en/about/previous-releases\"}",
+              "annotations": [
+                {
+                  "type": "url_citation",
+                  "url": "https://endoflife.date/nodejs",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://endoflife.date/nodejs"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/en/download/current",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/en/download/current"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://raw.githubusercontent.com/nodejs/release/main/README.md",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://raw.githubusercontent.com/nodejs/release/main/README.md"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/uk/blog",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/uk/blog"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/es/about/get-involved/events",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/es/about/get-involved/events"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/en/feed/releases.xml",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/en/feed/releases.xml"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://www.issoh.co.jp/tech/details/17906/",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://www.issoh.co.jp/tech/details/17906/"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/en/blog",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/en/blog"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/en/blog/announcements/evolving-the-nodejs-release-schedule",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/en/blog/announcements/evolving-the-nodejs-release-schedule"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/en/about/previous-releases",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/en/about/previous-releases"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/fr/blog/release",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/fr/blog/release"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://www.linuxcompatible.org/story/nodejs-26100-releases-with-utildebounce-utilthrottle-and-cryptoparsepkcs12/",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://www.linuxcompatible.org/story/nodejs-26100-releases-with-utildebounce-utilthrottle-and-cryptoparsepkcs12/"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/ja/about/previous-releases",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/ja/about/previous-releases"
+                },
+                {
+                  "type": "url_citation",
+                  "url": "https://nodejs.org/zh-cn/about/previous-releases",
+                  "start_index": 0,
+                  "end_index": 0,
+                  "title": "https://nodejs.org/zh-cn/about/previous-releases"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
