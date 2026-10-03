@@ -1474,11 +1474,13 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       warnings.push(...groundingWarnings(groundingMetadata))
 
       // Where each answer-text part sits in `text`, so a grounding segment
-      // (UTF-8 byte offsets into one part) becomes a range of `text`.
+      // (UTF-8 byte offsets into one part) becomes a range of `text`. Gemini's
+      // `partIndex` does not count thought parts (see `AnswerTextPart`).
       const answerParts: Array<AnswerTextPart | undefined> = []
       let answerOffset = 0
       for (const part of parts) {
-        if (typeof part.text === 'string' && part.thought !== true) {
+        if (part.thought === true) continue
+        if (typeof part.text === 'string') {
           answerParts.push({ text: part.text, offset: answerOffset })
           answerOffset += part.text.length
         } else {
@@ -1517,15 +1519,27 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
             meta['promptFeedback'] = pf as unknown as JsonValue
           }
           if (gm !== undefined) {
-            meta['groundingMetadata'] = gm as unknown as JsonValue
             const searchEntryPoint = readSearchEntryPoint(gm)
-            if (searchEntryPoint !== undefined) meta['google'] = { searchEntryPoint }
+            if (searchEntryPoint !== undefined) {
+              // Stored once, under `google.searchEntryPoint`: the widget HTML is
+              // kilobytes and `providerMetadata` is persisted on every grounded
+              // row, so the raw copy omits it.
+              const { searchEntryPoint: _widget, ...rest } = gm as Record<string, unknown>
+              meta['groundingMetadata'] = rest as unknown as JsonValue
+              meta['google'] = { searchEntryPoint }
+            } else {
+              meta['groundingMetadata'] = gm as unknown as JsonValue
+            }
           }
           return { providerMetadata: meta as JsonValue }
         })(),
         ...(() => {
           if (groundingMetadata === undefined) return {}
-          const citations = normalizeGroundingCitations(groundingMetadata, answerParts)
+          const citations = normalizeGroundingCitations(
+            groundingMetadata,
+            answerParts,
+            (message) => warnings.push({ type: 'other', message }),
+          )
           return citations.length > 0 ? { citations } : {}
         })(),
       }

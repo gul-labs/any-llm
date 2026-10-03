@@ -163,8 +163,10 @@ function extractGroundingArtifacts(providerMetadata: unknown): GroundingArtifact
 The adapter also projects those chunks onto first-class `result.citations`
 (`{ url, title?, sourceName?, cited?, textRange? }`). `cited` says whether a
 `groundingSupports` segment points at the source and `textRange` is the first supported
-span of `result.text` (UTF-16 offsets; Google's byte offsets are converted). Raw
-`groundingMetadata` stays on `providerMetadata`. Empty / unused grounding omits the field.
+span of `result.text` (UTF-16 offsets; Google's UTF-8 byte offsets are converted, and a range that
+does not match the segment's own text is dropped with a warning). Raw
+`groundingMetadata` stays on `providerMetadata` (without `searchEntryPoint`, which is at
+`providerMetadata.google.searchEntryPoint`; render its HTML in a sandboxed iframe). Empty / unused grounding omits the field.
 
 ```ts
 const citations = research.citations

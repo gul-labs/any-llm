@@ -312,9 +312,18 @@ throws `content_filter` (not retryable), and `MAX_TOKENS` returns `finishReason:
 last attempt only; the earlier attempts' spend is in their ledger rows.
 
 `result.citations` entries carry `cited` (a `groundingSupports` segment points at the source) and
-`textRange` (the first supported span of `result.text`, UTF-16 offsets). Google requires a grounded
-answer to display its Search Suggestions: the widget is at
-`result.providerMetadata.google.searchEntryPoint`.
+`textRange` (the first supported span of `result.text`, UTF-16 offsets). Gemini measures its segment
+offsets in UTF-8 bytes into the answer part (verified on a live Japanese and emoji answer), and its
+`partIndex` does not count thought parts. Every range is checked against `segment.text`: when the
+answer at the converted range is not exactly that text, the range is dropped, the source stays
+`cited: true`, and the result carries a warning, so a `textRange` is never a guess.
+
+Google requires a grounded answer to display its Search Suggestions: the widget is at
+`result.providerMetadata.google.searchEntryPoint` and is stored only there (the raw
+`providerMetadata.groundingMetadata` omits it, so persisted rows hold the HTML once). Its
+`renderedContent` is HTML and CSS that Google generates around model-chosen query strings: treat it
+as untrusted markup. Render it in a sandboxed `<iframe>` (for example `sandbox` with no
+`allow-scripts` and `srcdoc`), never inject it into your page's DOM with `innerHTML`.
 
 `countTokens` takes `messages` only on Google: `system` or `tools` fails with
 `bad_request`, because the Developer API's count cannot include them and a count

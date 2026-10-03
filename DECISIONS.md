@@ -2289,7 +2289,9 @@ Live evidence (2026-10-03):
 - Schema plus Search on Gemini 3.x is possible but not default. The measured rates are in
   `docs/grounded-structured.md`.
 - Fixtures (ADR-013): `packages/google/src/__fixtures__/grounding-schema-matrix-2026-10-03.json` (P4) and
-  `grounding-usage-fields-2026-10-03.json` (P5), redacted: model answer text and call cost removed.
+  `grounding-usage-fields-2026-10-03.json` (P5), redacted: model answer text and call cost removed. Amendment A adds
+  `grounding-supports-2026-10-03.json`, one full grounded response with `groundingSupports` (Japanese and
+  emoji answer, thought parts), redacted to distinct redirect placeholders.
 - Request-side search intent (one option that means "search" on every provider) is deferred to its own
   decision.
 
@@ -2324,7 +2326,18 @@ above are replaced by the rules here; everything else stands.
    Gemini 2.5 grounded call is therefore understated by those tokens at the input rate (about 176 uUSD on
    the P5 Pro sample). Whether Google bills them is the open billing question above; no upper bound is
    guessed into the price.
-6. **`pricingVersion` `gemini-2026-10-03` marks the new grounding lane,** not a token re-read: token rates
+6. **Gemini `textRange` is verified, not assumed.** A live capture (Japanese answer with emoji, two thought
+   parts before the answer; fixture `grounding-supports-2026-10-03.json`) showed that `startIndex` and
+   `endIndex` are UTF-8 bytes into the answer part, and that `partIndex` does not count thought parts (the
+   answer sat at parts index 2 and its segments omitted `partIndex`). The adapter indexes non-thought parts
+   and checks every range against `segment.text`: when the answer at the converted range is not exactly
+   that text the range is dropped, the source stays `cited: true`, and the result carries a warning. A
+   segment without `text` is accepted on the offsets alone.
+7. **`searchEntryPoint` is stored once,** at `providerMetadata.google.searchEntryPoint`; the raw
+   `providerMetadata.groundingMetadata` omits it. The HTML is kilobytes and persisted on every grounded row.
+   It is untrusted markup (Google's CSS plus model-chosen query strings): the README says to render it in
+   a sandboxed iframe.
+8. **`pricingVersion` `gemini-2026-10-03` marks the new grounding lane,** not a token re-read: token rates
    were last verified 2026-09-25. A row priced under the older version has no `tools` lane.
 
 ---

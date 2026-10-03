@@ -451,8 +451,11 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
   a `STOP` candidate (a filtered one throws `content_filter`). `allowSchemaWithSearch: true` admits
   `googleSearch` with `output.jsonSchema` on a model whose descriptor has `structuredOutputWithTools:
 false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless set to `false`.
-  `Citation.cited` / `textRange` come from `groundingSupports`; `providerMetadata.google.searchEntryPoint`
-  carries Google's required Search Suggestions widget.
+  `Citation.cited` / `textRange` come from `groundingSupports` (UTF-8 byte offsets converted to UTF-16,
+  `partIndex` excluding thought parts, every range checked against `segment.text` and dropped with a
+  warning on mismatch); `providerMetadata.google.searchEntryPoint` carries Google's required Search
+  Suggestions widget, stored once (the raw `groundingMetadata` omits it) and to be rendered as untrusted
+  HTML in a sandboxed iframe.
 - Errors: classify 401→invalid_auth; 403→invalid_auth unless a provider overlay reclassifies;
   429→rate_limited(+retryAfter), 5xx→server, timeout→timeout, 400→bad_request;
   safety (HTTP or 200-path)→content_filter.

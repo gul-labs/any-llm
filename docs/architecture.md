@@ -613,8 +613,9 @@ absent (Gemini 2.5, Gemma) rejects schema + Search even with `allowSchemaWithSea
 
 When grounding is active, `candidate.groundingMetadata` from the response is captured into
 `result.providerMetadata['groundingMetadata']` as `JsonValue`. `promptFeedback`, when present, is
-captured alongside it under `result.providerMetadata['promptFeedback']`; `searchEntryPoint` is also
-surfaced at `result.providerMetadata['google']['searchEntryPoint']`. All are persisted in the
+captured alongside it under `result.providerMetadata['promptFeedback']`; `searchEntryPoint` is moved to
+`result.providerMetadata['google']['searchEntryPoint']` and omitted from the raw `groundingMetadata`, so
+the widget HTML is persisted once. All are persisted in the
 `LlmCallRecord` via the existing `providerMetadata` JSONB lane.
 
 ### Transport Timeout

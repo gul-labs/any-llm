@@ -949,7 +949,9 @@ describe('citations carry cited and textRange from groundingSupports (R2.4)', ()
     expect(text.slice(first.start, first.end)).toBe('Café is open.')
   })
 
-  it('a thought part before the answer shifts partIndex but not the range in the answer text', async () => {
+  it('thought parts are not counted by partIndex: an omitted partIndex names the first answer part', async () => {
+    // Observed on a live call (fixture below): the answer sat at candidate parts
+    // index 2 after two thought parts, and its segments carried no partIndex.
     const result = await generate(
       'Answer here.',
       {
@@ -957,7 +959,7 @@ describe('citations carry cited and textRange from groundingSupports (R2.4)', ()
         groundingChunks: chunks,
         groundingSupports: [
           {
-            segment: { partIndex: 1, startIndex: 7, endIndex: 11 },
+            segment: { startIndex: 7, endIndex: 11, text: 'here' },
             groundingChunkIndices: [2],
           },
         ],
@@ -1017,6 +1019,86 @@ describe('citations carry cited and textRange from groundingSupports (R2.4)', ()
   })
 })
 
+describe('textRange against a real grounded response (audit P2-3)', () => {
+  const fixture = JSON.parse(
+    readFileSync(
+      fileURLToPath(
+        new URL('./__fixtures__/grounding-supports-2026-10-03.json', import.meta.url),
+      ),
+      'utf8',
+    ),
+  ) as { response: Record<string, unknown> }
+  const withSegments = (
+    edit?: (segments: Array<{ segment: Record<string, unknown> }>) => void,
+  ) => {
+    const response = structuredClone(fixture.response) as {
+      candidates: Array<{
+        groundingMetadata: {
+          groundingSupports: Array<{ segment: Record<string, unknown> }>
+        }
+      }>
+    }
+    edit?.(response.candidates[0]!.groundingMetadata.groundingSupports)
+    return response
+  }
+  const run = (response: unknown) =>
+    geminiAdapter({ client: makeFakeGemini(response as never) }).run(
+      request(SEARCH),
+      FAKE_CTX,
+    )
+
+  it('maps every segment: Japanese text and emoji, UTF-8 byte offsets, after two thought parts', async () => {
+    const response = withSegments()
+    const gm = response.candidates[0]!.groundingMetadata as unknown as {
+      groundingChunks: Array<{ web: { uri: string } }>
+      groundingSupports: Array<{
+        segment: { text: string }
+        groundingChunkIndices: number[]
+      }>
+    }
+    const result = await run(response)
+    expect(result.text).toContain('🚀')
+    expect(result.text).toContain('✅')
+    // A citation's range is the slice Gemini itself reported for the first
+    // support that names its first chunk (chunks that share a URL merge).
+    for (const citation of result.citations!) {
+      const chunkIndex = gm.groundingChunks.findIndex((c) => c.web.uri === citation.url)
+      const support = gm.groundingSupports.find((s) =>
+        s.groundingChunkIndices.includes(chunkIndex),
+      )!
+      expect(citation.cited).toBe(true)
+      const range = citation.textRange!
+      expect(result.text!.slice(range.start, range.end)).toBe(support.segment.text)
+    }
+    expect(result.warnings.map((w) => w.message).join('\n')).not.toContain('textRange')
+  })
+
+  it('a range whose slice differs from segment.text is dropped with a warning, the source stays cited', async () => {
+    const response = withSegments((segments) => {
+      // The last support names chunk 3 alone. Move it three bytes (still a
+      // character boundary): the slice no longer equals the text.
+      const segment = segments[2]!.segment
+      segment['startIndex'] = (segment['startIndex'] as number) + 3
+      segment['endIndex'] = (segment['endIndex'] as number) + 3
+    })
+    const result = await run(response)
+    const dropped = result.citations!.at(-1)!
+    expect(dropped.cited).toBe(true)
+    expect(dropped).not.toHaveProperty('textRange')
+    const warning = result.warnings.find((w) => w.message.includes('textRange'))
+    expect(warning?.message).toContain('segment.text')
+  })
+
+  it('a segment without text cannot be checked and is accepted by the offsets alone', async () => {
+    const response = withSegments((segments) => {
+      for (const s of segments) delete s.segment['text']
+    })
+    const result = await run(response)
+    expect(result.citations!.some((c) => c.textRange !== undefined)).toBe(true)
+    expect(result.warnings.map((w) => w.message).join('\n')).not.toContain('textRange')
+  })
+})
+
 describe('providerMetadata.google.searchEntryPoint (R2.4)', () => {
   const run = (groundingMetadata: unknown) =>
     geminiAdapter({
@@ -1029,9 +1111,23 @@ describe('providerMetadata.google.searchEntryPoint (R2.4)', () => {
     const entry = { renderedContent: '<div class="chip">q</div>' }
     const result = await run(grounded(['q'], { searchEntryPoint: entry }))
     expect(result.providerMetadata).toMatchObject({ google: { searchEntryPoint: entry } })
-    // The raw payload is still there.
+    // Stored once: the widget HTML is large and `providerMetadata` is persisted
+    // on every grounded row, so the raw copy omits it and the rest is intact.
+    const meta = result.providerMetadata as {
+      groundingMetadata: Record<string, unknown>
+      google: { searchEntryPoint: unknown }
+    }
+    expect(meta.groundingMetadata).not.toHaveProperty('searchEntryPoint')
+    expect(meta.groundingMetadata['webSearchQueries']).toEqual(['q'])
+    const escaped = JSON.stringify(entry.renderedContent).slice(1, -1)
+    expect(JSON.stringify(result.providerMetadata).split(escaped)).toHaveLength(2)
+  })
+
+  it('an unusable searchEntryPoint (empty object) is left in the raw payload as sent', async () => {
+    const result = await run(grounded(['q'], { searchEntryPoint: {} }))
+    expect(result.providerMetadata).not.toHaveProperty('google')
     expect(result.providerMetadata).toMatchObject({
-      groundingMetadata: { searchEntryPoint: entry },
+      groundingMetadata: { searchEntryPoint: {} },
     })
   })
 

@@ -64,7 +64,15 @@ function toCitation(chunk: unknown): Citation | undefined {
   }
 }
 
-/** The answer text one `Segment.partIndex` refers to, and where it sits in `LlmResult.text`. */
+/**
+ * The answer text one `Segment.partIndex` refers to, and where it sits in `LlmResult.text`.
+ *
+ * `partIndex` counts the candidate's parts WITHOUT thought parts: a live
+ * capture (`__fixtures__/grounding-supports-2026-10-03.json`) put the answer at
+ * `candidate.content.parts` index 2 after two thought parts, and its segments
+ * named it with an omitted `partIndex` (zero). Whether a non-thought function
+ * call part is counted is not captured; `segment.text` guards that guess.
+ */
 export interface AnswerTextPart {
   text: string
   /** UTF-16 offset of this part's text within the joined answer text. */
@@ -94,15 +102,24 @@ function utf16IndexAtByte(text: string, byte: number): number | undefined {
  * Convert a Gemini grounding `Segment` into a range of the joined answer text.
  *
  * Gemini measures `startIndex` and `endIndex` in UTF-8 bytes from the start of
- * the part named by `partIndex` (Google's `Segment` reference); an omitted
- * field is zero (proto3 JSON drops zeros). The result is in UTF-16 code units
- * of the joined text, as `Citation.textRange` promises. A segment that names a
- * part that is not answer text, or whose offsets do not land on character
- * boundaries, has no range.
+ * the answer part named by `partIndex` (confirmed on a live capture with
+ * Japanese text and emoji: not UTF-16, not code points); an omitted field is
+ * zero (proto3 JSON drops zeros). The result is in UTF-16 code units of the
+ * joined text, as `Citation.textRange` promises.
+ *
+ * `segment.text` is Gemini's own copy of the span. When it is a string it must
+ * equal the slice of the answer at the converted range; a mismatch means this
+ * conversion disagrees with the provider (different part counting, a path not
+ * captured), so the range is dropped and `onDropped` says why, rather than
+ * emitting a range that points at the wrong span. A segment that names no
+ * answer part, or whose offsets do not land on character boundaries, has no
+ * range.
  */
 function segmentRange(
   segment: unknown,
   answerParts: ReadonlyArray<AnswerTextPart | undefined>,
+  joined: string,
+  onDropped: (message: string) => void,
 ): { start: number; end: number } | undefined {
   if (segment === null || typeof segment !== 'object') return undefined
   const raw = segment as Record<string, unknown>
@@ -121,7 +138,15 @@ function segmentRange(
   const start = utf16IndexAtByte(part.text, startByte)
   const end = utf16IndexAtByte(part.text, endByte)
   if (start === undefined || end === undefined || end <= start) return undefined
-  return { start: part.offset + start, end: part.offset + end }
+  const range = { start: part.offset + start, end: part.offset + end }
+  const expected = raw['text']
+  if (typeof expected === 'string' && joined.slice(range.start, range.end) !== expected) {
+    onDropped(
+      `google: dropped a textRange for a grounding segment (partIndex ${partIndex}, bytes ${startByte}-${endByte}): the answer at that range does not equal segment.text. The source stays cited without a range.`,
+    )
+    return undefined
+  }
+  return range
 }
 
 /**
@@ -132,16 +157,18 @@ function segmentRange(
 function readSupports(
   groundingMetadata: Record<string, unknown>,
   answerParts: ReadonlyArray<AnswerTextPart | undefined>,
+  onDropped: (message: string) => void,
 ): Map<number, { start: number; end: number } | undefined> | undefined {
   const supports = groundingMetadata['groundingSupports']
   if (!Array.isArray(supports)) return undefined
+  const joined = answerParts.map((part) => part?.text ?? '').join('')
   const byChunk = new Map<number, { start: number; end: number } | undefined>()
   for (const support of supports) {
     if (support === null || typeof support !== 'object') continue
     const record = support as Record<string, unknown>
     const indices = record['groundingChunkIndices']
     if (!Array.isArray(indices)) continue
-    const range = segmentRange(record['segment'], answerParts)
+    const range = segmentRange(record['segment'], answerParts, joined, onDropped)
     for (const index of indices) {
       if (typeof index !== 'number') continue
       // The first usable range wins; any support keeps the chunk cited.
@@ -161,6 +188,8 @@ function readSupports(
  * chunk) and `textRange` (the first segment that does). Chunks that share a URL
  * merge: cited if any is, first range wins. `answerParts` maps a segment's
  * `partIndex` to the answer text it indexes; without it no `textRange` is set.
+ * `onDropped` receives a message for each range dropped because it disagrees
+ * with the segment's own text.
  *
  * Accepts `unknown` since `groundingMetadata` arrives as raw JSON on
  * `providerMetadata` (see `docs/grounded-structured.md`). Never throws —
@@ -170,6 +199,7 @@ function readSupports(
 export function normalizeGroundingCitations(
   groundingMetadata: unknown,
   answerParts: ReadonlyArray<AnswerTextPart | undefined> = [],
+  onDropped: (message: string) => void = () => {},
 ): Citation[] {
   if (groundingMetadata === null || typeof groundingMetadata !== 'object') return []
 
@@ -177,7 +207,7 @@ export function normalizeGroundingCitations(
   const chunks = metadata['groundingChunks']
   if (!Array.isArray(chunks)) return []
 
-  const supports = readSupports(metadata, answerParts)
+  const supports = readSupports(metadata, answerParts, onDropped)
   const byUrl = new Map<string, Citation>()
 
   chunks.forEach((chunk, chunkIndex) => {

@@ -189,8 +189,8 @@ is not admitted. With `req.outputJsonSchema`, the descriptor must set
 the combination fails with `bad_request` and hosts use the two-call recipe, unless the call
 sets `providerOptions.google.allowSchemaWithSearch: true` (ADR-035), which also turns
 `requireGrounding` on. When present, `candidate.groundingMetadata` is captured alongside
-`promptFeedback` in `result.providerMetadata`, and `searchEntryPoint` is surfaced at
-`providerMetadata.google.searchEntryPoint`. The adapter reports `usage.details.web_search_requested`
+`promptFeedback` in `result.providerMetadata`, and `searchEntryPoint` is moved to
+`providerMetadata.google.searchEntryPoint` (stored once). The adapter reports `usage.details.web_search_requested`
 and `web_search_calls`; the pricing source prices the grounding fee on the `tools` lane and marks a
 call that ran Search `estimated` (ADR-035). `requireGrounding: true` fails the call with a
 `grounding_missing` error (retryable only without an output schema) unless the response proves Search

@@ -1,6 +1,6 @@
 {
   "capturedOn": "2026-10-03",
-  "description": "One grounded Gemini 3 call (googleSearch, includeThoughts true) whose prompt asked for a Japanese answer with an emoji at the start of every bullet. Full response body kept (two thought parts, then one answer part; groundingSupports with segment.text). Grounding redirect tokens redacted per ADR-013. Observed: segment startIndex/endIndex are UTF-8 byte offsets into the answer part (not UTF-16, not code points, and not the concatenation of all parts), and an omitted partIndex (zero) names the answer part although it sits at candidate parts index 2 after two thought parts.",
+  "description": "One grounded Gemini 3 call (googleSearch, includeThoughts true) whose prompt asked for a Japanese answer with an emoji at the start of every bullet. Full response body kept (two thought parts, then one answer part; groundingSupports with segment.text). Grounding redirect tokens replaced by distinct placeholders (equal tokens stay equal) per ADR-013. Observed: segment startIndex/endIndex are UTF-8 byte offsets into the answer part (not UTF-16, not code points, and not the concatenation of all parts), and an omitted partIndex (zero) names the answer part although it sits at candidate parts index 2 after two thought parts.",
   "model": "gemini-3.6-flash",
   "response": {
     "candidates": [
@@ -31,25 +31,25 @@
           "groundingChunks": [
             {
               "web": {
-                "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/<redacted>",
+                "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/redacted-0",
                 "title": "nodejs.org"
               }
             },
             {
               "web": {
-                "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/<redacted>",
+                "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/redacted-1",
                 "title": "nodejs.org"
               }
             },
             {
               "web": {
-                "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/<redacted>",
+                "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/redacted-1",
                 "title": "nodejs.org"
               }
             },
             {
               "web": {
-                "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/<redacted>",
+                "uri": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/redacted-2",
                 "title": "envis.app"
               }
             }
