@@ -51,6 +51,9 @@ import type {
   LlmResult,
   GenConfig,
   CallMetadata,
+  JsonValue,
+  Message,
+  Part,
   Usage,
   Warning,
   Cost,
@@ -272,6 +275,33 @@ export interface RunStructuredOptions {
   signal?: AbortSignal
   /** Per-call metadata anchors merged into the persisted record. */
   metadata?: CallMetadata
+  /**
+   * Caller-owned correlation id persisted on every attempt row of the call, as
+   * {@link LlmRequest.externalId} does for `generate`. Give every host-level
+   * retry of one operation the same value.
+   */
+  externalId?: string
+  /**
+   * Parts appended to the rendered user message, after its text: a file, an
+   * image, audio. The rendered text part is omitted when the template renders
+   * to the empty string, so the message may be attachments only. An empty
+   * array is the same as none. The adapter checks each part against the model
+   * (admitted media types, tool parts rejected) before dispatch.
+   */
+  attachments?: Part[]
+  /**
+   * Earlier conversation turns, prepended before the rendered user message and
+   * sent unchanged (the same validation as `LlmRequest.messages`: tool-call
+   * and tool-result pairing, no empty assistant message). Use it to continue a
+   * conversation from a call site.
+   */
+  history?: Message[]
+  /**
+   * Opaque continuation state from the previous result, passed back exactly as
+   * for {@link LlmRequest.transientProviderState}: only models that declare
+   * `capabilities.providerState` admit it, and it is never persisted.
+   */
+  transientProviderState?: JsonValue
 }
 
 /**
@@ -2602,6 +2632,20 @@ export function createClient(config: ClientConfig): Client {
     return descriptor
   }
 
+  /** `transientProviderState` is only valid on a model that declares `providerState`. */
+  function assertProviderStateAdmitted(
+    state: JsonValue | undefined,
+    descriptor: ModelDescriptor,
+    model: string,
+  ): void {
+    if (state !== undefined && descriptor.capabilities?.providerState !== true) {
+      throw new LlmError(`Model "${model}" does not admit transientProviderState.`, {
+        kind: 'bad_request',
+        retryable: false,
+      })
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Public methods
   // -------------------------------------------------------------------------
@@ -2625,15 +2669,7 @@ export function createClient(config: ClientConfig): Client {
       const callAuth = requireAuth(runtimeOpts?.auth)
       // Config resolution: libDefaults → request.config
       const descriptor = checkDescriptor(resolved, provider, model)
-      if (
-        request.transientProviderState !== undefined &&
-        descriptor.capabilities?.providerState !== true
-      ) {
-        throw new LlmError(`Model "${model}" does not admit transientProviderState.`, {
-          kind: 'bad_request',
-          retryable: false,
-        })
-      }
+      assertProviderStateAdmitted(request.transientProviderState, descriptor, model)
       const merged = deepMergeConfig(libDefaults, request.config)
       const resolvedConfig = await validateResolvedConfig(model, descriptor, merged)
       return runPipeline(
@@ -2733,11 +2769,51 @@ export function createClient(config: ClientConfig): Client {
       const renderedSystem =
         callSite.system !== undefined ? interpolate(callSite.system, vars) : undefined
 
+      // Option parity with `generate`: attachments extend the rendered user
+      // message, history comes before it. A rendered message with no text and
+      // no attachment would send an empty user turn, so it is refused here
+      // (row-less, like the other prologue checks).
+      const attachments = runtimeOpts?.attachments ?? []
+      const history = runtimeOpts?.history ?? []
+      if (!Array.isArray(attachments)) {
+        throw new LlmError('attachments must be an array of parts.', {
+          kind: 'bad_request',
+          retryable: false,
+          issues: [{ path: 'attachments', message: 'must be an array of parts.' }],
+        })
+      }
+      if (!Array.isArray(history)) {
+        throw new LlmError('history must be an array of messages.', {
+          kind: 'bad_request',
+          retryable: false,
+          issues: [{ path: 'history', message: 'must be an array of messages.' }],
+        })
+      }
+      if (userText.length === 0 && attachments.length === 0) {
+        throw new LlmError(
+          `Call site "${callSite.id}" rendered an empty user message and no attachments were given; add a userTemplate that renders text, or pass attachments.`,
+          {
+            kind: 'bad_request',
+            retryable: false,
+            issues: [
+              {
+                path: 'userTemplate',
+                message: 'rendered an empty user message and there are no attachments.',
+              },
+            ],
+          },
+        )
+      }
+      const userParts: Part[] = [
+        ...(userText.length > 0 ? [{ kind: 'text' as const, text: userText }] : []),
+        ...attachments,
+      ]
+
       // Build the rendered request (no config on the request — already merged).
       const request: LlmRequest = {
         provider,
         model,
-        messages: [{ role: 'user', parts: [{ kind: 'text', text: userText }] }],
+        messages: [...history, { role: 'user', parts: userParts }],
         ...(renderedSystem !== undefined ? { system: renderedSystem } : {}),
         ...(callSite.jsonSchema !== undefined
           ? { output: { jsonSchema: callSite.jsonSchema } }
@@ -2745,7 +2821,15 @@ export function createClient(config: ClientConfig): Client {
         ...(runtimeOpts?.metadata !== undefined
           ? { metadata: runtimeOpts.metadata }
           : {}),
+        ...(runtimeOpts?.externalId !== undefined
+          ? { externalId: runtimeOpts.externalId }
+          : {}),
+        ...(runtimeOpts?.transientProviderState !== undefined
+          ? { transientProviderState: runtimeOpts.transientProviderState }
+          : {}),
       }
+      validateFunctionCalling(request, descriptor.capabilities?.continuation === 'state')
+      assertProviderStateAdmitted(request.transientProviderState, descriptor, model)
 
       return runPipeline(
         request,

@@ -83,6 +83,14 @@ const result = await client.runStructured(
 // result.queueDelayMs — wait inside RateLimiter.acquire, separate from latencyMs
 ```
 
+`runStructured` takes the same per-call options as `generate`: `externalId` (a correlation id persisted on every
+attempt row), `attachments` (parts appended to the rendered user message, after its text), `history` (earlier
+turns, prepended and sent unchanged) and `transientProviderState` (the previous result's continuation state, for
+models that declare `capabilities.providerState`). A template that renders to nothing is fine when there are
+attachments (the message is the attachments alone); with neither, the call is `bad_request` before dispatch.
+`history` is validated like `generate`'s `messages` (tool-call and tool-result pairing, no empty assistant
+message). The library still does not validate `output` (ADR-009): validate it yourself and retry as you see fit.
+
 ## Tool loops: `message`, `continuation`, `transientProviderState`
 
 The library runs no tool loop (ADR-029); the host does. Every successful result carries what the

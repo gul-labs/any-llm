@@ -345,6 +345,15 @@ prove the answer.
 - Callers own validation, retry, and acceptance policy for `output`.
 - Malformed or empty structured output is a successful provider call with `outputParsed:false`.
 
+**Amendment (2026-10-03): `runStructured` option parity.** `RunStructuredOptions` gains `externalId`,
+`attachments?: Part[]` (appended to the rendered user message), `history?: Message[]` (prepended) and
+`transientProviderState`, with the same meaning and validation as on `generate`, so a host that uses call
+sites no longer drops to `generate` to correlate a retry, attach a file, send history or continue a
+tool loop. A rendered user message that is empty, with no attachments, is `bad_request` before any
+request is built (row-less, like the other prologue checks); attachments alone are a valid message and
+no empty text part is sent. Output validation is unchanged: none of these options makes the library
+validate `output`, and a host that wants a validated answer still validates and retries itself.
+
 ---
 
 ## ADR-010: Model-Bound, Schema-Described Config

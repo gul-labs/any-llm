@@ -69,7 +69,9 @@ export interface CallSite {
    * here or in `system` must have a string-typed value in the `vars` passed
    * to `runStructured`, or the call is refused before any request is built
    * (`bad_request`, not retryable). No escape syntax for literal `{{...}}`
-   * text.
+   * text. A template that renders to the empty string (or an absent one) is
+   * only valid when the call passes `attachments`; otherwise `runStructured`
+   * refuses the call with `bad_request`.
    */
   userTemplate?: string
   /**

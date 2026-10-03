@@ -279,7 +279,7 @@ describe('D1 — strict template interpolation', () => {
     expect(part.text).toBe('Hello Ada')
   })
 
-  it('a call site with no templates is unchanged by D1', async () => {
+  it('a call site with no templates sends only its attachments (no empty text part)', async () => {
     const adapter = new FakeAdapter('google', successResult())
     const client = makeClient(adapter)
     const cs = defineCallSite({
@@ -288,10 +288,16 @@ describe('D1 — strict template interpolation', () => {
       model: 'gemini-2.5-flash',
     })
 
-    await client.runStructured(cs, { auth: TEST_AUTH })
+    await client.runStructured(cs, {
+      auth: TEST_AUTH,
+      attachments: [
+        { kind: 'file-uri', uri: 'https://x.test/a', mimeType: 'application/pdf' },
+      ],
+    })
     expect(adapter.calls).toHaveLength(1)
-    const part = adapter.calls[0]!.messages[0]?.parts[0] as { text: string }
-    expect(part.text).toBe('')
+    expect(adapter.calls[0]!.messages[0]?.parts).toEqual([
+      { kind: 'file-uri', uri: 'https://x.test/a', mimeType: 'application/pdf' },
+    ])
   })
 
   it('a template with no {{ is unchanged by D1', async () => {

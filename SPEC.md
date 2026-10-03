@@ -302,7 +302,9 @@ streaming `stream()`. They can be added without changing the above.
 ```
 runStructured(callSite, vars?, opts?)  /  generate(request)
   1. resolve config   (lib defaults → call-site defaults → per-call opts; deep-merge; omitted serviceTier stays omitted)
-  2. render prompts   (non-recursive interpolation; var values are NOT re-interpolated — anti-injection)
+  2. render prompts   (non-recursive interpolation; var values are NOT re-interpolated — anti-injection).
+                      runStructured options: externalId, attachments (appended to the user message), history
+                      (prepended), transientProviderState; an empty rendered user message with no attachments is 'bad_request'
   3. ids              callId; every attempt mints its own attemptId (ADR-031)
   4. telemetry.onStart + log 'llm.call.start'
   5. resolve adapter  (direct req.provider → adapter map; no derivation; unknown → LlmError 'bad_request')
