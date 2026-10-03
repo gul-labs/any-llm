@@ -312,6 +312,11 @@ port is a no-op in that context.
   abort signal, the `Release` fires before the underlying HTTP request finishes, and the slot
   count under-represents actual in-flight requests.
 
+**Amendment (ADR-041):** the port is `acquire(key, signal, hint?): Promise<Release>` with
+`Release = (usage?: Usage) => void`. The engine passes `hint.estimatedInputTokens` and releases with the
+attempt's usage when it has one, so a token-aware limiter can pace and reconcile. The ownership decision is
+unchanged: the library holds no distributed state.
+
 ---
 
 ## ADR-009: Forward-Only JSON Schema for v1 Structured Output
@@ -3138,3 +3143,102 @@ which are not kept). A test reads every such fixture through `readXaiResponseMet
 and exactly the remaining headers. The `ratelimit-remaining*` prefix, which no capture has, is removed from the match. A failed call has no `providerMetadata`, and `LlmError` has no request
 id field; the id of a failed call is `error.cause.requestID` (the SDK error keeps the response headers),
 which a stubbed-500 test pins. No new field is added.
+
+---
+
+## ADR-041: Quota windows, token pacing, the scheduler port and the test package
+
+**Status:** Accepted (2026-10-03). Extends ADR-008 and ADR-036. (ADR-038 and ADR-040 are reserved by the
+release plan for other decisions; this is the next number free of both.)
+
+**Context:**
+`@gullabs/quota` limited requests per minute and per UTC day only. Google resets its daily request quota at
+midnight Pacific time, so a UTC bucket was offset by 7 or 8 hours from the provider's window. Both Gemini and
+xAI enforce input tokens per minute, which the library could not pace, and the `RateLimiter` port carried no
+token estimate and got no usage back. The only store was Upstash, so a single-node host or any test suite
+hand-wrote a store, and the middleware refused to run without one. A slow store call was unbounded: the
+engine starts the attempt timer only after middleware returns, so a hung store held a call past its
+`timeoutMs`. `@gullabs/testing` could not reproduce failures (no error factories, timers on real time, a
+sink that did not dedupe like the ledger, a `FakeAdapter` that turned a mistyped result into a thrown value).
+
+**Decision:**
+
+1. **The day boundary is a time zone.** `ProviderQuotaRule.dayBoundary?: { timeZone }` (an IANA name,
+   resolved with `Intl.DateTimeFormat`, no dependency). Both stores key the per-day counter by the local date
+   and the zone name, and set its TTL to the time until the next local midnight. The boundary is found by
+   searching for the first instant whose local date is later, so it is right on 23- and 25-hour days and in a
+   zone whose DST change skips midnight; it is never `now + 24h`. An unknown zone is `bad_request`. Without a
+   boundary the day is the UTC day, as before.
+2. **Gemini's default is Pacific time, and the source is cited.** `quotaPolicyForGemini` sets
+   `dayBoundary: { timeZone: 'America/Los_Angeles' }`. Google's rate-limits page,
+   https://ai.google.dev/gemini-api/docs/rate-limits, re-read on 2026-10-03, states that requests-per-day
+   (RPD) quotas reset at midnight Pacific time, that limits apply per project and not per API key, and names
+   three dimensions (RPM, input TPM, RPD). It gives no per-model numbers. This closes the audit's Q-02.
+3. **`quotaPolicy` is the builder; the presets sit on it.** `quotaPolicy({ provider, models, defaults,
+dayBoundary?, scope? })`; `quotaPolicyForGemini` and `quotaPolicyForXai` call it (their `defaultLimits`
+   option is now `defaults`, one name). The xAI preset carries **no numbers**: xAI's rate-limits page,
+   https://docs.x.ai/developers/rate-limits, re-read on 2026-10-03, publishes limits per tier and model, but a
+   team's tier follows its cumulative spend and changes automatically, so the host passes its own
+   (`rpm`, `tpm`). xAI states requests per second and tokens per minute and documents no daily limit, so the
+   preset has no `rpd` and no boundary.
+4. **Tokens per minute, estimated and reconciled.** `ProviderQuotaRule.tpm` (a positive integer).
+   `RateLimiter.acquire(key, signal, hint?: { estimatedInputTokens? })` and `Release = (usage?: Usage) =>
+void` (ADR-008's port, widened). The engine hands `acquire` `estimateInputTokens(effectiveReq)` on every
+   attempt and calls `Release` with the attempt's normalized usage when there is one (a success, a billed
+   failure) and with none otherwise. `estimateInputTokens` is exported from core: the characters of system,
+   text parts, tool calls, tool results and tool declarations over 4, rounded up. It is a floor for a
+   request with media or file parts (they carry no text) and exists to pace, never to bill or refuse, so the
+   real usage corrects it. The store reserves the estimate in the minute's counter under the same atomic
+   check-and-consume as the request windows (R1.5 semantics unchanged: a denied call consumes nothing; one
+   call larger than the whole window passes into an empty window rather than waiting for a window it can
+   never fit) and `QuotaStore.adjustTokens({ scope, nowMs, tokens })` adds `actual - reserved` to the
+   acquire minute's counter, floored at 0, leaving a window that has ended alone. An attempt that ends
+   with no usage keeps its reservation (the provider may have counted it). A reconciliation failure is a
+   `backend_error` event, never a call failure. `adjustTokens` is required on `QuotaStore` (greenfield: a
+   store that enforces no `tpm` implements it as a no-op).
+5. **`inMemoryQuotaStore({ clock })`.** The same windows and rule in a `Map`. The clock is the store's own
+   time source for counter expiry, as a Redis server's clock is, while the window a call falls in is named by
+   the `nowMs` the caller passes; tests pass the client's `FakeClock`.
+6. **The middleware runs without a store.** `providerQuotaMiddleware` with no `store` still evaluates
+   rules: `rpd: 0` denies with `provider_disabled` and a `deny` event. Windows cannot be checked and are
+   skipped with one `warn` (`llm.quota.windows_skipped`) per instance. The consume-only-on-allow
+   semantics, the role-order rule (quota inside retry) and `maxDeferMs` (60 s default) are unchanged.
+7. **Store failure is a stated choice, and a store call is bounded.** `onStoreError: 'fail-open' |
+'fail-closed'` has no default on the middleware, the rate limiter and `enforceProviderQuota` when they have
+   a store (missing or unknown is `bad_request`). A caller abort or deadline that interrupts the store call
+   is never fail-open. `upstashQuotaStore({ url, token, timeoutMs? })` bounds each call (default 2 000 ms),
+   passes the caller's signal, and takes a `scheduler` for the timer. The Lua check takes
+   `(limit, ttl, cost)` per window and `INCRBY`; a second script corrects a token counter. Found in a host
+   sign-off on 2026-10-03: a hung store call was unbounded.
+8. **A `Scheduler` port.** `ClientConfig.scheduler?: { setTimeout, clearTimeout }`, default the platform's
+   timers, runs every wait the engine owns (the attempt timeout, the logical-call deadline, the sink waits).
+   It is on `EngineCtx.scheduler`, which `retryMiddleware`'s default sleep uses (its `sleep` option remains
+   a way to observe delays), and on `AdapterCtx.scheduler`, which `FakeAdapter` and `SignalAwareFakeAdapter`
+   delays use. `FakeClock` implements both `Clock` and `Scheduler`; `advance` fires due timers in order and
+   `advanceAsync` lets promise continuations run between them. The deadline stays measured on the
+   `clock` (ADR-036: the engine owns the call deadline, `ctx.deadlineAt` is on `ctx.clock`, and
+   `retryMiddleware` reads `ctx.clock.now` and has no separate `now` option), and the scheduler
+   enforces it, so a scheduler on a different time scale than the clock is a misconfiguration.
+9. **`@gullabs/testing` reproduces failures.** Error factories (`fakeHttpError`, `fakeNetworkError`,
+   `fakeBilledFailure`, `fakeProviderError('google' | 'xai', scenario)`): the provider scenarios build the
+   real `@google/genai` `ApiError` and `openai` `APIError.generate(...)` from the bodies pinned in the
+   provider packages' fixtures (copied into the package, with a test that fails if a copy drifts; the
+   captured and doc-derived scenarios are listed on the types and in the README, ADR-013). The SDKs are
+   optional peer dependencies loaded with `require`, so the class is the SDK's CommonJS build. Also
+   `RecordingSink({ dedupeOn: 'attemptId' })`, `RecordingTelemetry`, `RecordingLogger`, `fakeLlmResult`,
+   `FakeClient` (request capture, `expectRequest`), `FakeGoogleFileStore`, `FakeGoogleCacheStore`,
+   `FakeCliRunner`. `FakeAdapter` and `SignalAwareFakeAdapter` throw `TypeError` at construction for an
+   entry that is neither an `Error` nor a complete `AdapterResult`; a plain `{ status: 429 }` is no longer
+   thrown as an error.
+
+**Consequences:**
+
+- Hosts that build a quota middleware, rate limiter or `enforceProviderQuota` call with a store add
+  `onStoreError`. Hosts with their own `QuotaStore` add `adjustTokens`. `defaultLimits` is `defaults`.
+- A host that implements `RateLimiter` ignores the new `hint` and `usage` arguments to keep its behaviour.
+  A host `EngineCtx` literal (a middleware unit test) adds `scheduler`.
+- Gemini RPD buckets move from the UTC day to the Pacific day: counters keyed the old way are not reused.
+- Test suites replace `{ status: 429 }` entries with `fakeHttpError(429)` and drive time with one
+  `FakeClock` passed as both `clock` and `scheduler`.
+- A request with media is under-estimated for `tpm`; the reconciliation corrects the counter after the call,
+  not before it.

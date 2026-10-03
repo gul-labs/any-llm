@@ -233,12 +233,16 @@ from `contents`.
 
 Real hosts don't call `createClient()` at call sites — they own a factory module that
 assembles the client once and hand call sites the built client. `@gullabs/testing`'s
-fakes (`makeFakeGemini`, `FakeAdapter`, `RecordingSink`, `FakeClock`, `FakeIds`, ...) are
+fakes (`makeFakeGemini`, `FakeAdapter`, `FakeClient`, `RecordingSink`, `FakeClock`, `FakeIds`, ...) are
 designed to inject through that same host-owned factory unchanged, via injectable
 override parameters with production defaults — not via `vi.mock()`. See
 `packages/testing/README.md` § "Wiring fakes through a host-owned factory" for a
 complete two-file (factory + vitest test) example, including the port-level
-`FakeAdapter` variant for bypassing the Gemini SDK shape entirely.
+`FakeAdapter` variant for bypassing the Gemini SDK shape entirely. Drive time with one
+`FakeClock` passed as both `clock` and `scheduler` (timeouts, deadlines and retry back-off then
+advance with it), build failures with `fakeHttpError` / `fakeProviderError` instead of
+hand-made `{ status }` objects, and build results with `fakeLlmResult`. Host code that takes a
+`Client` can be tested with `FakeClient` (`expectRequest` asserts the request it sent).
 
 ## `defineCallSite` — reusable prompt templates
 

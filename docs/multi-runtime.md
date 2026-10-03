@@ -113,10 +113,11 @@ operation and what it cost (`select * from llm_calls where external_id = $1 orde
 
 A replayed or retried activity that calls the library again writes new rows, so
 `sink.records.length` after a replay counts every attempt. `RecordingSink`
-(`packages/testing/src/recording-sink.ts`) pushes every record it receives and does not implement
-`onConflictDoNothing` deduplication; `drizzleUsageSink` (`packages/drizzle/src/sink.ts`) dedupes
-only a sink re-delivering the same record (same `attemptId`, via the `attempt_id` primary key).
-Assert on `externalId` and row counts accordingly.
+(`packages/testing/src/recording-sink.ts`) pushes every record it receives unless it is built with
+`dedupeOn: 'attemptId'`, which drops a repeat of an `attemptId` as `onConflictDoNothing` does;
+`drizzleUsageSink` (`packages/drizzle/src/sink.ts`) dedupes only a sink re-delivering the same record
+(same `attemptId`, via the `attempt_id` primary key). Use `new RecordingSink({ dedupeOn: 'attemptId' })`
+in a host test to see what the ledger would hold, and assert on `externalId` and row counts accordingly.
 
 ```ts
 function makeWorkerClient(db: DbLike) {

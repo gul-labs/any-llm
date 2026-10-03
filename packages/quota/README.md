@@ -12,14 +12,17 @@ pnpm add @gullabs/quota @gullabs/core @gullabs/google
 
 ## Key exports
 
-| Export                           | What it is                                                      |
-| -------------------------------- | --------------------------------------------------------------- |
-| `quotaPolicyForGemini(opts)`     | Builds a provider quota policy for Gemini/Google model IDs      |
-| `checkProviderQuota(opts)`       | Returns a typed `QuotaDecision` (`allow` / `defer` / `deny`)    |
-| `enforceProviderQuota(opts)`     | Turns a `QuotaDecision` into quota events and typed `LlmError`s |
-| `providerQuotaMiddleware(opts)`  | Core `Middleware` (`role: 'quota'`) that blocks before `next()` |
-| `providerQuotaRateLimiter(opts)` | Core `RateLimiter` wrapper for non-middleware hosts             |
-| `upstashQuotaStore(opts)`        | Distributed `QuotaStore` backed by the Upstash REST pipeline    |
+| Export                           | What it is                                                                                  |
+| -------------------------------- | ------------------------------------------------------------------------------------------- |
+| `quotaPolicy(opts)`              | Builds a provider quota policy from per-model `rpm` / `rpd` / `tpm` limits                  |
+| `quotaPolicyForGemini(opts)`     | Gemini preset over `quotaPolicy`: provider `google`, the day rolls over at Pacific time     |
+| `quotaPolicyForXai(opts)`        | xAI preset over `quotaPolicy`: provider `xai`, host-supplied `rpm` / `tpm`, no day cap      |
+| `checkProviderQuota(opts)`       | Returns a typed `QuotaDecision` (`allow` / `defer` / `deny`)                                |
+| `enforceProviderQuota(opts)`     | Turns a `QuotaDecision` into quota events and typed `LlmError`s; returns a `QuotaAdmission` |
+| `providerQuotaMiddleware(opts)`  | Core `Middleware` (`role: 'quota'`) that blocks before `next()`; the `store` is optional    |
+| `providerQuotaRateLimiter(opts)` | Core `RateLimiter` wrapper for non-middleware hosts                                         |
+| `inMemoryQuotaStore(opts?)`      | Single-process `QuotaStore`; takes a `clock` so tests drive the windows                     |
+| `upstashQuotaStore(opts)`        | Distributed `QuotaStore` backed by the Upstash REST pipeline, each call time-bounded        |
 
 ## Quick example
 
@@ -35,12 +38,13 @@ import {
 const quotaStore = upstashQuotaStore({
   url: process.env.UPSTASH_REDIS_REST_URL!,
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
+  // timeoutMs: 2_000 is the default: one slow store call cannot hold a call past its own timeout.
 })
 
-const quotaPolicy = quotaPolicyForGemini({
+const policy = quotaPolicyForGemini({
   models: {
-    'gemini-2.5-pro': { rpm: 60, rpd: 2_000 },
-    'gemini-2.5-flash': { rpm: 120, rpd: 10_000 },
+    'gemini-2.5-pro': { rpm: 60, rpd: 2_000, tpm: 1_000_000 },
+    'gemini-2.5-flash': { rpm: 120, rpd: 10_000, tpm: 2_000_000 },
   },
 })
 
@@ -51,7 +55,9 @@ const client = createClient({
     retryMiddleware({ maxAttempts: 3 }),
     providerQuotaMiddleware({
       store: quotaStore,
-      policy: quotaPolicy,
+      policy,
+      // There is no default: choose what a failing store means for your traffic.
+      onStoreError: 'fail-closed',
     }),
   ],
 })
@@ -59,6 +65,112 @@ const client = createClient({
 
 Hosts that prefer the lower-level core `rateLimiter` hook can wrap the same policy/store pair with
 `providerQuotaRateLimiter(opts)` instead.
+
+## Presets and the numbers they carry
+
+`quotaPolicy({ provider, models, defaults, dayBoundary?, scope? })` is the general builder; `models`
+are keyed by canonical model id and `defaults` limit a model the table does not list. Each limit is
+optional: `rpm` (requests per minute), `rpd` (requests per day) and `tpm` (input tokens per minute).
+
+- **`quotaPolicyForGemini`** is `quotaPolicy` with provider `google` and
+  `dayBoundary: { timeZone: 'America/Los_Angeles' }`. Source: Google's rate-limits page,
+  https://ai.google.dev/gemini-api/docs/rate-limits, re-read on 2026-10-03, which states that
+  requests-per-day (RPD) quotas reset at midnight Pacific time, that limits apply per project (not per
+  API key), and that the dimensions are RPM, TPM (input tokens) and RPD. The page gives no per-model
+  numbers (they depend on the project's tier and are shown in AI Studio), so the limits are yours.
+- **`quotaPolicyForXai`** is `quotaPolicy` with provider `xai`, and carries **no numbers**: xAI's
+  rate-limits page, https://docs.x.ai/developers/rate-limits, re-read on 2026-10-03, publishes limits
+  per tier and model, but a team's tier follows its cumulative spend since 2026-01-01 and moves
+  automatically, so any number baked in would be wrong for most teams. Read your team's limits on the
+  Models page of the xAI Console and pass them in. xAI states limits as requests per second and tokens
+  per minute (per-second is the per-minute request budget divided by 60), and documents no daily
+  limit, so the preset has `rpm` and `tpm` and no `rpd` or day boundary. A per-minute bucket is looser
+  than a per-second limit within the minute.
+
+```ts
+import { quotaPolicyForXai } from '@gullabs/quota'
+
+const policy = quotaPolicyForXai({
+  models: { 'grok-4.5': { rpm: 600, tpm: 2_000_000 } }, // your team's numbers, from the console
+})
+```
+
+## The day window and its time zone
+
+`ProviderQuotaRule.dayBoundary: { timeZone }` (an IANA name, resolved with `Intl.DateTimeFormat`, no
+dependency) says where the per-day window rolls over; without it the day is the UTC day. Both stores
+name the day counter by the local calendar date (and the zone, so changing the boundary never shares a
+counter with the old one) and set its TTL to the time until the next local midnight, so the counter
+dies with its window. The boundary is found by searching for the first instant whose local date is
+later, never by adding 24 hours, so it is correct on the 23-hour and 25-hour days of a DST change
+(2026-03-08 and 2026-11-01 in Pacific time) and in a zone whose DST change skips midnight. An unknown
+zone is `bad_request`.
+
+The Lua `EVAL` store takes the TTL in milliseconds as an argument (computed per call), so the same
+single `EVAL` serves the minute, token and day windows.
+
+## Tokens per minute
+
+A rule with `tpm` paces on input tokens. Each attempt reserves an estimate and the real usage corrects
+it afterwards:
+
+- The engine passes `hint.estimatedInputTokens` to `RateLimiter.acquire(key, signal, hint)` for
+  every attempt, and the middleware computes the same figure itself. It is
+  `estimateInputTokens(req)` from `@gullabs/core`: the characters of the system instruction, text
+  parts, tool calls, tool results and tool declarations, divided by 4. **It is an estimate, not a
+  count**: inline media, file URIs and file references are not counted, so a request that carries
+  them is under-estimated. It is for pacing, never for billing or refusing.
+- A call is deferred (`rate_limited`, `reason` `tpm_exhausted` on the `defer` event, `retryAfterMs`
+  to the next minute) when its estimate would push the minute past `tpm`. A call larger than the whole
+  window is let through when the window is empty (the provider decides on it) rather than deferred for
+  ever.
+- After the attempt, `Release(usage)` (rate limiter) or the middleware adds `usage.inputTokens` minus
+  the reservation to that minute's counter (negative when the estimate was too high; the counter never
+  goes below 0). A billed failure that carries `usage` reconciles too; an attempt that ended with no
+  usage (a timeout, an abort, a transport failure) keeps its reservation, because the provider may
+  have counted the request. A window that has already ended is left alone. Reconciliation never fails
+  a call: a store error becomes a `backend_error` event.
+- `QuotaStore` gains `adjustTokens({ scope, nowMs, tokens })` for this; a custom store implements it
+  (a no-op for a store that enforces no `tpm`).
+
+## When the store fails: choose
+
+`providerQuotaMiddleware`, `providerQuotaRateLimiter` and `enforceProviderQuota` take
+`onStoreError: 'fail-closed' | 'fail-open'` when they have a store, and there is no default (a missing
+or unknown value is `bad_request`). `'fail-closed'` rethrows the store's error, so no call can exceed
+a quota the store could not confirm. `'fail-open'` lets the call through unchecked, so a store outage
+does not stop traffic. Both emit a `backend_error` event. A caller abort or deadline that interrupts
+the store call is never fail-open: that call is over.
+
+`upstashQuotaStore({ url, token, timeoutMs? })` bounds each REST call (default 2 000 ms) and passes
+the caller's signal to it, so a slow store cannot hold a call past its own `config.timeoutMs` (the
+engine starts the attempt timer only after middleware returns). A call still pending at the limit is
+aborted and fails with `Upstash quota call timed out after <n>ms`, which `onStoreError` then handles.
+
+## Without a store
+
+`providerQuotaMiddleware` works with no `store` (and no `onStoreError`): the rules still evaluate, so
+`rpd: 0` denies with `provider_disabled` and a `deny` event, but the `rpm`, `rpd` and `tpm` windows
+cannot be checked and are skipped, with one `warn` log (`llm.quota.windows_skipped`) per middleware
+instance. Use it to keep a kill switch in a deployment that has no shared store yet.
+
+## In-memory store
+
+`inMemoryQuotaStore({ clock })` is the same windows and the same check-and-consume rule in a `Map`,
+for single-process hosts and tests. The `clock` is the store's own time source for counter expiry (as a
+Redis server's clock is): pass the client's `FakeClock` and one `advance` rolls the windows over. It
+does not share state between processes.
+
+```ts
+const clock = new FakeClock(Date.UTC(2026, 9, 3, 12))
+const store = inMemoryQuotaStore({ clock })
+const middleware = providerQuotaMiddleware({
+  store,
+  policy,
+  onStoreError: 'fail-closed',
+  now: () => clock.now(),
+})
+```
 
 ## Fail-open default in core
 
@@ -72,8 +184,9 @@ core doc comment points back here for the quota-specific tradeoffs and limitatio
 
 ## Consume on allow, one unit per dispatch
 
-- **Consume on allow.** `upstashQuotaStore` checks every configured window (`rpm`, `rpd`) and
-  increments them in one Lua `EVAL`, and only when **all** are under their limits. A denied call
+- **Consume on allow.** `upstashQuotaStore` and `inMemoryQuotaStore` check every configured window
+  (`rpm`, `rpd`, `tpm`) and add to them (one unit for the request windows, the estimate for `tpm`) in
+  one Lua `EVAL` / one synchronous step, and only when **all** are under their limits. A denied call
   consumes nothing, and concurrent callers at the limit admit exactly the remaining capacity. The
   store needs `EVAL` support on a single database (Upstash REST qualifies); both window keys are
   passed as `KEYS`. A custom `QuotaStore` must be atomic in the same way.
@@ -102,13 +215,13 @@ core doc comment points back here for the quota-specific tradeoffs and limitatio
   `maxDelayMs` at or above `maxDeferMs` when you want every per-minute window waited out, and raise
   `maxAttempts` when several callers share a limit.
 - **Limits are looked up by the canonical model id.** The middleware resolves a declared alias to
-  its model before it asks the policy, so `quotaPolicyForGemini({ models })` must be keyed by the
+  its model before it asks the policy, so `quotaPolicy({ models })` (and the presets) must be keyed by the
   canonical id. A table keyed by an alias would never match, and the model would silently be
   unlimited, so the policy throws `bad_request` on the first call that sees such a key. (The
   `RateLimiter` path receives only the canonical id and cannot make that check.)
 - **Windows use the caller's clock.** Bucket keys and TTLs come from `now()` / the engine clock
-  (rounded up to whole milliseconds for `PEXPIRE`). Hosts whose clocks disagree near a minute or UTC
-  day boundary can over-admit for the skew; keep clocks synchronised (NTP) when exactness matters.
+  (rounded up to whole milliseconds for `PEXPIRE`). Hosts whose clocks disagree near a minute or day
+  boundary can over-admit for the skew; keep clocks synchronised (NTP) when exactness matters.
 
 ## Decision model
 
@@ -120,20 +233,20 @@ core doc comment points back here for the quota-specific tradeoffs and limitatio
 
 ### The `rpd: 0` convention (deliberate, not incidental)
 
-Setting `rpd: 0` on a model's `GeminiQuotaLimits` is a documented, intentional way to disable that
-model/scope entirely: `evaluateQuotaDecision` checks `resolved.rpd === 0` before consulting the
-`QuotaStore` at all and returns `{ kind: 'deny', reason: 'provider_disabled' }` immediately, with
-no store round-trip. Use it to hard-turn-off a model (e.g. one that's over budget or deprecated)
-without removing its `quotaPolicyForGemini` entry or touching `RateLimiter` wiring — every call
+Setting `rpd: 0` on a model's limits is a documented, intentional way to disable that
+model/scope entirely: the policy evaluator checks `resolved.rpd === 0` before consulting the
+`QuotaStore` at all (a store is not even needed) and returns
+`{ kind: 'deny', reason: 'provider_disabled' }` immediately, with no store round-trip. Use it to hard-turn-off a model (e.g. one that's over budget or deprecated)
+without removing its policy entry or touching `RateLimiter` wiring — every call
 gets a non-retryable `LlmError` instead of quietly falling through to `allow`. This is distinct
 from omitting `rpd` (which leaves the day-limit unenforced) or setting a positive `rpd` that the
 store exhausts (which yields a retryable `defer`, not a `deny`).
 
 ## Known limitations
 
-- The Lua script is atomic because Redis runs a script as one step, but the default test suite
-  exercises it through a JavaScript port of its logic (the script body is the same string, and a typo
-  in it would not be caught there). `consume-on-allow.test.ts` also runs the shipped script on a real
+- The Lua scripts are atomic because Redis runs a script as one step, but the default test suite
+  exercises them through a JavaScript port of their logic (the script body is the same string, and a typo
+  in it would not be caught there). `consume-on-allow.test.ts` also runs the shipped scripts on a real
   Lua interpreter against a small Redis shim; that block is opt-in and skipped when no `lua` binary is
   on `PATH` (for example `brew install lua`). Nothing exercises it on a real Redis or Upstash in CI,
   and the suite does not prove behaviour under truly concurrent connections.

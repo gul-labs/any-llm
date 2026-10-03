@@ -63,8 +63,8 @@ packages/
   codex-cli/  @gullabs/codex-cli  # dev-only: gpt-6-astra, gpt-6-sol, gpt-6-luna
   any-llm/    @gullabs/any-llm    # batteries-included facade: re-exports core + google
   drizzle/    @gullabs/drizzle    # reference llm_calls schema + drizzleUsageSink  (peerDep drizzle-orm)
-  quota/      @gullabs/quota      # provider quota middleware
-  testing/    @gullabs/testing    # FakeClock, FakeIds, RecordingSink, makeFakeGemini, makeFakeXai, assertRegistryInvariants
+  quota/      @gullabs/quota      # provider quota: rpm / rpd (day boundary) / tpm, presets, in-memory + Upstash stores
+  testing/    @gullabs/testing    # FakeClock (clock + scheduler), FakeIds, RecordingSink, FakeClient, fakeLlmResult, error factories, makeFakeGemini, makeFakeXai, fake stores, FakeCliRunner, assertRegistryInvariants
 ```
 
 Each provider package is a self-contained plugin (ADR-023): adapter + model descriptors +
@@ -274,6 +274,19 @@ export interface PricingSource {
 export type AuthMaterial = { apiKey: string }
 export interface Clock {
   now(): number
+}
+export interface Scheduler {
+  // every wait the engine owns; default is the platform's timers (ADR-041)
+  setTimeout(callback: () => void, ms: number): unknown
+  clearTimeout(handle: unknown): void
+}
+export type Release = (usage?: Usage) => void // called once per acquire; the attempt's usage when it has one
+export interface RateLimiter {
+  acquire(
+    key: string,
+    signal?: AbortSignal,
+    hint?: { estimatedInputTokens?: number },
+  ): Promise<Release>
 }
 export interface IdGenerator {
   callId(): string
@@ -562,7 +575,10 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
 
 ## Testing strategy (`@gullabs/testing` + per-package suites) — NO real provider calls
 
-- **Fakes:** `FakeClock`, `FakeIds`, `RecordingSink` (captures records), `makeFakeGemini` (a stub
+- **Fakes:** `FakeClock` (a `Clock` and a `Scheduler`: timeouts, deadlines and back-off advance with it),
+  `FakeIds`, `RecordingSink` (captures records; `dedupeOn: 'attemptId'` mirrors the ledger),
+  `RecordingTelemetry`, `RecordingLogger`, `fakeLlmResult`, `FakeClient`, error factories built from the real
+  SDK error classes, `FakeGoogleFileStore`, `FakeGoogleCacheStore`, `FakeCliRunner`, `makeFakeGemini` (a stub
   `@google/genai` client returning scripted responses incl. usageMetadata with thoughtsTokenCount),
   `makeFakeXai` (a structural `XaiClientLike` stub replaying Responses API payloads).
 - **Unit:** cost math (GROSS/net, >200k tier, cached discount, unknown-model→null); error

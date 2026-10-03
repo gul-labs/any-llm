@@ -37,7 +37,7 @@ Core carries **no provider knowledge** — no Gemini/Google types, model descrip
 tables. `ClientConfig.modelRegistry` is required; supply it via a provider package's plugin, e.g.
 `googleProvider()` from `@gullabs/google`.
 
-Port interfaces you implement: `ProviderAdapter`, `UsageSink`, `PricingSource`, `RateLimiter`, `Clock`, `IdGenerator`, `Logger`, `Telemetry`.
+Port interfaces you implement: `ProviderAdapter`, `UsageSink`, `PricingSource`, `RateLimiter`, `Clock`, `Scheduler`, `IdGenerator`, `Logger`, `Telemetry`.
 
 ## Quick example
 
@@ -425,6 +425,21 @@ Correlate the final outcome of a call from `result.attemptId` or `LlmError.attem
 `retryMiddleware` runs once per logical call; one inside it runs once per attempt. The
 `RateLimiter` is acquired once per **attempt** (inside each retry), not once per logical call, and
 is released when that attempt ends.
+
+- **The limiter is fed.** `acquire(key, signal, hint)` receives `hint.estimatedInputTokens`, a cheap
+  estimate of the attempt's input tokens (`estimateInputTokens(req)`, exported: text characters divided by
+  4; media and file parts are not counted, so it is an estimate and a floor, never a count), and the
+  `Release` the engine calls receives the attempt's normalized `Usage` when there is one (a success, or a
+  billed failure that carries `usage`) and nothing otherwise (a timeout, an abort, a transport failure).
+  A token-aware limiter (see `@gullabs/quota`'s `tpm`) paces on the first and reconciles with the second;
+  a concurrency limiter ignores both.
+- **Timers are injectable.** `ClientConfig.scheduler` (`{ setTimeout, clearTimeout }`) runs every wait the
+  engine owns (the attempt timeout, the call deadline, the sink waits) and is given to middleware
+  (`ctx.scheduler`, which `retryMiddleware` sleeps on) and to adapters (`AdapterCtx.scheduler`). The
+  default is the platform's timers. `FakeClock` from `@gullabs/testing` is both the `clock` and a
+  `scheduler`, so a test advances one object to fire timeouts and back-off. The scheduler must run
+  callbacks on the same time scale as the `clock`: the deadline is read off the clock and enforced by
+  these timers.
 
 - **Middleware cannot reroute.** The `next` a middleware receives refuses a request whose `provider`
   or `model` differs from the call's: the call fails with `LlmError('bad_request')` as the offender

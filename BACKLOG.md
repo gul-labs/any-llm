@@ -70,12 +70,13 @@ paths to other repos.
 ## B-003 — `@gullabs/testing` host-owned-factory documentation
 
 - **Priority:** P2
-- **Status:** docs drafted on a docs branch; merge pending further requirements.
+- **Status:** shipped. `packages/testing/README.md` § "Wiring fakes through a host-owned factory"
+  (with the injected `scheduler` beside `clock`) and the pointer in
+  `packages/any-llm/skills/any-llm/SKILL.md` describe it; the helpers a host needs instead of
+  `vi.mock` (`FakeClient`, `fakeLlmResult`, error factories, recorders, fake stores and CLI runner)
+  shipped with it (ADR-041).
 - **Origin:** several hosts hand-roll `vi.mock` fakes instead of `@gullabs/testing`; many
   inject adapters via a host-owned factory, not a bare `createClient()` call site.
-- **Scope:** README section showing fake wiring through a host-owned factory plus a
-  skill pointer in `packages/any-llm/skills/any-llm/SKILL.md` if applicable.
-- **Next step:** merge when requirements are stable.
 
 ---
 

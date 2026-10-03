@@ -179,17 +179,17 @@ Dev-only CLI ids: `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`; `claude-fable-5-1`, 
 
 ## Packages
 
-| Package                                        | What it is                                                                     |
-| ---------------------------------------------- | ------------------------------------------------------------------------------ |
-| [`@gullabs/any-llm`](./packages/any-llm)       | Gemini facade: re-exports core + Google adapter and installs `@google/genai`   |
-| [`@gullabs/core`](./packages/core)             | Engine, ports, cost, records. No provider SDKs                                 |
-| [`@gullabs/google`](./packages/google)         | Gemini / Gemma over `@google/genai`. Flex, thinking, files, cache, grounding   |
-| [`@gullabs/xai`](./packages/xai)               | Grok over the `openai` SDK Responses API. `grok-4.5` / `grok-4.6` / `grok-4.7` |
-| [`@gullabs/drizzle`](./packages/drizzle)       | Postgres `llm_calls` schema + `drizzleUsageSink`                               |
-| [`@gullabs/quota`](./packages/quota)           | Provider quota middleware (allow / defer / deny)                               |
-| [`@gullabs/testing`](./packages/testing)       | Fakes: clock, ids, sink, Gemini, xAI. Dev-only                                 |
-| [`@gullabs/claude-cli`](./packages/claude-cli) | Dev-only local `claude` CLI provider. Not for production                       |
-| [`@gullabs/codex-cli`](./packages/codex-cli)   | Dev-only local `codex` CLI provider. Not for production                        |
+| Package                                        | What it is                                                                          |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------- |
+| [`@gullabs/any-llm`](./packages/any-llm)       | Gemini facade: re-exports core + Google adapter and installs `@google/genai`        |
+| [`@gullabs/core`](./packages/core)             | Engine, ports, cost, records. No provider SDKs                                      |
+| [`@gullabs/google`](./packages/google)         | Gemini / Gemma over `@google/genai`. Flex, thinking, files, cache, grounding        |
+| [`@gullabs/xai`](./packages/xai)               | Grok over the `openai` SDK Responses API. `grok-4.5` / `grok-4.6` / `grok-4.7`      |
+| [`@gullabs/drizzle`](./packages/drizzle)       | Postgres `llm_calls` schema + `drizzleUsageSink`                                    |
+| [`@gullabs/quota`](./packages/quota)           | Provider quota: rpm, rpd (day boundary), tpm; Gemini + xAI presets; in-memory store |
+| [`@gullabs/testing`](./packages/testing)       | Fakes: clock + scheduler, client, sink, error factories, stores, runner. Dev-only   |
+| [`@gullabs/claude-cli`](./packages/claude-cli) | Dev-only local `claude` CLI provider. Not for production                            |
+| [`@gullabs/codex-cli`](./packages/codex-cli)   | Dev-only local `codex` CLI provider. Not for production                             |
 
 Published on npm under `@gullabs`, Apache-2.0, Node `>=22.12.0`.
 
