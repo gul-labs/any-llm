@@ -36,6 +36,9 @@ Seams are present; machinery is intentionally small.
   provider (`google`, `xai`), bound to the exact `model` string the host sent (an alias is never
   rewritten), and each adapter rejects another provider's state, stale history and another model's
   state with `bad_request` before dispatch. An overlay is a view of the host's history, never a copy.
+- **`AdapterResult.message` is required.** The engine never rebuilds the ordered assistant message
+  from `text` and `toolCalls`; a result with nothing representable has `message.parts === []`, and an
+  assistant message with no parts is `bad_request` on the next request.
 - **GROSS token convention:** `cachedInputTokens` is a SUBSET of `inputTokens`;
   `thinkingTokens` is a SUBSET of `outputTokens`. Cost math must not double-count.
 - **Cost is frozen at write time:** integer micro-USD + `pricingVersion` on every record.

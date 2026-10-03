@@ -85,7 +85,10 @@ host needs to continue one, and the rule differs by provider:
 
 - `result.message` is the assistant's output as an ordered `Message` on **every** provider: text
   parts and tool calls in provider order, thought parts omitted (indices are over `message.parts`).
-  `result.text` and `result.toolCalls` are conveniences derived from it.
+  `result.text` and `result.toolCalls` are conveniences derived from it (`toolCalls` is a copy, so
+  editing its arguments does not change `message`). A response with nothing representable, such as
+  one that spent its output cap on reasoning, has `message.parts === []`: do not append it to your
+  history (an assistant message with no parts is `bad_request`), retry the call instead.
 - `result.continuation` repeats the model descriptor's `capabilities.continuation`, so you do not
   need a registry lookup:
   - `'history'` (Gemini, grok-4.5/4.6, and every provider without replay state): append
@@ -149,8 +152,16 @@ for (;;) {
 
 `canonicalJson(value)` is the RFC 8785 JSON Canonicalization Scheme, with no dependency. Adapters
 use it to hash history parts so a hash does not depend on key order (a history stored in Postgres
-`jsonb` verifies after it is loaded). It accepts `JsonValue` only; `NaN`, `Infinity`, `-0`, lone
-surrogates, cycles and non-plain objects are `bad_request`.
+`jsonb` verifies after it is loaded). It accepts `JsonValue` only; `NaN`, `Infinity`, lone
+surrogates, cycles, nesting deeper than 1000 levels, symbol keys and non-plain objects (class
+instances, `Date`, `Map`) are `bad_request`; plain objects from another realm are accepted. `-0` is
+serialised as `0`, as RFC 8785 requires, so a value hashes the same after a JSON round trip.
+
+A custom `ProviderAdapter` must set `AdapterResult.message` (the engine does not rebuild it from
+`text` and `toolCalls`, because only the adapter knows the provider's interleaving). `countTokens`
+returns `accuracy: 'exact' | 'lower-bound' | 'estimated'`; `'estimated'` means the provider counted
+the history but the real call sends parts the count cannot include (for Gemini 3, the thought
+signatures on replayed function calls).
 
 ## Model config boundary
 

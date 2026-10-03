@@ -1243,6 +1243,9 @@ the configured minimum of M...', { kind: 'bad_request', retryable: false })` bef
    `inlineData`/`fileData.displayName`, `mediaResolution.numTokens`, and any `mediaResolution.level`
    value outside `MEDIA_RESOLUTION_LOW`/`MEDIUM`/`HIGH` — throws `LlmError('bad_request')` naming the
    offending field or key instead of silently dropping it.
+   _Amended by the ADR-029 addendum:_ `functionCall`, `functionResponse` and `thoughtSignature` are
+   no longer rejected; they convert to `tool-call` / `tool-result` parts and an imported signature
+   overlay. The rest of the list still throws.
 
 4. **Provider-payload error-taxonomy correction.** `packages/google/src/cache-store.ts`'s `create()`
    and `packages/google/src/file-store.ts`'s `upload()` previously classified a malformed-provider-
@@ -1702,8 +1705,15 @@ output and the adapter rejects assistant messages sent beside it.
     separate, tool calls with id, name and arguments. Parts with no `Part` representation (thought
     parts, xAI reasoning and server-tool items, superseded xAI message items) are omitted, and
     indices are defined over `message.parts` after the omission. `text` and `toolCalls` remain as
-    conveniences derived from the same output. Adapters that can interleave text and calls (Google,
-    xAI) set `AdapterResult.message`; otherwise the engine builds `[text, ...tool calls]`.
+    conveniences derived from the same output. `AdapterResult.message` is **required** on every
+    adapter, including the CLI adapters and the `@gullabs/testing` fakes: the engine does not build
+    one from `text` and `toolCalls` (only the adapter knows the provider's interleaving, and a
+    guessed order would be replayed). A result whose provider output has nothing representable (a
+    thought-only response, for example when the output cap was spent on reasoning) has
+    `message.parts === []`; a host must not append it, and an assistant message with no parts is
+    `bad_request` on the next request (reject, don't map: the library does not skip it). The engine
+    gives the host a copy of `toolCalls`, so editing `toolCalls[i].args` cannot change the
+    arguments in `message`, which a signature hashes.
 12. **`capabilities.continuation` and `LlmResult.continuation`.** The descriptor declares how the
     next turn is sent, and every result repeats it so a host needs no registry lookup. `'history'`
     (the default; Gemini, grok-4.5/4.6, every provider without replay state): append
@@ -1721,33 +1731,59 @@ output and the adapter rejects assistant messages sent beside it.
     rewrites an alias to the canonical id (ADR-033), state is bound to that string, and
     `LlmResult.model` stays the id the provider returned and is not for routing.
 14. **Gemini 3.x signatures are an overlay on the host's history, not a copy.**
-    `transientProviderState` is `{ google: { signatures: [{ messageIndex, partIndex, model,
-partSha256, signature }] } }`. The adapter builds every part from `request.messages`; the
+    `transientProviderState` is `{ google: { signatures: [{ messageIndex, partIndex, kind, model,
+partSha256, signature }] } }`. `kind` (`'text'` or `'tool-call'`) is the signed part's kind and
+    decides whether a stale entry is fatal (below). `messageIndex` is relative to the messages the
+    adapter receives. The adapter builds every part from `request.messages`; the
     overlay only says which built part gets which signature. `partSha256` is the SHA-256 of the
     part's RFC 8785 canonical JSON (text: `{kind, text}`; tool call: `{kind, toolCallId, toolName,
 args}`), so an edited text or argument is detected, and key order does not matter, which keeps
-    history stored in Postgres `jsonb` verifiable. `canonicalJson` is exported from core (about 60
-    lines, no dependency); its domain is `JsonValue` and anything else (non-finite numbers, `-0`,
-    lone surrogates, cycles, non-plain objects) is `bad_request`.
-    - Producing: the result's state is the incoming overlay plus one entry for each part of
-      `result.message` the model signed, with `messageIndex = request.messages.length` and the
+    history stored in Postgres `jsonb` verifiable. `canonicalJson` is exported from core (about 120
+    lines, no dependency); its domain is `JsonValue` and anything else (non-finite numbers, lone
+    surrogates, cycles, nesting deeper than 1000 levels, symbol keys, non-plain objects; plain
+    objects from another realm are accepted) is `bad_request`. `-0` is serialised as `0`, as RFC
+    8785 and `JSON.stringify` do, so a value hashes the same before and after a JSON round trip.
+    - Producing: the result's state is the verified incoming overlay plus one entry for each part
+      of `result.message` the model signed, with `messageIndex = request.messages.length` and the
       model string the request named. Signatures on omitted parts are dropped with a warning; an
-      unsigned first function call also warns.
+      unsigned first function call also warns. A call that was billed is never failed for a part
+      that cannot be hashed (a lone surrogate in provider output): the result is returned without
+      that entry, with a warning naming the part.
     - Consuming: each entry must name an assistant message whose part at `partIndex` hashes to
-      `partSha256`, and its `model` must equal the request's model string. Mismatch, edit, reorder,
-      removal, out-of-range index, duplicate, another model or a malformed overlay is
-      `bad_request` before dispatch. An assistant message that replays tool calls must have an entry
-      for its **first** tool-call part (matching the capture: only that call is signed, and each
-      sequential step needs its own); history produced by another provider fails this check, naming
-      the first `toolCallId`. Other parts need an entry only if one was issued (the capture shows a
-      text signature is optional). Google's dummy signature is **not** offered (BACKLOG).
+      `partSha256`, and its `model` must equal the request's model string. A stale
+      **function-call** entry (edit, reorder, removal, out-of-range index, another model), a
+      duplicate, a host part outside the JSON domain, or a malformed overlay is `bad_request`
+      before dispatch. A stale **text** entry is dropped with a warning and not carried forward:
+      Google treats text signatures as optional (the capture shows replays without them are
+      accepted), so dropping loses nothing required. An assistant message that replays tool calls
+      must have an entry for its **first** tool-call part (matching the capture: only that call is
+      signed, and each sequential step needs its own); history produced by another provider fails
+      this check, naming the first `toolCallId`. The rule is stricter than Google's: a live probe
+      (2026-10-03, `gemini-3.1-pro-preview`, `gemini-3.8-flash`) found an unsigned call in an
+      older turn accepted, because Google validates the current turn only. The library keeps the
+      strict rule so unsigned history never reaches Google by accident. Google's dummy signature
+      is **not** offered (BACKLOG).
+    - Trimming: indices address the host's messages, so removing messages needs the entries of
+      the removed messages gone and the later `messageIndex`es shifted down.
+      `@gullabs/google` exports `dropMessagesFromSignatureState(state, indices)` for that; the rule
+      is whole turns only, and a message that holds a function call is never kept without its
+      entry.
     - `geminiContentToMessages({ contents, model })` imports signatures from model text and
       `functionCall` parts into the same overlay instead of rejecting them; a signature on any other
       part, or without `model`, is `bad_request`.
 15. **Tool results are objects on the Gemini wire.** `functionResponse.response` must be an object:
     an error result is `{ error }`, a non-object result is `{ output }`, an object passes through.
+    Tool-call ids: Gemini returns `functionCall.id` (`call_<number>`, live capture 2026-10-03) and
+    the adapter uses and replays it. When a response has none the adapter synthesizes
+    `anyllm_call_<name>_<n>`, unique among the ids already in the request's history, and never
+    sends it: a response pairs with its call by name and order, which is what Gemini documents (a
+    replay with provider ids, without ids, with synthesized ids and with one id repeated across
+    steps was accepted on every probed model, fixture
+    `packages/google/src/__fixtures__/function-call-ids-2026-10-03.json`).
 16. **`@gullabs/testing` `runToolLoop(client, req, tools, { auth })`** follows `result.continuation`
-    after every turn so host tests exercise the right contract. The library still runs no loop.
+    after every turn so host tests exercise the right contract. The library still runs no loop. A
+    tool that throws becomes an `isError` tool result and the loop continues; a call to a tool with
+    no implementation is `bad_request`.
 
 **Consequences.**
 
@@ -1755,7 +1791,12 @@ args}`), so an edited text or argument is detected, and key order does not matte
   changes; `capabilities.statelessReasoningReplay` is replaced by `continuation` + `providerState`;
   Gemini 3.x requests that replay tool calls need the overlay (previously they failed at Google
   with 400); non-object tool results are wrapped instead of sent bare.
-- `countTokens` sends no signatures: it counts the messages as built without the overlay.
+- `countTokens` sends no signatures: it counts the messages as built without the overlay. The
+  endpoint accepts function calls without signatures and returns the same count with or without
+  them (live capture 2026-10-03), but `generate()` bills about 110 prompt tokens per replayed
+  signature, so a history with function calls on a Gemini 3 model is reported as
+  `accuracy: 'estimated'` (new `TokenCount.accuracy` value: the count is below what the real call
+  bills by an unreported amount). Without function calls, or on Gemini 2.5, it stays `'exact'`.
 - The overlay is not secret prompt text but is opaque provider data; it is never written to the
   ledger.
 

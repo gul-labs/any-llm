@@ -57,8 +57,14 @@ const { result, turns } = await runToolLoop(
 // result.text is the final answer; turns holds every LlmResult, in order.
 ```
 
-It is a test helper, not an agent runtime: it throws if the model calls a tool you did not
-implement, or keeps calling tools past `maxTurns` (default 8).
+It is a test helper, not an agent runtime. A tool that throws does not abort the loop: its error
+message goes back to the model as a tool result with `isError: true`, so a test can drive the model's
+recovery turn. It throws `bad_request` if the model calls a tool you did not implement, and throws if
+the model keeps calling tools past `maxTurns` (default 8).
+
+`FakeAdapter` and `SignalAwareFakeAdapter` require every scripted result to carry the assistant
+`message` (as `AdapterResult` does); a result entry without it throws a `TypeError` when the fake is
+constructed, instead of being completed from `text`.
 
 ## Quick example — end-to-end with fake Gemini client
 

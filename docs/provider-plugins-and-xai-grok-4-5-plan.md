@@ -614,6 +614,8 @@ Reject-don't-map throughout, exactly per the P0 house rule:
   `mediaResolution.numTokens`, and unknown `mediaResolution.level` enum
   values (only `MEDIA_RESOLUTION_LOW`/`MEDIUM`/`HIGH` map to
   `'low'`/`'medium'`/`'high'`). Nothing is ever silently dropped.
+  _Superseded in part (ADR-029 addendum):_ `functionCall`, `functionResponse` and `thoughtSignature`
+  are no longer in the reject list; they convert to tool parts and an imported signature overlay.
 - **No runtime SDK dependency**: `@google/genai` types (`Content`, `Part`) are
   imported with `import type` only — the converter has zero runtime coupling
   to the `@google/genai` package.

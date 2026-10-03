@@ -103,20 +103,90 @@ for (;;) {
 }
 ```
 
-`result.transientProviderState` is `{ google: { signatures: [{ messageIndex, partIndex, model,
+`result.transientProviderState` is `{ google: { signatures: [{ messageIndex, partIndex, kind, model,
 partSha256, signature }] } }`, an **overlay** that says which part of _your_ messages gets which
-signature. `partSha256` is the SHA-256 of the part's RFC 8785 canonical JSON, so an edited text or
-tool argument is detected and key order does not matter (history stored in Postgres `jsonb` still
-verifies). Persist it with the history it belongs to; it contains opaque provider tokens, not
-prompt text, and is never written to the ledger.
+signature. `kind` is the signed part's kind (`'text'` or `'tool-call'`); `messageIndex` indexes the
+messages the adapter receives (a middleware that adds or removes messages shifts them). `partSha256`
+is the SHA-256 of the part's RFC 8785 canonical JSON, so an edited text or tool argument is
+detected and key order does not matter (history stored in Postgres `jsonb` still verifies). Persist
+it with the history it belongs to; it contains opaque provider tokens, not prompt text, and is never
+written to the ledger.
 
-The next request is `bad_request` before dispatch when the history was edited, reordered, truncated
-or produced by another model after a signature was issued; when an entry names a different model
-string than the request (signatures are not replayed across models, and a declared alias is a
-different string from its canonical id); or when an assistant message with tool calls has no entry
-for its first call (this is also what rejects history produced by another provider). The library
-does not offer Google's dummy signature that bypasses validation: it degrades quality and is a
-[BACKLOG](../../BACKLOG.md) item, not a default. Gemini 2.5 and Gemma need none of this.
+**What is rejected and what is dropped.** A function-call signature is required, so the next request
+is `bad_request` before dispatch when a function-call entry is stale (the call was edited, reordered
+or removed, the message moved, or the entry was issued for another model string; signatures are not
+replayed across models, and a declared alias is a different string from its canonical id), when an
+assistant message with tool calls has no entry for its first call (this is also what rejects history
+produced by another provider, or by Gemini 2.5), when two entries name the same part, or when the
+state is malformed. A **text** signature is optional (Google accepts the next turn without it), so a
+stale text entry (the text was trimmed, edited or moved, the message is gone, or it was issued for
+another model) is dropped with a result warning and nothing else is lost; the dropped entry is not
+carried into the next state. A host that `.trim()`s the final answer, or rebuilds it from
+`result.text`, keeps working.
+
+Google validates the signature only on function calls in the current turn (live capture, 2026-10-03:
+an unsigned call in an older turn was accepted on `gemini-3.1-pro-preview` and `gemini-3.8-flash`).
+The library still requires an entry for every replayed tool-call message, so history without
+signatures never reaches Google by accident; keep a conversation that began on another provider on
+that provider.
+
+The library does not offer Google's dummy signature that bypasses validation: it degrades quality and
+is a [BACKLOG](../../BACKLOG.md) item, not a default. Gemini 2.5 and Gemma need none of this.
+
+### Trimming, compacting and rewinding the history
+
+The overlay is addressed by message index, so removing messages from your history moves what the
+indices mean. After you remove messages, pass their positions (in the history the state was issued
+for) to `dropMessagesFromSignatureState(state, indices)`. It drops the entries of the removed
+messages, shifts the later `messageIndex`es down, and returns `undefined` when nothing is left:
+
+```ts
+import { dropMessagesFromSignatureState } from '@gullabs/google'
+
+// Front-trim: drop the oldest turn (messages 0-3) to fit the context window.
+messages = messages.slice(4)
+state = dropMessagesFromSignatureState(state, [0, 1, 2, 3])
+
+// Rewind: undo the last tool step (messages 5-6), then ask again.
+messages = messages.slice(0, 5)
+state = dropMessagesFromSignatureState(state, [5, 6])
+```
+
+The rule is whole turns only: remove a tool-call message together with its tool-result message, and
+never keep a message that holds a function call while removing its entry. Compaction (replacing
+several messages by one summary) works the same way if the summary takes the place of the range's first
+message and you pass the rest of the range: replacing messages 0-3 with one user summary is
+`messages = [summary, ...messages.slice(4)]` and `dropMessagesFromSignatureState(state, [1, 2, 3])`
+(message 0 is a user message and never has an entry). Do not insert messages in front of kept ones; that
+shifts indices upward and the helper only shifts them down. Without the helper, a stale function-call
+entry is `bad_request`.
+
+### Tool-call ids
+
+Gemini returns a `functionCall.id` (`call_<number>` on the Developer API in the live capture); the
+library uses it as `toolCallId` and sends it back on the `functionCall` and `functionResponse`. If a
+response has no id, the library synthesizes `anyllm_call_<name>_<n>`, unique among the ids already in
+your history, and **never sends it** to Gemini (a response is matched to its call by name and order,
+which is what Gemini documents). Gemini 3 accepted a replay with provider ids, without ids, with
+synthesized ids and with the same id repeated across steps (capture
+`__fixtures__/function-call-ids-2026-10-03.json`).
+
+### Empty responses and `countTokens`
+
+A response with nothing to replay (the model produced only thoughts, for example when
+`maxOutputTokens` was spent on reasoning) has `result.message.parts === []`. Do not append it to your
+history: an assistant message with no parts is `bad_request`. Retry the call instead.
+
+`countTokens` sends the history without signatures (Gemini accepts that), and `generate()` bills each
+replayed signature (about 110 prompt tokens each). So when the counted history holds function calls
+on a Gemini 3 model, `accuracy` is `'estimated'`, not `'exact'`: the real count is higher by roughly
+one signature per signed call or text part. Without function calls, or on Gemini 2.5, it is
+`'exact'`.
+
+Provider output that cannot be hashed never fails a call that was billed: a lone surrogate in a
+function call's arguments or in text returns the result with a warning naming the part and no
+signature entry for it (the next turn is then `bad_request`, because the function call lacks its
+signature), and `-0` is treated as `0`.
 
 `geminiContentToMessages({ contents, model })` imports signatures from hand-authored
 `@google/genai` history into the same overlay, returned as `transientProviderState` beside `messages`; `model` is required
