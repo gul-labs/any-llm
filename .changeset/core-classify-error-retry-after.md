@@ -8,4 +8,4 @@
 
 New exports: `isTransportError(e)`, the shared transport matcher for adapters, and `parseRetryAfter(headers, now)`, which reads `retry-after-ms`, `retry-after` (decimal seconds, HTTP-date, or a duration such as `6m0s`) and the rate-limit reset headers (a number above 1e9 is epoch seconds), ignores anything that is not a positive delay, and caps the result at 24 hours. `LlmError.retryAfterMs` set by `classifyError` now goes through it, so an epoch `x-ratelimit-reset` no longer yields a 56-year delay.
 
-What hosts must change: a 404 or 413 that was retried as `unknown` (or matched on `unknown`) is now `bad_request`. Adapters can drop their own transport regexes and call `isTransportError`.
+What hosts must change: a 404 or 413 that was retried as `unknown` (or matched on `unknown`) is now `bad_request`. Adapters call `classifyError` (and `isTransportError` when they widen it) instead of keeping their own transport regexes.

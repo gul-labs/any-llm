@@ -167,6 +167,7 @@ describe('engine — sinkTimeoutMs (R4.1)', () => {
   })
 
   it('a sink that rejects after the timeout is not an unhandled rejection and not a failure event', async () => {
+    vi.useFakeTimers()
     const { logger, events } = recordingLogger()
     const late: UsageSink = {
       record: () =>
@@ -182,8 +183,10 @@ describe('engine — sinkTimeoutMs (R4.1)', () => {
       ids: new FakeIds(),
     })
 
-    await client.generate(request(), { auth: AUTH })
-    await sleep(150)
+    const call = observe(client.generate(request(), { auth: AUTH }))
+    await vi.advanceTimersByTimeAsync(20)
+    expect(call.settled).toBe(true)
+    await vi.advanceTimersByTimeAsync(150)
 
     expect(events.filter((e) => e.event === 'llm.call.sink.timeout')).toHaveLength(1)
     expect(events.some((e) => e.event === 'llm.call.sink.failed')).toBe(false)
@@ -229,6 +232,7 @@ describe('engine — sinkTimeoutMs (R4.1)', () => {
   })
 
   it('a sink still writing when timeoutMs passes does not turn a billed result into a timeout', async () => {
+    vi.useFakeTimers()
     const records: unknown[] = []
     const slow: UsageSink = {
       async record(r) {
@@ -245,9 +249,10 @@ describe('engine — sinkTimeoutMs (R4.1)', () => {
       ids: new FakeIds(),
     })
 
-    const result = await client.generate(request(40), { auth: AUTH })
+    const call = observe(client.generate(request(40), { auth: AUTH }))
+    await vi.advanceTimersByTimeAsync(200)
 
-    expect(result.text).toBe('ok')
+    expect(call.value?.text).toBe('ok')
     expect(records).toHaveLength(1)
   })
 
@@ -421,6 +426,7 @@ describe('engine — late rate-limiter acquire (R4.2)', () => {
   }
 
   it('releases a slot whose acquire resolves after the timeout won', async () => {
+    vi.useFakeTimers()
     const { limiter, state } = lateLimiter(120)
     const adapter = new FakeAdapter('google', OK)
     const client = createClient({
@@ -431,18 +437,19 @@ describe('engine — late rate-limiter acquire (R4.2)', () => {
       ids: new FakeIds(),
     })
 
-    await expect(client.generate(request(30), { auth: AUTH })).rejects.toMatchObject({
-      kind: 'timeout',
-    })
+    const call = observe(client.generate(request(30), { auth: AUTH }))
+    await vi.advanceTimersByTimeAsync(30)
+    expect(call.error).toMatchObject({ kind: 'timeout' })
     expect(state).toEqual({ acquired: 0, released: 0 })
 
-    await sleep(200)
+    await vi.advanceTimersByTimeAsync(200)
 
     expect(state).toEqual({ acquired: 1, released: 1 })
     expect(adapter.calls).toHaveLength(0)
   })
 
   it('releases a slot whose acquire resolves after a caller abort won', async () => {
+    vi.useFakeTimers()
     const { limiter, state } = lateLimiter(100)
     const controller = new AbortController()
     const client = createClient({
@@ -453,16 +460,21 @@ describe('engine — late rate-limiter acquire (R4.2)', () => {
       ids: new FakeIds(),
     })
 
-    const call = client.generate(request(), { auth: AUTH, signal: controller.signal })
-    setTimeout(() => controller.abort(), 20)
-    await expect(call).rejects.toMatchObject({ kind: 'aborted' })
+    const call = observe(
+      client.generate(request(), { auth: AUTH, signal: controller.signal }),
+    )
+    await vi.advanceTimersByTimeAsync(20)
+    controller.abort()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(call.error).toMatchObject({ kind: 'aborted' })
 
-    await sleep(180)
+    await vi.advanceTimersByTimeAsync(180)
 
     expect(state).toEqual({ acquired: 1, released: 1 })
   })
 
   it('does not release twice when acquire resolves before anything else', async () => {
+    vi.useFakeTimers()
     const { limiter, state } = lateLimiter(5)
     const client = createClient({
       adapters: [new FakeAdapter('google', OK)],
@@ -472,13 +484,16 @@ describe('engine — late rate-limiter acquire (R4.2)', () => {
       ids: new FakeIds(),
     })
 
-    await client.generate(request(500), { auth: AUTH })
-    await sleep(30)
+    const call = observe(client.generate(request(500), { auth: AUTH }))
+    await vi.advanceTimersByTimeAsync(5)
+    expect(call.value?.text).toBe('ok')
+    await vi.advanceTimersByTimeAsync(30)
 
     expect(state).toEqual({ acquired: 1, released: 1 })
   })
 
   it('an acquire that rejects when the signal fires is not an unhandled rejection', async () => {
+    vi.useFakeTimers()
     const limiter: RateLimiter = {
       acquire: (_key, signal) =>
         new Promise((_, reject) => {
@@ -493,10 +508,10 @@ describe('engine — late rate-limiter acquire (R4.2)', () => {
       ids: new FakeIds(),
     })
 
-    await expect(client.generate(request(30), { auth: AUTH })).rejects.toBeInstanceOf(
-      LlmError,
-    )
-    await sleep(30)
+    const call = observe(client.generate(request(30), { auth: AUTH }))
+    await vi.advanceTimersByTimeAsync(30)
+    expect(call.error).toBeInstanceOf(LlmError)
+    await vi.advanceTimersByTimeAsync(30)
   })
 })
 
@@ -562,7 +577,7 @@ describe('engine — countTokens cancellation race (R4.7)', () => {
       auth: AUTH,
       signal: controller.signal,
     })
-    setTimeout(() => controller.abort(reason), 20)
+    controller.abort(reason)
 
     const err = (await call.catch((e: unknown) => e)) as LlmError
 
@@ -725,6 +740,7 @@ describe('engine — rejects only with LlmError (R4.8)', () => {
         this.name = 'CancelledFailure'
       }
     }
+    vi.useFakeTimers()
     for (const mode of ['ignores', 'throws-reason'] as const) {
       const reason = new CancelledFailure()
       const controller = new AbortController()
@@ -743,10 +759,14 @@ describe('engine — rejects only with LlmError (R4.8)', () => {
         clock: new FakeClock(),
         ids: new FakeIds(),
       })
-      const call = client.generate(request(), { auth: AUTH, signal: controller.signal })
-      setTimeout(() => controller.abort(reason), 20)
+      const call = observe(
+        client.generate(request(), { auth: AUTH, signal: controller.signal }),
+      )
+      await vi.advanceTimersByTimeAsync(20)
+      controller.abort(reason)
+      await vi.advanceTimersByTimeAsync(10)
 
-      const err = (await reasonOf(call)) as LlmError
+      const err = call.error as LlmError
 
       expect(err).toBeInstanceOf(LlmError)
       expect(err.kind).toBe('aborted')
@@ -756,6 +776,7 @@ describe('engine — rejects only with LlmError (R4.8)', () => {
   })
 
   it('an abort reason that is not an Error is kept as cause too', async () => {
+    vi.useFakeTimers()
     const controller = new AbortController()
     const client = createClient({
       adapters: [new FakeAdapter('google', OK, { delayMs: 200 })],
@@ -763,10 +784,14 @@ describe('engine — rejects only with LlmError (R4.8)', () => {
       clock: new FakeClock(),
       ids: new FakeIds(),
     })
-    const call = client.generate(request(), { auth: AUTH, signal: controller.signal })
-    setTimeout(() => controller.abort('stop now'), 20)
+    const call = observe(
+      client.generate(request(), { auth: AUTH, signal: controller.signal }),
+    )
+    await vi.advanceTimersByTimeAsync(20)
+    controller.abort('stop now')
+    await vi.advanceTimersByTimeAsync(10)
 
-    const err = (await reasonOf(call)) as LlmError
+    const err = call.error as LlmError
 
     expect(err.kind).toBe('aborted')
     expect(err.cause).toBe('stop now')

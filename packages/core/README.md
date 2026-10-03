@@ -371,6 +371,11 @@ is released when that attempt ends.
 - **Treat the request as immutable once passed to `next`.** To change data (config, messages,
   metadata), pass a new object to `next`. The engine does not copy or freeze requests, so mutating
   nested data in place after calling `next` is a host bug it cannot detect.
+- **One deadline for the whole call.** `config.timeoutMs` starts when the call starts and is measured on
+  the client `clock`. `ctx.deadlineAt` is its end and `ctx.signal` aborts when it passes, so a
+  middleware that sleeps, retries or does I/O measures against those, never against the time it was
+  entered. A result an attempt already produced is returned even if work after `next()` runs past the
+  deadline; the deadline error otherwise carries the last attempt's error as `cause`.
 - **Quota goes inside retry.** `[retryMiddleware(...), providerQuotaMiddleware(...)]` accounts one
   quota unit per provider dispatch. `createClient` rejects the opposite order with `bad_request`. It
   identifies the built-ins by the readonly `Middleware.role` they set (`'retry'`, `'quota'`), never

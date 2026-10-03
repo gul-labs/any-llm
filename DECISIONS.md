@@ -2455,7 +2455,8 @@ was a non-retryable `unknown`.
    attempt (the call fails with `aborted` and one refusal row; `countTokens` calls no adapter).
    `config.timeoutMs` must be a finite number greater than 0 and at most 2^31 - 1 (`bad_request`
    before any row), as must `sinkTimeoutMs` and `countTokens`' `timeoutMs`: a longer timer fires after
-   1 ms.
+   1 ms. The gemini and grok config schemas cap `timeoutMs` at 2^31 - 1 minus the 5 s SDK buffer, since
+   the SDK's own deadline is `timeoutMs` plus that buffer.
 4. **The sink write is bounded by `sinkTimeoutMs` (default 5 s) and by abort and the deadline.** On
    expiry the engine logs `llm.call.sink.timeout` at `error` (`callId`, `attemptId`, `attemptNumber`,
    `provider`, `model`, `timeoutMs`), abandons the write (a late rejection is swallowed) and carries
