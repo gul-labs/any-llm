@@ -3419,6 +3419,43 @@ describe('response metadata and unpriced server tools (R7.5, R7.8)', () => {
     expect(computeXaiCost('grok-4.5', result.usage).confidence).toBe('estimated')
   })
 
+  it('stays silent and exact when a token-only tool (MCP) ran', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 1000, outputTokens: 10 })
+    ;(response.usage as Record<string, unknown>)['server_side_tool_usage_details'] = {
+      web_search_calls: 1,
+      mcp_calls: 3,
+    }
+    ;(response.usage as Record<string, unknown>)['num_server_side_tools_used'] = 4
+    const result = await xaiAdapter({ client: makeFakeXai(response) }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.warnings).toEqual([])
+    expect(computeXaiCost('grok-4.5', result.usage).confidence).toBe('exact')
+  })
+
+  it('warns about a counter the pricing table does not know', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 1000, outputTokens: 10 })
+    ;(response.usage as Record<string, unknown>)['server_side_tool_usage_details'] = {
+      web_search_calls: 1,
+      brand_new_tool: 2,
+    }
+    const result = await xaiAdapter({ client: makeFakeXai(response) }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.warnings.map((w) => w.message)).toEqual([
+      expect.stringContaining('brand_new_tool=2'),
+    ])
+    expect(computeXaiCost('grok-4.5', result.usage).confidence).toBe('estimated')
+  })
+
   it('stays silent and exact when only priced counters ran', async () => {
     const response = fakeXaiResponse({ text: 'ok', inputTokens: 1000, outputTokens: 10 })
     ;(response.usage as Record<string, unknown>)['server_side_tool_usage_details'] = {

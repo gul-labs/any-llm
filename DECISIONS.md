@@ -3043,3 +3043,23 @@ dropped both cache lanes and thinking.
 - Dashboards can separate tool fees from token spend and exact from estimated spend in SQL.
 - `Telemetry` implementers may add `onAttempt`; no existing hook changes meaning.
 - A host that switched on the three-member `GEMINI_PRICED_TIERS` loses `'batch'`.
+
+### Amendment A (2026-10-03): R7 audit fixes
+
+An adversarial audit of ADR-039's implementation found four P2 and nine P3 defects. This amendment
+supersedes the items below where they differ. Numbering follows the ADR's items.
+
+**Item 7 (xAI tool counters).** The `*_calls` suffix rule is replaced by an explicit table,
+`XAI_SERVER_TOOL_COUNTERS` (`packages/xai/src/pricing.ts`), over the members of
+`usage.server_side_tool_usage_details`: `priced` (`web_search_calls`, `x_posts_fetched`,
+`x_users_fetched`), `superseded` (`x_search_calls`), `fee_unpriced` (`code_interpreter_calls`,
+`file_search_calls`, `document_search_calls`, `image_generation_calls`: xAI charges per use and the
+snapshot has no rate) and `token_only` (`mcp_calls`). A non-zero `fee_unpriced` or unknown counter makes
+the call `estimated` with a warning; a `token_only` counter does not, because the tokens already priced
+are the whole cost. The sources are xAI's pricing page (https://docs.x.ai/developers/pricing, read
+2026-10-03, no date on the page): code execution $5/1k calls, file attachments $5/1k, collections search
+$2.50/1k, image generation at Imagine API rates, and Remote MCP, image understanding and X video
+understanding token-only. The last two are not in the table because no counter for them has been
+captured (xAI's tools docs name `SERVER_SIDE_TOOL_VIEW_IMAGE` in another usage field). Unknown counters are
+found in the nested counters object, because `usage.details` also flattens unrelated numeric usage fields.
+No fixture has a non-zero MCP counter; the tests for it are synthetic and say so.

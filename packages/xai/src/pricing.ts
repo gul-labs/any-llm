@@ -75,34 +75,76 @@ export const X_SEARCH_ITEM_COUNTERS = ['x_posts_fetched', 'x_users_fetched'] as 
 const LONG_CONTEXT_THRESHOLD = 200_000
 
 /**
- * Server-tool counters that are not an unpriced fee: `web_search_calls` is
- * priced, and `x_search_calls` is superseded by the per-item
- * `x_posts_fetched` / `x_users_fetched` counters.
+ * How this snapshot treats each server-tool usage counter xAI reports in
+ * `usage.server_side_tool_usage_details` (names live-captured in fixtures 17-33).
+ *
+ * - `priced`: billed by a lane of {@link computeXaiCost}.
+ * - `superseded`: no fee of its own (`x_search_calls` is replaced by the per-item
+ *   `x_posts_fetched` / `x_users_fetched`).
+ * - `fee_unpriced`: xAI charges per use and this snapshot has no rate, so a
+ *   non-zero count makes the call `'estimated'`: code execution $5/1k calls
+ *   (`code_interpreter_calls`), collections search $2.50/1k (`file_search_calls`),
+ *   file attachments $5/1k (`document_search_calls`, whose counter name is not
+ *   pinned: P-X2), image generation at Imagine API rates.
+ * - `token_only`: xAI lists the tool as token-priced with no invocation fee, so
+ *   the tokens already priced are the whole cost. `mcp_calls` (Remote MCP Tools)
+ *   is the only token-only counter whose name has been captured. Image
+ *   understanding and X video understanding are token-only too, but xAI names
+ *   their counters outside this object (`SERVER_SIDE_TOOL_VIEW_IMAGE`); none has
+ *   been captured, so none is listed.
+ *
+ * Source: https://docs.x.ai/developers/pricing ("Tools pricing"), read 2026-10-03
+ * (the page carries no date). A counter that is not in this table and is
+ * non-zero is unknown: it is treated like `fee_unpriced`.
  */
-const PRICED_OR_SUPERSEDED_CALL_COUNTERS: ReadonlySet<string> = new Set([
-  'web_search_calls',
-  'x_search_calls',
-])
+export const XAI_SERVER_TOOL_COUNTERS: Readonly<
+  Record<string, 'priced' | 'superseded' | 'fee_unpriced' | 'token_only'>
+> = Object.freeze({
+  web_search_calls: 'priced',
+  x_posts_fetched: 'priced',
+  x_users_fetched: 'priced',
+  x_search_calls: 'superseded',
+  code_interpreter_calls: 'fee_unpriced',
+  file_search_calls: 'fee_unpriced',
+  document_search_calls: 'fee_unpriced',
+  image_generation_calls: 'fee_unpriced',
+  mcp_calls: 'token_only',
+})
 
 /**
- * Names of the non-zero server-tool `*_calls` counters in `usage.details` that
- * this snapshot has no rate for (`code_interpreter_calls`, `file_search_calls`,
- * `mcp_calls`, `document_search_calls`, `image_generation_calls`, and anything
- * xAI adds). xAI may bill them; the snapshot cannot, so a call that reports one
- * is priced `'estimated'` (it understates) and the adapter warns.
+ * Names of the non-zero server-tool counters this snapshot cannot price: the
+ * `fee_unpriced` ones in {@link XAI_SERVER_TOOL_COUNTERS} and any counter the
+ * table does not know. xAI may bill them; the snapshot cannot, so a call that
+ * reports one is priced `'estimated'` (it understates) and the adapter warns.
+ *
+ * Candidates are the members of `usage.raw.server_side_tool_usage_details` (the
+ * object xAI reports tool counters in; `usage.details` flattens it together with
+ * unrelated numeric usage fields, so it cannot tell a counter from, say,
+ * `num_sources_used`) plus the table's own names found in `usage.details`.
  */
-export function unpricedXaiToolCounters(
-  details: Readonly<Record<string, number>>,
-): string[] {
-  return Object.entries(details)
-    .filter(
-      ([key, value]) =>
-        key.endsWith('_calls') &&
-        !PRICED_OR_SUPERSEDED_CALL_COUNTERS.has(key) &&
-        typeof value === 'number' &&
-        value > 0,
-    )
-    .map(([key]) => key)
+export function unpricedXaiToolCounters(usage: Usage): string[] {
+  const candidates = new Map<string, unknown>()
+  const raw = usage.raw
+  if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
+    const nested = (raw as Record<string, unknown>)['server_side_tool_usage_details']
+    if (typeof nested === 'object' && nested !== null && !Array.isArray(nested)) {
+      for (const [key, value] of Object.entries(nested)) candidates.set(key, value)
+    }
+  }
+  for (const [key, value] of Object.entries(usage.details)) {
+    if (Object.hasOwn(XAI_SERVER_TOOL_COUNTERS, key) && !candidates.has(key)) {
+      candidates.set(key, value)
+    }
+  }
+  const unpriced: string[] = []
+  for (const [key, value] of candidates) {
+    if (typeof value !== 'number' || !(value > 0)) continue
+    const kind = Object.hasOwn(XAI_SERVER_TOOL_COUNTERS, key)
+      ? XAI_SERVER_TOOL_COUNTERS[key]
+      : undefined
+    if (kind === undefined || kind === 'fee_unpriced') unpriced.push(key)
+  }
+  return unpriced
 }
 
 /** 1 tick = 1e-10 USD, so 10,000 ticks are 1 µUSD. */
@@ -291,8 +333,10 @@ function scaleRates(rates: XaiModelRates, factor: number): XaiModelRates {
  * 7. `cost_in_usd_ticks` (1 tick = 1e-10 USD) is converted to µUSD with the same
  *    rounding and reported as `Cost.providerReported`; `microUsd` stays this
  *    snapshot's price. The engine warns when the two totals drift.
- * 8. A non-zero server-tool `*_calls` counter this snapshot has no rate for
- *    ({@link unpricedXaiToolCounters}) makes the call `'estimated'`.
+ * 8. A non-zero server-tool counter that xAI bills per use (or that is unknown)
+ *    and this snapshot has no rate for ({@link unpricedXaiToolCounters}, driven
+ *    by {@link XAI_SERVER_TOOL_COUNTERS}) makes the call `'estimated'`. Token-only
+ *    tools (`mcp_calls`) do not.
  * 9. Tool lanes: `web_search_calls` per call; x_search is
  *    `x_posts_fetched` × $5/1k + `x_users_fetched` × $10/1k. A missing
  *    item counter leaves the call unpriced; the provider's billed ticks remain
@@ -359,7 +403,7 @@ function priceXaiCall(model: string, usage: Usage, tier?: string): Cost {
       }, 0)
 
   const microUsd = inputCost + cachedCost + outputCost + toolsCost
-  const unpricedCounters = unpricedXaiToolCounters(usage.details)
+  const unpricedCounters = unpricedXaiToolCounters(usage)
 
   return {
     microUsd,

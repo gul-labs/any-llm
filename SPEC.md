@@ -546,9 +546,10 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
   `codex-cli` runs its own OpenAI-strict preflight; the checks are Google's and xAI's.)
 - **Cost facts (ADR-039).** `cost_in_usd_ticks` is converted (1 tick = 1e-10 USD, rounded like a lane) to
   `Cost.providerReported.microUsd`; the snapshot stays the price and the engine warns on a total drift.
-  A non-zero server-tool `*_calls` counter with no rate (`code_interpreter_calls`, `file_search_calls`,
-  `mcp_calls`, `document_search_calls`, `image_generation_calls`, anything new) prices the call
-  `estimated` and the adapter warns. The response's `x-request-id` and `x-ratelimit-remaining-*` /
+  Server-tool counters are classified by an explicit table (`XAI_SERVER_TOOL_COUNTERS`): a non-zero
+  counter xAI bills per use with no rate here (`code_interpreter_calls`, `file_search_calls`,
+  `document_search_calls`, `image_generation_calls`) or one the table does not know prices the call
+  `estimated` and the adapter warns; token-only tools (`mcp_calls`) do not (ADR-039 Amendment A). The response's `x-request-id` and `x-ratelimit-remaining-*` /
   `ratelimit-remaining*` headers are on `providerMetadata.xai` as `requestId` and `rateLimitRemaining`
   (the real client reads them with the SDK's `.withResponse()`; a fake client reports none).
 - Search tools plus `output.jsonSchema` is admitted on all three models

@@ -1567,11 +1567,12 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
           })
         }
       }
-      // A non-zero counter for a server tool with no rate in the pricing snapshot
-      // (code interpreter, file or document search, MCP, image generation, or a
-      // tool xAI adds later) is billed by xAI and not priced here: the call is
-      // priced 'estimated' and understates.
-      const unpricedCounters = unpricedXaiToolCounters(usage.details)
+      // A non-zero counter for a server tool that xAI bills per use and the
+      // pricing snapshot has no rate for (code interpreter, file or document
+      // search, image generation), or one the snapshot does not know, is not
+      // priced here: the call is priced 'estimated' and understates. Token-only
+      // tools (MCP) are fully priced by their tokens and do not warn.
+      const unpricedCounters = unpricedXaiToolCounters(usage)
       if (unpricedCounters.length > 0) {
         warnings.push({
           type: 'other',
@@ -1579,7 +1580,7 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
             .map((key) => `${key}=${String(usage.details[key])}`)
             .join(
               ', ',
-            )}] are non-zero but have no rate in the pricing snapshot; the call's cost is estimated and understates.`,
+            )}] are non-zero but have no rate in the pricing snapshot (xAI bills the tool per use, or the counter is unknown); the call's cost is estimated and understates.`,
         })
       }
       if ((expectedToolCounters.length > 0 || hasFileRef) && !noServerToolRan) {
