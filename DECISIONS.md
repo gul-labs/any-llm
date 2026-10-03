@@ -543,15 +543,10 @@ library does not model the grounding metadata structure as a typed field.
 Flash-Lite models skipped Search and no model returned `groundingMetadata` with `responseSchema`. An
 accepted request is not evidence the tool ran, so all six Gemini 3.x descriptors now set
 `structuredOutputWithTools: false`. The combination fails with `bad_request` before dispatch, naming the
-two-call recipe (grounded research without a schema, then structured synthesis). Separately, any call that
-sent `googleSearch` reports `cost.confidence: 'estimated'` plus a warning, because grounding fees are not
-part of the token price; the adapter signals this with the synthetic `usage.details.google_search_requested`
-key (the same pattern xAI uses for `server_tools_requested`). The marker also goes on a grounded attempt
-that fails after billing (a candidate-less or blocked 200 with usage): the thrown `LlmError` carries the
-flagged `usage` and the warning in `LlmError.warnings`, which the engine writes to that attempt's row.
-`GOOGLE_SEARCH_REQUESTED_DETAIL` is exported so a host that re-prices from the ledger can read the key.
-Cost confidence itself is not persisted until a `cost_confidence` column ships (see `docs/ledger.md`). Hosts that need to turn the combination
-back on, or have it priced, need a new decision backed by probe evidence.
+two-call recipe (grounded research without a schema, then structured synthesis). A host may opt in per
+call with `providerOptions.google.allowSchemaWithSearch`; the search facts in usage, the grounding price
+and the `requireGrounding` fail-closed check are ADR-035, which replaces the synthetic
+`google_search_requested` marker this amendment first introduced.
 
 **Consequences:**
 
@@ -1876,6 +1871,8 @@ three neighbouring problems, all confirmed live on 2026-10-02 against
   xAI. The library offers no converter.
 - Fixture 33 pins the non-enforcement evidence. When a re-recorded fixture
   shows enforcement, update the README and this ADR.
+- ADR-035 adds the provider-neutral `usage.details.web_search_requested`, and a
+  known zero for `web_search_calls` when xAI states that no server tool ran.
 
 ---
 
@@ -2142,6 +2139,101 @@ not be the only possible type`) are caller errors, not `unknown`. Standard schem
 - Fixtures: `packages/google/src/__fixtures__/response-json-schema-2026-10-03.json` (P3 counts per
   keyword and model), `packages/xai/src/__fixtures__/structured-output-schema-docs-2026-10-03.json`
   (the documented rules), and the Zod fixture above (ADR-013).
+
+---
+
+## ADR-035: Search usage facts; grounding cost is estimated
+
+**Status:** Accepted (2026-10-03). Amends ADR-013 and ADR-030; replaces the `google_search_requested`
+marker.
+
+**Context:**
+A pricing source sees only `(model, usage, tier)`. The first fix for unpriced Gemini grounding
+(ADR-013's 2026-10-03 amendment) had the adapter write a Google-only synthetic key into `usage.details` so
+the pricing source could mark the cost estimated. That key said that Search was requested, nothing about
+whether it ran or how often, and the cost still left out the fee. xAI already reported a search count
+(`web_search_calls`) and a separate `server_tools_requested` flag, under names a host cannot share with
+Google. A host that wants to know "did Search run, and what did it cost" read a different place per provider.
+
+Live evidence (2026-10-03):
+
+- **P4**, every Gemini 3.x model with and without a response schema, `googleSearch` on, four calls each:
+  without a schema every model returned `groundingMetadata` with at least one query on 4 of 4 calls. With a
+  schema, 3.1 Pro returned it on 2 of 4 and the other five models on 0 of 4 (a prompt-token jump with no
+  metadata appeared on some, so some schema calls probably searched without saying so). No model reached the
+  3-of-4 bar this record set for turning the pair on by default.
+- **P5**, a grounded Gemini 2.5 call told to repeat one query three times: `webSearchQueries` held three
+  identical entries (3 occurrences, 1 unique) and `usageMetadata` carried `toolUsePromptTokenCount`
+  (77 on Flash, 141 on Pro), counted in `totalTokenCount` but not in `promptTokenCount`. Gemini 3.x
+  deduplicated its queries on 14 of 14 attempts and reported no tool-use tokens. Whether Google bills a
+  repeated query, or bills tool-use tokens as input, could not be reconciled: the billing export was not
+  available.
+
+**Decision:**
+
+1. **Two normalised facts, on every provider.** `usage.details.web_search_requested` is `1` when the
+   request enabled web search and absent otherwise. `usage.details.web_search_calls` is the observed
+   number of searches, absent when the response does not say; an explicit zero is a known zero. xAI
+   already emitted the count; it now also sets `web_search_requested`, and reports `0` when xAI states that
+   no server tool ran. Google counts **occurrences** in `groundingMetadata.webSearchQueries` (a repeated
+   query counts each time); `webSearchQueries` absent or metadata absent means the count is unknown. The
+   Google-only `google_search_requested` key and its exported constant are deleted.
+2. **Occurrences, always estimated.** Occurrences are the conservative count: nothing measured shows a
+   repeat is free. Because the free daily allowance Google publishes is shared across a project's calls, no
+   single call can know it was free, so every grounding fee is charged in full and a call that ran Search
+   is always `confidence: 'estimated'`. A known zero (Search requested, response reports zero queries) did
+   not run it and prices exactly.
+3. **The `tools` lane.** The Google pricing source adds the grounding fee to `Cost.details.tools`
+   (`microUsd` stays the sum of four lanes): Gemini 3 charges per query, `web_search_calls x 14_000` uUSD;
+   Gemini 2.5 charges per grounded prompt, `35_000` uUSD once however many queries ran. Rates are from
+   Google's pricing page, read 2026-10-03, and carry `pricingVersion` `gemini-2026-10-03`. Requested with the
+   count unknown: the lane stays `0`, the cost is estimated and the adapter warns that the fee is not
+   included. Gemma has no token price in the snapshot, so it has no grounding price.
+4. **Warnings.** A call that requested Search and whose response has no `groundingMetadata`, or metadata
+   with no `webSearchQueries`, carries a warning saying so, on the result and on the attempt's row, also
+   when the attempt fails after billing.
+5. **`requireGrounding` fails closed.** `providerOptions.google.requireGrounding: true` passes only on
+   positive evidence: `groundingMetadata` present and `web_search_calls >= 1`. Anything else throws
+   `LlmError` kind `server`, `retryable: true`, reason `grounding_missing`, with the attempt's usage
+   attached so the billed tokens reach the ledger. It needs `googleSearch` in the same request
+   (`bad_request` otherwise). It is off by default except as item 6 says.
+6. **Schema plus Search is an opt-in.** `structuredOutputWithTools` stays `false` on all six Gemini 3.x
+   descriptors (P4). `providerOptions.google.allowSchemaWithSearch: true` admits the pair on such a model
+   and turns `requireGrounding` on unless the host passes `requireGrounding: false`, so the default for an
+   opted-in call is to fail rather than return an unsearched answer. The flag needs `googleSearch` and
+   `output.jsonSchema` in the request, and a model with `capabilities.grounding`. A descriptor may set
+   `structuredOutputWithTools: true` only on evidence of at least 3 of 4 schema calls returning metadata
+   with a query.
+7. **Tool-use tokens and inconsistent totals.** `usage.details.tool_use_prompt` records
+   `toolUsePromptTokenCount` whenever Google reports it; it is not added to input and not priced.
+   Core's `normalizeUsage` compares `totalTokens` with `inputTokens + outputTokens`: a larger total adds a
+   warning and the engine reports the call's cost as `'estimated'`, for any provider. A Gemini 2.5 grounded
+   call trips it.
+8. **Citations.** `Citation.cited` and `Citation.textRange` (UTF-16 offsets into `LlmResult.text`) come
+   from Gemini `groundingSupports` (chunk referenced by a support; first supported segment, converted from
+   the UTF-8 byte offsets Google documents) and from xAI `url_citation` annotations (a non-empty range is an
+   inline citation and covers xAI's inline marker; a zero-width annotation is a source that is not cited
+   inline). xAI no longer reports a numeric-only title (its marker number) as a title. Google's
+   `searchEntryPoint`, which Google requires a grounded answer to display, is also on
+   `providerMetadata.google.searchEntryPoint`. The `googleSearch` options (`excludeDomains`,
+   `timeRangeFilter`) stay out of the strict schema until a probe shows what they do (BACKLOG).
+
+**Consequences:**
+
+- Breaking. `GOOGLE_SEARCH_REQUESTED_DETAIL` and the `google_search_requested` detail are gone: read
+  `web_search_requested` (and `web_search_calls`). Grounded Gemini rows now carry a priced `tools` lane in
+  `cost.details`; `cost_micro_usd` includes it. The ledger has no confidence column yet, so a row that ran
+  Search is still recognised by `token_details->>'web_search_requested' = '1'`; treat its cost as an
+  estimate that can overstate (free allowance) or understate (unpriced tool-use tokens, unknown counts).
+- **Open question, recorded rather than guessed:** whether Google bills repeated queries, and whether it
+  bills `toolUsePromptTokenCount` as input. Both can only be settled against a billing export. Until then
+  occurrences are counted and tool-use tokens are recorded unpriced, and the cost stays estimated.
+- Schema plus Search on Gemini 3.x is possible but not default. The measured rates are in
+  `docs/grounded-structured.md`.
+- Fixtures (ADR-013): `packages/google/src/__fixtures__/grounding-schema-matrix-2026-10-03.json` (P4) and
+  `grounding-usage-fields-2026-10-03.json` (P5), redacted: model answer text and call cost removed.
+- Request-side search intent (one option that means "search" on every provider) is deferred to its own
+  decision.
 
 ---
 

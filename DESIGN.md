@@ -186,10 +186,14 @@ is not admitted. With `req.outputJsonSchema`, the descriptor must set
 `structuredOutputWithTools`. No registered Google model sets that flag: the six Gemini
 3.x descriptors set it to `false`, because an accepted structured request with
 `googleSearch` does not show that Search ran (see `docs/grounded-structured.md`), so
-the combination fails with `bad_request` and hosts use the two-call recipe. When
-present, `candidate.groundingMetadata` is captured alongside `promptFeedback` in
-`result.providerMetadata`. A call that sent `googleSearch` reports an estimated cost (`confidence: 'estimated'`)
-and a warning, because grounding fees are not priced.
+the combination fails with `bad_request` and hosts use the two-call recipe, unless the call
+sets `providerOptions.google.allowSchemaWithSearch: true` (ADR-035), which also turns
+`requireGrounding` on. When present, `candidate.groundingMetadata` is captured alongside
+`promptFeedback` in `result.providerMetadata`, and `searchEntryPoint` is surfaced at
+`providerMetadata.google.searchEntryPoint`. The adapter reports `usage.details.web_search_requested`
+and `web_search_calls`; the pricing source prices the grounding fee on the `tools` lane and marks a
+call that ran Search `estimated` (ADR-035). `requireGrounding: true` fails the call with a retryable
+`grounding_missing` error unless the response proves Search ran.
 
 ### Transport Timeout
 
@@ -262,9 +266,10 @@ have `sampling: 'fixed'` and reject `temperature`, `topP`, `topK` at call time.
 **Grounding.** Requested via `providerOptions.google.tools: [{ googleSearch: {} }]`. The adapter
 captures `candidate.groundingMetadata` into `result.providerMetadata`. Grounding plus
 `output.jsonSchema` is admitted only when `structuredOutputWithTools` is set (no
-registered Google model sets it). Every other model fails with `bad_request` before the
-SDK call. A successful grounded response may omit grounding metadata, so callers needing
-auditable citations must check it explicitly.
+registered Google model sets it) or the call opts in with `allowSchemaWithSearch`. Every
+other call fails with `bad_request` before the SDK call. A successful grounded response may
+omit grounding metadata; callers needing auditable citations set `requireGrounding` or check
+`usage.details.web_search_calls` (ADR-035).
 
 **Flex transport timeout.** The adapter sets `config.httpOptions.timeout` automatically:
 1 500 000 ms (25 minutes) for Flex calls without `timeoutMs`, and `timeoutMs + 5 000 ms` when

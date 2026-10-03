@@ -151,7 +151,7 @@ paths to other repos.
 
 ## Follow-ups from the xAI server tool-choice release (2026-10-02)
 
-- **Gemini search + schema: decided, opt-in not built.** Structured output plus `googleSearch` is off by default on all six Gemini 3.x models (`structuredOutputWithTools: false`); the adapter rejects it with `bad_request` and points at the two-call recipe in `docs/grounded-structured.md`, which also holds the 2026-10-02 probe table. Still open: sending `responseJsonSchema` instead of `responseSchema` when `googleSearch` is present, and a per-call opt-in guarded by checks that Search actually ran (grounding evidence required), after which a model proven by probes could be on by default.
+- **Gemini search + schema: opt-in built, default stays off.** `providerOptions.google.allowSchemaWithSearch` (with `requireGrounding` on by default) shipped; a 2026-10-03 probe (ADR-035, `docs/grounded-structured.md`) found no Gemini 3.x model that returned grounding metadata with a query on 3 of 4 schema calls (best: 3.1 Pro, 2 of 4), so `structuredOutputWithTools` stays `false`. Re-probe when a new Gemini model ships or Google changes the schema + Search behaviour; a model that reaches 3 of 4 can be set on by default.
 - **xAI `safety_identifier`.** New Responses request field (September 2026 release notes, <https://docs.x.ai/developers/faq/security>): an opaque, hashed end-user id. Candidate `providerOptions.xai.safetyIdentifier` for multi-tenant hosts on one key. Needs a live probe before admission.
 - **xAI `POST /v1/responses/compact`.** Documented transcript compaction (<https://docs.x.ai/developers/advanced-api-usage/context-compaction>). grok-4.7 replay resends the full wire input; compaction would be the cost control. Needs a design: a second endpoint plus an opaque `compaction` input item.
 - **xAI `include: ["no_inline_citations"]`.** Suppresses inline `[[N]](url)` links in the text (<https://docs.x.ai/developers/tools/citations>). Expose only if a host needs citation-free text.
@@ -175,6 +175,27 @@ paths to other repos.
   `call_<name>_<n>` and replays it as `functionCall.id` / `functionResponse.id`. The 2026-10-03
   capture replayed the provider's parts as returned. Confirm with a probe that the API accepts a
   library-assigned id.
+
+## Follow-ups from Gemini grounding usage and price (2026-10-03)
+
+- **Do repeated Gemini queries and tool-use tokens bill?** The grounding fee counts query occurrences
+  (a repeated query counts each time) and `usage.details.tool_use_prompt` is recorded unpriced. Gemini
+  2.5 reported a query three times and `toolUsePromptTokenCount` 77 / 141 on a grounded call; Gemini 3.x
+  deduplicated its queries in 14 of 14 attempts and reported no tool-use tokens. Whether Google bills a
+  repeat, or bills tool-use tokens as input, needs a billing export reconciled against a call with a
+  repeated query. Until then the cost stays `'estimated'` and counts occurrences (ADR-035).
+- **`googleSearch` options.** Google documents `excludeDomains` and `timeRangeFilter` on the Search
+  tool. The strict schema accepts `googleSearch: {}` only. Probe what each does (and whether the
+  response reports them) before admitting them.
+- **Request-side search intent.** One provider-neutral way to say "search" (today: `providerOptions.google.tools`
+  or `providerOptions.xai.tools`) is deferred to its own decision. Usage reports search the same way on
+  both providers already.
+- **Grounding free allowance.** Google publishes a daily free grounding allowance. It is shared across a
+  project, so a single call cannot know it was free and the fee is charged in full. A host that tracks
+  its own volume can subtract it from the ledger.
+- **`providerMetadata` namespace.** Grounding metadata and `promptFeedback` sit at the top of
+  `providerMetadata`; `searchEntryPoint` is under `providerMetadata.google`. Decide one shape for provider
+  metadata before more keys are added.
 
 ## Optional later (not ticketed)
 

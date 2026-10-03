@@ -140,6 +140,7 @@ export interface LlmResult {
   latencyMs: number
   queueDelayMs?: number // time spent waiting in RateLimiter.acquire before provider dispatch
   warnings: Warning[] // never silently drop a setting
+  citations?: Citation[] // normalised sources, absent when the provider produced none
   providerMetadata?: JsonValue // raw provider metadata (grounding/safety/etc.)
 }
 export type FinishReason = 'stop' | 'length' | 'content_filter' | 'other'
@@ -155,12 +156,26 @@ export interface Usage {
   details: Record<string, number> // open token-type map; new types land here, costable
   raw: JsonValue // provider's entire usage object, verbatim
 }
+// Normalised search facts in `details`, same names on every provider (ADR-035):
+//   web_search_requested  1 when the request enabled web search, else absent
+//   web_search_calls      observed number of searches; absent when the response does not say
+// `normalizeUsage` also warns, and the engine reports the cost as 'estimated', when totalTokens
+// is larger than inputTokens + outputTokens (the provider counted tokens the fields omit).
+
+// ---- citations ----
+export interface Citation {
+  url: string
+  title?: string
+  sourceName?: string
+  cited?: boolean // the answer text cites this source (a span points at it); absent when the provider does not say
+  textRange?: { start: number; end: number } // first span of LlmResult.text tied to this source, UTF-16 offsets
+}
 
 // ---- cost: frozen, micro-USD, per-type breakdown ----
 export interface Cost {
   microUsd: number | null
   pricingVersion: string
-  confidence: 'exact' | 'estimated' // 'estimated' if any priced field had to be inferred, or a known charge is not priced (e.g. a call that sent googleSearch)
+  confidence: 'exact' | 'estimated' // 'estimated' if any priced field had to be inferred, a known charge is not priced, a grounding fee was charged in full (a call that ran Search), or totalTokens exceeds inputTokens + outputTokens (ADR-035)
   details: { input: number; cached: number; output: number; tools: number }
   // MUST sum to microUsd: input + cached + output + tools.
   // NOTE: thinking tokens are inside outputTokens and billed at the output rate — NO separate
@@ -424,7 +439,17 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
   output, grounding, and thinking (thinkingLevel). They do not support Gemini Flex or pricing.
 - Usage: read `usageMetadata` → `promptTokenCount`→inputTokens, `candidatesTokenCount`→outputTokens,
   `cachedContentTokenCount`→cachedInputTokens, `thoughtsTokenCount`→thinkingTokens; copy whole object
-  to `usage.raw`; populate `details`. Enforce GROSS convention.
+  to `usage.raw`; populate `details`. Enforce GROSS convention. `toolUsePromptTokenCount` is recorded
+  as `details.tool_use_prompt` and not priced.
+- Grounding (ADR-013, ADR-035): `providerOptions.google.tools: [{ googleSearch: {} }]` sets
+  `details.web_search_requested`; `details.web_search_calls` is the number of `webSearchQueries`
+  occurrences. The pricing source adds the fee to `Cost.details.tools` (Gemini 3: per query; Gemini 2.5:
+  per grounded prompt) and a call that ran Search is `estimated`. `requireGrounding: true` throws a
+  retryable `server` error with reason `grounding_missing` (usage attached) unless metadata with at least
+  one query is present. `allowSchemaWithSearch: true` admits `googleSearch` with `output.jsonSchema` on a
+  model that does not admit them by default, and turns `requireGrounding` on unless set to `false`.
+  `Citation.cited` / `textRange` come from `groundingSupports`; `providerMetadata.google.searchEntryPoint`
+  carries Google's required Search Suggestions widget.
 - Errors: classify 401→invalid_auth; 403→invalid_auth unless a provider overlay reclassifies;
   429→rate_limited(+retryAfter), 5xx→server, timeout→timeout, 400→bad_request;
   safety (HTTP or 200-path)→content_filter.

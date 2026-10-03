@@ -29,16 +29,20 @@ Rules that matter:
   run, otherwise the number of the refused attempt. `error_kind` and `error_reason` of such a row are the
   call's final outcome, so `error_reason = 'quota_window'` finds those calls too. A gap in a call's attempt
   numbers means a middleware refused that attempt before dispatch.
-- Cost confidence is **not** a column today. `cost_micro_usd` is the token-priced amount in micro-USD, and
-  the library does not persist whether it is exact. The one case that is knowingly incomplete is a Google
-  call that sent `googleSearch`: Search is billed per grounded prompt or query, which a token price cannot
-  see, so `cost_micro_usd` on such a row **omits grounding fees** and undercounts. It is marked in two
-  places: `token_details->>'google_search_requested' = '1'` (set on every attempt that sent `googleSearch`,
-  including failures that were billed) and a warning in `warnings` whose message says grounding fees are
-  not included. The result's `cost.confidence` is `'estimated'` for these calls but is not stored. The key
-  lives in `token_details`, which is otherwise token counts, so do not sum its values. Query grounded rows
-  with `token_details->>'google_search_requested'` and treat their cost as a lower bound. A later release
-  (plan R7.1) adds a persisted `cost_confidence` column and prices Search; until then use the marker above.
+- Cost confidence is **not** a column today. `cost_micro_usd` is the amount the library priced, and it
+  does not persist whether that amount is exact. Calls that ran web search are the knowingly approximate
+  ones, and two normalised facts in `token_details` mark them on every provider that reports them:
+  `web_search_requested` (`1` on every attempt of a request that enabled web search, failures that were
+  billed included) and `web_search_calls` (the observed number of searches; absent when the provider did
+  not say, `0` when it said none ran). Google grounding is priced in `cost_micro_usd` (Gemini 3 per
+  query, Gemini 2.5 per grounded prompt, charged in full because the free allowance is unknowable per
+  call), so such a row is an estimate that can overstate; a row with `web_search_requested` and no
+  `web_search_calls` has an unpriced fee and understates. `tool_use_prompt` (Gemini 2.5 Search-result
+  tokens) is recorded and not priced. A warning in `warnings` says why when the count is unknown. These
+  keys live in `token_details`, which is otherwise token counts, so do not sum its values. The result's
+  `cost.confidence` is `'estimated'` for these calls (and for any call whose `totalTokens` exceeds
+  `inputTokens + outputTokens`) but is not stored. A later release (plan R7.1) adds a persisted
+  `cost_confidence` column; until then use the markers above.
 
 - `attemptId` is the durable row identity.
 - Every attempt is a billed row with its own `attemptId`. The library never deduplicates provider calls; a host retry is a new call and new rows. Tie retries together with a shared `externalId`.

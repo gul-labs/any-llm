@@ -595,18 +595,23 @@ config: {
 ```
 
 `providerOptions.google` is a strict allowlist, not a general SDK passthrough. Only
-`cachedContent`, `httpOptions`, `safetySettings`, and exact `tools` declarations are admitted, and
+`allowSchemaWithSearch`, `cachedContent`, `flexFallback`, `httpOptions`, `requireGrounding`,
+`safetySettings`, and exact `tools` declarations are admitted, and
 reserved typed fields such as `serviceTier`, `thinkingConfig`, `responseMimeType`, and sampling
 knobs are rejected. If a `tools` entry requests `googleSearch` while `req.outputJsonSchema` is
 also set on a model whose descriptor does not set `structuredOutputWithTools` (none of the
 registered Google models do), the adapter throws `LlmError('bad_request', retryable: false)`
-before dispatch; the message names the two-call recipe in `docs/grounded-structured.md`. A call
-that sent `googleSearch` is costed as `confidence: 'estimated'` with a warning, since grounding
-fees are not priced.
+before dispatch unless the call sets `allowSchemaWithSearch: true`; the message names the two-call
+recipe in `docs/grounded-structured.md`. Opting in turns `requireGrounding` on (ADR-035).
+The adapter reports `usage.details.web_search_requested` and `web_search_calls`, the pricing source
+prices the grounding fee on the `tools` lane, and a call that ran Search is costed as
+`confidence: 'estimated'`. `requireGrounding: true` throws a retryable `server` error with reason
+`grounding_missing` unless the response has `groundingMetadata` with at least one query.
 
 When grounding is active, `candidate.groundingMetadata` from the response is captured into
 `result.providerMetadata['groundingMetadata']` as `JsonValue`. `promptFeedback`, when present, is
-captured alongside it under `result.providerMetadata['promptFeedback']`. Both are persisted in the
+captured alongside it under `result.providerMetadata['promptFeedback']`; `searchEntryPoint` is also
+surfaced at `result.providerMetadata['google']['searchEntryPoint']`. All are persisted in the
 `LlmCallRecord` via the existing `providerMetadata` JSONB lane.
 
 ### Transport Timeout
