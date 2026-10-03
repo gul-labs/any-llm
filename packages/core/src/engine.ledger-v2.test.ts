@@ -261,9 +261,9 @@ describe('R7.3 per-attempt telemetry and the cost of the whole call', () => {
     const rows = sink.records
     const sum = rows.reduce((acc, row) => acc + (row.costMicroUsd ?? 0), 0)
     expect(sum).toBe(result.callCost?.microUsd)
-    expect(rows.filter((row) => row.costMicroUsd == null)).toHaveLength(
-      result.callCost?.unpricedAttempts ?? -1,
-    )
+    expect(
+      rows.filter((row) => row.costMicroUsd === undefined || row.costMicroUsd === null),
+    ).toHaveLength(result.callCost?.unpricedAttempts ?? -1)
   })
 
   it('a billed failure with usage is priced; a dispatched failure without usage is not', async () => {

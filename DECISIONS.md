@@ -3135,7 +3135,6 @@ differ by 2 against a tolerance of 1 and raise a false drift warning.
 fixtures 02, 12 and 16 to 23 store the `headers` of real responses. They carry `x-request-id`,
 `x-ratelimit-remaining-requests` and `x-ratelimit-remaining-tokens` (and the `x-ratelimit-limit-*` ceilings,
 which are not kept). A test reads every such fixture through `readXaiResponseMeta` and pins the request id
-and exactly the remaining headers. The `ratelimit-remaining*` prefix match has no capture behind it and is
-kept only as a harmless alias match. A failed call has no `providerMetadata`, and `LlmError` has no request
+and exactly the remaining headers. The `ratelimit-remaining*` prefix, which no capture has, is removed from the match. A failed call has no `providerMetadata`, and `LlmError` has no request
 id field; the id of a failed call is `error.cause.requestID` (the SDK error keeps the response headers),
 which a stubbed-500 test pins. No new field is added.

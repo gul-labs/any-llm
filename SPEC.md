@@ -551,8 +551,8 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
   Server-tool counters are classified by an explicit table (`XAI_SERVER_TOOL_COUNTERS`): a non-zero
   counter xAI bills per use with no rate here (`code_interpreter_calls`, `file_search_calls`,
   `document_search_calls`, `image_generation_calls`) or one the table does not know prices the call
-  `estimated` and the adapter warns; token-only tools (`mcp_calls`) do not (ADR-039 Amendment A). The response's `x-request-id` and `x-ratelimit-remaining-*` /
-  `ratelimit-remaining*` headers are on `providerMetadata.xai` as `requestId` and `rateLimitRemaining`
+  `estimated` and the adapter warns; token-only tools (`mcp_calls`) do not (ADR-039 Amendment A). The response's `x-request-id` and `x-ratelimit-remaining-*`
+  headers are on `providerMetadata.xai` as `requestId` and `rateLimitRemaining`
   (the real client reads them with the SDK's `.withResponse()`; a fake client reports none).
 - Search tools plus `output.jsonSchema` is admitted on all three models
   (`structuredOutputWithTools`). A response reporting `num_server_side_tools_used: 0` and no

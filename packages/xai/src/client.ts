@@ -285,8 +285,8 @@ export interface XaiResponseMeta {
   /** The `x-request-id` response header. Absent when xAI sent none. */
   requestId?: string
   /**
-   * Response headers that state remaining quota (`x-ratelimit-remaining-*`,
-   * `ratelimit-remaining*`), lower-cased name to the verbatim value. Absent when
+   * Response headers that state remaining quota (`x-ratelimit-remaining-*`, the names xAI sent in
+   * every captured response), lower-cased name to the verbatim value. Absent when
    * the response carried none.
    */
   rateLimitRemaining?: Record<string, string>
@@ -310,9 +310,7 @@ export interface XaiRequestOptions {
 
 /** The headers {@link XaiResponseMeta.rateLimitRemaining} keeps. */
 function isRemainingQuotaHeader(name: string): boolean {
-  return (
-    name.startsWith('x-ratelimit-remaining') || name.startsWith('ratelimit-remaining')
-  )
+  return name.startsWith('x-ratelimit-remaining')
 }
 
 /**
