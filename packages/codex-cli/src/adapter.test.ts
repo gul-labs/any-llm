@@ -496,8 +496,10 @@ describe('argv construction', () => {
       'gpt-6-sol',
       '-o',
       join(cwd!, 'output.json'),
-      'Say exactly: hi',
+      '-',
     ])
+    // The prompt is on stdin, never in argv (a large one would hit E2BIG).
+    expect(calls[0]?.input).toBe('Say exactly: hi')
   })
 
   it('passes -C <scratchDir> matching the runner cwd', async () => {
@@ -537,8 +539,9 @@ describe('argv construction', () => {
     expect(args).toContain('model_reasoning_effort=max')
     expect(args).toContain('--output-schema')
     expect(args).toContain('-o')
-    // The prompt is the final positional argument.
-    expect(args[args.length - 1]).toBe('Say exactly: hi')
+    // The final positional argument is `-` (read the prompt from stdin).
+    expect(args[args.length - 1]).toBe('-')
+    expect(calls[0]?.input).toBe('Say exactly: hi')
   })
 
   it('omits -c model_reasoning_effort when reasoning.effort is unset', async () => {
@@ -555,16 +558,24 @@ describe('argv construction', () => {
     )
   })
 
-  it('passes an empty string as stdin input, with the prompt in argv', async () => {
+  it('sends the prompt on stdin and keeps it out of argv, however large', async () => {
     const { runner, calls } = makeFakeRunner(async () => ({
       stdout: PLAIN_JSONL,
       stderr: '',
       exitCode: 0,
     }))
     const adapter = codexCliAdapter({ runner })
-    await adapter.run(makeResolvedReq(), FAKE_CTX)
+    const big = 'x'.repeat(300_000)
+    await adapter.run(
+      makeResolvedReq({
+        messages: [{ role: 'user', parts: [{ kind: 'text', text: big }] }],
+      }),
+      FAKE_CTX,
+    )
 
-    expect(calls[0]?.input).toBe('')
+    expect(calls[0]?.input).toBe(big)
+    expect(calls[0]?.args.some((arg) => arg.length > 1000)).toBe(false)
+    expect(calls[0]?.args.at(-1)).toBe('-')
   })
 })
 
@@ -585,8 +596,7 @@ describe('<system> preamble folding', () => {
       FAKE_CTX,
     )
 
-    const prompt = calls[0]?.args[calls[0].args.length - 1]
-    expect(prompt).toBe(
+    expect(calls[0]?.input).toBe(
       '<system>\nYou are a helpful assistant.\n</system>\n\nSay exactly: hi',
     )
   })
@@ -611,8 +621,7 @@ describe('multi-message transcript serialization', () => {
     const adapter = codexCliAdapter({ runner })
     await adapter.run(makeResolvedReq({ messages }), FAKE_CTX)
 
-    const prompt = calls[0]?.args[calls[0].args.length - 1]
-    expect(prompt).toBe('User:\nfirst\n\nAssistant:\nsecond\n\nUser:\nthird')
+    expect(calls[0]?.input).toBe('User:\nfirst\n\nAssistant:\nsecond\n\nUser:\nthird')
   })
 })
 

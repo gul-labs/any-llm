@@ -476,12 +476,11 @@ export function codexCliAdapter(opts?: CodexCliAdapterOptions): ProviderAdapter 
           args.push('-o', outputPath)
 
           // The fully-serialized prompt (with the optional <system> preamble
-          // folded in) is the FINAL POSITIONAL ARGUMENT — matching the
-          // captured smoke-test invocation shape (`codex exec ... 'Say
-          // exactly: hi'`). We still pass an empty string as the runner's
-          // `input` (stdin) to satisfy the shared CodexCliRunner interface
-          // shape; codex never reads stdin in this invocation form.
-          args.push(prompt)
+          // folded in) travels on stdin and the positional argument is `-`,
+          // which `codex exec` documents as "read instructions from stdin".
+          // A prompt in argv would hit the OS limit on one argument (128 KiB
+          // on Linux, E2BIG) for a large history or file.
+          args.push('-')
 
           // ----------------------------------------------------------------
           // 4. Timeout — the runner owns timeout/abort enforcement
@@ -499,7 +498,7 @@ export function codexCliAdapter(opts?: CodexCliAdapterOptions): ProviderAdapter 
 
           let result: Awaited<ReturnType<CodexCliRunner['run']>>
           try {
-            result = await runner.run(args, '', {
+            result = await runner.run(args, prompt, {
               cwd: scratchDir,
               ...(timeoutMs !== undefined ? { timeoutMs } : {}),
               ...(req.signal !== undefined ? { signal: req.signal } : {}),

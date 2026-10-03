@@ -10,10 +10,21 @@
  */
 
 import { spawn } from 'node:child_process'
+import { StringDecoder } from 'node:string_decoder'
 
 // ---------------------------------------------------------------------------
 // CodexCliRunner — structural interface
 // ---------------------------------------------------------------------------
+
+/**
+ * Most stdout the runner buffers: 32 MiB. A call that prints more is killed and
+ * rejected, so a runaway process cannot exhaust the host's memory. stderr is
+ * diagnostic only: the runner keeps its last {@link MAX_STDERR_CHARS}.
+ */
+export const MAX_STDOUT_BYTES = 32 * 1024 * 1024
+
+/** Most stderr text kept (the tail); the adapter only reads its end. */
+export const MAX_STDERR_CHARS = 1024 * 1024
 
 /** Result of a single `codex` CLI invocation. */
 export interface CodexCliRunResult {
@@ -38,8 +49,9 @@ export interface CodexCliRunner {
    *
    * @param args - Full argv (excluding the binary path itself).
    * @param input - Data written to stdin, then the stream is closed. The
-   *   codex-cli adapter always passes `''` here — see the adapter's argv
-   *   construction comment for why the prompt travels via argv, not stdin.
+   *   codex-cli adapter passes the rendered prompt here and `-` as the
+   *   positional argument, so a large prompt is never an argv entry (Linux
+   *   caps one argument at 128 KiB).
    * @param opts.cwd - Working directory for the subprocess (also the
    *   directory passed as `-C` in the adapter's argv).
    * @param opts.timeoutMs - Optional wall-clock ceiling; the runner sends
@@ -90,7 +102,12 @@ export function createCodexCliRunner(codexPath = 'codex'): CodexCliRunner {
           stdio: ['pipe', 'pipe', 'pipe'],
         })
 
+        // Chunks can split a multibyte UTF-8 character, so each stream keeps
+        // a decoder that holds the partial bytes until the rest arrives.
+        const stdoutDecoder = new StringDecoder('utf8')
+        const stderrDecoder = new StringDecoder('utf8')
         let stdout = ''
+        let stdoutBytes = 0
         let stderr = ''
         let settled = false
         // Set once a timeout/abort has begun killing the child. The
@@ -140,11 +157,28 @@ export function createCodexCliRunner(codexPath = 'codex'): CodexCliRunner {
         }
 
         child.stdout.on('data', (chunk: Buffer) => {
-          stdout += chunk.toString('utf-8')
+          // Once a kill is under way the output no longer matters.
+          if (pendingError !== undefined) return
+          stdoutBytes += chunk.length
+          if (stdoutBytes > MAX_STDOUT_BYTES) {
+            const err = new Error(
+              `codex-cli stdout exceeded ${MAX_STDOUT_BYTES} bytes; the process was killed`,
+            )
+            err.name = 'OutputLimitError'
+            beginReject(err)
+            return
+          }
+          stdout += stdoutDecoder.write(chunk)
         })
         child.stderr.on('data', (chunk: Buffer) => {
-          stderr += chunk.toString('utf-8')
+          stderr = (stderr + stderrDecoder.write(chunk)).slice(-MAX_STDERR_CHARS)
         })
+
+        // A CLI that exits before reading its stdin (a bad flag, expired auth)
+        // makes the write fail with EPIPE. Without a listener that stream
+        // error is unhandled and crashes the host process; the exit code and
+        // stderr already carry the real failure.
+        child.stdin.on('error', () => {})
 
         child.on('error', (err) => {
           if (settled) return
@@ -166,12 +200,13 @@ export function createCodexCliRunner(codexPath = 'codex'): CodexCliRunner {
           if (pendingError !== undefined) {
             reject(pendingError)
           } else {
+            stdout += stdoutDecoder.end()
+            stderr = (stderr + stderrDecoder.end()).slice(-MAX_STDERR_CHARS)
             resolve({ stdout, stderr, exitCode: code })
           }
         })
 
-        child.stdin.write(input)
-        child.stdin.end()
+        child.stdin.end(input, 'utf8')
       })
     },
   }

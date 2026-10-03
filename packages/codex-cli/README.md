@@ -165,8 +165,12 @@ The invariant flags (`--json --ephemeral --skip-git-repo-check
 approval_policy=never --color never`) are never caller-configurable.
 `--strict-config` turns a mistyped `-c` key into exit 1 instead of a silent
 drop. Only `-m <model>`, `-c model_reasoning_effort=<effort>`,
-`--output-schema`, `-o`, `-C <scratchDir>`, and the final positional prompt
-argument vary per call.
+`--output-schema`, `-o` and `-C <scratchDir>` vary per call. The prompt is
+written to the child's stdin and the final positional argument is `-`
+(`codex exec` reads instructions from stdin for `-`), so a large history never
+hits the OS limit on one argv entry. The runner buffers at most 32 MiB of
+stdout (past that the process is killed and the call rejects), decodes UTF-8
+across chunk boundaries, and tolerates a CLI that exits before reading stdin.
 
 Smoke-tested on 2026-09-25 with `codex-cli 0.157.0`: `codex exec` accepted
 `--strict-config` together with `-c model_reasoning_effort=max` and
