@@ -3119,3 +3119,14 @@ equals `microUsd`, NULL rows being the unpriced attempts.
   because the cached text rate would understate a cache that holds audio. A response that splits the
   prompt and shows no audio proves the cache holds none and stays exact. No capture with cached tokens
   exists in the evidence; the rule is fail-closed on a split Google documents as optional.
+
+**Postgres-safe text and the drift tolerance.** `buildRecord` removes U+0000 and replaces each unpaired
+surrogate with U+FFFD in every string and object key of the record, once, last (redaction and the byte cap
+see the original text), and adds a warning when it changed anything. Postgres `text` cannot hold U+0000 and
+`jsonb` rejects both it and an unpaired surrogate (which `JSON.stringify` writes as an escape), so such a
+string used to fail the insert and the fail-open sink dropped the billed row. The cleaning is copy-on-write,
+so a clean record aliases its inputs as before and the caller's data is never mutated. The drift tolerance
+(item 6) counts the lanes that can carry rounding, 1 µUSD each, minimum 1: a lane with a non-zero amount or
+tokens for it (billable input, cached input, output), not only lanes whose rounded amount is non-zero. A lane
+that rounds to 0 can still hold up to 0.5 µUSD, so four sub-µUSD lanes and a rounded provider total could
+differ by 2 against a tolerance of 1 and raise a false drift warning.

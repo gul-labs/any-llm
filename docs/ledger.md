@@ -59,6 +59,10 @@ Rules that matter:
   such calls in SQL with the rows whose `status` is `timeout` or `aborted` and `cost_micro_usd IS NULL`.
   `callCost` is on `CallSuccessEvent`, `CallErrorEvent` and `LlmResult`; `Telemetry.onAttempt` reports each
   attempt as it happens.
+- Provider-controlled text can carry what Postgres cannot store: U+0000 (rejected by `text` and `jsonb`) and an
+  unpaired surrogate (rejected by `jsonb`). `buildRecord` removes U+0000 and replaces each unpaired surrogate
+  with U+FFFD in every string and object key of the record, and adds a warning when it did, so the billed row is
+  written instead of lost. The live result and the thrown error keep the original text.
 - `reasoning_text` and `error_message` are provider-controlled and are capped at 16 KiB (UTF-8, marker
   included) when the record is built. A longer text ends in `…[truncated]` and the row carries a warning;
   the live result and the thrown error keep the full text. `error_message` is redacted before it is cut.

@@ -391,7 +391,7 @@ details = { input, cached, output }   // thinking billed at output rate (folded 
 - Priced tiers are `standard` and `flex`; there is no Batch API path, so no batch rates are carried.
 - `Cost.providerReported?: { microUsd }` is the total a provider itself reports billing (xAI
   `cost_in_usd_ticks`, 1 tick = 1e-10 USD, rounded like a lane). `microUsd` stays the snapshot price; the
-  engine warns when the two totals differ by more than 1 µUSD per priced lane.
+  engine warns when the two totals differ by more than 1 µUSD per lane that can carry rounding (a non-zero amount or tokens for it; ADR-039 Amendment A).
 
 ---
 

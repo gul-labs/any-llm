@@ -700,3 +700,86 @@ describe('buildRecord — 16 KiB cap on reasoningText and errorMessage (D-01)', 
     expect(r.errorMessage).toBe('boom')
   })
 })
+
+describe('buildRecord — text Postgres cannot store (U+0000, lone surrogates)', () => {
+  const NUL = '\u0000'
+  const LONE_HIGH = '\ud800'
+  const LONE_LOW = '\udc00'
+
+  it('strips U+0000 from reasoningText and warns once', () => {
+    const r = buildRecord(makeBaseInput({ reasoningText: `a${NUL}b${NUL}` }))
+    expect(r.reasoningText).toBe('ab')
+    expect(r.warnings).toEqual([
+      {
+        type: 'other',
+        message:
+          'the ledger record held U+0000 or an unpaired surrogate, which Postgres cannot store; U+0000 was removed and each unpaired surrogate replaced with U+FFFD.',
+      },
+    ])
+  })
+
+  it('strips U+0000 from the error message (after redaction); the live error is unchanged', () => {
+    const err = new LlmError(`boom${NUL}after`, { kind: 'server', retryable: false })
+    const r = buildRecord(makeBaseInput({ error: err, status: 'api_error' }))
+    expect(r.errorMessage).toBe('boomafter')
+    expect(err.message).toBe(`boom${NUL}after`)
+  })
+
+  it('cleans warnings, provider metadata, citations, tool calls, usage, metadata and short text fields', () => {
+    const r = buildRecord(
+      makeBaseInput({
+        responseId: `resp${NUL}1`,
+        modelVersion: `v${LONE_HIGH}`,
+        warnings: [{ type: 'other', message: `w${NUL}x` }],
+        providerMetadata: { note: `p${NUL}`, nested: [{ [`k${NUL}`]: `s${LONE_LOW}t` }] },
+        citations: [{ url: `https://x/${NUL}`, title: `t${NUL}` } as never],
+        toolCalls: [{ toolCallId: `c${NUL}`, toolName: 'f', args: { q: `a${NUL}b` } }],
+        usage: makeUsage({ raw: { text: `r${NUL}` } }),
+        metadata: { tenantId: `t${NUL}1` },
+        generationConfig: makeConfig({ stopSequences: [`s${NUL}`] }),
+      }),
+    )
+    const serialised = JSON.stringify(r)
+    expect(serialised).not.toContain('\\u0000')
+    expect(serialised).not.toContain('\\ud800')
+    expect(serialised).not.toContain('\\udc00')
+    expect(r.responseId).toBe('resp1')
+    expect(r.modelVersion).toBe('v\ufffd')
+    expect(r.providerMetadata).toEqual({ note: 'p', nested: [{ k: 's\ufffdt' }] })
+    expect(r.toolCalls?.[0]).toEqual({
+      toolCallId: 'c',
+      toolName: 'f',
+      args: { q: 'ab' },
+    })
+    expect(r.rawUsage).toEqual({ text: 'r' })
+    expect(r.metadata).toEqual({ tenantId: 't1' })
+    expect((r.warnings as Array<{ message: string }>).map((w) => w.message)).toEqual([
+      'wx',
+      expect.stringContaining('U+0000'),
+    ])
+  })
+
+  it('a well-formed surrogate pair and ordinary text are untouched, with no warning and the same objects', () => {
+    const raw = { text: 'emoji 😀 \u00e9 \u4e2d' }
+    const providerMetadata = { a: ['😀'] }
+    const r = buildRecord(
+      makeBaseInput({
+        reasoningText: 'think 😀',
+        usage: makeUsage({ raw }),
+        providerMetadata,
+      }),
+    )
+    expect(r.reasoningText).toBe('think 😀')
+    expect(r.rawUsage).toBe(raw)
+    expect(r.providerMetadata).toBe(providerMetadata)
+    expect(r.warnings).toBeUndefined()
+  })
+
+  it('does not mutate the caller input', () => {
+    const providerMetadata = { note: `p${NUL}` }
+    const warnings = [{ type: 'other' as const, message: `w${NUL}` }]
+    buildRecord(makeBaseInput({ providerMetadata, warnings }))
+    expect(providerMetadata.note).toBe(`p${NUL}`)
+    expect(warnings[0]?.message).toBe(`w${NUL}`)
+  })
+})

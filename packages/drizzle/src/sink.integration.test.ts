@@ -18,7 +18,7 @@ import { describe, it, expect } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { drizzleUsageSink, type InsertableDb } from './sink.js'
 import { llmCalls } from './schema.js'
-import { LlmError, createClient, createModelRegistry } from '@gullabs/core'
+import { LlmError, buildRecord, createClient, createModelRegistry } from '@gullabs/core'
 import type { LlmCallRecord, JsonValue } from '@gullabs/core'
 import { FakeAdapter } from '@gullabs/testing'
 import { makeTestDescriptor } from '../../core/src/test-model-descriptor.js'
@@ -618,5 +618,54 @@ describe('drizzleUsageSink — real PGlite integration', () => {
 
     const latencies = rows.map((r) => r.latencyMs).sort()
     expect(latencies).toEqual([111, 222, 333])
+  })
+
+  // A provider-controlled NUL or unpaired surrogate must not cost the billed row.
+  it('persists a billed row whose provider text holds U+0000 and unpaired surrogates', async () => {
+    const db = await createTestDb()
+    const sink = drizzleUsageSink(asInsertableDb(db))
+    const nul = '\u0000'
+    const record = buildRecord({
+      callId: 'call_nul',
+      attemptId: 'attempt_nul',
+      attemptNumber: 1,
+      provider: 'google',
+      model: 'gemini-2.5-pro',
+      usage: {
+        inputTokens: 1,
+        outputTokens: 1,
+        details: {},
+        raw: { text: `r${nul}`, odd: '\ud800' },
+      },
+      latencyMs: 1,
+      status: 'ok',
+      generationConfig: {},
+      metadata: { k: `v${nul}` },
+      createdAt: '2026-10-03T00:00:00.000Z',
+      reasoningText: `think${nul}ing`,
+      warnings: [{ type: 'other', message: `w${nul}\udc00` }],
+      providerMetadata: { [`key${nul}`]: `v${nul}\ud800` },
+      cost: {
+        microUsd: 42,
+        usd: 0.000042,
+        pricingVersion: 'p',
+        confidence: 'exact',
+        details: { input: 40, cached: 0, output: 2, tools: 0 },
+      },
+    })
+    await sink.record(record)
+
+    const rows = await db.select().from(llmCalls)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      costMicroUsd: 42,
+      reasoningText: 'thinking',
+      metadata: { k: 'v' },
+      providerMetadata: { key: 'v\ufffd' },
+    })
+    expect(rows[0]?.warnings).toEqual([
+      { type: 'other', message: 'w\ufffd' },
+      expect.objectContaining({ message: expect.stringContaining('U+0000') }),
+    ])
   })
 })

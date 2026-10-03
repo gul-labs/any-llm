@@ -192,19 +192,26 @@ export function computeCost(
  * Compares the library's priced total with the total the provider reported
  * (`Cost.providerReported`) and returns a warning when they drift apart.
  *
- * Only totals are compared: a provider reports no lanes. Each priced lane
- * (`details.input`, `cached`, `output`, `tools` with a non-zero amount) is
- * rounded to whole micro-USD independently and the provider's figure is
- * converted with the same rounding, so each lane can account for up to 1 µUSD
- * of difference; a larger gap means the snapshot's rates are stale or a billed
- * lane is not priced. `undefined` when there is nothing to compare (unpriced, or
- * the provider reported no total) or the totals agree within that tolerance.
+ * Only totals are compared: a provider reports no lanes. Each lane is rounded to
+ * whole micro-USD independently, so it can carry up to 0.5 µUSD of rounding even
+ * when it rounded to 0, and the provider's figure is converted with the same
+ * rounding. A lane can carry rounding when it has a non-zero amount or the usage
+ * has tokens for it (billable input, cached input, output); the tolerance is 1 µUSD
+ * for each such lane, minimum 1. A larger gap means the snapshot's rates are stale
+ * or a billed lane is not priced. `undefined` when there is nothing to compare
+ * (unpriced, or the provider reported no total) or the totals agree within that
+ * tolerance.
  *
  * @internal
  */
-export function providerCostDriftWarning(cost: Cost): Warning | undefined {
+export function providerCostDriftWarning(cost: Cost, usage: Usage): Warning | undefined {
   if (cost.microUsd === null || cost.providerReported === undefined) return undefined
-  const lanes = Object.values(cost.details).filter((micro) => micro !== 0).length
+  const cached = usage.cachedInputTokens ?? 0
+  const lanes =
+    Number(cost.details.input !== 0 || usage.inputTokens - cached > 0) +
+    Number(cost.details.cached !== 0 || cached > 0) +
+    Number(cost.details.output !== 0 || usage.outputTokens > 0) +
+    Number(cost.details.tools !== 0)
   const tolerance = Math.max(1, lanes)
   const difference = cost.providerReported.microUsd - cost.microUsd
   if (Math.abs(difference) <= tolerance) return undefined
@@ -213,6 +220,6 @@ export function providerCostDriftWarning(cost: Cost): Warning | undefined {
     message:
       `cost drift: the provider reported ${cost.providerReported.microUsd} µUSD but pricing snapshot ` +
       `${cost.pricingVersion} computed ${cost.microUsd} µUSD (difference ${difference}, tolerance ${tolerance} ` +
-      `for ${lanes} priced lane${lanes === 1 ? '' : 's'}); the snapshot's rates may be stale or a billed lane is not priced.`,
+      `for ${lanes} lane${lanes === 1 ? '' : 's'} that can carry rounding); the snapshot's rates may be stale or a billed lane is not priced.`,
   }
 }

@@ -674,6 +674,90 @@ function capRecordText(text: string): { text: string; truncated: boolean } {
 }
 
 // ---------------------------------------------------------------------------
+// Postgres-safe text
+// ---------------------------------------------------------------------------
+
+/**
+ * Postgres `text` cannot hold U+0000 and `jsonb` rejects it, and `jsonb` also
+ * rejects an unpaired surrogate (`JSON.stringify` writes one as a `\ud800`-style
+ * escape). Provider-controlled text can carry either, and a row that fails to
+ * insert is a billed row lost (the sink is fail-open). `cleanText` removes
+ * U+0000 and replaces each unpaired surrogate with U+FFFD.
+ */
+function cleanText(text: string): string {
+  let out: string | undefined
+  let from = 0
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text.charCodeAt(i)
+    let replacement: string | undefined
+    if (c === 0) {
+      replacement = ''
+    } else if (c >= 0xd800 && c <= 0xdbff) {
+      const next = text.charCodeAt(i + 1)
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        i += 1
+        continue
+      }
+      replacement = '\ufffd'
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      replacement = '\ufffd'
+    }
+    if (replacement === undefined) continue
+    out = (out ?? '') + text.slice(from, i) + replacement
+    from = i + 1
+  }
+  return out === undefined ? text : out + text.slice(from)
+}
+
+/**
+ * Deep copy-on-write {@link cleanText} over every string and object key in a
+ * record value. A subtree with nothing to clean is returned as the same
+ * object, so the caller's data is never mutated and clean records alias their
+ * inputs exactly as before. `changed` is set when anything was cleaned.
+ */
+function cleanDeep<T>(value: T, state: { changed: boolean }): T {
+  if (typeof value === 'string') {
+    const cleaned = cleanText(value)
+    if (cleaned !== value) state.changed = true
+    return cleaned as T
+  }
+  if (Array.isArray(value)) {
+    let copy: unknown[] | undefined
+    value.forEach((item: unknown, index) => {
+      const cleaned = cleanDeep(item, state)
+      if (cleaned !== item) {
+        copy ??= value.slice()
+        copy[index] = cleaned
+      }
+    })
+    return (copy ?? value) as T
+  }
+  if (typeof value === 'object' && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>)
+    let copy: Record<string, unknown> | undefined
+    entries.forEach(([key, item], index) => {
+      const cleanedKey = cleanText(key)
+      const cleaned = cleanDeep(item, state)
+      if (cleaned !== item || cleanedKey !== key) {
+        if (cleanedKey !== key) state.changed = true
+        // Rebuild in order so a key that collapses keeps its place.
+        copy ??= Object.fromEntries(
+          entries.slice(0, index).map(([k, v]) => [k, v] as const),
+        )
+        copy[cleanedKey] = cleaned
+      } else if (copy !== undefined) {
+        copy[key] = item
+      }
+    })
+    return (copy ?? value) as T
+  }
+  return value
+}
+
+const CLEANED_TEXT_WARNING =
+  'the ledger record held U+0000 or an unpaired surrogate, which Postgres cannot store; U+0000 was removed and each unpaired surrogate replaced with U+FFFD.'
+
+// ---------------------------------------------------------------------------
 // buildRecord
 // ---------------------------------------------------------------------------
 
@@ -843,5 +927,16 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
     createdAt: input.createdAt,
   }
 
-  return record
+  // Provider-controlled text can carry what Postgres cannot store; clean the whole
+  // record once, last, so redaction and the byte cap saw the original text.
+  const state = { changed: false }
+  const cleaned = cleanDeep(record, state)
+  if (!state.changed) return record
+  return {
+    ...cleaned,
+    warnings: [
+      ...((cleaned.warnings ?? []) as JsonValue[]),
+      { type: 'other', message: CLEANED_TEXT_WARNING },
+    ],
+  }
 }

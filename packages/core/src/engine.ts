@@ -2083,7 +2083,7 @@ export function createClient(config: ClientConfig): Client {
             // The provider billed tokens its usage fields do not carry: the
             // amount can undercount, so it is never reported as exact.
             if (normalizedResult.estimated) cost = markEstimated(cost)
-            const drift = providerCostDriftWarning(cost)
+            const drift = providerCostDriftWarning(cost, normalizedResult.usage)
             if (drift !== undefined) costWarnings.push(drift)
             if (cost.microUsd === null) {
               const reason =

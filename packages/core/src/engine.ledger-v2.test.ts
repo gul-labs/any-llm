@@ -448,7 +448,7 @@ describe('R7.4 provider-reported total versus the priced total', () => {
     expect((await client.generate(request(), { auth: AUTH })).warnings).toEqual([])
   })
 
-  it('providerCostDriftWarning: tolerance is the number of non-zero priced lanes (min 1)', () => {
+  describe('providerCostDriftWarning tolerance is the rounding the lanes can carry', () => {
     const cost = (
       microUsd: number,
       reported: number,
@@ -461,26 +461,78 @@ describe('R7.4 provider-reported total versus the priced total', () => {
       details,
       providerReported: { microUsd: reported },
     })
-    const one = { input: 0, cached: 0, output: 500, tools: 0 }
-    const four = { input: 100, cached: 100, output: 100, tools: 100 }
-    expect(providerCostDriftWarning(cost(500, 501, one))).toBeUndefined()
-    expect(providerCostDriftWarning(cost(500, 502, one))).toBeDefined()
-    expect(providerCostDriftWarning(cost(400, 404, four))).toBeUndefined()
-    expect(providerCostDriftWarning(cost(400, 405, four))).toBeDefined()
-    expect(providerCostDriftWarning(cost(400, 396, four))).toBeUndefined()
-    expect(providerCostDriftWarning(cost(400, 395, four))).toBeDefined()
+    const tokens = (over: Partial<Usage> = {}): Usage => ({
+      inputTokens: 0,
+      outputTokens: 0,
+      details: {},
+      raw: null,
+      ...over,
+    })
+
+    it('counts the lanes with a non-zero amount (min 1)', () => {
+      const one = { input: 0, cached: 0, output: 500, tools: 0 }
+      const four = { input: 100, cached: 100, output: 100, tools: 100 }
+      const fourUsage = tokens({
+        inputTokens: 200,
+        cachedInputTokens: 100,
+        outputTokens: 50,
+      })
+      const oneUsage = tokens({ outputTokens: 50 })
+      expect(providerCostDriftWarning(cost(500, 501, one), oneUsage)).toBeUndefined()
+      expect(providerCostDriftWarning(cost(500, 502, one), oneUsage)).toBeDefined()
+      expect(providerCostDriftWarning(cost(400, 404, four), fourUsage)).toBeUndefined()
+      expect(providerCostDriftWarning(cost(400, 405, four), fourUsage)).toBeDefined()
+      expect(providerCostDriftWarning(cost(400, 396, four), fourUsage)).toBeUndefined()
+      expect(providerCostDriftWarning(cost(400, 395, four), fourUsage)).toBeDefined()
+    })
+
+    it('counts a lane that rounded to zero but has tokens: it still carries up to 0.5 µUSD', () => {
+      // Three lanes of 0.4 µUSD each round to 0; the provider's 1.2 rounds to 1.
+      // Four lanes of 0.4 (tools has an amount of 0 too) can differ by 2.
+      const zero = { input: 0, cached: 0, output: 0, tools: 0 }
+      const usage = tokens({ inputTokens: 8, cachedInputTokens: 4, outputTokens: 4 })
+      expect(providerCostDriftWarning(cost(0, 2, zero), usage)).toBeUndefined()
+      expect(providerCostDriftWarning(cost(0, 3, zero), usage)).toBeUndefined()
+      expect(providerCostDriftWarning(cost(0, 4, zero), usage)).toBeDefined()
+    })
+
+    it('a call with no tokens and no amounts has no rounding to excuse beyond 1 µUSD', () => {
+      const zero = { input: 0, cached: 0, output: 0, tools: 0 }
+      expect(providerCostDriftWarning(cost(0, 1, zero), tokens())).toBeUndefined()
+      expect(providerCostDriftWarning(cost(0, 2, zero), tokens())).toBeDefined()
+    })
+
+    it('cached tokens are not billable input: an all-cached prompt counts the cached lane only', () => {
+      const zero = { input: 0, cached: 0, output: 0, tools: 0 }
+      // inputTokens 4, all cached, no output: one possible lane, so tolerance 1.
+      const usage = tokens({ inputTokens: 4, cachedInputTokens: 4 })
+      expect(providerCostDriftWarning(cost(0, 1, zero), usage)).toBeUndefined()
+      expect(providerCostDriftWarning(cost(0, 2, zero), usage)).toBeDefined()
+    })
+
+    it('the warning names the lane count', () => {
+      const zero = { input: 0, cached: 0, output: 0, tools: 0 }
+      const w = providerCostDriftWarning(
+        cost(0, 9, zero),
+        tokens({ inputTokens: 8, cachedInputTokens: 4, outputTokens: 4 }),
+      )
+      expect(w?.message).toContain('tolerance 3 for 3 lanes')
+    })
   })
 
   it('an unpriced cost is never compared, even with a provider total', () => {
     expect(
-      providerCostDriftWarning({
-        microUsd: null,
-        usd: null,
-        pricingVersion: 'v',
-        confidence: 'estimated',
-        details: { input: 0, cached: 0, output: 0, tools: 0 },
-        providerReported: { microUsd: 5_000 },
-      }),
+      providerCostDriftWarning(
+        {
+          microUsd: null,
+          usd: null,
+          pricingVersion: 'v',
+          confidence: 'estimated',
+          details: { input: 0, cached: 0, output: 0, tools: 0 },
+          providerReported: { microUsd: 5_000 },
+        },
+        usage(),
+      ),
     ).toBeUndefined()
   })
 })
