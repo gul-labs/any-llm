@@ -47,6 +47,7 @@ import {
   FakeIds,
   RecordingSink,
   SignalAwareFakeAdapter,
+  fakeHttpError,
 } from '@gullabs/testing'
 import { makeTestPricingSource } from './test-pricing-source.js'
 import { makePermissiveTestDescriptor } from './test-model-descriptor.js'
@@ -1021,7 +1022,7 @@ describe('surface-stress: fail-open', () => {
 
   it('throwing sink on error path: LlmError still rethrown (5 iterations)', async () => {
     const sink = new RecordingSink({ failOnRecord: true })
-    const adapter = new FakeAdapter('google', { status: 500 })
+    const adapter = new FakeAdapter('google', fakeHttpError(500))
 
     const client = createClient({
       adapters: [adapter],
@@ -1070,7 +1071,7 @@ describe('surface-stress: fail-open', () => {
 
     // Error path — telemetry throws in onStart + onError, error still rethrown
     const failClient = createClient({
-      adapters: [new FakeAdapter('google', { status: 503 })],
+      adapters: [new FakeAdapter('google', fakeHttpError(503))],
       pricingSources: { google: PRICING },
       modelRegistry: TEST_REGISTRY,
       telemetry: throwingTelemetry,

@@ -113,6 +113,14 @@ export interface AdapterCtx {
    * reads it from {@link ResolvedRequest.modelDescriptor}.
    */
   modelDescriptor?: ModelDescriptor
+  /**
+   * The client's {@link Scheduler}, for adapters that wait (a polling loop, a
+   * scripted delay). Set by the engine on every call, so an adapter's waits
+   * follow the same fake or real timers as the engine's own. Absent only when
+   * an adapter is invoked directly, outside the engine, in which case real
+   * timers apply.
+   */
+  scheduler?: Scheduler
 }
 
 /**
@@ -271,6 +279,11 @@ export interface ProviderAdapter {
  * A function that MUST be called exactly once to signal the end of the
  * rate-limited window for a single acquired slot.
  *
+ * The engine passes the attempt's normalized {@link Usage} when the provider
+ * reported one (a success, or a billed failure that carries `usage`), and
+ * nothing when the attempt produced none (a timeout, an abort, a transport
+ * failure). A token-aware limiter reconciles its estimate against it.
+ *
  * The engine guarantees `Release` is called on every exit path (success and
  * error) after a successful {@link RateLimiter.acquire}.  Implementations that
  * track concurrency use it to free the slot; implementations based on a
@@ -281,7 +294,23 @@ export interface ProviderAdapter {
  * provider request actually stops.  Concurrency-slot accuracy therefore depends
  * on adapters honoring the abort signal cooperatively.
  */
-export type Release = () => void
+export type Release = (usage?: Usage) => void
+
+/**
+ * What the engine knows about a call before it is dispatched, handed to
+ * {@link RateLimiter.acquire} so a token-aware limiter can pace on it.
+ */
+export interface RateLimitHint {
+  /**
+   * A cheap estimate of the attempt's input tokens, from the text the request
+   * carries (system, message text, tool calls and results, tool declarations;
+   * see `estimateInputTokens`). Media and file parts are not counted, so it is
+   * a floor for a request that carries them. It is an estimate, never the
+   * provider's count: the limiter reconciles it with the real usage given to
+   * {@link Release}.
+   */
+  estimatedInputTokens?: number
+}
 
 /**
  * Pre-send pacing / backpressure seam.
@@ -351,10 +380,13 @@ export interface RateLimiter {
    *                 `acquire` is still pending, the engine calls the `Release`
    *                 it resolves with later, so a slot is not leaked; a limiter
    *                 that ignores the signal still holds its slot until then.
+   * @param hint   - What the engine knows about the attempt before dispatch
+   *                 (see {@link RateLimitHint}). A limiter that does not pace
+   *                 on tokens ignores it.
    * @returns A {@link Release} that MUST be called exactly once after the
    *          acquire resolves, on every exit path.
    */
-  acquire(key: string, signal?: AbortSignal): Promise<Release>
+  acquire(key: string, signal?: AbortSignal, hint?: RateLimitHint): Promise<Release>
 }
 
 // ---------------------------------------------------------------------------
@@ -478,6 +510,25 @@ export type AuthMaterial = ApiKeyAuth | CliSessionAuth
 export interface Clock {
   /** Returns the current time as milliseconds since the Unix epoch. */
   now(this: void): number
+}
+
+/**
+ * Handle returned by {@link Scheduler.setTimeout}; opaque, passed back to
+ * {@link Scheduler.clearTimeout}.
+ */
+export type TimerHandle = object | number
+
+/**
+ * The timer source the engine, the retry middleware and the fakes use for every
+ * wait. The default is the platform's `setTimeout` and `clearTimeout`.
+ * Inject `FakeClock` from `@gullabs/testing` (it implements both this and
+ * {@link Clock}) to make timeouts, deadlines and back-off deterministic.
+ */
+export interface Scheduler {
+  /** Runs `callback` once after `ms` milliseconds; returns a handle for `clearTimeout`. */
+  setTimeout(this: void, callback: () => void, ms: number): TimerHandle
+  /** Cancels a pending timer; a settled or unknown handle is ignored. */
+  clearTimeout(this: void, handle: TimerHandle): void
 }
 
 /**
@@ -717,6 +768,8 @@ export interface EngineCtx {
   callId: string
   /** Time source injected from the client config. */
   clock: Clock
+  /** Timer source injected from the client config; waits go through it. */
+  scheduler: Scheduler
   /** Structured logger injected from the client config. */
   logger: Logger
   /**

@@ -6,4 +6,6 @@ export default defineConfig({
   clean: true,
   sourcemap: true,
   treeshake: true,
+  // `createRequire(import.meta.url)` in errors.ts, for the CJS build.
+  shims: true,
 })

@@ -1,5 +1,6 @@
 export { inMemoryRateLimiter, type InMemoryRateLimiterOptions } from '@gullabs/core'
-import type { RateLimiter, Release } from '@gullabs/core'
+import type { RateLimiter, Release, Scheduler, TimerHandle } from '@gullabs/core'
+import { PLATFORM_SCHEDULER } from './platform-scheduler.js'
 
 export interface ScriptedRateLimiterOptions {
   /** Fixed delay (ms) the limiter waits before resolving `acquire`. */
@@ -10,6 +11,11 @@ export interface ScriptedRateLimiterOptions {
    * sleeping in wall-clock time.
    */
   clock?: { advance(ms: number): void }
+  /**
+   * Timer source for the wait when `clock` is not given. Pass a `FakeClock` to
+   * make the wait follow fake time. Default: platform timers.
+   */
+  scheduler?: Scheduler
 }
 
 /**
@@ -25,14 +31,15 @@ export function scriptedRateLimiter(opts: ScriptedRateLimiterOptions): RateLimit
           return
         }
 
-        let timer: ReturnType<typeof setTimeout> | undefined
+        const scheduler = opts.scheduler ?? PLATFORM_SCHEDULER
+        let timer: TimerHandle | undefined
         const onAbort = (): void => {
           cleanup()
           reject(new DOMException('Aborted', 'AbortError'))
         }
         const cleanup = (): void => {
           if (timer !== undefined) {
-            clearTimeout(timer)
+            scheduler.clearTimeout(timer)
             timer = undefined
           }
           signal?.removeEventListener('abort', onAbort)
@@ -48,7 +55,7 @@ export function scriptedRateLimiter(opts: ScriptedRateLimiterOptions): RateLimit
           return
         }
 
-        timer = setTimeout(() => {
+        timer = scheduler.setTimeout(() => {
           cleanup()
           resolve(() => {})
         }, opts.delayMs)

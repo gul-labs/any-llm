@@ -147,9 +147,15 @@ importers:
 
   packages/testing:
     devDependencies:
+      '@google/genai':
+        specifier: ^2.24.0
+        version: 2.25.0
       '@gullabs/core':
         specifier: workspace:*
         version: link:../core
+      openai:
+        specifier: ^7.23.0
+        version: 7.25.0(ws@8.21.3)(zod@4.6.5)
 
   packages/xai:
     dependencies:

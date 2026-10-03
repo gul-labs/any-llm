@@ -20,6 +20,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
+import { FakeClock } from '@gullabs/testing'
 import { LlmError } from './errors.js'
 import { retryMiddleware } from './retry.js'
 import type { Handler, EngineCtx, ResolvedRequest } from './ports.js'
@@ -64,6 +65,7 @@ function makeCtx(clock: { now: () => number }, deadlineAt?: number): EngineCtx {
   return {
     callId: 'c1',
     clock,
+    scheduler: new FakeClock(),
     logger: NOOP_LOGGER,
     ...(deadlineAt !== undefined ? { deadlineAt } : {}),
   }

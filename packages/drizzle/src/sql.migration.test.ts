@@ -32,7 +32,7 @@ import { describe, expect, it } from 'vitest'
 import { assertLlmCallsSchema, drizzleUsageSink, type InsertableDb } from './sink.js'
 import { llmCalls } from './schema.js'
 import { LlmError, createClient, createModelRegistry } from '@gullabs/core'
-import type { LlmCallRecord, Logger } from '@gullabs/core'
+import type { AdapterResult, LlmCallRecord, Logger } from '@gullabs/core'
 import { FakeAdapter, FakeClock, FakeIds } from '@gullabs/testing'
 import { makePermissiveTestDescriptor } from '../../core/src/test-model-descriptor.js'
 
@@ -764,7 +764,7 @@ function documentedStatement(source: string, startsWith: string): string {
 const costLanes = { input: 3, cached: 0, output: 4, tools: 0 }
 
 describe('a table that was not migrated is detectable, and the engine logs every dropped row loudly', () => {
-  const OK = {
+  const OK: AdapterResult = {
     message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
     text: 'ok',
     usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },

@@ -37,6 +37,7 @@ import {
   FakeIds,
   RecordingSink,
   SignalAwareFakeAdapter,
+  fakeHttpError,
 } from '@gullabs/testing'
 import {
   makePermissiveTestDescriptor,
@@ -496,7 +497,7 @@ describe('engine — double-count integration', () => {
 
 describe('engine — failure path', () => {
   it('adapter throws {status:429} → rethrows LlmError rate_limited, record written', async () => {
-    const adapter = new FakeAdapter('google', { status: 429 })
+    const adapter = new FakeAdapter('google', fakeHttpError(429))
     const sink = new RecordingSink()
     const errors: object[] = []
     const telemetry: Telemetry = {
@@ -727,7 +728,7 @@ describe('engine — fail-open sink', () => {
 
   it('sink throws on error-path record → still rethrows the LlmError', async () => {
     const sink = new RecordingSink({ failOnRecord: true })
-    const adapter = new FakeAdapter('google', { status: 500 })
+    const adapter = new FakeAdapter('google', fakeHttpError(500))
 
     const client = createClient({
       adapters: [adapter],
@@ -1275,7 +1276,7 @@ describe('engine — logger', () => {
     }
 
     const client = createClient({
-      adapters: [new FakeAdapter('google', { status: 500 })],
+      adapters: [new FakeAdapter('google', fakeHttpError(500))],
 
       pricingSources: { google: PRICING },
       modelRegistry: TEST_REGISTRY,

@@ -93,4 +93,35 @@ describe('RecordingSink', () => {
     const sink: import('@gullabs/core').UsageSink = new RecordingSink()
     expect(typeof sink.record).toBe('function')
   })
+
+  describe("dedupeOn: 'attemptId'", () => {
+    it('keeps the first record of an attemptId and counts the repeat, as the ledger does', async () => {
+      const sink = new RecordingSink({ dedupeOn: 'attemptId' })
+      const first = makeRecord({ attemptId: 'a1', status: 'api_error' })
+      const repeat = makeRecord({ attemptId: 'a1', status: 'ok' })
+
+      await sink.record(first)
+      await sink.record(repeat)
+      await sink.record(makeRecord({ attemptId: 'a2' }))
+
+      expect(sink.records.map((r) => r.attemptId)).toEqual(['a1', 'a2'])
+      expect(sink.records[0]).toBe(first)
+      expect(sink.duplicates).toEqual([repeat])
+    })
+
+    it('without the option every record is kept, which is what hides a double write', async () => {
+      const sink = new RecordingSink()
+      await sink.record(makeRecord({ attemptId: 'a1' }))
+      await sink.record(makeRecord({ attemptId: 'a1' }))
+      expect(sink.records).toHaveLength(2)
+      expect(sink.duplicates).toEqual([])
+    })
+
+    it('a failed write does not claim the attemptId', async () => {
+      const sink = new RecordingSink({ dedupeOn: 'attemptId', failOnRecord: true })
+      await expect(sink.record(makeRecord({ attemptId: 'a1' }))).rejects.toThrow()
+      expect(sink.records).toEqual([])
+      expect(sink.duplicates).toEqual([])
+    })
+  })
 })

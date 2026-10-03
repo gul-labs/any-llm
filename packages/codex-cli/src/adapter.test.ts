@@ -11,6 +11,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { LlmError } from '@gullabs/core'
+import { FakeCliRunner } from '@gullabs/testing'
 import type { ResolvedRequest, AdapterCtx, Message } from '@gullabs/core'
 import { codexCliAdapter } from './adapter.js'
 import type { CodexCliRunner, CodexCliRunResult } from './runner.js'
@@ -65,19 +66,12 @@ interface FakeRunnerCall {
   opts: { cwd: string; timeoutMs?: number; signal?: AbortSignal }
 }
 
-/** Builds a fake CodexCliRunner that resolves with a fixed result and records calls. */
+/** Builds a fake CodexCliRunner (`FakeCliRunner`) that answers from `behavior` and records calls. */
 function makeFakeRunner(
   behavior: (call: FakeRunnerCall) => Promise<CodexCliRunResult> | CodexCliRunResult,
 ): { runner: CodexCliRunner; calls: FakeRunnerCall[] } {
-  const calls: FakeRunnerCall[] = []
-  const runner: CodexCliRunner = {
-    async run(args, input, opts) {
-      const call: FakeRunnerCall = { args, input, opts }
-      calls.push(call)
-      return behavior(call)
-    },
-  }
-  return { runner, calls }
+  const runner = new FakeCliRunner(behavior)
+  return { runner, calls: runner.calls }
 }
 
 const FAKE_CTX: AdapterCtx = {

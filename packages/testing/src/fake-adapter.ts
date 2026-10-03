@@ -13,7 +13,10 @@ import type {
   ResolvedRequest,
   AdapterCtx,
   AdapterResult,
+  Scheduler,
 } from '@gullabs/core'
+
+import { PLATFORM_SCHEDULER } from './platform-scheduler.js'
 
 // ---------------------------------------------------------------------------
 // FakeAdapter script entry
@@ -23,34 +26,22 @@ import type {
  * A scripted response entry for {@link FakeAdapter}.
  *
  * - {@link AdapterResult}: the adapter returns this as a success response.
- * - `Error`: the adapter throws it (goes through engine's `classifyError`).
- * - Plain object (e.g. `{ status: 429 }`): thrown as-is; `classifyError`
- *   extracts the HTTP status for classification.
+ * - `Error`: the adapter throws it (goes through engine's `classifyError`). Use
+ *   the factories in `errors.ts` (`fakeHttpError`, `fakeProviderError`, ...) for
+ *   the shapes real SDKs throw.
+ *
+ * Anything else (a plain object such as `{ status: 429 }`, a result that lacks
+ * `model`, `usage` or `message`) is a mistake in the test and is rejected with a
+ * `TypeError` when the adapter is built, never turned into a thrown value.
  */
-export type FakeAdapterEntry = AdapterResult | Error | Record<string, unknown>
+export type FakeAdapterEntry = AdapterResult | Error
 
 /**
  * Internal discriminated-union queue entry.
- * Normalised at enqueue time so `run()` never mis-classifies a plain-object
- * error that happens to carry a `usage` key (e.g. `{ status: 429, usage: null }`).
  */
-type QueueEntry =
+export type QueueEntry =
   { kind: 'result'; result: AdapterResult } | { kind: 'throw'; error: unknown }
 
-/**
- * Normalise a public {@link FakeAdapterEntry} into an internal {@link QueueEntry}.
- *
- * An entry is a genuine {@link AdapterResult} only when **both**:
- * - `model` is a non-empty string, and
- * - `usage` is a non-null object.
- *
- * Such an entry must also carry the required `message` (an assistant message,
- * as every adapter returns); one without it is a mistake in the test and is
- * rejected with a `TypeError` instead of being completed.
- *
- * Everything else (including `Error` instances and plain HTTP-style objects
- * such as `{ status: 429, usage: null }`) is treated as a throw.
- */
 /**
  * Throw when a result-shaped scripted entry lacks the required assistant
  * `message`. Shared with the signal-aware fake; not part of the public surface.
@@ -70,20 +61,37 @@ export function assertResultHasMessage(entry: Record<string, unknown>): void {
   }
 }
 
-function normalizeEntry(entry: FakeAdapterEntry): QueueEntry {
+/**
+ * Classify one scripted entry, or throw `TypeError` naming `where`.
+ *
+ * An entry is an {@link AdapterResult} only when `model` is a non-empty string,
+ * `usage` is a non-null object and `message` is an assistant message. An
+ * `Error` instance is a scripted throw. Everything else is rejected.
+ * Shared with the signal-aware fake; not part of the public surface.
+ */
+export function classifyEntry(entry: unknown, where: string): QueueEntry {
   if (entry instanceof Error) {
     return { kind: 'throw', error: entry }
   }
-  const e = entry as Record<string, unknown>
-  if (
-    typeof e['model'] === 'string' &&
-    typeof e['usage'] === 'object' &&
-    e['usage'] !== null
-  ) {
-    assertResultHasMessage(e)
-    return { kind: 'result', result: entry as AdapterResult }
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+    throw new TypeError(
+      `${where} must be an Error or an AdapterResult, got ${entry === null ? 'null' : typeof entry}.`,
+    )
   }
-  return { kind: 'throw', error: entry }
+  const e = entry as Record<string, unknown>
+  const hasModel = typeof e['model'] === 'string' && e['model'].length > 0
+  const hasUsage = typeof e['usage'] === 'object' && e['usage'] !== null
+  if (!hasModel || !hasUsage) {
+    const missing = [
+      ...(hasModel ? [] : ['a non-empty `model`']),
+      ...(hasUsage ? [] : ['a `usage` object']),
+    ].join(' and ')
+    throw new TypeError(
+      `${where} must be an Error or an AdapterResult (a non-empty \`model\`, a \`usage\` object and an assistant \`message\`); it lacks ${missing}. A plain object is never thrown as an error: build one with a factory from '@gullabs/testing' (fakeHttpError, fakeProviderError, ...) or pass an Error.`,
+    )
+  }
+  assertResultHasMessage(e)
+  return { kind: 'result', result: entry as AdapterResult }
 }
 
 // ---------------------------------------------------------------------------
@@ -106,10 +114,11 @@ function normalizeEntry(entry: FakeAdapterEntry): QueueEntry {
  *
  * const adapter2 = new FakeAdapter('google', [
  *   successResult,
- *   { status: 429 },  // engine classifies as rate_limited
+ *   fakeHttpError(429),  // engine classifies as rate_limited
  * ])
  *
- * // Slow adapter for timeout tests:
+ * // Slow adapter for timeout tests; the delay runs on the client's scheduler,
+ * // so a FakeClock passed as `scheduler` makes it instant and deterministic:
  * const slow = new FakeAdapter('google', successResult, { delayMs: 200 })
  * ```
  */
@@ -123,8 +132,9 @@ export class FakeAdapter implements ProviderAdapter {
   private readonly _entries: QueueEntry[]
 
   /**
-   * Optional artificial delay before returning/throwing, in milliseconds.
-   * Use `timeoutMs < delayMs` in the client config to test timeout behaviour.
+   * Optional artificial delay before returning/throwing, in milliseconds, on
+   * the client's `scheduler`. Use `timeoutMs < delayMs` in the client config to
+   * test timeout behaviour.
    */
   private readonly _delayMs: number
 
@@ -140,16 +150,24 @@ export class FakeAdapter implements ProviderAdapter {
     opts?: { delayMs?: number },
   ) {
     this.id = id
-    const raw = Array.isArray(entries) ? entries : [entries]
-    this._entries = raw.map(normalizeEntry)
+    const raw: unknown[] = Array.isArray(entries) ? entries : [entries]
+    if (raw.length === 0) {
+      throw new TypeError('FakeAdapter needs at least one scripted entry.')
+    }
+    this._entries = raw.map((entry, i) => classifyEntry(entry, `FakeAdapter entry ${i}`))
     this._delayMs = opts?.delayMs ?? 0
   }
 
-  async run(req: ResolvedRequest, _ctx: AdapterCtx): Promise<AdapterResult> {
+  async run(req: ResolvedRequest, ctx: AdapterCtx): Promise<AdapterResult> {
     this.calls.push(req)
 
     if (this._delayMs > 0) {
-      await new Promise<void>((resolve) => setTimeout(resolve, this._delayMs))
+      // The client's scheduler (a FakeClock in a deterministic test); real
+      // timers only when the adapter is called outside the engine.
+      const scheduler: Scheduler = ctx.scheduler ?? PLATFORM_SCHEDULER
+      await new Promise<void>((resolve) => {
+        scheduler.setTimeout(resolve, this._delayMs)
+      })
     }
 
     // Pick entry: sequential, clamped to last when exhausted.

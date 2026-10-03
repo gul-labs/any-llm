@@ -14,7 +14,7 @@
 
 import { LlmError, classifyError } from './errors.js'
 import { MAX_TIMER_MS } from './timer.js'
-import type { Middleware, Handler, EngineCtx } from './ports.js'
+import type { Middleware, Handler, EngineCtx, Scheduler, TimerHandle } from './ports.js'
 import type { ResolvedRequest } from './ports.js'
 import type { LlmResult } from './types.js'
 
@@ -165,13 +165,17 @@ export function computeBackoffMs(
 // ---------------------------------------------------------------------------
 
 /**
- * Returns a promise that resolves after `ms` milliseconds, or rejects with an
+ * Returns a promise that resolves after `ms` milliseconds on `scheduler`, or rejects with an
  * `LlmError('aborted')` if `signal` fires first.
  *
  * Cleans up all listeners and timers on both resolution and rejection, so no
  * leaks occur even when `ms` is very large.
  */
-function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+function abortableSleep(
+  ms: number,
+  signal: AbortSignal | undefined,
+  scheduler: Scheduler,
+): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     if (signal?.aborted === true) {
       reject(
@@ -184,12 +188,12 @@ function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<vo
       return
     }
 
-    let timer: ReturnType<typeof setTimeout> | undefined
+    let timer: TimerHandle | undefined
     let abortHandler: (() => void) | undefined
 
     const cleanup = (): void => {
       if (timer !== undefined) {
-        clearTimeout(timer)
+        scheduler.clearTimeout(timer)
         timer = undefined
       }
       if (abortHandler !== undefined && signal !== undefined) {
@@ -198,7 +202,7 @@ function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<vo
       }
     }
 
-    timer = setTimeout(() => {
+    timer = scheduler.setTimeout(() => {
       cleanup()
       resolve()
     }, ms)
@@ -288,7 +292,11 @@ function isTimerDelay(value: number): boolean {
 export function retryMiddleware(
   policy?: RetryPolicy,
   opts?: {
-    /** Injected sleep function for testing (default: `abortableSleep`). */
+    /**
+     * Replaces the sleep (default: an abortable wait on `ctx.scheduler`, so
+     * `FakeClock` drives it). A test that only needs to see the delays can
+     * record them here; one that needs time to pass advances the clock.
+     */
     sleep?(this: void, ms: number, signal?: AbortSignal): Promise<void>
     /** Injected RNG for deterministic back-off tests (default: `Math.random`). */
     random?(this: void): number
@@ -317,7 +325,7 @@ export function retryMiddleware(
   )
   const shouldRetryFn =
     policy?.shouldRetry ?? ((err: LlmError): boolean => err.retryable === true)
-  const sleepFn = opts?.sleep ?? abortableSleep
+  const sleepOverride = opts?.sleep
   const rand = opts?.random ?? ((): number => Math.random())
 
   return {
@@ -439,7 +447,9 @@ export function retryMiddleware(
             'llm.call.retry',
           )
 
-          await sleepFn(sleepMs, ctx.signal)
+          await (sleepOverride !== undefined
+            ? sleepOverride(sleepMs, ctx.signal)
+            : abortableSleep(sleepMs, ctx.signal, ctx.scheduler))
         }
       }
     },

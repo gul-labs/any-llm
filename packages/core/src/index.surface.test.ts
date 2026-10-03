@@ -37,6 +37,16 @@ describe('@gullabs/core package surface', () => {
     expect(typeof surface.composeProviders).toBe('function')
   })
 
+  it('exports estimateInputTokens for pacing and the scheduler and rate-limit hint types', () => {
+    expect(typeof surface.estimateInputTokens).toBe('function')
+    expectTypeOf<surface.Scheduler>().toHaveProperty('setTimeout')
+    expectTypeOf<surface.RateLimitHint>().toHaveProperty('estimatedInputTokens')
+    expectTypeOf<surface.ClientConfig['scheduler']>().toEqualTypeOf<
+      surface.Scheduler | undefined
+    >()
+    expectTypeOf<surface.Release>().toBeCallableWith(undefined)
+  })
+
   it('exports canonicalJson (RFC 8785)', () => {
     expect(surface.canonicalJson({ b: 1, a: [true] })).toBe('{"a":[true],"b":1}')
   })

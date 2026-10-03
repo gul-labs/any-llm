@@ -1,7 +1,7 @@
 {
   "name": "@gullabs/testing",
   "version": "0.8.2",
-  "description": "Test fakes for any-llm — FakeClock, FakeIds, RecordingSink, FakeAdapter, makeFakeGemini, fakeGeminiResponse. No network in tests.",
+  "description": "Test fakes for any-llm: FakeClock (clock and scheduler), FakeClient, FakeAdapter, error factories, recording sink, telemetry and logger, fake Gemini and xAI SDK clients, fake stores and CLI runner. No network in tests.",
   "type": "module",
   "license": "Apache-2.0",
   "repository": {
@@ -26,10 +26,14 @@
     "build": "tsup"
   },
   "peerDependencies": {
-    "@gullabs/core": "workspace:*"
+    "@google/genai": "^2",
+    "@gullabs/core": "workspace:*",
+    "openai": "^7"
   },
   "devDependencies": {
-    "@gullabs/core": "workspace:*"
+    "@google/genai": "^2.24.0",
+    "@gullabs/core": "workspace:*",
+    "openai": "^7.23.0"
   },
   "engines": {
     "node": ">=22.12.0"
@@ -50,5 +54,13 @@
     "access": "public"
   },
   "homepage": "https://github.com/gul-labs/any-llm/tree/main/packages/testing#readme",
-  "bugs": "https://github.com/gul-labs/any-llm/issues"
+  "bugs": "https://github.com/gul-labs/any-llm/issues",
+  "peerDependenciesMeta": {
+    "@google/genai": {
+      "optional": true
+    },
+    "openai": {
+      "optional": true
+    }
+  }
 }

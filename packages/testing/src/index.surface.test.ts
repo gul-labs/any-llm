@@ -31,3 +31,27 @@ describe('@gullabs/testing package surface: runToolLoop', () => {
     expect(typeof runToolLoop).toBe('function')
   })
 })
+
+describe('@gullabs/testing package surface: R8 helpers', () => {
+  it('every R8 helper is reachable from the package root', async () => {
+    const api = await import('./index.js')
+    for (const name of [
+      'FakeClock',
+      'FakeClient',
+      'FakeAdapter',
+      'FakeGoogleFileStore',
+      'FakeGoogleCacheStore',
+      'FakeCliRunner',
+      'RecordingSink',
+      'RecordingTelemetry',
+      'RecordingLogger',
+      'fakeLlmResult',
+      'fakeHttpError',
+      'fakeNetworkError',
+      'fakeBilledFailure',
+      'fakeProviderError',
+    ] as const) {
+      expect(typeof api[name], name).toBe('function')
+    }
+  })
+})

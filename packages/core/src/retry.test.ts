@@ -9,9 +9,15 @@ import { describe, it, expect } from 'vitest'
 import { LlmError } from './errors.js'
 import { computeBackoffMs, retryMiddleware } from './retry.js'
 import { createClient, createModelRegistry } from './index.js'
-import type { Handler, EngineCtx, ResolvedRequest } from './ports.js'
+import type { AdapterResult, Handler, EngineCtx, ResolvedRequest } from './ports.js'
 import type { LlmResult, Usage } from './types.js'
-import { FakeAdapter, FakeClock, FakeIds, RecordingSink } from '@gullabs/testing'
+import {
+  FakeAdapter,
+  FakeClock,
+  FakeIds,
+  RecordingSink,
+  fakeHttpError,
+} from '@gullabs/testing'
 import {
   makePermissiveTestDescriptor,
   makeTestDescriptor,
@@ -59,6 +65,7 @@ function makeCtx(
   return {
     callId: 'c1',
     clock: { now: deadline?.now ?? (() => 0) },
+    scheduler: new FakeClock(),
     logger: NOOP_LOGGER,
     ...(signal !== undefined ? { signal } : {}),
     ...(deadline !== undefined ? { deadlineAt: deadline.deadlineAt } : {}),
@@ -595,14 +602,14 @@ describe('engine + middleware — integration', () => {
   ])
   const TEST_AUTH = { apiKey: 'test-key' }
 
-  function makeSuccessResult() {
+  function makeSuccessResult(): AdapterResult {
     return {
       message: { role: 'assistant', parts: [{ kind: 'text', text: 'Hello!' }] },
       text: 'Hello!',
       usage: { inputTokens: 100, outputTokens: 20, details: {}, raw: null },
       model: 'gemini-2.5-pro',
       modelVersion: 'gemini-2.5-pro-001',
-      finishReason: 'stop' as const,
+      finishReason: 'stop',
       responseId: 'resp-1',
       warnings: [],
     }
@@ -658,7 +665,7 @@ describe('engine + middleware — integration', () => {
 
   it('retry middleware: N attempts → N records, same callId, distinct attemptIds', async () => {
     const adapter = new FakeAdapter('google', [
-      { status: 429 }, // attempt 1 → rate_limited
+      fakeHttpError(429), // attempt 1 → rate_limited
       makeSuccessResult(), // attempt 2 → ok
     ])
     const sink = new RecordingSink()
@@ -703,7 +710,7 @@ describe('engine + middleware — integration', () => {
   })
 
   it('retry exhausted: all N attempts sinked, final error thrown', async () => {
-    const adapter = new FakeAdapter('google', { status: 429 })
+    const adapter = new FakeAdapter('google', fakeHttpError(429))
     const sink = new RecordingSink()
     const ids = new FakeIds()
 
@@ -748,8 +755,8 @@ describe('engine + middleware — integration', () => {
     const successes: object[] = []
 
     const adapter = new FakeAdapter('google', [
-      { status: 429 },
-      { status: 429 },
+      fakeHttpError(429),
+      fakeHttpError(429),
       makeSuccessResult(),
     ])
 

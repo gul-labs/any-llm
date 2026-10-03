@@ -77,6 +77,8 @@ export type {
   ApiKeyAuth,
   CliSessionAuth,
   Clock,
+  Scheduler,
+  TimerHandle,
   IdGenerator,
   Logger,
   Telemetry,
@@ -86,6 +88,7 @@ export type {
   CallSuccessEvent,
   CallErrorEvent,
   RateLimiter,
+  RateLimitHint,
   Release,
   // Middleware seam
   EngineCtx,
@@ -142,6 +145,8 @@ export type { CallSite } from './callsite.js'
 export { defineCallSite } from './callsite.js'
 
 // In-memory rate limiter (production-ready, dependency-free)
+export { estimateInputTokens } from './estimate.js'
+export type { EstimableRequest } from './estimate.js'
 export { inMemoryRateLimiter } from './rate-limiter.js'
 export type { InMemoryRateLimiterOptions } from './rate-limiter.js'
 

@@ -22,6 +22,7 @@ import { buildRecord, normalizeUsage } from './record.js'
 import { providerCostDriftWarning } from './cost.js'
 import { assertMessagesShape, assertPartsShape } from './input-shapes.js'
 import { assertTimerMs } from './timer.js'
+import { estimateInputTokens } from './estimate.js'
 import { redactSecrets } from './redact.js'
 import { boundedModelText, unknownModelMessage } from './registry.js'
 import type { ModelDescriptor, ModelRegistry } from './registry.js'
@@ -32,10 +33,13 @@ import type {
   PricingSource,
   UsageSink,
   Clock,
+  Scheduler,
+  TimerHandle,
   IdGenerator,
   Logger,
   Telemetry,
   RateLimiter,
+  RateLimitHint,
   Release,
   ResolvedRequest,
   AdapterCtx,
@@ -129,9 +133,24 @@ export interface ClientConfig {
    * It stamps records and measures latencies, and the call deadline
    * (`config.timeoutMs`) is measured on it too, so a clock that does not
    * advance in real time (a frozen one) leaves middleware time uncounted.
-   * The timers that enforce the deadline are real, monotonic timers.
+   * The timers that enforce the deadline come from {@link ClientConfig.scheduler}
+   * (real, monotonic timers by default).
    */
   clock?: Clock
+  /**
+   * Timer source for every wait the engine owns: the attempt timeout, the
+   * logical-call deadline, the sink waits. It is also given to the middleware
+   * (`EngineCtx.scheduler`, which `retryMiddleware` sleeps on) and to adapters
+   * (`AdapterCtx.scheduler`). Defaults to the platform's `setTimeout` and
+   * `clearTimeout`. `FakeClock` from `@gullabs/testing` implements it, so a test
+   * drives timeouts, deadlines and back-off by advancing one clock.
+   *
+   * It must run the callback after at least `ms` milliseconds on the scale of
+   * {@link ClientConfig.clock}: the deadline is read off the clock and enforced
+   * by these timers, so a scheduler that runs on a different scale than the
+   * clock makes `expired()` and the timer disagree.
+   */
+  scheduler?: Scheduler
   /**
    * Unique ID generator.  Defaults to `crypto.randomUUID()`.
    * Inject {@link FakeIds} in tests for deterministic record assertions.
@@ -461,6 +480,13 @@ const DEFAULT_CLOCK: Clock = {
   now: () => Date.now(),
 }
 
+const DEFAULT_SCHEDULER: Scheduler = {
+  setTimeout: (callback, ms) => globalThis.setTimeout(callback, ms),
+  clearTimeout: (handle) => {
+    globalThis.clearTimeout(handle as ReturnType<typeof globalThis.setTimeout>)
+  },
+}
+
 /** Sentinel empty usage for error-path records when the adapter never returned. */
 const EMPTY_USAGE: Usage = {
   inputTokens: 0,
@@ -770,6 +796,7 @@ function defaultRoute(
 function buildCancellationRace(
   callerSignal: AbortSignal | undefined,
   timeoutMs: number | undefined,
+  scheduler: Scheduler,
 ): {
   raceParts: Array<Promise<never>>
   combinedSignal: AbortSignal | undefined
@@ -777,7 +804,7 @@ function buildCancellationRace(
 } {
   const raceParts: Array<Promise<never>> = []
 
-  let timer: ReturnType<typeof setTimeout> | undefined
+  let timer: TimerHandle | undefined
   let callerAbortCleanup: (() => void) | undefined
 
   // ── (a) Caller-abort race promise ────────────────────────────────────────
@@ -839,7 +866,7 @@ function buildCancellationRace(
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeoutRejectFn = reject
     })
-    timer = setTimeout(() => {
+    timer = scheduler.setTimeout(() => {
       // REJECT FIRST — schedules the 'timeout' LlmError into the microtask
       // queue before the abort signal fires.  This guarantees 'timeout' wins
       // Promise.race even when the adapter rejects synchronously on abort.
@@ -875,7 +902,7 @@ function buildCancellationRace(
   // Idempotent cleanup — safe to call on both success and error paths.
   function cleanup(): void {
     if (timer !== undefined) {
-      clearTimeout(timer)
+      scheduler.clearTimeout(timer)
       timer = undefined
     }
     callerAbortCleanup?.()
@@ -925,7 +952,7 @@ interface CallDeadline {
  * Arms `timeoutMs` for the whole logical call, not only for each attempt, so
  * time spent in middleware (a quota deferral, a store round-trip) counts
  * against it. The deadline is measured on the injected clock, like every
- * ledger latency; the timer that enforces it is a monotonic `setTimeout`, so a
+ * ledger latency; the timer that enforces it is the scheduler's (a monotonic `setTimeout` by default), so a
  * wall-clock jump can only make `expired()` early or late, never leave the
  * call without its timer.
  *
@@ -953,6 +980,7 @@ function buildCallDeadline(
   callerSignal: AbortSignal | undefined,
   timeoutMs: number | undefined,
   clock: Clock,
+  scheduler: Scheduler,
   lastAttemptError: () => LlmError | undefined,
 ): CallDeadline {
   if (timeoutMs === undefined) {
@@ -1003,7 +1031,7 @@ function buildCallDeadline(
   let fired = false
   let finished = false
   let produced: LlmResult | undefined
-  let settleTimer: ReturnType<typeof setTimeout> | undefined
+  let settleTimer: TimerHandle | undefined
   const fire = (): void => {
     if (fired || finished) return
     fired = true
@@ -1023,7 +1051,7 @@ function buildCallDeadline(
     settleGate.reject(err)
     controller.abort(err)
   }
-  const timer = setTimeout(() => {
+  const timer = scheduler.setTimeout(() => {
     timerFired = true
     elapsedController.abort()
     if (inFlight === 0) fire()
@@ -1050,7 +1078,7 @@ function buildCallDeadline(
         // chain, and it is the better answer: let the microtasks that carry it
         // run first. The gate fires only if the chain is still pending after
         // that, which is a middleware doing more work or hanging.
-        settleTimer = setTimeout(() => {
+        settleTimer = scheduler.setTimeout(() => {
           settleTimer = undefined
           if (inFlight === 0) fire()
         }, 0)
@@ -1058,8 +1086,8 @@ function buildCallDeadline(
     },
     cleanup() {
       finished = true
-      clearTimeout(timer)
-      clearTimeout(settleTimer)
+      scheduler.clearTimeout(timer)
+      if (settleTimer !== undefined) scheduler.clearTimeout(settleTimer)
       merged?.cleanup()
     },
   }
@@ -1362,6 +1390,7 @@ async function recordToSink(
   callId: string,
   timeoutMs: number,
   interrupts: readonly (AbortSignal | undefined)[],
+  scheduler: Scheduler,
 ): Promise<void> {
   if (sink === undefined) return
   const fields = {
@@ -1371,16 +1400,16 @@ async function recordToSink(
     provider: record.provider,
     model: record.model,
   }
-  let timer: ReturnType<typeof setTimeout> | undefined
-  let graceTimer: ReturnType<typeof setTimeout> | undefined
+  let timer: TimerHandle | undefined
+  let graceTimer: TimerHandle | undefined
   const detach: Array<() => void> = []
   try {
     const abandoned = new Promise<'timeout' | 'interrupted'>((resolve) => {
-      timer = setTimeout(() => {
+      timer = scheduler.setTimeout(() => {
         resolve('timeout')
       }, timeoutMs)
       const interrupted = (): void => {
-        graceTimer ??= setTimeout(() => {
+        graceTimer ??= scheduler.setTimeout(() => {
           resolve('interrupted')
         }, SINK_INTERRUPT_GRACE_MS)
       }
@@ -1422,8 +1451,8 @@ async function recordToSink(
       'llm.call.sink.failed',
     )
   } finally {
-    if (timer !== undefined) clearTimeout(timer)
-    if (graceTimer !== undefined) clearTimeout(graceTimer)
+    if (timer !== undefined) scheduler.clearTimeout(timer)
+    if (graceTimer !== undefined) scheduler.clearTimeout(graceTimer)
     for (const off of detach) off()
   }
 }
@@ -1583,6 +1612,7 @@ export function createClient(config: ClientConfig): Client {
   const sinkTimeoutMs = config.sinkTimeoutMs ?? DEFAULT_SINK_TIMEOUT_MS
   assertTimerMs(sinkTimeoutMs, 'createClient: sinkTimeoutMs', 'sinkTimeoutMs')
   const clock: Clock = config.clock ?? DEFAULT_CLOCK
+  const scheduler: Scheduler = config.scheduler ?? DEFAULT_SCHEDULER
   const ids: IdGenerator = config.ids ?? DEFAULT_IDS
   const logger: Logger = config.logger ?? NOOP_LOGGER
   const safeLogger: Logger = makeSafeLogger(logger)
@@ -1850,6 +1880,7 @@ export function createClient(config: ClientConfig): Client {
       callerSignal,
       resolvedConfig.timeoutMs,
       clock,
+      scheduler,
       () => lastAttemptError,
     )
     // A sink write stops waiting on the caller's abort and on the deadline
@@ -1862,6 +1893,7 @@ export function createClient(config: ClientConfig): Client {
     const engineCtx: EngineCtx = {
       callId,
       clock,
+      scheduler,
       logger: safeLogger,
       ...(deadline.signal !== undefined ? { signal: deadline.signal } : {}),
       ...(deadline.deadlineAt !== undefined ? { deadlineAt: deadline.deadlineAt } : {}),
@@ -1965,7 +1997,7 @@ export function createClient(config: ClientConfig): Client {
           deadline.deadlineAt === undefined
             ? undefined
             : deadline.deadlineAt - ctx.clock.now()
-        const cancellation = buildCancellationRace(ctx.signal, attemptBudgetMs)
+        const cancellation = buildCancellationRace(ctx.signal, attemptBudgetMs, scheduler)
         cleanup = cancellation.cleanup
         const { raceParts, combinedSignal } = cancellation
 
@@ -1974,9 +2006,13 @@ export function createClient(config: ClientConfig): Client {
         const acquireStartMs = ctx.clock.now()
         // The key uses the canonical id so a model and its aliases share one
         // limiter bucket.
+        const rateLimitHint: RateLimitHint = {
+          estimatedInputTokens: estimateInputTokens(effectiveReq),
+        }
         const acquirePromise = rateLimiter.acquire(
           `${provider}:${callDescriptor.model}`,
           combinedSignal,
+          rateLimitHint,
         )
         try {
           release =
@@ -2024,6 +2060,7 @@ export function createClient(config: ClientConfig): Client {
         const adapterCtx: AdapterCtx = {
           auth: callAuth,
           logger: ctx.logger,
+          scheduler,
           ...(combinedSignal !== undefined ? { signal: combinedSignal } : {}),
         }
 
@@ -2037,17 +2074,18 @@ export function createClient(config: ClientConfig): Client {
 
         // Cleanup on success path (idempotent).
         cleanup()
-        // Release the rate-limiter slot — swallow errors so a broken Release
-        // cannot mask the successful result.
+
+        // Step 7b: Normalize usage ONCE.
+        normalizedResult = normalizeUsage(adapterResult.usage)
+
+        // Release the rate-limiter slot with the call's usage — swallow errors
+        // so a broken Release cannot mask the successful result.
         try {
-          release()
+          release(normalizedResult.usage)
         } catch {
           /* intentionally swallowed */
         }
         release = undefined
-
-        // Step 7b: Normalize usage ONCE.
-        normalizedResult = normalizeUsage(adapterResult.usage)
 
         // Step 8: JSON.parse structured output — caller owns validation.
         let output: unknown
@@ -2164,6 +2202,7 @@ export function createClient(config: ClientConfig): Client {
           ctx.callId,
           sinkTimeoutMs,
           sinkInterrupts,
+          scheduler,
         )
         noteAttemptCost(cost)
         emitAttempt({
@@ -2228,12 +2267,6 @@ export function createClient(config: ClientConfig): Client {
       } catch (rawErr) {
         // Invariant B: cleanup on every error path.
         cleanup()
-        try {
-          release?.()
-        } catch {
-          /* intentionally swallowed */
-        }
-        release = undefined
 
         // Classify error (LlmError passes through unchanged). A cooperative
         // adapter that throws the signal's own abort reason (a DOMException, a
@@ -2244,6 +2277,14 @@ export function createClient(config: ClientConfig): Client {
         // that attempt's usage and snapshot cost even though it is retryable.
         const failureNormalized =
           err.usage !== undefined ? normalizeUsage(err.usage) : undefined
+
+        // Free the rate-limiter slot; a billed failure hands its usage over.
+        try {
+          release?.(failureNormalized?.usage)
+        } catch {
+          /* intentionally swallowed */
+        }
+        release = undefined
         const failureUsage =
           failureNormalized !== undefined
             ? failureNormalized.usage
@@ -2306,6 +2347,7 @@ export function createClient(config: ClientConfig): Client {
           ctx.callId,
           sinkTimeoutMs,
           sinkInterrupts,
+          scheduler,
         )
         // A failure that reported no usage is known to cost nothing only when
         // nothing was dispatched, or the provider answered with an error that is
@@ -2575,6 +2617,7 @@ export function createClient(config: ClientConfig): Client {
           callId,
           sinkTimeoutMs,
           sinkInterrupts,
+          scheduler,
         )
       }
 
@@ -3072,7 +3115,11 @@ export function createClient(config: ClientConfig): Client {
 
       // Same cancellation race as a generation attempt: caller abort and
       // `timeoutMs` end the call even when the adapter ignores its signal.
-      const cancellation = buildCancellationRace(runtimeOpts?.signal, countTimeoutMs)
+      const cancellation = buildCancellationRace(
+        runtimeOpts?.signal,
+        countTimeoutMs,
+        scheduler,
+      )
       try {
         // An async wrapper turns a synchronous throw into a rejection the
         // race handles, instead of leaving a cancellation promise unhandled.

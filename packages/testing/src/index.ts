@@ -6,6 +6,8 @@
  *   FakeClock,
  *   FakeIds,
  *   RecordingSink,
+ *   fakeLlmResult,
+ *   fakeHttpError,
  *   fakeGeminiResponse,
  *   makeFakeGemini,
  * } from '@gullabs/testing'
@@ -18,6 +20,47 @@ export { FakeClock } from './clock.js'
 export { FakeIds } from './ids.js'
 export { RecordingSink } from './recording-sink.js'
 export type { RecordingSinkOptions } from './recording-sink.js'
+export { RecordingTelemetry } from './recording-telemetry.js'
+export type { RecordedTelemetryEvent } from './recording-telemetry.js'
+export { RecordingLogger } from './recording-logger.js'
+export type { LogEntry, LogLevel } from './recording-logger.js'
+export { fakeLlmResult } from './fake-llm-result.js'
+export { FakeClient } from './fake-client.js'
+export type { FakeClientCall, FakeClientEntry, FakeClientOptions } from './fake-client.js'
+export {
+  fakeHttpError,
+  fakeNetworkError,
+  fakeBilledFailure,
+  fakeProviderError,
+  HttpStatusError,
+} from './errors.js'
+export type {
+  FakeHttpErrorOptions,
+  FakeNetworkErrorOptions,
+  FakeBilledFailureOptions,
+  GoogleErrorScenario,
+  XaiErrorScenario,
+} from './errors.js'
+export { FakeGoogleFileStore } from './fake-google-file-store.js'
+export type {
+  FakeGoogleFileHandle,
+  FakeGoogleFileDeleteOptions,
+  FakeGoogleFileStoreOptions,
+} from './fake-google-file-store.js'
+export { FakeGoogleCacheStore } from './fake-google-cache-store.js'
+export type {
+  FakeGoogleCacheHandle,
+  FakeGoogleCacheKey,
+  FakeGoogleCacheCreateInput,
+  FakeGoogleCacheStoreOptions,
+} from './fake-google-cache-store.js'
+export { FakeCliRunner } from './fake-cli-runner.js'
+export type {
+  FakeCliRunCall,
+  FakeCliRunEntry,
+  FakeCliRunOptions,
+  FakeCliRunResult,
+} from './fake-cli-runner.js'
 export { fakeGeminiResponse, fakeGeminiBlocked, makeFakeGemini } from './fake-gemini.js'
 export type {
   GeminiPartLike,

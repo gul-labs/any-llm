@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os'
 import { readFileSync } from 'node:fs'
 import { describe, it, expect, vi } from 'vitest'
 import { LlmError, normalizeUsage } from '@gullabs/core'
+import { FakeCliRunner } from '@gullabs/testing'
 import type { AdapterCtx, ResolvedRequest } from '@gullabs/core'
 import { claudeCliAdapter } from './adapter.js'
 import { claudeCliRegistry } from './models.js'
@@ -81,15 +82,8 @@ type RunCall = { args: string[]; input: string; opts: ClaudeCliRunOptions }
 function makeFakeRunner(
   handler: (call: RunCall) => Promise<ClaudeCliRunResult> | ClaudeCliRunResult,
 ): { runner: ClaudeCliRunner; calls: RunCall[] } {
-  const calls: RunCall[] = []
-  const runner: ClaudeCliRunner = {
-    async run(args, input, opts) {
-      const call = { args, input, opts }
-      calls.push(call)
-      return handler(call)
-    },
-  }
-  return { runner, calls }
+  const runner = new FakeCliRunner(handler)
+  return { runner, calls: runner.calls }
 }
 
 function envelopeResult(envelope: ClaudeCliEnvelope): ClaudeCliRunResult {
