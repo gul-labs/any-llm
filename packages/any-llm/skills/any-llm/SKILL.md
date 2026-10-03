@@ -609,7 +609,12 @@ const handle = await cacheStore.create({
 - Pre-send backpressure is a `RateLimiter` port (`ClientConfig.rateLimiter`); default
   is a no-op. `@gullabs/core` ships a dependency-free `inMemoryRateLimiter`, and the
   companion `@gullabs/quota` package provides shared/cross-process quota primitives —
-  see that package's README for setup.
+  see that package's README for setup. The limiter runs once per attempt (inside each
+  retry). Put `providerQuotaMiddleware` inside `retryMiddleware`; `createClient` rejects
+  the other order.
+- A middleware cannot change `provider` or `model` (`bad_request`); route and fall back
+  in the host by making a new call. Correlate host retries with a shared `externalId`;
+  every attempt is its own billed row.
 - Every call computes `result.cost` (micro-USD) via the configured `PricingSource`
   (`geminiPricingSource()`), and, when `sink` is configured on `createClient`, persists
   a full per-attempt record (usage, cost, warnings, error classification) — fail-open,

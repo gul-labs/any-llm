@@ -779,7 +779,7 @@ describe('D5 — generic pre-attempt ledger record', () => {
     expect(record.costMicroUsd).toBeUndefined()
     expect(record.pricingVersion).toBeUndefined()
     expect(record.attemptNumber).toBe(0)
-    // Minted — no idempotencyKey was supplied.
+    // Minted by the engine.
     expect(record.attemptId).toBe('attempt_1')
     expect(record.callId).toBe(err.callId)
     expect(record.provider).toBe('google')
@@ -787,7 +787,7 @@ describe('D5 — generic pre-attempt ledger record', () => {
     expect(record.createdAt).toBe(new Date(1000).toISOString())
   })
 
-  it('D3 refusal with idempotencyKey supplied uses it verbatim as attemptId', async () => {
+  it('D3 refusal rows get minted attemptIds even when hosts share an externalId', async () => {
     const adapter = new FakeAdapter('google', successResult())
     const sink = new RecordingSink()
     const client = createClient({
@@ -799,22 +799,25 @@ describe('D5 — generic pre-attempt ledger record', () => {
       ids: new FakeIds(),
     })
 
-    await client
-      .generate(
-        {
-          provider: 'google',
-          model: 'gemini-2.5-flash',
-          messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hi' }] }],
-          inputContract: { schema: ValueSchema, value: { orderId: '' } },
-          idempotencyKey: 'idem-key-1',
-        },
-        { auth: TEST_AUTH },
-      )
-      .catch(() => {})
+    for (let i = 0; i < 2; i++) {
+      await client
+        .generate(
+          {
+            provider: 'google',
+            model: 'gemini-2.5-flash',
+            messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hi' }] }],
+            inputContract: { schema: ValueSchema, value: { orderId: '' } },
+            externalId: 'idem-key-1',
+          },
+          { auth: TEST_AUTH },
+        )
+        .catch(() => {})
+    }
 
-    expect(sink.records).toHaveLength(1)
-    expect(sink.records[0]!.attemptNumber).toBe(0)
-    expect(sink.records[0]!.attemptId).toBe('idem-key-1')
+    expect(sink.records).toHaveLength(2)
+    expect(sink.records.map((r) => r.attemptNumber)).toEqual([0, 0])
+    expect(sink.records.map((r) => r.attemptId)).toEqual(['attempt_1', 'attempt_2'])
+    expect(sink.records.map((r) => r.externalId)).toEqual(['idem-key-1', 'idem-key-1'])
   })
 
   it('quota-style rate_limited middleware refusal pre-attempt writes one row', async () => {

@@ -11,7 +11,8 @@ duplication proves a library helper is warranted. That is why the repo does not 
 - pass auth on every call;
 - let web routes decide whether library retry middleware is appropriate;
 - let Temporal or another orchestrator own external retries;
-- use stable `idempotencyKey` values for externally retried activities;
+- give every external retry of one operation the same `externalId` (the library never deduplicates
+  provider calls, and every attempt is a billed ledger row);
 - persist host-specific typed context in a sidecar keyed by `attemptId` when needed.
 
 ## Application-local metadata helper
@@ -102,19 +103,20 @@ async function handleRoute(req: Request, db: DbLike) {
 
 ## Temporal worker client
 
-Externally retried activities should usually skip library retry middleware. Let the orchestrator own
-retry timing and hand the library a stable `idempotencyKey` so the ledger deduplicates attempt 1
-rows across activity replays/retries.
+Externally retried activities should usually skip library retry middleware. Let the orchestrator
+own retry timing and give every retry of one activity the same `externalId`. The library never
+deduplicates provider calls: each activity retry is a billed provider call and writes its own ledger
+row with its own freshly minted `attemptId`. Query by `externalId` to see every attempt of one
+operation and what it cost (`select * from llm_calls where external_id = $1 order by created_at`).
 
-### Testing note: RecordingSink does not dedupe
+### Testing note: replay writes new rows
 
-**Important for test correctness:** `RecordingSink` (`packages/testing/src/recording-sink.ts`) pushes
-every record it receives and does not implement `onConflictDoNothing` deduplication.
-`drizzleUsageSink` (`packages/drizzle/src/sink.ts`) only gets dedupe via the `attempt_id` primary key.
-In a test, if you replay a Temporal activity with the same `idempotencyKey`, `RecordingSink` can still
-accumulate multiple rows — so `sink.records.length` after a replay is not a reliable proxy for
-"deduplication happened." Assert on `attemptId` values (or dedupe in the test itself) rather than raw
-record counts when a test exercises replay/retry behavior against `RecordingSink`.
+A replayed or retried activity that calls the library again writes new rows, so
+`sink.records.length` after a replay counts every attempt. `RecordingSink`
+(`packages/testing/src/recording-sink.ts`) pushes every record it receives and does not implement
+`onConflictDoNothing` deduplication; `drizzleUsageSink` (`packages/drizzle/src/sink.ts`) dedupes
+only a sink re-delivering the same record (same `attemptId`, via the `attempt_id` primary key).
+Assert on `externalId` and row counts accordingly.
 
 ```ts
 function makeWorkerClient(db: DbLike) {
@@ -139,7 +141,6 @@ export async function runReportActivity(
       model: 'gemini-2.5-pro',
       messages: [{ role: 'user', parts: [{ kind: 'text', text: input.prompt }] }],
       callSiteId: 'worker-report',
-      idempotencyKey: input.attemptKey,
       externalId: input.reportId,
       metadata: buildAnyLlmMetadata({
         tenantId: 'tenant_123',
@@ -211,7 +212,8 @@ Do not use library retry middleware when:
 
 - Temporal, a job queue, or another orchestrator already retries the unit of work;
 - you need durable sleeps or calendar-time rescheduling;
-- you want one externally minted `idempotencyKey` to anchor the first ledger row.
+- you want every retry of one operation to share one `externalId` and be counted by the host, not by
+  in-process attempt numbers.
 
 ## Sidecar persistence
 

@@ -49,6 +49,7 @@ export {
 // Errors
 export type {
   LlmErrorKind,
+  LlmErrorReason,
   LlmErrorOptions,
   LlmErrorIssue,
   HttpClassification,
@@ -111,7 +112,7 @@ export { composeProviders } from './plugin.js'
 
 // Model registry
 export type { ModelDescriptor, ModelRegistry } from './registry.js'
-export { createModelRegistry } from './registry.js'
+export { createModelRegistry, assertModelMatchesDescriptor } from './registry.js'
 export { toConfigJsonSchema, zodToStandardSchema } from './model-config/index.js'
 
 // Call site

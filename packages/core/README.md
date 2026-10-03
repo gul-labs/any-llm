@@ -17,15 +17,15 @@ Every other `@gullabs/*` package declares this one as an exact-version peer depe
 
 ## Key exports
 
-| Export                       | What it is                                                               |
-| ---------------------------- | ------------------------------------------------------------------------ |
-| `createClient(config)`       | Wires ports into a `{ generate, runStructured }` client                  |
-| `composeProviders(plugins)`  | Merges one or more `ProviderPlugin`s into `ClientConfig` fields          |
-| `createModelRegistry(descs)` | Builds a `ModelRegistry` from an array of `ModelDescriptor`s             |
-| `defineCallSite(opts)`       | Defines a typed, reusable prompt template bound to a model               |
-| `computeCost(...)`           | Pure, provider-agnostic cost function (providers supply their own rates) |
-| `LlmError`                   | Typed error class — always thrown on call failure                        |
-| `buildRecord(input)`         | Assembles an `LlmCallRecord` from engine state (used internally)         |
+| Export                       | What it is                                                                                    |
+| ---------------------------- | --------------------------------------------------------------------------------------------- |
+| `createClient(config)`       | Wires ports into a `{ generate, runStructured }` client                                       |
+| `composeProviders(plugins)`  | Merges one or more `ProviderPlugin`s into `ClientConfig` fields                               |
+| `createModelRegistry(descs)` | Builds a `ModelRegistry` from an array of `ModelDescriptor`s (exact ids + declared `aliases`) |
+| `defineCallSite(opts)`       | Defines a typed, reusable prompt template bound to a model                                    |
+| `computeCost(...)`           | Pure, provider-agnostic cost function (providers supply their own rates)                      |
+| `LlmError`                   | Typed error class — always thrown on call failure                                             |
+| `buildRecord(input)`         | Assembles an `LlmCallRecord` from engine state (used internally)                              |
 
 Core carries **no provider knowledge** — no Gemini/Google types, model descriptors, or pricing
 tables. `ClientConfig.modelRegistry` is required; supply it via a provider package's plugin, e.g.
@@ -102,6 +102,13 @@ const parsedConfig = descriptor.configSchema.parse({
 Use `descriptor.configJsonSchema` for form generation and
 `descriptor.configSchema` for persisted/request-time validation. Do not use
 `output.jsonSchema` as a substitute; that surface is only for output shaping.
+
+Model ids resolve **exactly** (ADR-033): a request names a descriptor's canonical `model` or one
+of its declared `aliases`, never a longer or shorter string. `gemini-2.5-flash-image` is not
+priced or validated as `gemini-2.5-flash`; it is `bad_request` with the closest registered ids
+listed. An alias is for a real provider version suffix: the request string is sent to the provider
+unchanged, the call is priced under the canonical descriptor, and the ledger row records the string
+the host sent. Adapters check their descriptor with `assertModelMatchesDescriptor`.
 
 Model-specific reminders:
 
@@ -181,11 +188,35 @@ idempotent on `r.attemptId`. Key traceability fields: `callId` (stable across re
 `queueDelayMs`, and `metadata` (host-supplied, stored verbatim). `latencyMs` measures provider
 dispatch only; `queueDelayMs` measures pre-send wait inside `RateLimiter.acquire`.
 
-If a request includes `idempotencyKey`, attempt 1 uses that exact value as `attemptId`. In-process
-library retries suffix later attempts (`key:2`, `key:3`, ...), so callers should correlate the final
-outcome from `result.attemptId` or `LlmError.attemptId`. Temporal-owned activity retries that call
-the library fresh each time keep the pre-minted key on attempt 1 and deduplicate only at the ledger
-sink.
+Every attempt is its own billed row with its own minted `attemptId`, including pre-attempt refusal
+rows (`attemptNumber: 0`). The library never deduplicates provider calls, and nothing a host passes
+in becomes an `attemptId`. To tie host-level retries of one operation together, give every retry the
+same `externalId`: it is persisted on every attempt row (indexed in `@gullabs/drizzle`), so a host
+retry that reuses it shows up as extra rows under one `externalId`, each with the spend it caused.
+Correlate the final outcome of a call from `result.attemptId` or `LlmError.attemptId`. The sink's
+`attemptId` idempotency only absorbs an at-least-once sink re-delivering the same record.
+
+## Middleware, retry and rate limiting
+
+`ClientConfig.middleware` is an ordered list, outermost first. A middleware outside
+`retryMiddleware` runs once per logical call; one inside it runs once per attempt. The
+`RateLimiter` is acquired once per **attempt** (inside each retry), not once per logical call, and
+is released when that attempt ends.
+
+- **Middleware cannot reroute.** The `next` a middleware receives refuses a request whose `provider`
+  or `model` differs from the call's: the call fails with `LlmError('bad_request')` as the offender
+  calls `next` (before any inner middleware or the provider runs) and a pre-attempt refusal row is
+  written. The engine dispatches, validates, prices and authenticates with the identity it recorded
+  at call start, so a middleware cannot change them even by mutating the request. Route in the host
+  instead; see "Fallback" in the [root README](../../README.md#fallback). A quota unit taken by a
+  middleware outside the offender is not refunded: the offender is a host bug.
+- **Treat the request as immutable once passed to `next`.** To change data (config, messages,
+  metadata), pass a new object to `next`. The engine does not copy or freeze requests, so mutating
+  nested data in place after calling `next` is a host bug it cannot detect.
+- **Quota goes inside retry.** `[retryMiddleware(...), providerQuotaMiddleware(...)]` accounts one
+  quota unit per provider dispatch. `createClient` rejects the opposite order with `bad_request`. It
+  identifies the built-ins by the readonly `Middleware.role` they set (`'retry'`, `'quota'`), never
+  by `id`.
 
 ### Redaction
 

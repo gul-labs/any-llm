@@ -42,6 +42,35 @@ export type LlmErrorKind =
   | 'content_filter'
   | 'unknown'
 
+/**
+ * Closed vocabulary of machine-readable error reasons. `kind` and `retryable`
+ * stay authoritative; `reason` only says why within a kind.
+ *
+ * The union is closed on purpose so adapters cannot invent reasons: adding a
+ * member is a core release. Hosts should keep a `default` branch when they
+ * switch on it.
+ *
+ * - `'transport_timeout'`      — a transport-level timeout before response
+ *   headers arrived.
+ * - `'quota_window'`           — a local quota window is exhausted for longer
+ *   than the caller is willing to wait.
+ * - `'daily_quota'`            — a provider daily quota is exhausted.
+ * - `'credits_exhausted'`      — the provider account is out of credits.
+ * - `'spend_ceiling'`          — a spend ceiling was reached.
+ * - `'grounding_missing'`      — grounding was required but did not run.
+ * - `'search_budget_exceeded'` — a search budget was exceeded.
+ * - `'cache_not_found'`        — a referenced provider cache entry is gone.
+ */
+export type LlmErrorReason =
+  | 'transport_timeout'
+  | 'quota_window'
+  | 'daily_quota'
+  | 'credits_exhausted'
+  | 'spend_ceiling'
+  | 'grounding_missing'
+  | 'search_budget_exceeded'
+  | 'cache_not_found'
+
 // ---------------------------------------------------------------------------
 // LlmError
 // ---------------------------------------------------------------------------
@@ -69,6 +98,8 @@ export interface LlmErrorOptions {
   kind: LlmErrorKind
   /** Whether the caller may safely retry this error. */
   retryable: boolean
+  /** Why the error happened, within its `kind`, from the closed {@link LlmErrorReason} set. */
+  reason?: LlmErrorReason
   /** HTTP status code, when the error originated from an HTTP response. */
   httpStatus?: number
   /**
@@ -118,6 +149,8 @@ export class LlmError extends Error {
   readonly kind: LlmErrorKind
   /** Whether the caller may safely retry. */
   readonly retryable: boolean
+  /** Machine-readable reason within `kind`, when one applies. */
+  readonly reason?: LlmErrorReason
   /** HTTP status code, if applicable. */
   readonly httpStatus?: number
   /** Suggested retry delay in milliseconds. */
@@ -145,6 +178,9 @@ export class LlmError extends Error {
     this.name = 'LlmError'
     this.kind = options.kind
     this.retryable = options.retryable
+    if (options.reason !== undefined) {
+      this.reason = options.reason
+    }
     // With exactOptionalPropertyTypes we must not assign `undefined` to optional
     // properties — only conditionally include them.
     if (options.httpStatus !== undefined) {

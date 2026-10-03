@@ -8,7 +8,12 @@
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { LlmError, createClient, retryMiddleware } from '@gullabs/core'
+import {
+  LlmError,
+  createClient,
+  createModelRegistry,
+  retryMiddleware,
+} from '@gullabs/core'
 import type { ResolvedRequest, AdapterCtx, ModelDescriptor } from '@gullabs/core'
 import type { ProviderOptions } from '@gullabs/core'
 import {
@@ -2757,5 +2762,137 @@ describe('FIX A-2: client-side flex AbortSignal ceiling', () => {
     // Confirm a combined signal was passed (not the raw callerController signal).
     expect(capturedSignal).not.toBe(callerController.signal)
     expect(capturedSignal?.aborted).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Declared model aliases (ADR-033)
+// ---------------------------------------------------------------------------
+
+describe('declared model aliases', () => {
+  const canonical = geminiModelDescriptors.find((d) => d.model === 'gemini-2.5-pro')!
+  const aliased: ModelDescriptor = { ...canonical, aliases: ['gemini-2.5-pro-001'] }
+
+  it('accepts a declared alias on a first-turn dispatch and sends it to the SDK verbatim', async () => {
+    const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
+    await geminiAdapter({ client }).run(
+      makeResolvedReq({ model: 'gemini-2.5-pro-001', modelDescriptor: aliased }),
+      FAKE_CTX,
+    )
+    expect((client.calls[0] as { model: string }).model).toBe('gemini-2.5-pro-001')
+  })
+
+  it('rejects a string that is neither the canonical id nor a declared alias', async () => {
+    const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
+    await expect(
+      geminiAdapter({ client }).run(
+        makeResolvedReq({ model: 'gemini-2.5-pro-002', modelDescriptor: aliased }),
+        FAKE_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('rejects another provider’s descriptor whose alias list matches the requested string', async () => {
+    const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
+    const foreign = makeTestDescriptor({
+      provider: 'xai',
+      model: 'grok-4.5',
+      aliases: ['gemini-2.5-pro-001'],
+    })
+    await expect(
+      geminiAdapter({ client }).run(
+        makeResolvedReq({ model: 'gemini-2.5-pro-001', modelDescriptor: foreign }),
+        FAKE_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('through createClient: dispatches the alias verbatim and prices it under the canonical descriptor', async () => {
+    const client = makeFakeGemini(
+      fakeGeminiResponse({ text: 'ok', promptTokenCount: 100, candidatesTokenCount: 10 }),
+    )
+    const sink = new RecordingSink()
+    const llm = createClient({
+      adapters: [geminiAdapter({ client })],
+      pricingSources: { google: geminiPricingSource() },
+      modelRegistry: createModelRegistry([aliased]),
+      sink,
+      clock: new FakeClock(),
+      ids: new FakeIds(),
+    })
+    const request = {
+      provider: 'google',
+      model: 'gemini-2.5-pro-001',
+      messages: [
+        { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'hi' }] },
+      ],
+    }
+
+    await llm.generate(request, { auth: { apiKey: 'test-key' } })
+    const viaCanonical = await llm.generate(
+      { ...request, model: 'gemini-2.5-pro' },
+      { auth: { apiKey: 'test-key' } },
+    )
+
+    expect((client.calls[0] as { model: string }).model).toBe('gemini-2.5-pro-001')
+    expect(sink.records[0]!.model).toBe('gemini-2.5-pro-001')
+    expect(sink.records[0]!.costMicroUsd).toBeGreaterThan(0)
+    expect(sink.records[0]!.costMicroUsd).toBe(viaCanonical.cost?.microUsd)
+
+    await expect(
+      llm.generate(
+        { ...request, model: 'gemini-2.5-pro-002' },
+        { auth: { apiKey: 'test-key' } },
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request' })
+  })
+})
+
+describe('middleware cannot reroute on the built-in registry (ADR-037)', () => {
+  it('a swapped modelDescriptor and post-next provider/model assignments change neither the SDK model nor the price', async () => {
+    const flash = defaultGeminiRegistry.resolve('google', 'gemini-2.5-flash')!
+    const client = makeFakeGemini(
+      fakeGeminiResponse({
+        text: 'ok',
+        promptTokenCount: 1000,
+        candidatesTokenCount: 10,
+      }),
+    )
+    const sink = new RecordingSink()
+    const llm = createClient({
+      adapters: [geminiAdapter({ client })],
+      pricingSources: { google: geminiPricingSource() },
+      modelRegistry: defaultGeminiRegistry,
+      sink,
+      clock: new FakeClock(),
+      ids: new FakeIds(),
+      middleware: [
+        {
+          id: 'swapper',
+          async intercept(req, ctx, next) {
+            ;(req as { modelDescriptor?: ModelDescriptor }).modelDescriptor = flash
+            const out = await next(req, ctx)
+            ;(req as { model: string }).model = 'gemini-2.5-flash'
+            return out
+          },
+        },
+      ],
+    })
+    const request = {
+      provider: 'google',
+      model: 'gemini-2.5-pro',
+      messages: [
+        { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'hi' }] },
+      ],
+    }
+
+    const out = await llm.generate(request, { auth: { apiKey: 'test-key' } })
+    const baseline = geminiPricingSource().price('gemini-2.5-pro', out.usage)
+
+    expect((client.calls[0] as { model: string }).model).toBe('gemini-2.5-pro')
+    expect(out.cost?.microUsd).toBe(baseline.microUsd)
+    expect(sink.records[0]!.model).toBe('gemini-2.5-pro')
   })
 })

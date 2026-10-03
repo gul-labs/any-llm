@@ -258,11 +258,11 @@ streaming `stream()`. They can be added without changing the above.
 runStructured(callSite, vars?, opts?)  /  generate(request)
   1. resolve config   (lib defaults → call-site defaults → per-call opts; deep-merge; omitted serviceTier stays omitted)
   2. render prompts   (non-recursive interpolation; var values are NOT re-interpolated — anti-injection)
-  3. ids              callId + attemptId
+  3. ids              callId; every attempt mints its own attemptId (ADR-031)
   4. telemetry.onStart + log 'llm.call.start'
   5. resolve adapter  (direct req.provider → adapter map; no derivation; unknown → LlmError 'bad_request')
   6. require per-call auth material ({ apiKey })
-  7. rateLimiter.acquire("${provider}:${model}")  [queueDelayMs measured separately]
+  7. rateLimiter.acquire("${provider}:${model}")  [once per attempt; queueDelayMs measured separately]
   8. adapter.run(resolved, ctx)   with timeout + AbortSignal
   9. normalize usage  (GROSS convention enforced; details map + raw populated by adapter)
  10. parse structured output  (JSON.parse result → output + outputParsed; caller validates)
@@ -274,6 +274,17 @@ runStructured(callSite, vars?, opts?)  /  generate(request)
 ```
 
 Canonical log events (identical across hosts): `llm.call.start` / `.success` / `.error`.
+
+Invariants of the middleware chain (ADR-037) and model resolution (ADR-033):
+
+- Model ids resolve exactly: a descriptor's canonical `model` or one of its declared `aliases`.
+  There is no prefix matching.
+- A call's `{ provider, requestedModel, descriptor }` is fixed at call start. A middleware whose
+  `next` receives a request with a different `provider` or `model` is refused with `bad_request`
+  (and a pre-attempt `attemptNumber: 0` row); `runAttempt` never reads them from the request.
+  Hosts route and fall back by making a new call.
+- A quota middleware (`role: 'quota'`) must be inside a retry middleware (`role: 'retry'`);
+  `createClient` rejects the other order.
 
 ### Config resolution & call sites (`callsite.ts`)
 
@@ -312,10 +323,10 @@ details = { input, cached, output }   // thinking billed at output rate (folded 
 export interface LlmCallRecord {
   recordSchemaVersion: 1
   callId: string
-  attemptId: string
+  attemptId: string // always minted by the engine, one per attempt (ADR-031)
   attemptNumber: number // 1-based ordinal within the logical call (1 = first attempt, 2 = first retry, …)
   callSiteId?: string
-  externalId?: string // caller-owned correlation id for host ledgers
+  externalId?: string // caller-owned correlation id; give every host retry of one operation the same value
   provider: string
   model: string
   modelVersion?: string
@@ -357,7 +368,8 @@ export interface LlmCallRecord {
 ```
 
 `@gullabs/drizzle` ships the matching `pgTable('llm_calls', …)` (typed columns + jsonb lanes) and
-`drizzleUsageSink(db, table)`. Idempotency: insert `onConflictDoNothing` on `attemptId`.
+`drizzleUsageSink(db, table)`. Insert is `onConflictDoNothing` on `attemptId`, which only absorbs an
+at-least-once sink re-delivering the same record; every attempt has its own minted `attemptId`.
 Core imports no ORM; a host with a different store implements `UsageSink` directly.
 
 ---

@@ -20,6 +20,7 @@ import {
 import type { LlmErrorIssue, NormalizedSchemaIssue } from './errors.js'
 import { buildRecord, normalizeUsage } from './record.js'
 import { redactSecrets } from './redact.js'
+import { unknownModelMessage } from './registry.js'
 import type { ModelDescriptor, ModelRegistry } from './registry.js'
 import type {
   ProviderAdapter,
@@ -1188,6 +1189,32 @@ export function createClient(config: ClientConfig): Client {
       }
       seenIds.add(mw.id)
     }
+
+    // Quota accounts one unit per provider dispatch, which needs it INSIDE
+    // retry. Identification reads `role`, never the (configurable) `id`.
+    const firstQuota = config.middleware.findIndex((mw) => mw.role === 'quota')
+    let lastRetry = -1
+    config.middleware.forEach((mw, i) => {
+      if (mw.role === 'retry') lastRetry = i
+    })
+    const quotaMw = config.middleware[firstQuota]
+    const retryMw = config.middleware[lastRetry]
+    if (quotaMw !== undefined && retryMw !== undefined && firstQuota < lastRetry) {
+      throw new LlmError(
+        `Quota middleware "${quotaMw.id}" is placed outside (before) retry middleware "${retryMw.id}"; ` +
+          'place quota inside retry, e.g. [retryMiddleware(...), providerQuotaMiddleware(...)], so every provider dispatch consumes exactly one quota unit.',
+        {
+          kind: 'bad_request',
+          retryable: false,
+          issues: [
+            {
+              path: `middleware.${firstQuota}`,
+              message: `quota middleware must come after retry middleware (retry is at index ${lastRetry}).`,
+            },
+          ],
+        },
+      )
+    }
   }
 
   // Unconditional construction-time invariant: every registry descriptor's
@@ -1254,7 +1281,7 @@ export function createClient(config: ClientConfig): Client {
   async function runPipeline(
     request: LlmRequest,
     resolvedConfig: ResolvedConfig,
-    descriptor: ModelDescriptor | undefined,
+    descriptor: ModelDescriptor,
     callSiteId: string | undefined,
     callerSignal: AbortSignal | undefined,
     callAuth: AuthMaterial,
@@ -1304,6 +1331,17 @@ export function createClient(config: ClientConfig): Client {
       'llm.call.start',
     )
 
+    // Call identity (ADR-037). Recorded once, at call start. `runAttempt`
+    // dispatches, validates, prices and authenticates with these three values
+    // and never reads `provider`, `model` or `modelDescriptor` from the request
+    // a middleware hands it, so nothing a middleware does to those fields can
+    // change routing. `requestedModel` is the exact string the host sent (a
+    // declared alias stays an alias, ADR-033); `callDescriptor` is the
+    // descriptor object resolved for it.
+    const callProvider = request.provider
+    const requestedModel = request.model
+    const callDescriptor = descriptor
+
     // Build the pre-resolved request for the middleware chain.
     // The per-attempt signal is NOT included here — each attempt builds its
     // own combined (caller + timeout) signal inside runAttempt.
@@ -1319,7 +1357,7 @@ export function createClient(config: ClientConfig): Client {
       ...(request.output?.jsonSchema !== undefined
         ? { outputJsonSchema: request.output.jsonSchema }
         : {}),
-      ...(descriptor !== undefined ? { modelDescriptor: descriptor } : {}),
+      modelDescriptor: descriptor,
       ...(request.tools !== undefined ? { tools: request.tools } : {}),
       ...(request.toolChoice !== undefined ? { toolChoice: request.toolChoice } : {}),
     }
@@ -1344,20 +1382,24 @@ export function createClient(config: ClientConfig): Client {
     // Errors: classify → build error record → sink (fail-open) → rethrow.
     // The call-level telemetry.onError and logger.error are fired by the
     // epilogue after the chain settles, NOT here.
-    async function runAttempt(req: ResolvedRequest, ctx: EngineCtx): Promise<LlmResult> {
+    async function runAttempt(
+      incoming: ResolvedRequest,
+      ctx: EngineCtx,
+    ): Promise<LlmResult> {
+      // Pin the call identity over whatever the middleware chain handed us.
+      const req: ResolvedRequest = {
+        ...incoming,
+        provider: callProvider,
+        model: requestedModel,
+        modelDescriptor: callDescriptor,
+      }
       // Resolve 1-based attempt ordinal (set by retry middleware; defaults to 1
       // for direct calls that bypass the retry middleware).
       const attemptNumber = req.attemptNumber ?? 1
       const attemptStartMs = ctx.clock.now()
-      // Generate a fresh attemptId on every invocation. When a caller supplies
-      // an idempotencyKey, keep attempt 1 exactly equal to that key and suffix
-      // in-process retries so every attempt still gets a durable row.
-      const attemptId =
-        request.idempotencyKey === undefined
-          ? ids.attemptId()
-          : attemptNumber === 1
-            ? request.idempotencyKey
-            : `${request.idempotencyKey}:${attemptNumber}`
+      // Every attempt is its own billed ledger row, so every attempt gets a
+      // freshly minted id. Host retries correlate through `externalId`.
+      const attemptId = ids.attemptId()
       lastAttemptId = attemptId
       lastAttemptNumber = attemptNumber
 
@@ -1368,9 +1410,9 @@ export function createClient(config: ClientConfig): Client {
       )
 
       // Track progressive state for the error-path record builder.
-      // `req.provider` is authoritative from the start; routing/post-route
+      // The call's provider is authoritative from the start; routing/post-route
       // checks below never change it (they may only reject the call).
-      const provider = req.provider
+      const provider = callProvider
       let normalizedResult: { usage: Usage; warnings: Warning[] } | undefined
       let cost: Cost | undefined
       // Release function returned by rateLimiter.acquire — called on every exit path.
@@ -1427,8 +1469,10 @@ export function createClient(config: ClientConfig): Client {
         // Step 6b: Rate-limiter acquire — PRE-SEND backpressure. Measure
         // queueDelayMs separately from provider-dispatch latencyMs below.
         const acquireStartMs = ctx.clock.now()
+        // The key uses the canonical id so a model and its aliases share one
+        // limiter bucket.
         const acquirePromise = rateLimiter.acquire(
-          `${provider}:${effectiveReq.model}`,
+          `${provider}:${callDescriptor.model}`,
           combinedSignal,
         )
         try {
@@ -1497,14 +1541,15 @@ export function createClient(config: ClientConfig): Client {
         // Step 9: Cost — fail-open (never fail the call for costing).
         const costWarnings: Warning[] = []
         try {
-          const pricingKey = req.modelDescriptor?.pricingFamily ?? req.model
-          const source = pricingSources[req.provider]
+          // Priced under the canonical descriptor, never the requested string.
+          const pricingKey = callDescriptor.pricingFamily ?? callDescriptor.model
+          const source = pricingSources[provider]
           if (source === undefined) {
             // No pricing source for this provider — cost stays absent
             // (fail-open); the warning below is the only trace.
             costWarnings.push({
               type: 'other',
-              message: `Provider "${req.provider}" has no configured pricing source; usage was recorded but not costed.`,
+              message: `Provider "${provider}" has no configured pricing source; usage was recorded but not costed.`,
             })
           } else {
             cost = source.price(
@@ -1632,7 +1677,7 @@ export function createClient(config: ClientConfig): Client {
           try {
             const source = pricingSources[provider]
             failureCost = source?.price(
-              effectiveReq.modelDescriptor?.pricingFamily ?? effectiveReq.model,
+              callDescriptor.pricingFamily ?? callDescriptor.model,
               failureUsage,
               err.servedServiceTier ?? effectiveReq.config.serviceTier,
             )
@@ -1691,10 +1736,47 @@ export function createClient(config: ClientConfig): Client {
     // middleware[0] is outermost; runAttempt is innermost (reduceRight folds
     // from right so index-0 wraps everything else).
     const middlewareList = config.middleware ?? []
+    //
+    // Every middleware receives a guarded `next` (ADR-037): a request whose
+    // provider or model differs from the call's is refused at the boundary,
+    // before anything inside the offender (inner middleware, `runAttempt`)
+    // runs. Hosts route and fall back themselves with a new call.
+    const guardBoundary =
+      (next: Handler): Handler =>
+      async (req, ctx) => {
+        if (req.provider !== callProvider || req.model !== requestedModel) {
+          throw new LlmError(
+            'middleware may not change the provider or model; route in the host and make a new call.',
+            {
+              kind: 'bad_request',
+              retryable: false,
+              issues: [
+                ...(req.provider !== callProvider
+                  ? [
+                      {
+                        path: 'provider',
+                        message: `call is for provider "${callProvider}", middleware passed "${String(req.provider)}".`,
+                      },
+                    ]
+                  : []),
+                ...(req.model !== requestedModel
+                  ? [
+                      {
+                        path: 'model',
+                        message: `call is for model "${requestedModel}", middleware passed "${String(req.model)}".`,
+                      },
+                    ]
+                  : []),
+              ],
+            },
+          )
+        }
+        return next(req, ctx)
+      }
     const chain: Handler = middlewareList.reduceRight(
       (next: Handler, mw: Middleware): Handler =>
         (req, ctx) =>
-          mw.intercept(req, ctx, next),
+          mw.intercept(req, ctx, guardBoundary(next)),
       runAttempt,
     )
 
@@ -1782,15 +1864,13 @@ export function createClient(config: ClientConfig): Client {
       // record from `runAttempt`'s own catch block; this branch must not
       // duplicate that (boundary pinned by tests).
       //
-      // `attemptId` follows the EXISTING first-attempt idempotency rule
-      // verbatim (see `runAttempt` above): `request.idempotencyKey` when
-      // supplied, a freshly minted id otherwise. `attemptNumber: 0` marks
+      // `attemptId` is minted like any attempt's. `attemptNumber: 0` marks
       // "refused before any attempt ran" — real attempts start at 1.
       // Telemetry is deliberately unaffected: `CallErrorEvent.attemptId`
       // below still derives from `lastAttemptId` (undefined here), not from
       // this synthetic id — it has no telemetry counterpart.
       if (lastAttemptId === undefined) {
-        const syntheticAttemptId = request.idempotencyKey ?? ids.attemptId()
+        const syntheticAttemptId = ids.attemptId()
         const syntheticRecord = buildErrorRecord(
           callId,
           syntheticAttemptId,
@@ -1968,7 +2048,7 @@ export function createClient(config: ClientConfig): Client {
       const descriptor = registry.resolve(request.provider, request.model)
       if (descriptor === undefined) {
         throw new LlmError(
-          `No registered model for provider "${request.provider}" model "${request.model}".`,
+          unknownModelMessage(registry, request.provider, request.model),
           { kind: 'bad_request', retryable: false },
         )
       }
@@ -2055,7 +2135,7 @@ export function createClient(config: ClientConfig): Client {
       const descriptor = registry.resolve(callSite.provider, callSite.model)
       if (descriptor === undefined) {
         throw new LlmError(
-          `No registered model for provider "${callSite.provider}" model "${callSite.model}".`,
+          unknownModelMessage(registry, callSite.provider, callSite.model),
           { kind: 'bad_request', retryable: false },
         )
       }
@@ -2143,7 +2223,7 @@ export function createClient(config: ClientConfig): Client {
       const descriptor = registry.resolve(request.provider, request.model)
       if (descriptor === undefined) {
         throw new LlmError(
-          `No registered model for provider "${request.provider}" model "${request.model}".`,
+          unknownModelMessage(registry, request.provider, request.model),
           { kind: 'bad_request', retryable: false },
         )
       }

@@ -10,20 +10,20 @@ ledger shape unless you have a concrete reason to stop consuming the shared sink
 
 ## What each field is for
 
-| Field           | Owner                                  | Use it for                                                                                                                            |
-| --------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `callId`        | library                                | Group all attempts belonging to one logical call.                                                                                     |
-| `attemptId`     | library or caller via `idempotencyKey` | Primary key for the attempt row and the foreign-key target for sidecars.                                                              |
-| `attemptNumber` | library                                | Distinguish first attempt vs in-process retries.                                                                                      |
-| `callSiteId`    | caller                                 | Prompt-family grouping and observability.                                                                                             |
-| `externalId`    | caller                                 | One convenient correlation id for host-ledger queries.                                                                                |
-| `queueDelayMs`  | library                                | Time spent waiting in the configured rate limiter before provider dispatch; use alongside `latencyMs` when attributing spend/latency. |
-| `metadata`      | caller                                 | Small, stable, non-secret host anchors persisted verbatim.                                                                            |
+| Field           | Owner   | Use it for                                                                                                                            |
+| --------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `callId`        | library | Group all attempts belonging to one logical call.                                                                                     |
+| `attemptId`     | library | Primary key for the attempt row and the foreign-key target for sidecars. Always minted by the library.                                |
+| `attemptNumber` | library | Distinguish first attempt vs in-process retries.                                                                                      |
+| `callSiteId`    | caller  | Prompt-family grouping and observability.                                                                                             |
+| `externalId`    | caller  | Correlation id for host-ledger queries; give every host retry of one operation the same value.                                        |
+| `queueDelayMs`  | library | Time spent waiting in the configured rate limiter before provider dispatch; use alongside `latencyMs` when attributing spend/latency. |
+| `metadata`      | caller  | Small, stable, non-secret host anchors persisted verbatim.                                                                            |
 
 Rules that matter:
 
 - `attemptId` is the durable row identity.
-- `idempotencyKey` gives you ledger idempotency only. It does not deduplicate provider calls.
+- Every attempt is a billed row with its own `attemptId`. The library never deduplicates provider calls; a host retry is a new call and new rows. Tie retries together with a shared `externalId`.
 - `metadata` is for low-cardinality JSON anchors, not secrets or large debug payloads.
 - If a host field needs typed indexes or joins, put it in a sidecar table.
 
@@ -169,9 +169,9 @@ order by failures desc;
 
 Retries by model (`callId` → `attemptId` is 1:many; `count(*) filter (...)` counts physical retry attempts, and `count(distinct call_id)` counts logical calls):
 
-In-process retries with the same `idempotencyKey` become `key`, `key:2`, `key:3` for later attempts,
-or fresh UUIDs when no `idempotencyKey` is provided. This pattern is the correct retry count across a
-logical call.
+Every attempt of an in-process retry gets a freshly minted `attemptId`; `attempt_number` orders them
+within the `call_id`. To count every attempt a host's own retries caused, group by `external_id`
+instead of `call_id`.
 
 ```sql
 select

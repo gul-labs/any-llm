@@ -7,7 +7,7 @@
  * @module
  */
 
-import { LlmError, assertNever } from '@gullabs/core'
+import { LlmError, assertNever, assertModelMatchesDescriptor } from '@gullabs/core'
 import type {
   ProviderAdapter,
   ResolvedRequest,
@@ -586,12 +586,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       const warnings: Warning[] = []
       const model = req.model
       const descriptor = req.modelDescriptor
-      if (descriptor?.model !== model || descriptor.provider !== 'google') {
-        throw new LlmError(`No matching Google model descriptor for "${model}".`, {
-          kind: 'bad_request',
-          retryable: false,
-        })
-      }
+      assertModelMatchesDescriptor(req, descriptor, 'google')
       if (req.transientProviderState !== undefined) {
         throw new LlmError(`Model "${model}" does not admit transientProviderState.`, {
           kind: 'bad_request',

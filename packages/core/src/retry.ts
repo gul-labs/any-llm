@@ -228,6 +228,7 @@ export function retryMiddleware(
 
   return {
     id: 'retry',
+    role: 'retry',
 
     async intercept(
       req: ResolvedRequest,

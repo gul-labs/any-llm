@@ -354,12 +354,11 @@ export interface LlmRequest {
   /** Optional call-site identifier for direct `generate()` observability grouping. */
   callSiteId?: string
   /**
-   * Optional ledger idempotency key. Attempt 1 uses this exact value as
-   * `attemptId`; in-process library retries suffix later attempts (`key:2`,
-   * `key:3`, ...) so every attempt can keep a distinct durable row.
+   * Optional caller-owned correlation id persisted on every attempt row of the
+   * call. Give every host-level retry of one logical operation the same
+   * `externalId`; each attempt is still its own billed row with its own
+   * `attemptId`, and the library never deduplicates provider calls.
    */
-  idempotencyKey?: string
-  /** Optional caller-owned correlation id persisted on the record. */
   externalId?: string
   /**
    * Optional opt-in input contract for the `generate()` path (D3).

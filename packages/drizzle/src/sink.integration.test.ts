@@ -16,7 +16,10 @@ import { describe, it, expect } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { drizzleUsageSink, type InsertableDb } from './sink.js'
 import { llmCalls } from './schema.js'
+import { createClient, createModelRegistry } from '@gullabs/core'
 import type { LlmCallRecord, JsonValue } from '@gullabs/core'
+import { FakeAdapter } from '@gullabs/testing'
+import { makeTestDescriptor } from '../../core/src/test-model-descriptor.js'
 
 // ---------------------------------------------------------------------------
 // DDL derived precisely from packages/drizzle/src/schema.ts
@@ -331,6 +334,44 @@ describe('drizzleUsageSink — real PGlite integration', () => {
       .from(llmCalls)
       .where(eq(llmCalls.attemptId, 'idempotent_attempt'))
     expect(rows).toHaveLength(1)
+  })
+
+  // ADR-031: a host retry that reuses one externalId makes two billed calls;
+  // both must keep their own row.
+  it('two engine calls sharing an externalId persist two rows with distinct attemptIds', async () => {
+    const db = await createTestDb()
+    const client = createClient({
+      adapters: [
+        new FakeAdapter('google', {
+          text: 'ok',
+          usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: {} },
+          model: 'm1',
+          warnings: [],
+        }),
+      ],
+      modelRegistry: createModelRegistry([
+        makeTestDescriptor({ provider: 'google', model: 'm1' }),
+      ]),
+      sink: drizzleUsageSink(asInsertableDb(db)),
+    })
+    const request = {
+      provider: 'google',
+      model: 'm1',
+      messages: [
+        { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'Hi' }] },
+      ],
+      externalId: 'host-op-7',
+    }
+
+    await client.generate(request, { auth: { apiKey: 'test-key' } })
+    await client.generate(request, { auth: { apiKey: 'test-key' } })
+
+    const rows = await db
+      .select()
+      .from(llmCalls)
+      .where(eq(llmCalls.externalId, 'host-op-7'))
+    expect(rows).toHaveLength(2)
+    expect(new Set(rows.map((r) => r.attemptId)).size).toBe(2)
   })
 
   // (b cont.) Second insert with different data on same attemptId must not overwrite.

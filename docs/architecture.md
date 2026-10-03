@@ -137,8 +137,8 @@ interpolation and config-layer merging before handing off to the shared core.
    in `llm.call.start` log and forwarded to `telemetry.onStart`.
 
 5. **ModelDescriptor resolution.** The registry resolves the explicit
-   (`req.provider`, `req.model`) pair — exact match first, then longest-prefix within that
-   provider only. An unregistered pair throws `LlmError('bad_request')` at the public API
+   (`req.provider`, `req.model`) pair by exact match on the descriptor's canonical `model` or one
+   of its declared `aliases` (ADR-033); there is no prefix matching. An unregistered pair throws `LlmError('bad_request')` at the public API
    boundary (reject, don't map). The resolved descriptor is attached to `ResolvedRequest` for
    the adapter's use (`reasoningApi` variant, capability flags).
 
@@ -159,9 +159,9 @@ interpolation and config-layer merging before handing off to the shared core.
    before `runAttempt` starts — a request input-contract violation (step 6), or a pre-attempt
    refusal from a middleware such as `@gullabs/quota` — writes one synthetic `LlmCallRecord`:
    `attemptNumber: 0`, all-zero usage, `cost` omitted, `status` derived from the error's `kind`
-   via the same `errorKindToStatus` mapping used for real attempts. `attemptId` follows the same
-   idempotency rule as a real first attempt (`request.idempotencyKey` when supplied, minted
-   otherwise). This is the only ledger-visible trace of a pre-attempt refusal; errors thrown
+   via the same `errorKindToStatus` mapping used for real attempts. `attemptId` is minted like
+   any attempt's (ADR-031). A middleware that tries to change the call's provider or model is
+   refused the same way (ADR-037). This is the only ledger-visible trace of a pre-attempt refusal; errors thrown
    before `callId` assignment (steps 1–3, 5) stay row-less. See ADR-025 for the full boundary
    table and the deliberate `CallErrorEvent.attemptId` telemetry divergence.
 
@@ -175,9 +175,17 @@ Each `Middleware` receives `(req, ctx, next)` where `next` is the rest of the ch
 `runAttempt`. Middleware calling `next` once is a passthrough; calling it multiple times
 implements retry patterns.
 
-`retryMiddleware` (first-party, opt-in) sits outermost. On a retryable error it computes a
+`retryMiddleware` (first-party, opt-in) normally sits outermost. On a retryable error it computes a
 backoff delay and calls `next` again. Each `next` call generates a fresh `attemptId` in the
 sink — retries are visible as separate records sharing a `callId`.
+
+The `next` every middleware receives is guarded (ADR-037): a request whose `provider` or `model`
+differs from the call's is refused with `bad_request` at that boundary, before anything inside the
+offender runs, and the engine's `runAttempt` dispatches, validates, prices and authenticates with
+the `{ provider, requestedModel, descriptor }` it recorded at call start rather than reading them
+from the request. A middleware that wants another target cannot reroute; the host catches the
+error and makes a new call. Quota middleware (`role: 'quota'`) must sit inside retry
+(`role: 'retry'`) so it accounts one unit per dispatch; `createClient` rejects the other order.
 
 ### Phase 3 — Per-Attempt Handler (`runAttempt`)
 
@@ -202,7 +210,9 @@ attempt. Steps:
    ordering guarantees `kind: 'timeout'` wins the `Promise.race` even against a synchronously
    aborting adapter.
 
-4. **Rate-limiter acquire.** `rateLimiter.acquire("${provider}:${model}", signal)` is raced
+4. **Rate-limiter acquire.** `rateLimiter.acquire("${provider}:${model}", signal)` (once per
+   attempt, so once per retry; `model` is the descriptor's canonical id, so aliases share a
+   bucket) is raced
    against the cancellation promises. On rejection (caller abort, timeout, or limiter error),
    the call fails. On resolution, a `Release` function is returned; it is called on every exit
    path (success and error). Time spent waiting here is recorded as `queueDelayMs` and excluded
@@ -404,13 +414,15 @@ not survive restarts.
 
 Each descriptor carries:
 
-- `model` — the bare provider-native model string (used as exact-match key and prefix).
+- `model` — the canonical provider-native model string (the exact-match key).
   Identity is the pair (`provider`, `model`); the same bare `model` may exist under multiple
   providers with different config schemas.
+- `aliases` — optional extra model strings the provider serves as the same model (real version
+  suffixes). Exact-match keys too; sent to the provider unchanged and priced under this descriptor.
 - `provider` — matches the `ProviderAdapter.id` used for routing. `createClient` verifies at
   construction that every registry descriptor's `provider` matches a configured adapter's `id`.
 - `pricingFamily` — the key into the pricing table (e.g., `"gemini-2.5-pro"` for
-  `"gemini-2.5-pro-001"`).
+  `"gemini-2.5-pro-001"`, when that string is a declared alias).
 - `capabilities.reasoningApi` — `'budget'` (Gemini 2.5 series, `thinkingBudget`) or
   `'level'` (Gemini 3.x series, `thinkingLevel`).
 - `capabilities.sampling` — `'tunable'` (Gemini 2.5 series) or `'fixed'` (Gemini 3.x series).
@@ -425,11 +437,10 @@ Each descriptor carries:
 
 `ModelRegistry.resolve(provider, model)`:
 
-1. Exact match on the (`provider`, `model`) pair — O(1) hash lookup.
-2. Longest-prefix match — linear scan **within that provider only**; the candidate with
-   `model.startsWith(descriptor.model)` and the longest `descriptor.model` wins. Prefix
-   matching never crosses providers.
-3. `undefined` — no descriptor found.
+1. Exact match on the (`provider`, `model`) pair — O(1) hash lookup. Declared `aliases` are
+   additional keys for the same descriptor, unique within the provider.
+2. `undefined` — no descriptor found. There is no prefix matching: an unregistered sibling such as
+   `gemini-2.5-flash-image` next to `gemini-2.5-flash` is unknown, never priced as the shorter id.
 
 When `undefined`, the engine throws `LlmError('bad_request')` at the public API boundary.
 There is no provider derivation, no `provider/model` slash convention, and no `'unknown'`
@@ -634,9 +645,9 @@ matches `req.provider` against adapter ids directly, one adapter configured or t
 `toolChoice` in, `tool-call` / `tool-result` parts and `LlmResult.toolCalls` out. No
 agent loop, no tool execution. `runStructured` + `tools` is `bad_request`.
 
-**Provider-fallback middleware.** The middleware contract allows calling `next` with a modified
-`ResolvedRequest` pointing to a different model. A fallback middleware (retry on `server` with
-a different provider) is implementable today; no first-party implementation ships in v1.
+**Provider fallback.** Deliberately host-side (ADR-037). A middleware cannot change a call's
+provider or model; the host catches the error and makes a new `generate` call against the other
+target. No first-party fallback ships.
 
 **Distributed rate limiting.** The `RateLimiter` port is in place. Core defaults to a no-op
 limiter, while `@gullabs/quota` provides companion quota primitives for shared enforcement.

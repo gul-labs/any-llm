@@ -8,11 +8,17 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { LlmError, createClient } from '@gullabs/core'
+import { LlmError, createClient, createModelRegistry } from '@gullabs/core'
 import type { ResolvedRequest, AdapterCtx, ModelDescriptor } from '@gullabs/core'
-import { fakeXaiResponse, makeFakeXai, RecordingSink } from '@gullabs/testing'
+import {
+  FakeClock,
+  FakeIds,
+  fakeXaiResponse,
+  makeFakeXai,
+  RecordingSink,
+} from '@gullabs/testing'
 import { xaiAdapter, classifyXaiError } from './adapter.js'
-import { computeXaiCost } from './pricing.js'
+import { computeXaiCost, xaiPricingSource } from './pricing.js'
 import {
   xaiRegistry,
   grok45ModelDescriptor,
@@ -2434,5 +2440,91 @@ describe('outputJsonSchema dialect preflight', () => {
       .format
     expect(sent.schema).toBe(schema)
     expect(result.rawStructured).toEqual({ employees: null })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Declared model aliases (ADR-033)
+// ---------------------------------------------------------------------------
+
+describe('declared model aliases', () => {
+  const aliased: ModelDescriptor = {
+    ...grok45ModelDescriptor,
+    aliases: ['grok-4.5-0415'],
+  }
+
+  it('accepts a declared alias on a first-turn dispatch and sends it to the SDK verbatim', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
+    await xaiAdapter({ client }).run(
+      makeResolvedReq({ model: 'grok-4.5-0415', modelDescriptor: aliased }),
+      FAKE_CTX,
+    )
+    expect((client.calls[0] as { model: string }).model).toBe('grok-4.5-0415')
+  })
+
+  it('rejects a string that is neither the canonical id nor a declared alias', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
+    await expect(
+      xaiAdapter({ client }).run(
+        makeResolvedReq({ model: 'grok-4.5-0416', modelDescriptor: aliased }),
+        FAKE_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('rejects another provider’s descriptor whose alias list matches the requested string', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
+    const foreign = makeTestDescriptor({
+      provider: 'google',
+      model: 'gemini-2.5-pro',
+      aliases: ['grok-4.5-0415'],
+    })
+    await expect(
+      xaiAdapter({ client }).run(
+        makeResolvedReq({ model: 'grok-4.5-0415', modelDescriptor: foreign }),
+        FAKE_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('through createClient: dispatches the alias verbatim and prices it under the canonical descriptor', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
+    const sink = new RecordingSink()
+    const llm = createClient({
+      adapters: [xaiAdapter({ client })],
+      pricingSources: { xai: xaiPricingSource() },
+      modelRegistry: createModelRegistry([aliased]),
+      sink,
+      clock: new FakeClock(),
+      ids: new FakeIds(),
+    })
+    const request = {
+      provider: 'xai',
+      model: 'grok-4.5-0415',
+      messages: [
+        { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'hi' }] },
+      ],
+    }
+
+    const viaAlias = await llm.generate(request, { auth: { apiKey: 'test-key' } })
+    const viaCanonical = await llm.generate(
+      { ...request, model: 'grok-4.5' },
+      { auth: { apiKey: 'test-key' } },
+    )
+
+    expect((client.calls[0] as { model: string }).model).toBe('grok-4.5-0415')
+    expect((client.calls[1] as { model: string }).model).toBe('grok-4.5')
+    expect(sink.records[0]!.model).toBe('grok-4.5-0415')
+    expect(viaAlias.cost?.microUsd).not.toBeNull()
+    expect(viaAlias.cost?.microUsd).toBe(viaCanonical.cost?.microUsd)
+
+    await expect(
+      llm.generate(
+        { ...request, model: 'grok-4.5-0416' },
+        { auth: { apiKey: 'test-key' } },
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request' })
   })
 })

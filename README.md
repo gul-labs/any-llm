@@ -118,6 +118,33 @@ const geminiFiles = new GoogleFileStore({ auth: { apiKey: geminiKey } })
 
 See [`packages/xai/README.md`](./packages/xai/README.md) for `XaiFileStore` / `FileRefPart` and fail-closed delete.
 
+## Fallback
+
+The library does not reroute. A middleware cannot change a call's `provider` or `model` (the call
+fails with `bad_request`), and there is no fallback middleware: the host decides where a failed call
+goes next. Catch the error and make a **new** call against the other target with that target's
+config and auth. Each call has its own `callId`, is validated and priced against its own model, and
+writes its own rows; give both the same `externalId` to link them.
+
+```ts
+async function generateWithFallback(messages: Message[], externalId: string) {
+  const targets = [
+    { provider: 'google', model: 'gemini-2.5-pro', auth: { apiKey: googleKey } },
+    { provider: 'xai', model: 'grok-4.6', auth: { apiKey: xaiKey } },
+  ]
+  let last: unknown
+  for (const { auth, ...target } of targets) {
+    try {
+      return await client.generate({ ...target, messages, externalId }, { auth })
+    } catch (err) {
+      if (!(err instanceof LlmError) || !err.retryable) throw err
+      last = err
+    }
+  }
+  throw last
+}
+```
+
 ## Auth
 
 The library never reads credentials from the environment or any ambient source. There is no `envAuth()`, no `AuthProvider` port, and no client-level `auth` on `createClient`. Pass `auth` on every call:

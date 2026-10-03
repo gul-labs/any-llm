@@ -42,14 +42,10 @@ export interface LlmCallRecord {
   /** Unique ID for the logical call (shared across retries). */
   callId: string
   /**
-   * Unique ID for this specific attempt — the idempotency key.
-   *
-   * On `attemptNumber: 0` (a pre-attempt refusal — see below), this is
-   * derived by the same rule as attempt 1: `request.idempotencyKey` when
-   * supplied, a freshly minted id otherwise. It remains the idempotency key
-   * in that case too — a caller-retried refused call with the same
-   * `idempotencyKey` upserts the same row rather than accumulating
-   * duplicates.
+   * Unique ID for this specific attempt, always minted by the engine — also
+   * for `attemptNumber: 0` refusal rows. It only de-duplicates an at-least-once
+   * sink re-delivering the same record; it is never derived from host input.
+   * Correlate host retries of one operation through `externalId`.
    */
   attemptId: string
   /**

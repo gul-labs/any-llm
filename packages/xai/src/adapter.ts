@@ -7,7 +7,12 @@
  * @module
  */
 
-import { LlmError, classifyError, assertNever } from '@gullabs/core'
+import {
+  LlmError,
+  classifyError,
+  assertNever,
+  assertModelMatchesDescriptor,
+} from '@gullabs/core'
 import type {
   ProviderAdapter,
   ResolvedRequest,
@@ -697,11 +702,8 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
 
       const warnings: Warning[] = []
       const model = req.model
-      if (
-        req.modelDescriptor !== undefined &&
-        (req.modelDescriptor.model !== model || req.modelDescriptor.provider !== 'xai')
-      ) {
-        throw badXaiRequest(`Mismatched xAI model descriptor for "${model}".`)
+      if (req.modelDescriptor !== undefined) {
+        assertModelMatchesDescriptor(req, req.modelDescriptor, 'xai')
       }
       if (
         xaiRegistry.resolve('xai', model)?.capabilities?.statelessReasoningReplay ===

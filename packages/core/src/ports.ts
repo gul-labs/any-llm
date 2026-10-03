@@ -630,6 +630,26 @@ export type Handler = (req: ResolvedRequest, ctx: EngineCtx) => Promise<LlmResul
  * Calling `next(req, ctx)` zero times short-circuits the chain.
  * Calling it once is the normal passthrough.
  * Calling it multiple times (with or without delay) implements retry patterns.
+ *
+ * **Contract (ADR-037).**
+ *
+ * - **Middleware cannot reroute.** The `next` a middleware receives refuses a
+ *   request whose `provider` or `model` differs from the call's: the call fails
+ *   with `LlmError('bad_request')`, as the offender calls `next`, before any
+ *   inner middleware or the provider runs, and a pre-attempt refusal row
+ *   (`attemptNumber: 0`) is written. The engine routes, validates config,
+ *   prices and authenticates with the identity it recorded at call start and
+ *   never reads `provider`, `model` or `modelDescriptor` from the request a
+ *   middleware passes on. To use another provider or model, catch the error in
+ *   the host and make a new call.
+ * - **Treat the request as immutable once passed to `next`.** To change data
+ *   (config, messages, metadata), pass a new object to `next`. The engine does
+ *   not copy or freeze requests, so mutating nested data in place after
+ *   calling `next` is a host bug the engine cannot detect.
+ * - **Order decides what a middleware counts.** Outermost runs first. A
+ *   middleware outside `retryMiddleware` runs once per logical call; one inside
+ *   it runs once per attempt. A quota unit taken by a middleware outside a
+ *   rejected offender is not refunded.
  */
 export interface Middleware {
   /**
@@ -638,9 +658,20 @@ export interface Middleware {
    */
   id: string
   /**
+   * Built-in role marker, set only by the first-party factories
+   * (`retryMiddleware` sets `'retry'`, `providerQuotaMiddleware` sets
+   * `'quota'`). `createClient` reads it, never the `id`, to reject a client
+   * that places a quota middleware outside (before) a retry middleware: quota
+   * accounts one unit per provider dispatch, which needs it inside retry.
+   * Host middleware leaves it unset.
+   */
+  readonly role?: 'retry' | 'quota'
+  /**
    * Intercept a request.  Call `next(req, ctx)` to proceed to the next layer.
    *
-   * @param req - The resolved request (may be forwarded or modified).
+   * @param req - The resolved request. Forward it, or pass a new object with
+   *   changed data to `next`; never change `provider` or `model` (see the
+   *   contract above).
    * @param ctx - Stable call-level context (callId, clock, logger, signal).
    * @param next - The next handler in the chain; the innermost is `runAttempt`.
    */

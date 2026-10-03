@@ -198,7 +198,8 @@ enumerating every version string in the pricing table.
 
 ## ADR-006: `ModelDescriptor` Registry with Exact-ID and Longest-Prefix Resolution
 
-**Status:** Accepted; resolution keying and routing fallbacks superseded by ADR-022
+**Status:** Superseded by ADR-033 (exact ids plus declared aliases; no prefix matching). Resolution
+keying and routing fallbacks were already superseded by ADR-022.
 
 **Context:**
 A model string like `gemini-2.5-pro-001` must route to the `google` adapter, resolve to the
@@ -242,7 +243,8 @@ provider mappings without a library release.
 
 ## ADR-007: Opt-In Middleware Chain; Retry as First-Party Middleware
 
-**Status:** Accepted
+**Status:** Accepted; amended by ADR-037 (a middleware cannot change the provider or model, so
+provider fallback is host-side, not middleware)
 
 **Context:**
 Cross-cutting behaviors like retry, circuit-breaking, and request logging need to wrap the
@@ -268,8 +270,8 @@ one record. The `callId` is stable across all attempts of a logical call.
 
 - Retry policy is configurable without patching the engine: `maxAttempts`, `baseDelayMs`,
   `maxDelayMs`, and a custom `shouldRetry` predicate are all overridable.
-- The middleware contract is simple enough that hosts can implement circuit-breakers, request
-  tracing, or provider-fallback as middleware without forking the library.
+- The middleware contract is simple enough that hosts can implement circuit-breakers or request
+  tracing as middleware without forking the library. Rerouting is not middleware work (ADR-037).
 - Middleware `id` uniqueness is validated at `createClient` construction to catch misconfiguration
   early.
 - The retry sleep is abortable: if the caller fires the abort signal during a backoff window, the
@@ -477,7 +479,8 @@ adapter sets.
 
 **Deliberately not built:** automatic Flex → Standard fallback when a Flex call times out. Such a
 fallback is a disguised retry that crosses tier boundaries without the caller's awareness. Retry
-and fallback logic belongs in the middleware chain where it is explicit and auditable.
+logic belongs in the middleware chain where it is explicit and auditable; routing and fallback
+belong in the host (ADR-037).
 
 **Consequences:**
 
@@ -1351,10 +1354,9 @@ Implementing surfaces:
   started, the engine writes one synthetic `LlmCallRecord`: `status` via the existing
   `errorKindToStatus` mapping (no new status value, `recordSchemaVersion` stays `1`), all-zero
   usage, `cost` omitted (the existing "nothing was priced" convention, not a new `cost: 0` literal),
-  `attemptNumber: 0`. `attemptId` follows the EXISTING first-attempt idempotency rule
-  verbatim — `request.idempotencyKey` when supplied, a freshly minted id otherwise — so a
-  caller-retried refused call with the same `idempotencyKey` upserts the same row instead of
-  accumulating duplicates. `record.ts`'s `attemptNumber`/`attemptId` doc contracts are rewritten:
+  `attemptNumber: 0`. `attemptId` followed the first-attempt idempotency rule —
+  `request.idempotencyKey` when supplied, a freshly minted id otherwise (superseded by ADR-031:
+  `idempotencyKey` is deleted and every row, refusal rows included, gets a minted id). `record.ts`'s `attemptNumber`/`attemptId` doc contracts are rewritten:
   `attemptNumber` is documented as "0 = refused before any attempt ran; real attempts are 1-based";
   `attemptId` on `attemptNumber: 0` is documented as derived by the attempt-1 rule and remaining the
   idempotency key. **Deliberate telemetry divergence:** `CallErrorEvent.attemptId` stays absent when
@@ -1728,3 +1730,123 @@ three neighbouring problems, all confirmed live on 2026-10-02 against
   xAI. The library offers no converter.
 - Fixture 33 pins the non-enforcement evidence. When a re-recorded fixture
   shows enforcement, update the README and this ADR.
+
+---
+
+## ADR-031: Ledger rows are per attempt; correlation is `externalId`
+
+**Status:** Accepted (2026-10-03). Supersedes the `idempotencyKey` rule of ADR-025 and the
+"idempotency key" wording of the `attemptId` contract.
+
+**Context:**
+`LlmRequest.idempotencyKey` became attempt 1's `attemptId`, and the drizzle sink inserts with
+`onConflictDoNothing` on `attempt_id`. The docs recommended reusing the key across host-level retries
+(a workflow activity retry, a job-queue redelivery). That is a second billed provider call whose row
+is silently dropped, so every host that followed the docs under-reported spend. Two tenants that
+picked the same key would also collide.
+
+**Decision:**
+
+1. **Delete `LlmRequest.idempotencyKey`.** `attemptId` is always minted by the engine, one per
+   attempt, including the synthetic `attemptNumber: 0` refusal row.
+2. **`externalId` is the correlation id.** It is persisted on every attempt row (indexed in
+   `@gullabs/drizzle`) and is deliberately not unique. A host gives every retry of one logical
+   operation the same `externalId`.
+3. **The library never deduplicates provider calls.** Every attempt is a billed row. The sink's
+   `onConflictDoNothing` on `attempt_id` stays, but it now only absorbs an at-least-once sink
+   re-delivering the same record.
+
+**Consequences:**
+
+- Spend is complete: a host retry that reuses an `externalId` shows up as extra rows under it, each
+  with its own cost.
+- Hosts with history keyed on old key-derived `attemptId`s (`key`, `key:2`, ...) must join on
+  `externalId` going forward. Existing rows are not rewritten.
+- A host that wants to avoid a duplicate provider call must check its own state before calling.
+
+---
+
+## ADR-033: Exact model ids plus declared aliases
+
+**Status:** Accepted (2026-10-03). Supersedes ADR-006.
+
+**Context:**
+ADR-006 resolved a model string by exact match, then longest prefix. A request for
+`gemini-2.5-flash-image`, `gemini-2.5-pro-preview-tts` or a live-audio variant resolved to the text
+model's descriptor and was validated, adapted and priced as that text model, exact-looking and
+wrong. Both adapters also guarded `descriptor.model === req.model`, so any attempt to repair this
+with an alias list would have been rejected on its first call.
+
+**Decision:**
+
+1. **Exact match only.** `ModelRegistry.resolve(provider, model)` matches a descriptor's canonical
+   `model` or one of its declared `ModelDescriptor.aliases?: readonly string[]` (real version
+   suffixes). The prefix walk is deleted. An alias is unique within its provider and may not equal
+   any canonical id or other alias; the registry throws at construction otherwise.
+2. **Unknown ids are rejected** with `bad_request` naming the closest registered ids of that
+   provider (edit distance, canonical ids and aliases).
+3. **Adapters accept aliases through one core helper,**
+   `assertModelMatchesDescriptor(req, descriptor, adapterProvider)`: `descriptor.provider` must
+   equal both `req.provider` and the adapter's provider id, and `req.model` must be the descriptor's
+   canonical id or a declared alias. The Google and xAI adapters use it.
+4. **The request string is never rewritten.** It is forwarded to the provider unchanged and
+   recorded on the ledger row as the host sent it. Pricing and the rate-limiter key use the
+   canonical descriptor (`pricingFamily ?? model`), so a model and its aliases are priced alike and
+   share a limiter bucket.
+5. No built-in alias is declared without evidence of the provider serving it (ADR-013).
+
+**Consequences:**
+
+- Hosts that relied on prefix resolution (a dated or `-latest` suffix) must name a registered id or
+  add the suffix as an alias in a custom registry.
+- A new model variant is unpriced-by-mistake no more: it fails closed until it is registered.
+- The Claude and Codex CLI adapters keep their own exact-id guards; they declare no aliases.
+
+---
+
+## ADR-037: Middleware cannot reroute
+
+**Status:** Accepted (2026-10-03). Amends ADR-007.
+
+**Context:**
+ADR-007 described middleware as a way to build provider fallback. The engine let a middleware change
+`provider` or `model` on the request, but validated, priced and authenticated with the original call's
+descriptor and auth. A Google-to-xAI switch sent Gemini's `serviceTier: 'flex'` to xAI and recorded
+`microUsd: null`; a same-provider switch was priced at the original model's rates with no warning.
+The owner decided hosts own routing and fallback; the library offers neither.
+
+**Decision:**
+
+1. **Boundary check.** The engine wraps the `next` it hands to every middleware and compares
+   `req.provider` and `req.model` with the call's values at that boundary. A difference fails with
+   `bad_request` ("middleware may not change the provider or model; route in the host and make a
+   new call") with an `issues` entry per changed field. The offender is caught as it calls `next`,
+   before anything inside it runs, so quota middleware inside it consumes nothing. A middleware
+   outside the offender has already run and is not refunded. The rejection writes a pre-attempt
+   refusal row (`attemptNumber: 0`, no provider call).
+2. **Call identity.** At call start the engine records `{ provider, requestedModel, descriptor }`:
+   the provider, the exact model string the host sent (a declared alias stays an alias, ADR-033) and
+   the descriptor object it resolved. `runAttempt` dispatches, validates config, prices, routes and
+   authenticates with these and never reads `provider`, `model` or `modelDescriptor` from the
+   request it receives.
+3. **Scope.** The library does not copy or freeze requests or descriptors to defend against a
+   middleware that mutates nested data in place after calling `next`. That is a host bug the
+   boundary check cannot see, and guarding it needs deep copies and frozen descriptors, which break
+   `AbortSignal`, functions and Zod schemas. The middleware contract says: treat the request as
+   immutable once passed to `next`; to change data, pass a new object.
+4. **No rerouting API, no fallback middleware.** A host that wants fallback catches the error and
+   calls `generate` again with the other target's config and auth: a separate logical call with its
+   own `callId`, priced and recorded correctly by construction. Hosts link the two with the same
+   `externalId`.
+5. **Quota placement.** `Middleware` gains a readonly `role?: 'retry' | 'quota'`, set by
+   `retryMiddleware` and `providerQuotaMiddleware` and not configurable. `createClient` rejects, with
+   `bad_request`, a client that puts a quota middleware before a retry middleware: quota accounts
+   one unit per provider dispatch, which needs it inside retry. The check reads `role`, never `id`.
+
+**Consequences:**
+
+- ADR-007's statement that provider fallback is implementable as middleware is deleted.
+- Hosts that rerouted in middleware move that logic outside `generate`; see the README "Fallback"
+  section.
+- Middleware can still pass a new request object with changed config, messages or metadata to
+  `next`.

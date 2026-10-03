@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 
 import {
+  assertModelMatchesDescriptor,
   createModelRegistry,
   LlmError,
   toConfigJsonSchema,
@@ -33,12 +34,58 @@ describe('createModelRegistry', () => {
     makeDescriptor('beta', 'p3'),
   ]
 
-  it('resolves exact and longest-prefix matches, scoped to the given provider', () => {
+  it('resolves exact ids only, scoped to the given provider', () => {
     const registry = createModelRegistry(descriptors)
 
     expect(registry.resolve('p1', 'alpha')?.provider).toBe('p1')
-    expect(registry.resolve('p2', 'beta-v2-001')?.provider).toBe('p2')
-    expect(registry.resolve('p3', 'beta-experimental')?.provider).toBe('p3')
+    expect(registry.resolve('p2', 'beta-v2')?.provider).toBe('p2')
+    expect(registry.resolve('p3', 'beta')?.provider).toBe('p3')
+  })
+
+  it('does not prefix-match: an unregistered sibling of a registered id is unknown', () => {
+    const registry = createModelRegistry(descriptors)
+
+    expect(registry.resolve('p2', 'beta-v2-001')).toBeUndefined()
+    expect(registry.resolve('p3', 'beta-experimental')).toBeUndefined()
+    expect(registry.resolve('p1', 'alpha-image')).toBeUndefined()
+  })
+
+  it('resolves a declared alias to its descriptor, and only within its provider', () => {
+    const aliased = { ...makeDescriptor('gamma', 'p1'), aliases: ['gamma-001'] }
+    const registry = createModelRegistry([aliased, makeDescriptor('other', 'p2')])
+
+    expect(registry.resolve('p1', 'gamma')).toBe(aliased)
+    expect(registry.resolve('p1', 'gamma-001')).toBe(aliased)
+    expect(registry.resolve('p2', 'gamma-001')).toBeUndefined()
+    expect(registry.resolve('p1', 'gamma-002')).toBeUndefined()
+  })
+
+  it('rejects an alias that collides with a canonical id or another alias, in either order', () => {
+    const a = { ...makeDescriptor('m1', 'p'), aliases: ['m2'] }
+    const b = makeDescriptor('m2', 'p')
+    expect(() => createModelRegistry([a, b])).toThrow(/collides/)
+    expect(() => createModelRegistry([b, a])).toThrow(/collides/)
+    expect(() =>
+      createModelRegistry([
+        { ...makeDescriptor('x', 'p'), aliases: ['dup'] },
+        { ...makeDescriptor('y', 'p'), aliases: ['dup'] },
+      ]),
+    ).toThrow(/collides/)
+    expect(() =>
+      createModelRegistry([{ ...makeDescriptor('x', 'p'), aliases: ['x'] }]),
+    ).toThrow(/collides/)
+    expect(() =>
+      createModelRegistry([{ ...makeDescriptor('x', 'p'), aliases: [''] }]),
+    ).toThrow(/alias/)
+  })
+
+  it('allows the same alias string under two providers', () => {
+    const registry = createModelRegistry([
+      { ...makeDescriptor('m', 'p'), aliases: ['same'] },
+      { ...makeDescriptor('n', 'q'), aliases: ['same'] },
+    ])
+    expect(registry.resolve('p', 'same')?.model).toBe('m')
+    expect(registry.resolve('q', 'same')?.model).toBe('n')
   })
 
   it('returns undefined for unknown models', () => {
@@ -52,15 +99,6 @@ describe('createModelRegistry', () => {
 
     // 'alpha' is only registered under 'p1' — resolving it under 'p2' must miss.
     expect(registry.resolve('p2', 'alpha')).toBeUndefined()
-  })
-
-  it('never lets a prefix descriptor under one provider match a longer model resolved under another provider', () => {
-    const registry = createModelRegistry(descriptors)
-
-    // 'beta' is registered under 'p3' as a prefix candidate for 'beta-experimental',
-    // but resolving 'beta-experimental' under 'p1' (which has no 'beta*' descriptor)
-    // must miss rather than crossing over to p3's descriptor.
-    expect(registry.resolve('p1', 'beta-experimental')).toBeUndefined()
   })
 
   it('returns a defensive copy from listDescriptors', () => {
@@ -147,5 +185,55 @@ describe('@gullabs/core package surface', () => {
     expect(typeof surface.zodToStandardSchema).toBe('function')
     expect(removedConfigSchemaFactory in surface).toBe(false)
     expect(removedConfigValidatorFactory in surface).toBe(false)
+  })
+})
+
+describe('assertModelMatchesDescriptor', () => {
+  const descriptor = { ...makeDescriptor('canon', 'p'), aliases: ['canon-001'] }
+
+  it('accepts the canonical id and a declared alias', () => {
+    expect(() =>
+      assertModelMatchesDescriptor({ provider: 'p', model: 'canon' }, descriptor, 'p'),
+    ).not.toThrow()
+    expect(() =>
+      assertModelMatchesDescriptor(
+        { provider: 'p', model: 'canon-001' },
+        descriptor,
+        'p',
+      ),
+    ).not.toThrow()
+  })
+
+  it('rejects a string that is neither canonical nor an alias', () => {
+    expect(() =>
+      assertModelMatchesDescriptor(
+        { provider: 'p', model: 'canon-002' },
+        descriptor,
+        'p',
+      ),
+    ).toThrow(LlmError)
+  })
+
+  it('rejects a missing descriptor', () => {
+    expect(() =>
+      assertModelMatchesDescriptor({ provider: 'p', model: 'canon' }, undefined, 'p'),
+    ).toThrow(/No matching p model descriptor/)
+  })
+
+  it('rejects a descriptor whose provider differs from the adapter or the request, even when an alias matches', () => {
+    const other = { ...makeDescriptor('canon', 'q'), aliases: ['canon-001'] }
+    expect(() =>
+      assertModelMatchesDescriptor({ provider: 'p', model: 'canon-001' }, other, 'p'),
+    ).toThrow(LlmError)
+    expect(() =>
+      assertModelMatchesDescriptor({ provider: 'q', model: 'canon-001' }, other, 'p'),
+    ).toThrow(LlmError)
+    expect(() =>
+      assertModelMatchesDescriptor(
+        { provider: 'p', model: 'canon-001' },
+        descriptor,
+        'q',
+      ),
+    ).toThrow(LlmError)
   })
 })

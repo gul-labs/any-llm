@@ -2011,7 +2011,7 @@ describe('engine — reconcile loop (callId/attemptId/telemetry)', () => {
     expect(result.attemptId).not.toBe(failedRecord.attemptId)
   })
 
-  it('idempotencyKey is deterministic but still preserves per-attempt retry records', async () => {
+  it('every attempt mints its own attemptId; retries share the callId and externalId', async () => {
     const adapter = new FakeAdapter('google', [
       new LlmError('transient', { kind: 'server', retryable: true }),
       makeSuccessResult(),
@@ -2037,17 +2037,40 @@ describe('engine — reconcile loop (callId/attemptId/telemetry)', () => {
         provider: 'google',
         model: 'gemini-2.5-pro',
         messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hi' }] }],
-        idempotencyKey: 'ctx-123',
+        externalId: 'ctx-123',
       },
       { auth: TEST_AUTH },
     )
 
     expect(sink.records).toHaveLength(2)
-    expect(sink.records[0]!.attemptId).toBe('ctx-123')
+    expect(sink.records[0]!.attemptId).toBe('attempt_1')
     expect(sink.records[0]!.status).toBe('api_error')
-    expect(sink.records[1]!.attemptId).toBe('ctx-123:2')
+    expect(sink.records[1]!.attemptId).toBe('attempt_2')
     expect(sink.records[1]!.status).toBe('ok')
-    expect(result.attemptId).toBe('ctx-123:2')
+    expect(sink.records[0]!.externalId).toBe('ctx-123')
+    expect(sink.records[1]!.externalId).toBe('ctx-123')
+    expect(result.attemptId).toBe('attempt_2')
+  })
+
+  it('two calls with one externalId (a host retry) write two rows with distinct attemptIds', async () => {
+    const { client, sink } = makeClient()
+    const request = {
+      provider: 'google',
+      model: 'gemini-2.5-pro',
+      messages: [
+        { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'Hi' }] },
+      ],
+      externalId: 'host-op-1',
+    }
+
+    const first = await client.generate(request, { auth: TEST_AUTH })
+    const second = await client.generate(request, { auth: TEST_AUTH })
+
+    expect(sink.records).toHaveLength(2)
+    expect(first.callId).not.toBe(second.callId)
+    expect(first.attemptId).not.toBe(second.attemptId)
+    expect(new Set(sink.records.map((r) => r.attemptId)).size).toBe(2)
+    expect(sink.records.map((r) => r.externalId)).toEqual(['host-op-1', 'host-op-1'])
   })
 
   it('externalId round-trips to success records', async () => {
