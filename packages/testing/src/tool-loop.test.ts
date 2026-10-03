@@ -138,9 +138,11 @@ describe('runToolLoop', () => {
     const missing = scripted([
       result({ toolCalls: [{ toolCallId: '1', toolName: 'nope', args: {} }] }),
     ])
-    await expect(runToolLoop(missing.client, REQ, tools, AUTH)).rejects.toThrow(
-      /no implementation for tool "nope"/,
-    )
+    await expect(runToolLoop(missing.client, REQ, tools, AUTH)).rejects.toMatchObject({
+      name: 'LlmError',
+      kind: 'bad_request',
+      message: expect.stringMatching(/no implementation for tool "nope"/),
+    })
     const endless = scripted(
       Array.from({ length: 5 }, () =>
         result({ toolCalls: [call('1')], message: callMessage('1') }),
@@ -150,6 +152,56 @@ describe('runToolLoop', () => {
       runToolLoop(endless.client, REQ, tools, { ...AUTH, maxTurns: 3 }),
     ).rejects.toThrow(/after 3 turns/)
     expect(endless.requests).toHaveLength(3)
+  })
+
+  it('a throwing tool becomes an isError tool result and the loop continues', async () => {
+    const { client, requests } = scripted([
+      result({
+        toolCalls: [call('1'), call('2')],
+        message: callMessage('1'),
+        transientProviderState: { p: 1 },
+      }),
+      result({ text: 'recovered' }),
+    ])
+    const flaky = {
+      echo: (args: unknown) => {
+        if ((args as { id: string }).id === '1') throw new Error('upstream 503')
+        return { ok: true }
+      },
+    }
+    const outcome = await runToolLoop(client, REQ, flaky, AUTH)
+    expect(outcome.result.text).toBe('recovered')
+    expect(requests[1]?.messages[2]?.parts).toEqual([
+      {
+        kind: 'tool-result',
+        toolCallId: '1',
+        toolName: 'echo',
+        result: 'upstream 503',
+        isError: true,
+      },
+      { kind: 'tool-result', toolCallId: '2', toolName: 'echo', result: { ok: true } },
+    ])
+  })
+
+  it('a tool that rejects with a non-Error is reported by its string form', async () => {
+    const { client, requests } = scripted([
+      result({ toolCalls: [call('1')], message: callMessage('1') }),
+      result({ text: 'done' }),
+    ])
+    await runToolLoop(
+      client,
+      REQ,
+      {
+        echo: () => {
+          throw 'plain string'
+        },
+      },
+      AUTH,
+    )
+    expect(requests[1]?.messages[2]?.parts[0]).toMatchObject({
+      result: 'plain string',
+      isError: true,
+    })
   })
 
   it('does not mutate the request it was given', async () => {
