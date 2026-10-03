@@ -41,6 +41,7 @@ import {
 import { xaiRegistry } from './models.js'
 import { XAI_JSON_SCHEMA_PROFILE } from './json-schema.js'
 import { X_SEARCH_ITEM_COUNTERS, unpricedXaiToolCounters } from './pricing.js'
+import { XaiStreamError } from './stream.js'
 import type {
   XaiClientLike,
   XaiRequestOptions,
@@ -775,6 +776,9 @@ export function classifyXaiError(rawErr: unknown, deadline?: XaiSdkDeadline): Ll
   if (rawErr instanceof LlmError) {
     return rawErr
   }
+  if (rawErr instanceof XaiStreamError) {
+    return classifyStreamError(rawErr)
+  }
 
   const base = classifyError(rawErr)
 
@@ -895,6 +899,43 @@ function classifyFailedResponseCode(
   }
 }
 
+/**
+ * The error for a call that failed while streaming (ADR-040). Usage is attached
+ * only when the latest response snapshot carried it, which is rare: the final
+ * usage arrives on the terminal event, so a cut stream is normally an unpriced
+ * attempt, not a free one.
+ */
+function classifyStreamError(err: XaiStreamError): LlmError {
+  const failure = err.failure
+  const common = {
+    provider: 'xai',
+    ...(err.partialUsage !== undefined ? { usage: mapUsage(err.partialUsage) } : {}),
+    ...(err.servedServiceTier !== undefined
+      ? { servedServiceTier: err.servedServiceTier }
+      : {}),
+    cause: err,
+  } as const
+  switch (failure.kind) {
+    case 'ended_early':
+    case 'malformed':
+      // A connection that closed early or a body that is not valid is a
+      // transient provider fault; a retry may complete.
+      return new LlmError(err.message, { kind: 'server', retryable: true, ...common })
+    case 'deadline':
+      // The same limit again, the same spend again.
+      return new LlmError(`xAI request hit the SDK deadline: ${err.message}`, {
+        kind: 'timeout',
+        retryable: false,
+        reason: 'transport_timeout',
+        ...common,
+      })
+    case 'error_event': {
+      const { kind, retryable } = classifyFailedResponseCode(failure.code)
+      return new LlmError(err.message, { kind, retryable, ...common })
+    }
+  }
+}
+
 /** The error for a response with `status` `failed` or `cancelled` (see step 6b). */
 function failedResponseError(response: XaiResponseShape): LlmError {
   const reported = isPlainRecord(response.error) ? response.error : undefined
@@ -941,10 +982,11 @@ export interface XaiAdapterOptions {
   client?: XaiClientLike
   /**
    * HTTP transport (`fetch` and `fetchOptions`) for the SDK client the adapter
-   * builds. Required in practice for any call that can run longer than 300 s:
-   * the SDK `timeout` alone does not lift Node's header and body timers, so
-   * pass an undici `fetch` with an `Agent({ headersTimeout, bodyTimeout })`
-   * dispatcher. See the package README. Also used for `countTokens`
+   * builds: a proxy, mTLS or egress policy, or an undici `fetch` with an
+   * `Agent({ headersTimeout, bodyTimeout })` dispatcher. Calls stream
+   * internally (ADR-040), so a reasoning call no longer needs it to run past
+   * 300 s; a tool-using call expected to run past 300 s without any streamed
+   * event still does (untested, see the package README). Also used for `countTokens`
    * (`POST /v1/tokenize-text`). Validated and copied when the adapter is
    * created. Cannot be combined with `client` (an injected client owns its own
    * transport).
@@ -1399,9 +1441,13 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
           { model, configKeys: Object.keys(params) },
           'llm.adapter.dispatch',
         )
-        // SDK deadline: timeoutMs + buffer so the engine's own deadline (armed
-        // at exactly timeoutMs) fires first; one hour when no timeoutMs is set.
-        // It does not lift Node's 300 s header timer (that needs `transport`).
+        // Request deadline: timeoutMs + buffer so the engine's own deadline
+        // (armed at exactly timeoutMs) fires first; one hour when no timeoutMs
+        // is set. The client sends the call as a stream (ADR-040) and applies it
+        // as the SDK `timeout` (the wait for headers only, for a stream) and as
+        // its own timer over the rest of the stream, so it bounds the whole
+        // call. It does not move Node's 300 s header timer (that needs
+        // `transport`); the stream keeps the body timer from ever going quiet.
         const sdkTimeoutMs =
           genConfig.timeoutMs !== undefined
             ? genConfig.timeoutMs + XAI_TIMEOUT_BUFFER_MS
@@ -1439,6 +1485,10 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       // ------------------------------------------------------------------
       if (response.status === 'failed' || response.status === 'cancelled') {
         throw failedResponseError(response)
+      }
+      // What reconciling the stream with its final object had to do (ADR-040).
+      for (const message of responseMeta?.streamNotes ?? []) {
+        warnings.push({ type: 'other', message })
       }
 
       // ------------------------------------------------------------------

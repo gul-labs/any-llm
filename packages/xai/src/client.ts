@@ -11,6 +11,7 @@
 
 import { LlmError } from '@gullabs/core'
 import type { AuthMaterial } from '@gullabs/core'
+import { XaiStreamError, XaiStreamReducer } from './stream.js'
 
 // ---------------------------------------------------------------------------
 // Auth narrowing — xAI only accepts ApiKeyAuth
@@ -290,20 +291,31 @@ export interface XaiResponseMeta {
    * the response carried none.
    */
   rateLimitRemaining?: Record<string, string>
+  /**
+   * What reconciling the streamed events with the final response object did
+   * (ADR-040): items the final object lacked and the stream completed, fields
+   * taken from the stream, fields that differed. Absent when they agreed. The
+   * adapter reports each as a warning.
+   */
+  streamNotes?: string[]
 }
 
 /** Per-request options the adapter passes to `responses.create`. */
 export interface XaiRequestOptions {
   signal?: AbortSignal
   /**
-   * The SDK's own whole-request deadline in milliseconds. It does not move
-   * Node's header and body timers; see {@link XaiTransport}.
+   * The request's whole-call deadline in milliseconds. The real client sends
+   * the request as a stream (ADR-040) and applies it twice: as the SDK's
+   * `timeout`, which for a stream covers only the wait for response headers,
+   * and as its own timer over the remaining stream, so the deadline bounds the
+   * whole call. It does not move Node's header and body timers; see
+   * {@link XaiTransport}.
    */
   timeout?: number
   /**
    * Called with the response's {@link XaiResponseMeta} once the response
-   * arrived, before `create` resolves. Only the real client calls it; a fake
-   * client may ignore it.
+   * is complete, before `create` resolves. Only the real client calls it; a
+   * fake client may ignore it.
    */
   onResponse?: (meta: XaiResponseMeta) => void
 }
@@ -428,27 +440,138 @@ export async function buildXaiClient(
         options?: XaiRequestOptions,
       ): Promise<XaiResponseShape> {
         // `onResponse` is ours, not an SDK request option.
-        const { onResponse, ...sdkOptions } = options ?? {}
-        // Cast needed: our structural types are subsets of the real SDK types,
-        // and the real SDK's types do not exactly match xAI's actual response
-        // shape (see module doc comment). `withResponse()` exposes the HTTP
-        // response (headers) beside the parsed body.
-        const pending = (
-          client.responses.create as unknown as (
-            p: unknown,
-            o?: Omit<XaiRequestOptions, 'onResponse'>,
-          ) => {
-            withResponse(): Promise<{
-              data: XaiResponseShape
-              response: Response
-              request_id: string | null
-            }>
+        const { onResponse, timeout, signal } = options ?? {}
+        // The call always streams (ADR-040): the stream keeps the connection
+        // busy, so Node's 300 s body timer never sees a quiet gap, and the
+        // events rebuild what the terminal object can omit. Cast needed: our
+        // structural types are subsets of the real SDK types, and the real
+        // SDK's types do not exactly match xAI's actual response shape (see
+        // module doc comment). `withResponse()` exposes the HTTP response
+        // (headers) beside the event stream.
+        type Pending = {
+          withResponse(): Promise<{
+            data: AsyncIterable<unknown>
+            response: Response
+            request_id: string | null
+          }>
+        }
+        const send = (p: unknown, o: unknown): Pending =>
+          (client.responses.create as unknown as (p: unknown, o: unknown) => Pending)(
+            p,
+            o,
+          )
+        // The SDK `timeout` stops at the response headers for a stream, so the
+        // call gets its own controller: the caller's signal is forwarded
+        // (reason included), and a timer started once the headers arrive
+        // aborts it at the same whole-call deadline.
+        const controller = new AbortController()
+        const forwardAbort = (): void => {
+          controller.abort(signal?.reason)
+        }
+        if (signal?.aborted === true) forwardAbort()
+        else signal?.addEventListener('abort', forwardAbort, { once: true })
+        const startedAt = performance.now()
+        let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+        const deadline = { hit: false }
+        const reducer = new XaiStreamReducer()
+        const deadlineError = (): XaiStreamError =>
+          new XaiStreamError(
+            { kind: 'deadline', timeoutMs: timeout ?? 0 },
+            reducer.context(),
+          )
+        try {
+          const { data, response, request_id } = await send(
+            { ...params, stream: true },
+            {
+              signal: controller.signal,
+              headers: { accept: 'text/event-stream' },
+              ...(timeout !== undefined ? { timeout } : {}),
+            },
+          ).withResponse()
+          if (timeout !== undefined) {
+            deadlineTimer = setTimeout(
+              () => {
+                deadline.hit = true
+                controller.abort()
+              },
+              Math.max(0, timeout - (performance.now() - startedAt)),
+            )
           }
-        )(params, sdkOptions)
-        const { data, response, request_id } = await pending.withResponse()
-        onResponse?.(readXaiResponseMeta(response.headers, request_id))
-        return data
+          let terminal = false
+          try {
+            for await (const event of data) {
+              if (reducer.push(event)) {
+                terminal = true
+                break
+              }
+            }
+          } catch (err) {
+            if (deadline.hit) throw deadlineError()
+            throw await streamFailure(err, reducer)
+          }
+          if (!terminal) {
+            if (deadline.hit) throw deadlineError()
+            // The SDK ends a stream quietly when its request was aborted.
+            if (signal?.aborted === true) throw abortError(signal)
+            throw reducer.endedEarly()
+          }
+          const { response: reduced, notes } = reducer.result()
+          onResponse?.({
+            ...readXaiResponseMeta(response.headers, request_id),
+            ...(notes.length > 0 ? { streamNotes: notes } : {}),
+          })
+          return reduced
+        } finally {
+          if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
+          signal?.removeEventListener('abort', forwardAbort)
+        }
       },
     },
   }
+}
+
+/**
+ * The error an aborted caller signal ends in: its reason when that is an
+ * `LlmError` (the engine's deadline), else an `AbortError` carrying it.
+ */
+function abortError(signal: AbortSignal): unknown {
+  const reason: unknown = signal.reason
+  if (reason instanceof LlmError) return reason
+  return Object.assign(new Error('Request was aborted.'), {
+    name: 'AbortError',
+    cause: reason,
+  })
+}
+
+/**
+ * What an error thrown while reading the stream means. An `error` event or a
+ * `data.error` payload is thrown by the SDK as a status-less `APIError`; a
+ * body the SDK cannot parse is a `SyntaxError`. Both become
+ * {@link XaiStreamError}s that `classifyXaiError` maps. Anything else (a
+ * transport failure, an undici timer) is returned untouched.
+ */
+async function streamFailure(err: unknown, reducer: XaiStreamReducer): Promise<unknown> {
+  const { default: OpenAI } = await import('openai')
+  if (err instanceof OpenAI.APIError && err.status === undefined) {
+    const body = (err as { error?: unknown }).error
+    const field = (name: string): string | undefined => {
+      const value =
+        (err as unknown as Record<string, unknown>)[name] ??
+        (typeof body === 'object' && body !== null
+          ? (body as Record<string, unknown>)[name]
+          : undefined)
+      return typeof value === 'string' ? value : undefined
+    }
+    return new XaiStreamError(
+      { kind: 'error_event', code: field('code'), message: field('message') },
+      { ...reducer.context(), cause: err },
+    )
+  }
+  if (err instanceof SyntaxError) {
+    return new XaiStreamError(
+      { kind: 'malformed', detail: err.message },
+      { ...reducer.context(), cause: err },
+    )
+  }
+  return err
 }

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { composeProviders, createClient, LlmError } from '@gullabs/core'
 import type { JsonValue, LlmRequest } from '@gullabs/core'
 import { xaiProvider } from './provider.js'
+import { sseResponse, synthesizeStreamEvents } from './test-sse.js'
 
 let sent: Array<{ url: string; text: string; body: Record<string, unknown> }>
 
@@ -19,8 +20,8 @@ beforeEach(() => {
       text,
       body: JSON.parse(text) as Record<string, unknown>,
     })
-    return new Response(
-      JSON.stringify({
+    return sseResponse(
+      synthesizeStreamEvents({
         id: 'resp_1',
         model: 'grok-4.6',
         status: 'completed',
@@ -34,7 +35,6 @@ beforeEach(() => {
         ],
         usage: { input_tokens: 4, output_tokens: 3, total_tokens: 7 },
       }),
-      { status: 200, headers: { 'content-type': 'application/json' } },
     )
   })
 })

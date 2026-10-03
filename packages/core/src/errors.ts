@@ -63,9 +63,6 @@ export type LlmErrorKind =
  * - `'credits_exhausted'`      — the provider account is out of credits.
  * - `'spend_ceiling'`          — a spend ceiling was reached.
  * - `'grounding_missing'`      — grounding was required but did not run.
- * - `'search_budget_exceeded'` — a search budget was exceeded. Reserved for the
- *   streaming release, which can abort a call at the budget: nothing emits it yet
- *   (a post-call budget overrun is a warning, not an error).
  * - `'cache_not_found'`        — a referenced provider cache entry is gone.
  * - `'quota_store_unavailable'` — a quota store (a host's own or
  *   `@gullabs/quota`'s) failed or timed out, so the call was refused before it
@@ -79,7 +76,6 @@ export type LlmErrorReason =
   | 'credits_exhausted'
   | 'spend_ceiling'
   | 'grounding_missing'
-  | 'search_budget_exceeded'
   | 'cache_not_found'
   | 'quota_store_unavailable'
 

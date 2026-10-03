@@ -26,6 +26,7 @@ import {
 } from '@gullabs/testing'
 import { xaiAdapter, classifyXaiError } from './adapter.js'
 import { computeXaiCost, xaiPricingSource } from './pricing.js'
+import { sseResponse, synthesizeStreamEvents } from './test-sse.js'
 import {
   xaiRegistry,
   grok45ModelDescriptor,
@@ -1513,10 +1514,7 @@ describe('xai transport option', () => {
     const stubFetch = ((_input: unknown, init: Record<string, unknown>) => {
       seen.push(init)
       return Promise.resolve(
-        new Response(JSON.stringify(fakeXaiResponse({ text: 'ok' })), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
+        sseResponse(synthesizeStreamEvents({ ...fakeXaiResponse({ text: 'ok' }) })),
       )
     }) as unknown as typeof fetch
     const transport = {
@@ -1545,10 +1543,7 @@ describe('xai transport option', () => {
     const stubFetch = ((input: unknown, init: Record<string, unknown>) => {
       seen.push({ url: String(input), init })
       return Promise.resolve(
-        new Response(JSON.stringify(fakeXaiResponse({ text: 'wire ok' })), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
+        sseResponse(synthesizeStreamEvents({ ...fakeXaiResponse({ text: 'wire ok' }) })),
       )
     }) as unknown as typeof fetch
     const adapter = xaiAdapter({

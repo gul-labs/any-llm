@@ -1,0 +1,631 @@
+{
+  "source": "2026-10-03 live probes P9a and P12/P12b: the same Responses request streamed (stream:true, SSE read to the terminal event) and not streamed, on grok-4.5 (low effort, plain and one-search web_search prompts, two repetitions each), plus streamed reasoning calls of 17 to 28 minutes on grok-4.5/4.6/4.7 and one 20-search web_search stream, all on Node's default fetch (no custom undici Agent).",
+  "sanitization": "The probes kept only event-type counts, usage, output item TYPES, the final text and event timings; no event bodies and no reasoning text. Nothing else was edited. Prompts were synthetic. `cost_in_usd_ticks` is xAI's billed total (1 tick = 1e-10 USD). The streamed object and the non-streamed object of one pair come from two separate billed calls, so token counts differ run to run; only shape was compared.",
+  "p9a": {
+    "plain": [
+      {
+        "nonStreamed": {
+          "outputItemTypes": [
+            "message"
+          ],
+          "annotationsCount": 0,
+          "usage": {
+            "input_tokens": 1530,
+            "input_tokens_details": {
+              "cached_tokens": 0
+            },
+            "output_tokens": 12,
+            "output_tokens_details": {
+              "reasoning_tokens": 11
+            },
+            "total_tokens": 1542,
+            "num_sources_used": 0,
+            "num_server_side_tools_used": 0,
+            "cost_in_usd_ticks": 31320000,
+            "context_details": {
+              "input_tokens": 1530,
+              "output_tokens": 19
+            }
+          }
+        },
+        "streamed": {
+          "firstEventMs": 1006,
+          "eventTypeCounts": {
+            "response.created": 1,
+            "response.in_progress": 1,
+            "response.output_item.added": 1,
+            "response.content_part.added": 1,
+            "response.output_text.delta": 1,
+            "response.output_text.done": 1,
+            "response.content_part.done": 1,
+            "response.output_item.done": 1,
+            "response.completed": 1
+          },
+          "outputItemTypes": [
+            "message"
+          ],
+          "annotationsCount": 0,
+          "usage": {
+            "input_tokens": 1530,
+            "input_tokens_details": {
+              "cached_tokens": 1408
+            },
+            "output_tokens": 23,
+            "output_tokens_details": {
+              "reasoning_tokens": 22
+            },
+            "total_tokens": 1553,
+            "num_sources_used": 0,
+            "num_server_side_tools_used": 0,
+            "cost_in_usd_ticks": 8044000,
+            "context_details": {
+              "input_tokens": 1530,
+              "output_tokens": 30
+            }
+          }
+        },
+        "sameUsageKeys": true,
+        "sameServerToolDetailKeys": true
+      },
+      {
+        "nonStreamed": {
+          "outputItemTypes": [
+            "message"
+          ],
+          "annotationsCount": 0,
+          "usage": {
+            "input_tokens": 1530,
+            "input_tokens_details": {
+              "cached_tokens": 1408
+            },
+            "output_tokens": 12,
+            "output_tokens_details": {
+              "reasoning_tokens": 11
+            },
+            "total_tokens": 1542,
+            "num_sources_used": 0,
+            "num_server_side_tools_used": 0,
+            "cost_in_usd_ticks": 7384000,
+            "context_details": {
+              "input_tokens": 1530,
+              "output_tokens": 19
+            }
+          }
+        },
+        "streamed": {
+          "firstEventMs": 936,
+          "eventTypeCounts": {
+            "response.created": 1,
+            "response.in_progress": 1,
+            "response.output_item.added": 1,
+            "response.content_part.added": 1,
+            "response.output_text.delta": 1,
+            "response.output_text.done": 1,
+            "response.content_part.done": 1,
+            "response.output_item.done": 1,
+            "response.completed": 1
+          },
+          "outputItemTypes": [
+            "message"
+          ],
+          "annotationsCount": 0,
+          "usage": {
+            "input_tokens": 1530,
+            "input_tokens_details": {
+              "cached_tokens": 1408
+            },
+            "output_tokens": 30,
+            "output_tokens_details": {
+              "reasoning_tokens": 29
+            },
+            "total_tokens": 1560,
+            "num_sources_used": 0,
+            "num_server_side_tools_used": 0,
+            "cost_in_usd_ticks": 8464000,
+            "context_details": {
+              "input_tokens": 1530,
+              "output_tokens": 37
+            }
+          }
+        },
+        "sameUsageKeys": true,
+        "sameServerToolDetailKeys": true
+      }
+    ],
+    "web_search": [
+      {
+        "nonStreamed": {
+          "outputItemTypes": [
+            "web_search_call",
+            "reasoning",
+            "message"
+          ],
+          "annotationsCount": 1,
+          "usage": {
+            "input_tokens": 7957,
+            "input_tokens_details": {
+              "cached_tokens": 2304
+            },
+            "output_tokens": 269,
+            "output_tokens_details": {
+              "reasoning_tokens": 221
+            },
+            "total_tokens": 8226,
+            "num_sources_used": 0,
+            "num_server_side_tools_used": 1,
+            "cost_in_usd_ticks": 186112000,
+            "server_side_tool_usage_details": {
+              "web_search_calls": 1,
+              "x_search_calls": 0,
+              "x_posts_fetched": 0,
+              "x_users_fetched": 0,
+              "code_interpreter_calls": 0,
+              "file_search_calls": 0,
+              "mcp_calls": 0,
+              "document_search_calls": 0,
+              "image_generation_calls": 0
+            },
+            "context_details": {
+              "input_tokens": 5553,
+              "output_tokens": 214
+            }
+          }
+        },
+        "streamed": {
+          "firstEventMs": 1123,
+          "eventTypeCounts": {
+            "response.created": 1,
+            "response.in_progress": 1,
+            "response.output_item.added": 2,
+            "response.web_search_call.in_progress": 1,
+            "response.web_search_call.searching": 1,
+            "response.web_search_call.completed": 1,
+            "response.output_item.done": 2,
+            "response.content_part.added": 1,
+            "response.output_text.delta": 18,
+            "response.output_text.annotation.added": 1,
+            "response.output_text.done": 1,
+            "response.content_part.done": 1,
+            "response.completed": 1
+          },
+          "outputItemTypes": [
+            "web_search_call",
+            "message"
+          ],
+          "annotationsCount": 1,
+          "usage": {
+            "input_tokens": 7872,
+            "input_tokens_details": {
+              "cached_tokens": 4608
+            },
+            "output_tokens": 250,
+            "output_tokens_details": {
+              "reasoning_tokens": 199
+            },
+            "total_tokens": 8122,
+            "num_sources_used": 0,
+            "num_server_side_tools_used": 1,
+            "cost_in_usd_ticks": 144104000,
+            "server_side_tool_usage_details": {
+              "web_search_calls": 1,
+              "x_search_calls": 0,
+              "x_posts_fetched": 0,
+              "x_users_fetched": 0,
+              "code_interpreter_calls": 0,
+              "file_search_calls": 0,
+              "mcp_calls": 0,
+              "document_search_calls": 0,
+              "image_generation_calls": 0
+            },
+            "context_details": {
+              "input_tokens": 5468,
+              "output_tokens": 205
+            }
+          }
+        },
+        "sameUsageKeys": true,
+        "sameServerToolDetailKeys": true
+      },
+      {
+        "nonStreamed": {
+          "outputItemTypes": [
+            "web_search_call",
+            "reasoning",
+            "message"
+          ],
+          "annotationsCount": 10,
+          "usage": {
+            "input_tokens": 11458,
+            "input_tokens_details": {
+              "cached_tokens": 4608
+            },
+            "output_tokens": 192,
+            "output_tokens_details": {
+              "reasoning_tokens": 163
+            },
+            "total_tokens": 11650,
+            "num_sources_used": 0,
+            "num_server_side_tools_used": 1,
+            "cost_in_usd_ticks": 212344000,
+            "server_side_tool_usage_details": {
+              "web_search_calls": 1,
+              "x_search_calls": 0,
+              "x_posts_fetched": 0,
+              "x_users_fetched": 0,
+              "code_interpreter_calls": 0,
+              "file_search_calls": 0,
+              "mcp_calls": 0,
+              "document_search_calls": 0,
+              "image_generation_calls": 0
+            },
+            "context_details": {
+              "input_tokens": 9054,
+              "output_tokens": 150
+            }
+          }
+        },
+        "streamed": {
+          "firstEventMs": 1176,
+          "eventTypeCounts": {
+            "response.created": 1,
+            "response.in_progress": 1,
+            "response.output_item.added": 2,
+            "response.web_search_call.in_progress": 1,
+            "response.web_search_call.searching": 1,
+            "response.web_search_call.completed": 1,
+            "response.output_item.done": 2,
+            "response.content_part.added": 1,
+            "response.output_text.delta": 18,
+            "response.output_text.annotation.added": 1,
+            "response.output_text.done": 1,
+            "response.content_part.done": 1,
+            "response.completed": 1
+          },
+          "outputItemTypes": [
+            "web_search_call",
+            "message"
+          ],
+          "annotationsCount": 1,
+          "usage": {
+            "input_tokens": 7882,
+            "input_tokens_details": {
+              "cached_tokens": 4736
+            },
+            "output_tokens": 245,
+            "output_tokens_details": {
+              "reasoning_tokens": 194
+            },
+            "total_tokens": 8127,
+            "num_sources_used": 0,
+            "num_server_side_tools_used": 1,
+            "cost_in_usd_ticks": 141828000,
+            "server_side_tool_usage_details": {
+              "web_search_calls": 1,
+              "x_search_calls": 0,
+              "x_posts_fetched": 0,
+              "x_users_fetched": 0,
+              "code_interpreter_calls": 0,
+              "file_search_calls": 0,
+              "mcp_calls": 0,
+              "document_search_calls": 0,
+              "image_generation_calls": 0
+            },
+            "context_details": {
+              "input_tokens": 5478,
+              "output_tokens": 190
+            }
+          }
+        },
+        "sameUsageKeys": true,
+        "sameServerToolDetailKeys": true
+      }
+    ]
+  },
+  "p12": {
+    "p12-stream-A-grok-4.5-high": {
+      "model": "grok-4.5",
+      "reasoningEffort": "high",
+      "tools": null,
+      "durationMs": 1098298,
+      "firstEventMs": 2176,
+      "eventCount": 2396,
+      "maxEventGapMs": 15001,
+      "eventTypeCounts": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 2365,
+        "comment": 1,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 2,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 17,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.completed": 1
+      },
+      "terminalStatus": "completed",
+      "finalOutputItemTypes": [
+        "reasoning",
+        "message"
+      ],
+      "finalUsage": {
+        "input_tokens": 1590,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 66690,
+        "output_tokens_details": {
+          "reasoning_tokens": 66673
+        },
+        "total_tokens": 68280,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 4033200000,
+        "context_details": {
+          "input_tokens": 1590,
+          "output_tokens": 66697
+        }
+      }
+    },
+    "p12-stream-A-grok-4.6-xhigh": {
+      "model": "grok-4.6",
+      "reasoningEffort": "xhigh",
+      "tools": null,
+      "durationMs": 998919,
+      "firstEventMs": 1941,
+      "eventCount": 1950,
+      "maxEventGapMs": 15001,
+      "eventTypeCounts": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 1932,
+        "comment": 1,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 2,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 4,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.completed": 1
+      },
+      "terminalStatus": "completed",
+      "finalOutputItemTypes": [
+        "reasoning",
+        "message"
+      ],
+      "finalUsage": {
+        "input_tokens": 1591,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 79042,
+        "output_tokens_details": {
+          "reasoning_tokens": 79038
+        },
+        "total_tokens": 80633,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 4774340000,
+        "context_details": {
+          "input_tokens": 1591,
+          "output_tokens": 79049
+        }
+      }
+    },
+    "p12-stream-B-grok-4.6-xhigh": {
+      "model": "grok-4.6",
+      "reasoningEffort": "xhigh",
+      "tools": null,
+      "durationMs": 1019162,
+      "firstEventMs": 2263,
+      "eventCount": 3320,
+      "maxEventGapMs": 6866,
+      "eventTypeCounts": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 3300,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 2,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 7,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.completed": 1
+      },
+      "terminalStatus": "completed",
+      "finalOutputItemTypes": [
+        "reasoning",
+        "message"
+      ],
+      "finalUsage": {
+        "input_tokens": 1604,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 67372,
+        "output_tokens_details": {
+          "reasoning_tokens": 67365
+        },
+        "total_tokens": 68976,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 4074400000,
+        "context_details": {
+          "input_tokens": 1604,
+          "output_tokens": 67379
+        }
+      }
+    },
+    "p12-stream-B-grok-4.7-xhigh": {
+      "model": "grok-4.7",
+      "reasoningEffort": "xhigh",
+      "tools": null,
+      "durationMs": 1496770,
+      "firstEventMs": 2182,
+      "eventCount": 7291,
+      "maxEventGapMs": 12004,
+      "eventTypeCounts": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 7257,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 2,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 21,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.completed": 1
+      },
+      "terminalStatus": "completed",
+      "finalOutputItemTypes": [
+        "reasoning",
+        "message"
+      ],
+      "finalUsage": {
+        "input_tokens": 1604,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 102188,
+        "output_tokens_details": {
+          "reasoning_tokens": 102167
+        },
+        "total_tokens": 103792,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 6163360000,
+        "context_details": {
+          "input_tokens": 1604,
+          "output_tokens": 102197
+        }
+      }
+    },
+    "p12-stream-C-grok-4.6-xhigh": {
+      "model": "grok-4.6",
+      "reasoningEffort": "xhigh",
+      "tools": null,
+      "durationMs": 1705217,
+      "firstEventMs": 2278,
+      "eventCount": 6657,
+      "maxEventGapMs": 8832,
+      "eventTypeCounts": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 6621,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 2,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 23,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.completed": 1
+      },
+      "terminalStatus": "completed",
+      "finalOutputItemTypes": [
+        "reasoning",
+        "message"
+      ],
+      "finalUsage": {
+        "input_tokens": 1609,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 113626,
+        "output_tokens_details": {
+          "reasoning_tokens": 113603
+        },
+        "total_tokens": 115235,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 6849740000,
+        "context_details": {
+          "input_tokens": 1609,
+          "output_tokens": 113633
+        }
+      }
+    },
+    "p12b-stream-websearch-grok-4.6": {
+      "model": "grok-4.6",
+      "reasoningEffort": "xhigh",
+      "tools": [
+        {
+          "type": "web_search"
+        }
+      ],
+      "durationMs": 98786,
+      "firstEventMs": 2312,
+      "eventCount": 2410,
+      "maxEventGapMs": 15000,
+      "eventTypeCounts": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 22,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 29,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 22,
+        "response.web_search_call.in_progress": 20,
+        "response.web_search_call.searching": 20,
+        "response.web_search_call.completed": 20,
+        "comment": 1,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 2258,
+        "response.output_text.annotation.added": 9,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.completed": 1
+      },
+      "terminalStatus": "completed",
+      "finalOutputItemTypes": {
+        "reasoning": 1,
+        "web_search_call": 20,
+        "message": 1
+      },
+      "finalUsage": {
+        "input_tokens": 335301,
+        "input_tokens_details": {
+          "cached_tokens": 246528
+        },
+        "output_tokens": 6008,
+        "output_tokens_details": {
+          "reasoning_tokens": 3272
+        },
+        "total_tokens": 341309,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 20,
+        "cost_in_usd_ticks": 7737160000,
+        "server_side_tool_usage_details": {
+          "web_search_calls": 20,
+          "x_search_calls": 0,
+          "x_posts_fetched": 0,
+          "x_users_fetched": 0,
+          "code_interpreter_calls": 0,
+          "file_search_calls": 0,
+          "mcp_calls": 0,
+          "document_search_calls": 0,
+          "image_generation_calls": 0
+        },
+        "context_details": {
+          "input_tokens": 88376,
+          "output_tokens": 3592
+        }
+      }
+    }
+  }
+}

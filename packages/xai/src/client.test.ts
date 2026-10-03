@@ -18,6 +18,7 @@ import { LlmError } from '@gullabs/core'
 import { classifyXaiError } from './adapter.js'
 import { buildXaiClient, readXaiResponseMeta, requireApiKey } from './client.js'
 import type { XaiResponseCreateParams, XaiTransport } from './client.js'
+import { sseResponse, synthesizeStreamEvents } from './test-sse.js'
 
 describe('requireApiKey', () => {
   it('returns the key on valid ApiKeyAuth', () => {
@@ -85,19 +86,17 @@ describe('buildXaiClient — auth rejection (no network / SDK import)', () => {
 
 const PARAMS: XaiResponseCreateParams = { model: 'grok-4.5', input: [], store: false }
 const AUTH = { apiKey: 'xai-test' }
-const OK_BODY = JSON.stringify({
+const OK_RESPONSE = {
   id: 'resp_1',
   model: 'grok-4.5',
   status: 'completed',
   output: [],
   usage: { input_tokens: 1, output_tokens: 1 },
-})
+}
 
-function jsonResponse(body: string): Response {
-  return new Response(body, {
-    status: 200,
-    headers: { 'content-type': 'application/json' },
-  })
+/** The call always streams (ADR-040); this is its synthetic, minimal event stream. */
+function okResponse(headers: Record<string, string> = {}): Response {
+  return sseResponse(synthesizeStreamEvents(OK_RESPONSE), headers)
 }
 
 function asTransport(
@@ -134,7 +133,7 @@ describe('buildXaiClient — transport (real SDK, stubbed fetch)', () => {
       asTransport(
         (url, init) => {
           seen.push({ url: String(url), init })
-          return Promise.resolve(jsonResponse(OK_BODY))
+          return Promise.resolve(okResponse())
         },
         { dispatcher },
       ),
@@ -184,8 +183,7 @@ describe('buildXaiClient — SDK deadline (real SDK, stubbed fetch)', () => {
     const client = await buildXaiClient(
       AUTH,
       asTransport(
-        () =>
-          new Promise((resolve) => setTimeout(() => resolve(jsonResponse(OK_BODY)), 60)),
+        () => new Promise((resolve) => setTimeout(() => resolve(okResponse()), 60)),
       ),
     )
     await expect(
@@ -347,14 +345,7 @@ describe('buildXaiClient — transport deadline (real SDK, stubbed fetch)', () =
 
 describe('buildXaiClient — response metadata (real SDK, stubbed fetch)', () => {
   function withHeaders(headers: Record<string, string>): XaiTransport {
-    return asTransport(() =>
-      Promise.resolve(
-        new Response(OK_BODY, {
-          status: 200,
-          headers: { 'content-type': 'application/json', ...headers },
-        }),
-      ),
-    )
+    return asTransport(() => Promise.resolve(okResponse(headers)))
   }
 
   it('hands the request id and the remaining-quota headers to onResponse before create resolves', async () => {
