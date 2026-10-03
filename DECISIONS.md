@@ -2876,3 +2876,95 @@ The owner decided hosts own routing and fallback; the library offers neither.
   section.
 - Middleware can still pass a new request object with changed config, messages or metadata to
   `next`.
+
+---
+
+## ADR-039: Ledger v2: cost confidence and lanes are persisted
+
+**Status:** Accepted (2026-10-03). Extends ADR-027 and ADR-035. (ADR-038 is not used in this change; the number is
+left for the decision the release plan reserved it for.)
+
+**Context:**
+The engine computed `Cost.confidence`, the four-lane `Cost.details` and `Cost.unpricedReason` for every
+call, and `buildRecord` dropped all three. A row that priced a call from guessed or missing web-search counters
+was indistinguishable in SQL from an exact one, the tool-fee lane could not be separated from token spend,
+and the reason a row had no cost lived only in the free-text `warnings` column. The ledger schema also had
+no index on `created_at`, no CHECK on its closed `status` and `error_kind` vocabularies, and no cap on
+`reasoning_text` / `error_message` although the SPEC said they were truncated. Cost accuracy had four
+gaps: Gemini audio was priced at the text rate and marked exact, xAI's own billed total was never compared
+with the snapshot, a non-zero xAI tool counter with no rate left the call exact, and `claude-cli` usage
+dropped both cache lanes and thinking.
+
+**Decision:**
+
+1. **Record version 2.** `LlmCallRecord.recordSchemaVersion` is `2`. New optional fields:
+   `costConfidence` (`'exact' | 'estimated'`, present whenever a `Cost` was computed), `costDetails`
+   (`{ input, cached, output, tools }`, present only when priced) and `costUnpricedReason` (present only when
+   `costMicroUsd` is `null`). Refusal rows, which have no cost, carry none. `@gullabs/drizzle` adds
+   `cost_confidence` (text), `cost_details` (jsonb) and `cost_unpriced_reason` (text). Rows written before
+   version 2 keep NULL: their confidence was never stored and is not backfilled.
+2. **Schema hygiene.** Indexes `llm_calls_created_at_idx (created_at)` and
+   `llm_calls_call_site_created_at_idx (call_site_id, created_at)`. CHECK constraints on `status` and
+   `error_kind` (the closed core unions; the Drizzle schema fails to compile if core adds a member, and a new
+   member ships with SQL). **No CHECK on `error_reason`** (ADR-036 item 4 stands). The `drizzle-orm` peer
+   range is `>=0.36 <1`.
+3. **Truncation.** `buildRecord` caps `reasoningText` and `errorMessage` at 16 KiB of UTF-8, marker included,
+   cutting on a code point and ending in `…[truncated]`, and adds a warning. `errorMessage` is redacted
+   before it is cut. The live result and the thrown error keep the full text.
+4. **SQL ships with the schema.** `sql/install.sql` is the fresh table; `sql/upgrades/0002-ledger-v2.sql`
+   takes the previously published shape (0.7.2 plus upgrade 0001) forward, is idempotent, validates existing
+   rows against the CHECKs, and notes that index builds lock a very large table. The migration test runs both
+   on PGlite and proves the upgraded table, indexes and checks equal a fresh install.
+5. **Per-attempt and per-call cost.** `Telemetry.onAttempt?(AttemptEvent)` fires once per provider attempt,
+   after its row went to the sink, with usage, cost and, on failure, kind, reason and `retryable` (refusal
+   rows that never reached an attempt emit none). `LlmResult.callCost?: { microUsd, attempts }` sums every
+   attempt's priced amount (retries and billed failures included) and counts attempts that ran; it is absent
+   when nothing was priced or any attempt that reported usage was unpriced, because a sum with a hole is not
+   reported. `CallErrorEvent` gains `usage` and `cost` of the last failing attempt (when it reported usage)
+   and the same `callCost`.
+6. **Provider-reported total.** `Cost.providerReported?: { microUsd }` carries the total a provider says it
+   billed. For xAI it is `usage.cost_in_usd_ticks` (1 tick = 1e-10 USD) rounded to whole µUSD like each
+   priced lane; it is present even when the snapshot cannot price the call. `Cost.microUsd` stays the
+   snapshot price; the provider's figure never replaces it. Only totals are compared, because xAI reports no
+   lanes. The engine adds a `cost drift` warning when the totals differ by more than 1 µUSD per priced
+   (non-zero) lane, minimum 1: the snapshot is stale or a billed lane is missing. (The audit proposed 2 µUSD
+   per lane; with whole-µUSD rounding on both sides, 1 per lane is the bound.)
+7. **Fail closed on unpriced xAI tools.** A non-zero `*_calls` counter that is neither `web_search_calls`
+   nor the superseded `x_search_calls` makes the call `'estimated'` and the adapter warns. The priority tier
+   with a warm cache is pinned by fixture `35-priority-warm-cache.json` (live probe, 2026-10-03; all three
+   models reconcile to billed ticks, the cached lane at 2x its standard rate); fixture 33's five usages are
+   reconciled to ticks, which also pins that the long-context band applies to the summed agentic input.
+8. **Gemini input is priced per modality where the page does.** Gemini 2.5 Flash, 2.5 Flash-Lite and 3.1
+   Flash-Lite publish a separate audio input and cached-audio rate (standard and flex); every other model
+   lists one rate for all modalities. The adapter records `promptTokensDetails` / `cacheTokensDetails` as
+   `details.input_<modality>` / `cached_<modality>`; the pricing source bills audio tokens at the audio
+   rates and the rest at the text rate. When audio was sent and the response reports no audio tokens, or
+   cached tokens sit beside audio with no cached split, the cost is `'estimated'`. Rates are from
+   https://ai.google.dev/gemini-api/docs/pricing, read 2026-10-03 (page last updated 2026-10-01); the
+   earlier statement that per-modality lanes are unneeded (SPEC) and the "deferred seam" comment
+   (`pricing.ts`) are both removed.
+9. **No batch tier.** The Batch API has no path in this library and no schema admits a batch tier, so the
+   unreachable `batch` rates are deleted from the snapshot; `'batch'` is an unpriced tier.
+   `GoogleCacheHandle.totalTokenCount` returns the create response's `usageMetadata.totalTokenCount` so a host
+   can price cache storage (per token-hour).
+10. **claude-cli usage follows Anthropic's accounting.** `input_tokens` excludes both cache lanes, so
+    `inputTokens = input + cache_read + cache_creation`, `cachedInputTokens = cache_read`,
+    `details.cacheWrite = cache_creation`, `thinkingTokens = output_tokens_details.thinking_tokens`. The
+    adapter stays unpriced.
+11. **xAI response metadata.** The built-in client reads the response through the SDK's `.withResponse()`
+    and reports `x-request-id` and the remaining-quota headers (`x-ratelimit-remaining-*`,
+    `ratelimit-remaining*`) to the adapter, which puts `requestId` and `rateLimitRemaining` on
+    `providerMetadata.xai`. Headers of a failed call are not captured. No capture of xAI's real
+    rate-limit header names exists in the evidence, so the header match is by prefix and the values are kept
+    verbatim; the names are not asserted against a live response.
+
+**Consequences:**
+
+- Hosts using `@gullabs/drizzle` apply `sql/upgrades/0002-ledger-v2.sql` before deploying this version; the
+  sink writes every column, so without it every insert fails (logged as `llm.call.sink.failed`;
+  `assertLlmCallsSchema` detects it).
+- Hosts that wrote their own sink or table add the three cost columns (all optional) and read
+  `recordSchemaVersion: 2`.
+- Dashboards can separate tool fees from token spend and exact from estimated spend in SQL.
+- `Telemetry` implementers may add `onAttempt`; no existing hook changes meaning.
+- A host that switched on the three-member `GEMINI_PRICED_TIERS` loses `'batch'`.

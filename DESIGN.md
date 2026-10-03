@@ -131,7 +131,8 @@ raw object as JSONB) are always written, even when the hot typed fields (`inputT
 
 ### `LlmCallRecord.recordSchemaVersion`
 
-Always `1` in this release. Increment on any breaking schema change to the record shape. Sinks
+Always `2` in this release (version 2 added `costConfidence`, `costDetails` and `costUnpricedReason`,
+ADR-039). Increment on any breaking schema change to the record shape. Sinks
 should check this field before deserializing records written by an older or newer engine version.
 
 ---

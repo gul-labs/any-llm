@@ -287,8 +287,9 @@ export interface Logger {
 export interface Telemetry {
   // optional; host wires Sentry/PostHog/OTel
   onStart?(e: object): unknown
+  onAttempt?(e: AttemptEvent, span?: unknown): void // once per provider attempt: usage, cost, error kind (ADR-039)
   onSuccess?(e: object, span?: unknown): void
-  onError?(e: object, span?: unknown): void
+  onError?(e: object, span?: unknown): void // carries usage, cost and callCost of the failing attempts when known
 }
 ```
 
@@ -315,9 +316,11 @@ runStructured(callSite, vars?, opts?)  /  generate(request)
  10. parse structured output  (JSON.parse result → output + outputParsed; caller validates)
  11. pricing.price()  → Cost (micro-USD, frozen)   [fail-open → cost absent on pricing error]
  12. build LlmCallRecord  + sink.record()           [fail-open: swallow+log sink errors; bounded by sinkTimeoutMs]
+     telemetry.onAttempt (per attempt, success or failure, fail-open)
  13. telemetry.onSuccess + log 'llm.call.success'
  14. return LlmResult
   (any throw → classify → telemetry.onError + log 'llm.call.error' + record status + rethrow LlmError)
+  LlmResult.callCost = { microUsd, attempts }: every attempt's priced amount summed (retries and billed failures included)
 ```
 
 Canonical log events (identical across hosts): `llm.call.start` / `.success` / `.error`.
@@ -371,9 +374,17 @@ details = { input, cached, output }   // thinking billed at output rate (folded 
 - Long-context tier: Gemini Pro charges a premium above 200k input tokens — `inputRate` selects by
   total `inputTokens`. (Flash-lite is flat; encode per-model.)
 - Unknown model → `cost = { microUsd: null, … }`; tokens + raw still recorded for later backfill.
-- Pricing is **token-count based** across modalities — media parts bill through the provider's
-  token accounting, so no per-modality input pricing lanes are needed (the DESIGN regression is
-  avoided).
+- Input is priced **per modality where the provider prices modalities apart**. Gemini 2.5 Flash, 2.5
+  Flash-Lite and 3.1 Flash-Lite bill audio input above text, image and video (and cached audio apart from
+  cached text); the adapter records `promptTokensDetails` / `cacheTokensDetails` as
+  `details.input_<modality>` / `cached_<modality>` and the pricing source bills the audio tokens at the audio
+  rates and the rest at the text rate. Every other model has one input rate for all modalities. An audio
+  request whose response reports no audio tokens is `estimated`. Source: Google's pricing page, read
+  2026-10-03 (ADR-039).
+- Priced tiers are `standard` and `flex`; there is no Batch API path, so no batch rates are carried.
+- `Cost.providerReported?: { microUsd }` is the total a provider itself reports billing (xAI
+  `cost_in_usd_ticks`, 1 tick = 1e-10 USD, rounded like a lane). `microUsd` stays the snapshot price; the
+  engine warns when the two totals differ by more than 1 µUSD per priced lane.
 
 ---
 
@@ -381,7 +392,7 @@ details = { input, cached, output }   // thinking billed at output rate (folded 
 
 ```ts
 export interface LlmCallRecord {
-  recordSchemaVersion: 1
+  recordSchemaVersion: 2 // 2 added the three cost fields (ADR-039)
   callId: string
   attemptId: string // always minted by the engine, one per attempt (ADR-031)
   attemptNumber: number // 1-based ordinal within the logical call (1 = first attempt, 2 = first retry, …)
@@ -411,6 +422,9 @@ export interface LlmCallRecord {
   // cost (frozen)
   costMicroUsd?: number | null
   pricingVersion?: string
+  costConfidence?: 'exact' | 'estimated' // present whenever a Cost was computed (ADR-039)
+  costDetails?: { input: number; cached: number; output: number; tools: number } // only when priced
+  costUnpricedReason?: string // only when costMicroUsd is null
   // forward-compat lanes (jsonb)
   tokenDetails: JsonValue
   rawUsage: JsonValue
@@ -418,11 +432,11 @@ export interface LlmCallRecord {
   warnings?: JsonValue
   generationConfig: JsonValue // what we actually sent (transport keys stripped)
   // thinking capture (goal 3): summary text when includeThoughts was requested
-  reasoningText?: string // truncated to a cap; null when not requested/returned
+  reasoningText?: string // capped at 16 KiB UTF-8 with a …[truncated] marker; absent when not requested/returned
   // postmortem
   errorKind?: LlmErrorKind
   errorReason?: LlmErrorReason // LlmError.reason; absent on success and when the error has none
-  errorMessage?: string // truncated; diagnostics on failure
+  errorMessage?: string // redacted, then capped at 16 KiB like reasoningText; diagnostics on failure
   metadata: JsonValue // host anchors
   createdAt: string // Clock-stamped
 }
@@ -430,7 +444,9 @@ export interface LlmCallRecord {
 
 `@gullabs/drizzle` ships the matching `pgTable('llm_calls', …)` (typed columns + jsonb lanes),
 `drizzleUsageSink(db, table)`, and the SQL for it: `sql/install.sql` (fresh install) and
-`sql/upgrades/*.sql`. `error_reason` is plain text with no CHECK constraint (ADR-036). Insert is `onConflictDoNothing` on `attemptId`, which only absorbs an
+`sql/upgrades/*.sql`. `status` and `error_kind` carry CHECK constraints over the closed core unions;
+`error_reason` is plain text with no CHECK constraint (ADR-036). The table has indexes on `call_id`,
+`external_id`, `created_at` and `(call_site_id, created_at)`. Insert is `onConflictDoNothing` on `attemptId`, which only absorbs an
 at-least-once sink re-delivering the same record; every attempt has its own minted `attemptId`.
 Core imports no ORM; a host with a different store implements `UsageSink` directly.
 
@@ -458,7 +474,10 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
 - Usage: read `usageMetadata` → `promptTokenCount`→inputTokens, `candidatesTokenCount`→outputTokens,
   `cachedContentTokenCount`→cachedInputTokens, `thoughtsTokenCount`→thinkingTokens; copy whole object
   to `usage.raw`; populate `details`. Enforce GROSS convention. `toolUsePromptTokenCount` is recorded
-  as `details.tool_use_prompt` and not priced.
+  as `details.tool_use_prompt` and not priced. Per-modality prompt counts are recorded as
+  `details.input_<modality>` and `details.cached_<modality>`; audio is priced apart on the models that
+  price it apart (ADR-039). `GoogleCacheHandle.totalTokenCount` is the create call's
+  `usageMetadata.totalTokenCount`, for pricing cache storage.
 - Grounding (ADR-013, ADR-035): `providerOptions.google.tools: [{ googleSearch: {} }]` sets
   `details.web_search_requested`; `details.web_search_calls` is the number of `webSearchQueries`
   occurrences. The pricing source adds the fee to `Cost.details.tools` (Gemini 3: per query; Gemini 2.5:
@@ -520,6 +539,13 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
   xAI's, a malformed schema, …) are `bad_request` before dispatch, naming the path; the adapter
   never rewrites a schema. (`claude-cli` forwards `output.jsonSchema` to the CLI untouched and
   `codex-cli` runs its own OpenAI-strict preflight; the checks are Google's and xAI's.)
+- **Cost facts (ADR-039).** `cost_in_usd_ticks` is converted (1 tick = 1e-10 USD, rounded like a lane) to
+  `Cost.providerReported.microUsd`; the snapshot stays the price and the engine warns on a total drift.
+  A non-zero server-tool `*_calls` counter with no rate (`code_interpreter_calls`, `file_search_calls`,
+  `mcp_calls`, `document_search_calls`, `image_generation_calls`, anything new) prices the call
+  `estimated` and the adapter warns. The response's `x-request-id` and `x-ratelimit-remaining-*` /
+  `ratelimit-remaining*` headers are on `providerMetadata.xai` as `requestId` and `rateLimitRemaining`
+  (the real client reads them with the SDK's `.withResponse()`; a fake client reports none).
 - Search tools plus `output.jsonSchema` is admitted on all three models
   (`structuredOutputWithTools`). A response reporting `num_server_side_tools_used: 0` and no
   `server_side_tool_usage_details` prices exactly with no tool fee. See ADR-030.
