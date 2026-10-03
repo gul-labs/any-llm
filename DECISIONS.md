@@ -2962,91 +2962,166 @@ The owner decided hosts own routing and fallback; the library offers neither.
 
 ## ADR-038: Opt-in payload storage
 
-**Status:** Accepted (2026-10-03). Extends ADR-002 (fail-open sinks), ADR-027 and ADR-039 (the ledger).
+**Status:** Accepted (2026-10-03). Extends ADR-002 (fail-open sinks), ADR-027 and ADR-039 (the ledger). Amended
+2026-10-03 after the R11 audit: bounded, linear-time redaction; payload built after the outcome inside the sink
+budget; a truthful statement of what `llm_calls` holds; reused transaction handles; batched purge; a stricter
+upgrade guard.
 
 **Context:**
-`llm_calls` stores usage, cost, configuration, metadata, citations, tool calls and reasoning text, but no
-prompt and no response text. A host that has to debug or audit a call (what exactly was sent, what exactly
+`llm_calls` stores usage, cost, configuration, metadata, citations, tool calls and reasoning text, but not the
+prompt and not the model's answer. A host that has to debug or audit a call (what exactly was sent, what exactly
 came back, why a structured output failed to parse) builds its own payload table and wires the write by hand
 at every call path, each with its own redaction, size limit and retention. The stored text can hold customer
-data, so the library must not store it by default, and a payload write must never cost a ledger row or fail a
-call.
+data, so the library must not store the full prompt and response by default, and a payload write must never cost
+a ledger row or fail a call.
+
+The ledger row is not text-free, and that is the existing contract (ADR-027, ADR-039): it carries the model's
+tool-call arguments, its reasoning text, the error message of a failed attempt, citations and the host's
+`metadata`. The payload opt-in does not change that and does not govern it. This ADR says so, and the table in
+decision 3 lists every text-bearing place.
 
 **Decision:**
 
 1. **Opt-in per client.** `ClientConfig.payloads?: { redact?, maxChars?, include? }`. Absent, nothing is
-   captured and the sink is called exactly as before. Present, every attempt that reached the adapter,
-   success or failure, gets one payload, unless `include(request)` returns anything but `true` or the call
-   opts out. `payloads` without a `sink` is `bad_request` at `createClient`, as is an unknown key, a
-   non-function `redact` / `include`, or a `maxChars` that is not a positive integer. An attempt refused
-   before dispatch (a middleware refusal, a config failure, a limiter that rejected) sent nothing and has no
-   payload.
+   captured and the sink is called exactly as before. Present, every attempt that reached the adapter, success
+   or failure, gets one payload, unless `include(request)` returns anything but `true` or the call opts out.
+   `payloads` without a `sink` is `bad_request` at `createClient`, as is an unknown key, a non-function or
+   `async` `redact` / `include` (detected by the function's type, plus a thenable returned at run time, which
+   drops the payload with a warning), or a `maxChars` that is not an integer of at least 1,000 (below that the
+   JSON skeleton alone does not fit). The config is copied and frozen at `createClient`. The sink must declare
+   `UsageSink.acceptsPayloads: true` (`drizzleUsageSink` and `RecordingSink` do); otherwise `createClient` logs
+   one `llm.config.payloads.sink_ignores_payloads` warning and no payload is built, so a sink that would drop
+   the second argument costs no capture work. An attempt refused before dispatch (a middleware refusal, a config
+   failure, a limiter that rejected) sent nothing and has no payload.
 2. **Per-call opt-out on both entrypoints.** `generate(request, { auth, storePayload })` and
    `runStructured(callSite, vars?, { auth, storePayload })`. `false` skips the payload for the call; `true` or
    absent follows the client; `true` never switches storage on for a client that did not enable it. Any
    non-boolean is `bad_request`. `runStructured` builds its request internally, so the option cannot live on
    the request.
-3. **What is captured.** Request, as the adapter received it (after middleware): `system`, every message as
-   `{ role, parts }`, text verbatim, tool-call arguments and tool-result values as JSON, an inline media part
-   as `{ kind, mimeType, bytes, sha256 }` (decoded size and SHA-256, never the bytes), a provider-hosted file
-   reference (`file-uri`, `file-ref`) as its URI or id (a reference, not content), and tools as
-   `{ name, schemaSha256 }` (SHA-256 of the canonical JSON of `inputJsonSchema`; descriptions are not stored).
-   Response: the raw model text, or the raw JSON text of a structured output when the adapter returned only
-   the parsed value, and the attempt's error message when it failed. Reasoning text and the model's tool
-   calls are already on the `llm_calls` row and are not repeated. `transientProviderState` is never stored.
-4. **Redact, then cap, in that order.** (1) Core's `redactSecrets` on every string leaf, including strings
-   nested in tool arguments and tool results (object keys are not touched). (2) The host's `redact(payload)`,
-   synchronous, on a copy it may change, returning the payload to store. (3) The caps, last, so a redactor
-   cannot push stored text over the limit: every string over `maxChars` (default 200,000 characters) is cut
-   and ends in `[truncated]`, and the serialized payload is capped at `4 x maxChars` by replacing the largest
-   strings with `[dropped: over the payload size cap]` until it fits. Then U+0000 and unpaired surrogates are
-   cleaned, because Postgres cannot store them (as in ADR-039). A payload that still does not fit after every
-   large string was replaced is dropped. A throwing or non-payload-returning `redact`, a throwing `include`,
-   an undecodable media part and a payload that cannot be capped drop the payload, log
-   `llm.call.payload.dropped` at `warn` (the error text bounded to 300 characters), and never fail the call.
-5. **Persistence.** `UsageSink.record(record, { payload?, logger? })`. The context is passed only when there is
-   a payload, and `logger` is the client's, for a sink that recovers from a payload problem. A sink that
-   ignores the second argument is unaffected. Payload building runs before the bounded sink write, so
-   `sinkTimeoutMs` bounds the ledger row and the payload together and a slow sink is abandoned as before.
+3. **What is captured, and what is not.** The payload is `{ request, response }`. Request, as the adapter
+   received it (after middleware), snapshotted at dispatch so that a host changing its request during the call
+   changes nothing stored: `system`, every message as `{ role, parts }`, text verbatim, tool-call arguments and
+   tool-result values as JSON, an inline media part as `{ kind, mimeType, bytes, sha256 }` (decoded size and
+   SHA-256, never the bytes; above 20 MiB decoded it is `{ bytes, sha256: null, skipped: 'too_large' }`, and
+   data that is not valid base64 is `{ bytes: null, sha256: null, skipped: 'invalid_base64' }`, dropping only
+   that part), a `file-uri` as scheme, host and path only (userinfo, query string and fragment are removed: a
+   signed URL is a credential), a `file-ref` as its id, and tools as `{ name, schemaSha256 }` (SHA-256 of the
+   canonical JSON of `inputJsonSchema`; descriptions are not stored). Response: the raw model text, or the raw
+   JSON text of a structured output when the adapter returned only the parsed value, and the attempt's error
+   message when it failed. `transientProviderState` is never stored. Reasoning text and the model's tool calls
+   are not repeated in the payload; they are on the ledger row.
+
+   What holds text, and what governs it:
+
+   | Where                                                  | What it holds                                                                                                                                                          | Core secret patterns                                          | Governed by `payloads` / `include` / `storePayload` / purge and delete |
+   | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------- |
+   | `llm_calls.reasoning_text`                             | The model's reasoning text, when the provider returns it (16 KiB cap)                                                                                                  | Yes                                                           | No                                                                     |
+   | `llm_calls.tool_calls`                                 | The tool calls the model made: id, name, arguments as JSON                                                                                                             | Yes: every string, and the value of a key named like a secret | No                                                                     |
+   | `llm_calls.error_message`                              | The error text of a failed attempt (provider error text, which can echo part of a request; 16 KiB cap)                                                                 | Yes                                                           | No                                                                     |
+   | `llm_calls.metadata`                                   | The host's `CallMetadata` bag, verbatim                                                                                                                                | No, never scanned                                             | No                                                                     |
+   | `llm_calls.citations`                                  | Source URL, title and source name of a grounded answer                                                                                                                 | No                                                            | No                                                                     |
+   | `llm_calls.provider_metadata`, `raw_usage`, `warnings` | Provider-reported JSON and engine diagnostics                                                                                                                          | No                                                            | No                                                                     |
+   | `llm_calls.generation_config`                          | The call's settings; `providerOptions` and `httpOptions.headers` are scrubbed                                                                                          | Partly                                                        | No                                                                     |
+   | `llm_call_payloads.request`                            | The system prompt; every message part (text, tool-call arguments, tool-result values); media as type, size and SHA-256; file references; tools as name and schema hash | Yes, then the host's `redact`                                 | Yes                                                                    |
+   | `llm_call_payloads.response`                           | The raw model text, or the attempt's error message                                                                                                                     | Yes, then the host's `redact`                                 | Yes                                                                    |
+
+   `storePayload: false`, `include` and the off-by-default setting govern the payload table only; they never
+   keep the `llm_calls` text columns out of the ledger, and `purgeLlmCallPayloads` / `deleteLlmCallPayloads` do
+   not touch them. There is no second opt-out for the ledger columns (the ledger contract is unchanged): a host
+   that needs no text in the ledger wraps the sink and drops those columns before delegating, and a tenant
+   deletion also updates or deletes the `llm_calls` rows.
+
+4. **Bound, redact, cap, in that order, on every string.** (a) U+0000 and unpaired surrogates are stripped,
+   so a secret split by U+0000 is recognised and redacted whole (`buildRecord` does the same for the ledger
+   row). (b) A string longer than `maxChars + 256` is cut to that window, and the unbroken token at the cut
+   edge is dropped, so the work of every later step is bounded by the cap and a secret cut in half cannot
+   survive as a fragment too short to match; such a string ends in `[truncated]`. (c) Core's `redactSecrets`,
+   which runs in time linear in the string (bounded key names, no backtracking), and, for tool-call arguments
+   and tool-result values, replacement of the value of an object key named like `password`, `secret`, `token`,
+   `api_key`, `authorization`, `credential` or `private_key` (any case, as a substring) with `[REDACTED]`. The
+   covered credential shapes are listed in the `@gullabs/core` README; they are credentials, not personal data.
+   (d) The host's `redact(payload)`, synchronous, on a copy it may change, returning the payload to store.
+   (e) The caps, last, so a redactor cannot push stored text over the limit: every string over `maxChars`
+   (default 200,000 characters) is cut and ends in `[truncated]`, and the serialized payload is capped at
+   `4 x maxChars` by replacing the largest strings, then the largest tool arguments and results, with
+   `[dropped: over the payload size cap]` until it fits. (f) U+0000 and unpaired surrogates are stripped again
+   (Postgres cannot store them, as in ADR-039, and a host redactor can add them). A payload that still does not
+   fit is dropped. A throwing or non-payload-returning `redact`, a throwing `include`, a payload that cannot be
+   capped, a payload not built before the sink wait ends and a request that cannot be copied drop the payload
+   and log `llm.call.payload.dropped` at `warn` with the `stage`, the error class name and a fixed sentence.
+   Raw error text is never logged: a redactor's error can contain the payload. The call is never failed.
+5. **Persistence, and what bounds the work.** `UsageSink.record(record, { payload?, logger? })`. The context is
+   passed only when there is a payload, and `logger` is the client's, for a sink that recovers from a payload
+   problem. The request is snapshotted at dispatch (containers copied, tool arguments and results deep-copied,
+   strings and media data shared), and `include` is called then, once per attempt. The payload is built after
+   the attempt's outcome is known and inside the bounded sink write: `recordToSink` races the build against the
+   `sinkTimeoutMs` timer and the abort and deadline interrupts, and the build checks for abandonment and yields
+   to the event loop (the client's scheduler, `setTimeout(0)`) every 4 million characters or bytes of work.
+   When the wait ends first, the build stops at its next step, the payload is dropped with a warning and the
+   ledger row is still written. Two things are not interruptible: a single synchronous step (one string is at
+   most `maxChars + 256` characters of linear work, a 1 MiB hashing chunk) and the host's synchronous `redact`;
+   what bounds the total is the pre-redaction cap, not a timer. Media is hashed with `node:crypto` in 1 MiB
+   chunks of base64 (about 1 MiB of extra memory per part at a time, not a decoded copy) with a yield between
+   chunks.
 6. **`drizzleUsageSink({ db, transaction? })`.** BREAKING: the sink took a structurally typed
-   `drizzleUsageSink(db, table?)` with only `insert`, which cannot run a savepoint; that option shape is
-   deleted (no shim, no `table` argument). `db` is a Drizzle Postgres database (`PgDatabase`) and must have
-   `transaction`; `transaction?` is a host helper `(fn) => Promise` that receives the transaction handle,
-   for databases whose standard routes every transaction through its own helper (tenant or role context,
-   timeouts). Every write goes through it (default `db.transaction`), also when there is no payload, and every
-   statement runs on the handle it passes: insert the `llm_calls` row (`ON CONFLICT (attempt_id) DO NOTHING`),
-   then, in a nested `tx.transaction` (Drizzle's Postgres drivers run it as `SAVEPOINT` / `ROLLBACK TO
-SAVEPOINT`), insert the `llm_call_payloads` row. A payload failure rolls back to the savepoint, is logged
-   as `llm.call.payload.failed` (the driver error under Drizzle's query error, bounded to 300 characters,
-   because Drizzle's own message carries the statement's parameters, which here are customer text) and the
-   transaction commits: the ledger row always survives. A ledger-row failure aborts the transaction, so
-   there is no orphan payload, and `record` rejects (`llm.call.sink.failed`).
+   `drizzleUsageSink(db, table?)` with only `insert`; that option shape is deleted (no shim, no `table`
+   argument, and `assertLlmCallsSchema` / `assertLlmCallPayloadsSchema` lose theirs). `db` is a Drizzle
+   Postgres database (`PgDatabase`); one without `transaction()` and without a `transaction` helper is
+   `bad_request` at construction, with no fallback. A record **without** a payload is one `INSERT ... ON
+CONFLICT (attempt_id) DO NOTHING` on `db`: no transaction, one round trip, and it works on a driver without
+   transactions. A record **with** a payload runs in one transaction: the ledger insert, then, behind a
+   `SAVEPOINT` named uniquely per write, the payload insert (`ON CONFLICT DO NOTHING`). A payload failure is
+   rolled back to the savepoint, logged as `llm.call.payload.failed` (the driver error under Drizzle's query
+   error, bounded to 300 characters, because Drizzle's own message carries the statement's parameters, which
+   here are customer text) and the transaction commits. A ledger-row failure aborts the transaction, so there
+   is no orphan payload, and `record` rejects (`llm.call.sink.failed`). `transaction?` is a host helper
+   `(fn) => Promise` that receives the handle, for databases whose standard routes every transaction through its
+   own helper; when given it takes over every write. The helper must open a transaction per call; if it hands
+   every call the same ambient handle, the sink serializes its writes per handle (a queue keyed by the handle),
+   because Drizzle's own nested transaction names every savepoint alike and concurrent writes on one connection
+   would roll each other back. A rollback of such a host transaction takes the ledger rows with it. A write the
+   engine stopped waiting for keeps its connection until the database finishes it; hosts set
+   `idle_in_transaction_session_timeout` and `statement_timeout` for the sink's role.
 7. **Schema and SQL.** `llm_call_payloads(attempt_id TEXT PRIMARY KEY REFERENCES llm_calls(attempt_id) ON
 DELETE CASCADE, request JSONB NOT NULL, response JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT
 now())` with an index on `created_at`; `created_at` is the record's timestamp. `sql/install.sql` creates it;
-   `sql/upgrades/0003-llm-call-payloads.sql` adds it to a table at the previous shape. The upgrade is
-   idempotent per statement, sets `lock_timeout`, and refuses (with an error) to run over a table that already
-   has the name and is not this one, so a host's own `llm_call_payloads` is renamed first rather than
-   silently adopted. `assertLlmCallPayloadsSchema(db)` is the `assertLlmCallsSchema` counterpart.
+   `sql/upgrades/0003-llm-call-payloads.sql` adds it to a table at the previous shape. The upgrade is one
+   transaction with a transaction-local `lock_timeout`, and it refuses (with an error) to run over a table that
+   already has the name unless that table has exactly the four columns with these types, nullability and
+   default, the primary key on `attempt_id` and the foreign key to `llm_calls(attempt_id)` with `ON DELETE
+CASCADE` under the expected name, so a host's own `llm_call_payloads` is renamed first rather than silently
+   adopted. `assertLlmCallPayloadsSchema(db)` is the `assertLlmCallsSchema` counterpart.
 8. **Retention and deletion are the host's.** The library never deletes on its own.
-   `purgeLlmCallPayloads(db, { olderThan })` deletes payloads older than a cutoff (the `created_at` index
-   serves it) and returns the count; `deleteLlmCallPayloads(db, { callIds })` deletes the payloads of the given
-   calls and returns the count. There is deliberately no delete by `externalId`: it is host-supplied, not
-   unique, and can repeat across tenants, so such a helper could delete another tenant's payloads. `callId`
-   is minted by the engine and globally unique; a host resolves a tenant's calls through its own scoping (for
-   example a tenant id it puts in `metadata`) and passes the resulting ids. Neither helper touches `llm_calls`.
-9. **Testing.** `RecordingSink.payloads` is a `Map` of `attemptId` to payload.
+   `purgeLlmCallPayloads(db, { olderThan, batchSize? })` deletes payloads older than a cutoff in batches (the
+   `created_at` index finds them, the primary key deletes them; 5,000 rows per statement by default, each
+   statement returning a count and never the ids) and returns the total; `deleteLlmCallPayloads(db, { callIds })`
+   deletes the payloads of the given calls and returns the count (a sparse or non-string list is `bad_request`).
+   There is deliberately no delete by `externalId`: it is host-supplied, not unique, and can repeat across
+   tenants, so such a helper could delete another tenant's payloads. `callId` is minted by the engine and
+   globally unique; a host resolves a tenant's calls through its own scoping and passes the resulting ids.
+   Neither helper touches `llm_calls`, so a subject deletion also updates or deletes the ledger rows' text
+   columns (decision 3). `llm_call_payloads` has no tenant column: hosts read it through `llm_calls` and write
+   row-level security as an `exists` over `llm_calls`. Drizzle's query logger and Postgres statement logging
+   record bound parameters, which for a payload insert is the payload.
+9. **Testing.** `RecordingSink.payloads` is a `Map` of `attemptId` to payload, and `RecordingSink` declares
+   `acceptsPayloads`.
 
 **Consequences:**
 
 - Hosts that call `drizzleUsageSink(db, table)` change to `drizzleUsageSink({ db })`; a custom table object
-  is no longer accepted. Their `db` must be a Drizzle Postgres database with `transaction`. Every record is
-  now written in a transaction.
+  is no longer accepted. Their `db` must have `transaction()`. A record without a payload stays a single
+  INSERT; only a payload write opens a transaction.
+- Hosts with a custom `UsageSink` that wants payloads set `acceptsPayloads: true` and read the second argument.
 - Hosts that turn on `payloads` apply `sql/upgrades/0003-llm-call-payloads.sql` first. Without the table every
   payload insert fails, is logged as `llm.call.payload.failed`, and the ledger rows still commit.
+- The ledger row now redacts `tool_calls` arguments and `reasoning_text` with core's patterns, and strips
+  U+0000 before redacting `error_message`, `reasoning_text` and `provider_options`. The columns themselves are
+  unchanged.
 - Stored payloads can contain customer data. Core's patterns are best-effort, not DLP: a host that stores
-  payloads supplies its own `redact`, a retention job and a tenant deletion path.
-- Anything that implements `UsageSink` may read the optional second argument; nothing else changes.
+  payloads supplies its own `redact`, a retention job and a tenant deletion path, and a wrapping sink if no text
+  may reach `llm_calls`.
+- `maxChars` below 1,000, an `async` `redact` / `include`, a sink without `acceptsPayloads` and a `db` without
+  `transaction()` are now refused or warned about at construction.
 - Node-postgres coverage runs only where a server is available (`ANY_LLM_TEST_POSTGRES_URL`); CI runs the
   same behaviour on PGlite.
 

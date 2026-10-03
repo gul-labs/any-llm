@@ -12,16 +12,16 @@ pnpm add @gullabs/drizzle @gullabs/core @gullabs/google drizzle-orm
 
 ## Key exports
 
-| Export                                    | What it is                                                                                                                                             |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `llmCalls`                                | Drizzle `pgTable('llm_calls', ...)` — the reference schema                                                                                             |
-| `llmCallPayloads`                         | Drizzle `pgTable('llm_call_payloads', ...)` — opt-in prompt and response text, keyed by `attempt_id`                                                   |
-| `drizzleUsageSink({ db, transaction? })`  | Returns a `UsageSink` that writes each record in one transaction via `INSERT ... ON CONFLICT DO NOTHING` (idempotent on `attemptId`), plus its payload |
-| `PostgresDb`, `DrizzleUsageSinkOptions`   | Types of the `db` handle (a Drizzle Postgres database) and of the sink options                                                                         |
-| `assertLlmCallsSchema(db)`                | Checks, without writing, that the table has every column the sink writes; rejects pointing at `sql/upgrades/`                                          |
-| `assertLlmCallPayloadsSchema(db)`         | The same check for `llm_call_payloads`; rejects pointing at `0003-llm-call-payloads.sql`                                                               |
-| `purgeLlmCallPayloads(db, { olderThan })` | Deletes payloads written before a cutoff; returns the count                                                                                            |
-| `deleteLlmCallPayloads(db, { callIds })`  | Deletes the payloads of the given calls; returns the count                                                                                             |
+| Export                                                | What it is                                                                                                                                                 |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llmCalls`                                            | Drizzle `pgTable('llm_calls', ...)` — the reference schema                                                                                                 |
+| `llmCallPayloads`                                     | Drizzle `pgTable('llm_call_payloads', ...)` — opt-in prompt and response text, keyed by `attempt_id`                                                       |
+| `drizzleUsageSink({ db, transaction? })`              | Returns a `UsageSink`: one `INSERT ... ON CONFLICT DO NOTHING` per record (idempotent on `attemptId`); a record with a payload is written in a transaction |
+| `PostgresDb`, `DrizzleUsageSinkOptions`               | Types of the `db` handle (a Drizzle Postgres database) and of the sink options                                                                             |
+| `assertLlmCallsSchema(db)`                            | Checks, without writing, that the table has every column the sink writes; rejects pointing at `sql/upgrades/`                                              |
+| `assertLlmCallPayloadsSchema(db)`                     | The same check for `llm_call_payloads`; rejects pointing at `0003-llm-call-payloads.sql`                                                                   |
+| `purgeLlmCallPayloads(db, { olderThan, batchSize? })` | Deletes payloads written before a cutoff in batches (5,000 rows by default); returns the count                                                             |
+| `deleteLlmCallPayloads(db, { callIds })`              | Deletes the payloads of the given calls; returns the count                                                                                                 |
 
 ## Quick example
 
@@ -57,13 +57,13 @@ The `llm_calls` table mirrors `LlmCallRecord` from `@gullabs/core`: typed column
 
 The package ships plain SQL in `sql/` (resolvable as `@gullabs/drizzle/sql/install.sql` and so on):
 
-| File                                      | Use                                                                                                                           |
-| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `sql/install.sql`                         | Fresh install of the current `llm_calls` and `llm_call_payloads` tables and their indexes.                                    |
-| `sql/upgrades/0001-add-error-reason.sql`  | Adds the `error_reason` column to a table created by 0.7.2 or earlier. Idempotent.                                            |
-| `sql/upgrades/0002-ledger-v2.sql`         | Adds the cost columns, the `created_at` indexes and the `status` / `error_kind` CHECKs (NOT VALID). Idempotent per statement. |
-| `sql/upgrades/0002-validate-checks.sql`   | Validates those CHECKs against existing rows, after you clean legacy rows. Run separately.                                    |
-| `sql/upgrades/0003-llm-call-payloads.sql` | Adds the `llm_call_payloads` table. Idempotent per statement; refuses to run over a table of that name that is not ours.      |
+| File                                      | Use                                                                                                                                             |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sql/install.sql`                         | Fresh install of the current `llm_calls` and `llm_call_payloads` tables and their indexes.                                                      |
+| `sql/upgrades/0001-add-error-reason.sql`  | Adds the `error_reason` column to a table created by 0.7.2 or earlier. Idempotent.                                                              |
+| `sql/upgrades/0002-ledger-v2.sql`         | Adds the cost columns, the `created_at` indexes and the `status` / `error_kind` CHECKs (NOT VALID). Idempotent per statement.                   |
+| `sql/upgrades/0002-validate-checks.sql`   | Validates those CHECKs against existing rows, after you clean legacy rows. Run separately.                                                      |
+| `sql/upgrades/0003-llm-call-payloads.sql` | Adds the `llm_call_payloads` table, in one transaction. Refuses to run over a table of that name whose columns, types or keys differ from ours. |
 
 Apply every upgrade you have not run yet, in order, **before** deploying the new sink, on every release that
 ships one (the packages version in lockstep, so a core bump for an unrelated fix is a drizzle bump too). The
@@ -110,8 +110,8 @@ array and `getTableConfig` are the surface the schema relies on. Report a break 
 
 ## Payload storage
 
-By default the library stores no prompt and no response text. A host that has to debug or audit calls opts in
-on the client:
+By default the library stores no full prompt and no full response text. A host that has to debug or audit
+calls opts in on the client:
 
 ```ts
 const client = createClient({
@@ -122,34 +122,78 @@ const client = createClient({
 ```
 
 With `payloads` set, each attempt that reached the provider writes one `llm_call_payloads` row next to its
-`llm_calls` row (see [`@gullabs/core`](../core/README.md#payload-storage-opt-in) for what is captured and the
-redact-then-cap order, and ADR-038). Skip a call with `storePayload: false` on `generate` or `runStructured`.
-Run `sql/upgrades/0003-llm-call-payloads.sql` (or install from `sql/install.sql`) first; call
+`llm_calls` row (see [`@gullabs/core`](../core/README.md#payload-storage-opt-in) for what is captured, the
+bound-redact-cap order and the patterns, and ADR-038). Skip a call with `storePayload: false` on `generate` or
+`runStructured`. Run `sql/upgrades/0003-llm-call-payloads.sql` (or install from `sql/install.sql`) first; call
 `assertLlmCallPayloadsSchema(db)` at deploy or boot to check.
 
-**The write.** `drizzleUsageSink({ db, transaction? })` takes a Drizzle Postgres database that has `transaction`.
-Each record is written in one transaction: the `llm_calls` row first, then, in a nested transaction (a
-`SAVEPOINT`), the payload row. If the payload insert fails it is rolled back to the savepoint, logged as
-`llm.call.payload.failed`, and the transaction commits: **the ledger row always survives a payload failure**. If
-the ledger insert fails, nothing is written (no orphan payload) and the engine logs `llm.call.sink.failed`. The
-whole write is bounded by `sinkTimeoutMs` and never fails the LLM call.
+**What is in `llm_calls` whatever you set.** `payloads`, `include` and `storePayload` govern the payload table
+only. The ledger row is written for every attempt and holds text of its own:
+
+| Where                                                  | What it holds                                                                                                                                                          | Core secret patterns                                          | Governed by `payloads` / `include` / `storePayload` / purge and delete |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `llm_calls.reasoning_text`                             | The model's reasoning text, when the provider returns it (16 KiB cap)                                                                                                  | Yes                                                           | No                                                                     |
+| `llm_calls.tool_calls`                                 | The tool calls the model made: id, name, arguments as JSON                                                                                                             | Yes: every string, and the value of a key named like a secret | No                                                                     |
+| `llm_calls.error_message`                              | The error text of a failed attempt (provider error text, which can echo part of a request; 16 KiB cap)                                                                 | Yes                                                           | No                                                                     |
+| `llm_calls.metadata`                                   | Your `CallMetadata` bag, verbatim                                                                                                                                      | No, never scanned                                             | No                                                                     |
+| `llm_calls.citations`                                  | Source URL, title and source name of a grounded answer                                                                                                                 | No                                                            | No                                                                     |
+| `llm_calls.provider_metadata`, `raw_usage`, `warnings` | Provider-reported JSON and engine diagnostics                                                                                                                          | No                                                            | No                                                                     |
+| `llm_calls.generation_config`                          | The call's settings; `providerOptions` and `httpOptions.headers` are scrubbed                                                                                          | Partly                                                        | No                                                                     |
+| `llm_call_payloads.request`                            | The system prompt; every message part (text, tool-call arguments, tool-result values); media as type, size and SHA-256; file references; tools as name and schema hash | Yes, then your `redact`                                       | Yes                                                                    |
+| `llm_call_payloads.response`                           | The raw model text, or the attempt's error message                                                                                                                     | Yes, then your `redact`                                       | Yes                                                                    |
+
+A host that needs no text in the ledger does not persist those columns: wrap the sink and drop them before
+delegating (an example is in [`docs/ledger.md`](../../docs/ledger.md#what-each-table-holds)). A tenant deletion
+is `deleteLlmCallPayloads` for the payload rows plus your own `UPDATE` or `DELETE` on `llm_calls` for the ledger
+columns; `purgeLlmCallPayloads` and `deleteLlmCallPayloads` never touch `llm_calls`.
+
+**The write.** `drizzleUsageSink({ db, transaction? })` takes a Drizzle Postgres database.
+
+- A record **without a payload** is one `INSERT ... ON CONFLICT DO NOTHING` on `db`: no transaction, one round
+  trip. This is the path every record takes unless `payloads` is configured, and the only one a driver without
+  transactions can run (the `neon-http` driver throws on `transaction()`, so with it a ledger-only sink works, and a
+  payload write fails and is logged as `llm.call.sink.failed`).
+- A record **with a payload** is written in one transaction: the `llm_calls` row, then, behind a uniquely named
+  `SAVEPOINT`, the payload row. If the payload insert fails it is rolled back to the savepoint, logged as
+  `llm.call.payload.failed`, and the transaction commits: **the ledger row survives a payload failure**. If the
+  ledger insert fails, nothing is written (no orphan payload) and the engine logs `llm.call.sink.failed`.
+- A `db` with no `transaction()` (and no `transaction` helper) is `bad_request` at `drizzleUsageSink(...)`, not a
+  failure on the first payload. There is no fallback.
+- The whole write, and the building of the payload, is bounded by `sinkTimeoutMs` and never fails the LLM call.
+  Set `idle_in_transaction_session_timeout` and `statement_timeout` for the role that runs the sink: a write the
+  engine stopped waiting for keeps its pooled connection until the database finishes or gives up on it.
 
 If your database standard routes every transaction through your own helper (tenant or role context, statement
-timeouts), pass it as `transaction`; every statement then runs on the handle it gives the sink:
+timeouts), pass it as `transaction`; it then takes over every write (a record without a payload too) and every
+statement runs on the handle it gives the sink:
 
 ```ts
 drizzleUsageSink({ db, transaction: (fn) => withTenantTransaction(fn) })
 ```
 
+The helper must open a transaction of its own per call. If it hands every call the same ambient transaction, the
+sink serializes its writes on that handle (one at a time, each behind its own savepoint), so concurrent records
+all keep their payloads; but the ledger rows now belong to that transaction: **when the host transaction rolls
+back, the ledger rows and payloads roll back with it.** Do not use an ambient transaction for a call whose bill
+must survive its failure.
+
 **Payloads can contain customer data, and retention is yours.** The library never deletes them. Schedule
-`purgeLlmCallPayloads(db, { olderThan })` (a daily job with your retention window) and, for tenant or subject
-deletion, `deleteLlmCallPayloads(db, { callIds })`. Deletion takes `callIds` only: `externalId` is yours, not
-unique, and can repeat across tenants, so there is no delete by `externalId`. Resolve a tenant's calls through
-your own scoping (for example a tenant id in `metadata`), select their `call_id`s, and pass them. Deleting a
-payload never touches the `llm_calls` row; deleting an `llm_calls` row deletes its payload (`ON DELETE CASCADE`).
+`purgeLlmCallPayloads(db, { olderThan })` (a daily job with your retention window; it deletes in batches of
+`batchSize`, default 5,000, and returns the total) and, for tenant or subject deletion,
+`deleteLlmCallPayloads(db, { callIds })`. Deletion takes `callIds` only: `externalId` is yours, not unique, and can
+repeat across tenants, so there is no delete by `externalId`. Resolve a tenant's calls through your own scoping
+(for example a tenant id in `metadata`), select their `call_id`s, and pass them. Deleting a payload never
+touches the `llm_calls` row; deleting an `llm_calls` row deletes its payload (`ON DELETE CASCADE`).
+
+`llm_call_payloads` has no tenant column. Read it only through a join to `llm_calls`, and write row-level
+security on it as an `exists` over `llm_calls`: a policy written against `llm_calls` does not cover it. Drizzle's
+query logger and Postgres statement logging record bound parameters, which for a payload insert is the payload
+JSON: keep them off for the sink's role.
 
 If you already have a table named `llm_call_payloads`, rename it (with its index and foreign key) before applying
-the SQL; the upgrade stops with an error rather than write into a table of another shape.
+the SQL: the upgrade compares the existing table's columns, types, nullability, default, primary key and foreign
+key with the table it would create, and stops with an error unless they match exactly. It runs in one
+transaction with a transaction-local `lock_timeout`, so a failed run leaves nothing behind.
 
 ## Sink fail-open guarantee
 

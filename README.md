@@ -95,7 +95,7 @@ console.log(result.cost?.microUsd) // integer µUSD, frozen at call time
 console.log(result.reasoningText)
 ```
 
-Persist records with [`@gullabs/drizzle`](./packages/drizzle) by passing `sink: drizzleUsageSink({ db })` to `createClient`. Prompt and response text is stored only if you opt in with `payloads` on the client config (see [Payload storage](./packages/drizzle/README.md#payload-storage)); it can contain customer data, and retention is yours.
+Persist records with [`@gullabs/drizzle`](./packages/drizzle) by passing `sink: drizzleUsageSink({ db })` to `createClient`. The ledger row holds usage, cost, settings and your `metadata`, plus text the model or the provider produced (reasoning text, tool-call arguments, error messages, citation URLs). The full prompt and response text is stored only if you opt in with `payloads` on the client config, and that opt-in governs the payload table only: see [what each table holds](./docs/ledger.md#what-each-table-holds) and [Payload storage](./packages/drizzle/README.md#payload-storage). Stored text can contain customer data, and retention is yours.
 
 A network-free walkthrough lives in [`examples/basic.ts`](./examples/basic.ts). Run it with `pnpm example`.
 

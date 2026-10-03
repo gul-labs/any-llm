@@ -167,20 +167,74 @@ Two ways to find out before rows are lost:
   `LIMIT 0`, writes nothing, and rejects with an error that points at `sql/upgrades/`. It needs no client,
   so run it from a deploy or CI step, a readiness endpoint, or at boot.
 
+## What each table holds
+
+The ledger row is not text-free, and the opt-in payload table is not the only place customer text can land.
+This is the whole list of text-bearing places and what governs each:
+
+| Where                                                  | What it holds                                                                                                                                                          | Core secret patterns applied                                  | Governed by `payloads`, `include`, `storePayload`, the purge and delete helpers |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `llm_calls.reasoning_text`                             | The model's reasoning text, when the provider returns it (16 KiB cap)                                                                                                  | Yes                                                           | No                                                                              |
+| `llm_calls.tool_calls`                                 | The tool calls the model made: id, name, arguments as JSON                                                                                                             | Yes: every string, and the value of a key named like a secret | No                                                                              |
+| `llm_calls.error_message`                              | The error text of a failed attempt (provider error text, which can echo part of a request; 16 KiB cap)                                                                 | Yes                                                           | No                                                                              |
+| `llm_calls.metadata`                                   | Your `CallMetadata` bag, verbatim                                                                                                                                      | No, never scanned                                             | No                                                                              |
+| `llm_calls.citations`                                  | Source URL, title and source name of a grounded answer                                                                                                                 | No                                                            | No                                                                              |
+| `llm_calls.provider_metadata`, `raw_usage`, `warnings` | Provider-reported JSON and engine diagnostics                                                                                                                          | No                                                            | No                                                                              |
+| `llm_calls.generation_config`                          | The call's settings; `providerOptions` and `httpOptions.headers` are scrubbed                                                                                          | Partly                                                        | No                                                                              |
+| `llm_call_payloads.request`                            | The system prompt; every message part (text, tool-call arguments, tool-result values); media as type, size and SHA-256; file references; tools as name and schema hash | Yes, then your `redact`                                       | Yes                                                                             |
+| `llm_call_payloads.response`                           | The raw model text, or the attempt's error message                                                                                                                     | Yes, then your `redact`                                       | Yes                                                                             |
+
+`storePayload: false`, `include` and the off-by-default `payloads` setting govern `llm_call_payloads` only. The
+`llm_calls` columns above are written on every attempt whatever they say (core's secret patterns, listed in the
+README of `@gullabs/core`, run on the ones marked), and `purgeLlmCallPayloads` / `deleteLlmCallPayloads` do not
+touch them. Personal data in them (a customer's name in a tool-call argument, an SSN the model repeated in its
+reasoning) is yours to handle. A host that needs no text at all in `llm_calls` does not persist those columns:
+wrap the sink and drop them before delegating.
+
+```ts
+import { drizzleUsageSink } from '@gullabs/drizzle'
+import type { UsageSink } from '@gullabs/core'
+
+const inner = drizzleUsageSink({ db })
+const sink: UsageSink = {
+  acceptsPayloads: true, // the wrapper forwards ctx, so payloads still reach the payload table
+  record: (r, ctx) => {
+    // `_`-prefixed names are the columns this host does not persist
+    const {
+      reasoningText: _r,
+      toolCalls: _t,
+      errorMessage: _e,
+      citations: _c,
+      ...rest
+    } = r
+    return inner.record(rest, ctx)
+  },
+}
+```
+
+A tenant deletion that follows these docs has two parts: `deleteLlmCallPayloads(db, { callIds })` for the payload
+rows, and your own `UPDATE llm_calls SET reasoning_text = NULL, tool_calls = NULL, error_message = NULL,
+citations = NULL, metadata = '{}' WHERE call_id = ANY($1)` (or `DELETE`, which also cascades to the payload
+rows) for the ledger columns.
+
 ## Prompt and response text (opt-in)
 
-`llm_calls` holds no prompt and no response text. A client that sets `ClientConfig.payloads` hands the sink one
-payload per attempt that reached the provider, and `drizzleUsageSink({ db })` stores it in `llm_call_payloads`,
-keyed by `attempt_id` (FK to `llm_calls`, `ON DELETE CASCADE`, index on `created_at`): `request` is
-`{ system?, messages, tools? }` with media parts as a media type, size and SHA-256 (never bytes) and tools as
-name and schema hash; `response` is `{ text?, errorMessage? }`. `sql/upgrades/0003-llm-call-payloads.sql` adds
-the table to an existing database. The payload is written in the same transaction as the ledger row, behind a
-savepoint: a payload failure never costs the ledger row. See the
+A client that sets `ClientConfig.payloads` hands the sink one payload per attempt that reached the provider, and
+`drizzleUsageSink({ db })` stores it in `llm_call_payloads`, keyed by `attempt_id` (FK to `llm_calls`, `ON DELETE
+CASCADE`, index on `created_at`): `request` is `{ system?, messages, tools? }` with media parts as a media type,
+size and SHA-256 (never bytes; a part over 20 MiB or not valid base64 is stored as a marker) and tools as name
+and schema hash; `response` is `{ text?, errorMessage? }`. `sql/upgrades/0003-llm-call-payloads.sql` adds the
+table to an existing database. A payload is written in the same transaction as the ledger row, behind a
+savepoint: a payload failure never costs the ledger row. The transaction is also why a host rollback takes the
+ledger row too, when your `transaction` helper joins a transaction of yours. See the
 [`@gullabs/drizzle` README](../packages/drizzle/README.md#payload-storage) and ADR-038.
 
 Payloads can contain customer data. Retention and tenant deletion are the host's duty: schedule
-`purgeLlmCallPayloads(db, { olderThan })` and delete by call with `deleteLlmCallPayloads(db, { callIds })` (no
-delete by `externalId`, which can repeat across tenants). To read a call's payloads:
+`purgeLlmCallPayloads(db, { olderThan })` (batched, 5,000 rows per statement by default) and delete by call with
+`deleteLlmCallPayloads(db, { callIds })` (no delete by `externalId`, which can repeat across tenants).
+
+`llm_call_payloads` has no tenant column. Read it only through a join to `llm_calls`, and write any row-level
+security on it as an `exists` over `llm_calls`, because a policy written against `llm_calls` does not cover it:
 
 ```sql
 select c.attempt_number, c.status, p.request, p.response
@@ -189,6 +243,10 @@ join llm_call_payloads p using (attempt_id)
 where c.call_id = $1
 order by c.attempt_number;
 ```
+
+Drizzle's query logger and Postgres statement logging (`log_statement`, `log_min_duration_statement`,
+`auto_explain`) record bound parameters, which for the payload insert is the payload JSON. Leave them off for the
+role that runs the sink, or accept that the log holds what the table holds.
 
 ## Atomic sidecar writes (transaction composition)
 

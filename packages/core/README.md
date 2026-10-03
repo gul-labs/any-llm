@@ -336,20 +336,20 @@ const client = createClient({
 
 Four levels: `debug`, `info`, `warn`, `error`. Engine events:
 
-| Event                       | Level                                                                                                                                          |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `llm.call.start`            | `info`                                                                                                                                         |
-| `llm.call.attempt.start`    | `debug`                                                                                                                                        |
-| `llm.call.retry`            | `debug` — includes `attemptNumber`, `delayMs`, `errorKind`, `retryable`                                                                        |
-| `llm.call.success`          | `info`                                                                                                                                         |
-| `llm.call.error`            | `error`                                                                                                                                        |
-| `llm.call.cost.failed`      | `warn`                                                                                                                                         |
-| `llm.call.sink.success`     | `debug`                                                                                                                                        |
-| `llm.call.sink.failed`      | `error` (redacted)                                                                                                                             |
-| `llm.call.sink.timeout`     | `error` — `sinkTimeoutMs` passed; the row may be lost                                                                                          |
-| `llm.call.sink.interrupted` | `error` — 100 ms after an abort or the call deadline; the row may be lost                                                                      |
-| `llm.call.payload.dropped`  | `warn` — a payload could not be built (a throwing `redact` or `include`, an undecodable media part, over the size cap); the call is unaffected |
-| `llm.call.payload.failed`   | `error` — logged by `@gullabs/drizzle`: the payload insert failed and was rolled back; the ledger row committed                                |
+| Event                       | Level                                                                                                                                                                                                               |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llm.call.start`            | `info`                                                                                                                                                                                                              |
+| `llm.call.attempt.start`    | `debug`                                                                                                                                                                                                             |
+| `llm.call.retry`            | `debug` — includes `attemptNumber`, `delayMs`, `errorKind`, `retryable`                                                                                                                                             |
+| `llm.call.success`          | `info`                                                                                                                                                                                                              |
+| `llm.call.error`            | `error`                                                                                                                                                                                                             |
+| `llm.call.cost.failed`      | `warn`                                                                                                                                                                                                              |
+| `llm.call.sink.success`     | `debug`                                                                                                                                                                                                             |
+| `llm.call.sink.failed`      | `error` (redacted)                                                                                                                                                                                                  |
+| `llm.call.sink.timeout`     | `error` — `sinkTimeoutMs` passed; the row may be lost                                                                                                                                                               |
+| `llm.call.sink.interrupted` | `error` — 100 ms after an abort or the call deadline; the row may be lost                                                                                                                                           |
+| `llm.call.payload.dropped`  | `warn` — a payload could not be built (a throwing or async `redact` or `include`, over the size cap, a sink wait that ended first); fields `stage`, `errorName`, `error` (a fixed sentence); the call is unaffected |
+| `llm.call.payload.failed`   | `error` — logged by `@gullabs/drizzle`: the payload insert failed and was rolled back; the ledger row committed                                                                                                     |
 
 Host logger exceptions are swallowed by `makeSafeLogger` — fail-open; a bad logger never breaks a
 call.
@@ -423,16 +423,16 @@ Correlate the final outcome of a call from `result.attemptId` or `LlmError.attem
 
 ### Payload storage (opt-in)
 
-By default no prompt or response text is stored. `ClientConfig.payloads` turns it on for the client:
+By default the full prompt and response text is not stored. `ClientConfig.payloads` turns it on for the client:
 
 ```ts
 const client = createClient({
   ...composeProviders([googleProvider()]),
-  sink: drizzleUsageSink({ db }),
+  sink: drizzleUsageSink({ db }), // a sink must declare acceptsPayloads: true to receive payloads
   payloads: {
-    redact: (payload) => scrubCustomerData(payload), // optional; runs after core's secret patterns
-    maxChars: 200_000, // optional; per string, and 4x for the whole payload
-    include: (request) => request.metadata?.['audit'] === true, // optional; only `true` captures
+    redact: (payload) => scrubCustomerData(payload), // optional, synchronous; runs after core's secret patterns
+    maxChars: 200_000, // optional, at least 1,000; per string, and 4x for the whole payload
+    include: (request) => request.metadata?.['audit'] === true, // optional, synchronous; only `true` captures
   },
 })
 
@@ -441,17 +441,65 @@ await client.runStructured(callSite, vars, { auth, storePayload: false })
 ```
 
 Every attempt that reached the provider adapter, success or failure, hands the sink one payload next to its
-record: `sink.record(record, { payload })`. It holds the request as sent (`system`, messages as
+record: `sink.record(record, { payload })`. It holds the request as dispatched (`system`, messages as
 `{ role, parts }`, text verbatim, tool-call arguments and tool-result values as JSON, tools as name and schema
-hash; an inline image, audio or file part is only its media type, size and SHA-256, never the bytes) and the raw
-model text, or the error message of a failed attempt. Reasoning text and tool calls stay on the record.
-Strings are redacted with core's `redactSecrets` patterns (nested ones too), then your `redact`, then capped:
-the cap is applied last, so a redactor cannot push stored text over the limit. A payload that cannot be built
-(for example a `redact` that throws) is dropped with an `llm.call.payload.dropped` warning and never fails the call.
-`payloads` needs a `sink`; a sink that ignores the second argument is unaffected.
+hash; an inline image, audio or file part is only its media type, size and SHA-256, never the bytes; a
+`file-uri` without its userinfo, query string and fragment) and the raw model text, or the error message of a
+failed attempt. The request is snapshotted at dispatch, so what is stored is what was sent even if you change
+your request while the call is in flight, and `include` is called once per attempt at that moment.
 
-Stored payloads can contain customer data. The library never deletes them: retention and tenant deletion are
-yours (`@gullabs/drizzle` ships `purgeLlmCallPayloads` and `deleteLlmCallPayloads`; ADR-038).
+The payload is built after the attempt's outcome is known, inside the `sinkTimeoutMs` wait, and in this order
+for every string: U+0000 and unpaired surrogates are stripped, the string is cut to `maxChars + 256` characters
+(at a token edge, so a secret cut in half does not survive as a fragment), core's `redactSecrets` patterns run,
+then your `redact` runs on the whole payload, then the caps run last (`maxChars` per string, `4 x maxChars`
+for the whole payload: the largest strings, then the largest tool arguments and results, become a marker), and
+U+0000 is stripped once more. A secret split by U+0000 is therefore redacted whole, and a redactor cannot push
+stored text over the limit. A large payload yields to the event loop between steps; when `sinkTimeoutMs` or an
+abort ends the wait first, the payload is dropped with an `llm.call.payload.dropped` warning and the ledger row
+is still written. A synchronous `redact` cannot be interrupted: keep it fast. Inline media above 20 MiB is
+stored as `{ mimeType, bytes, sha256: null, skipped: 'too_large' }` and data that is not valid base64 as
+`{ skipped: 'invalid_base64' }`; neither drops the payload. Hashing needs about 1 MiB of extra memory per part
+at any moment, not a decoded copy.
+
+What the core patterns cover (best-effort, credentials only, never personal data): Google API keys (`AIza…`,
+`ya29.…`), `sk-…` keys, GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`), `xai-…` keys, AWS
+access key ids, `Bearer` tokens in any case, the credential after any `Authorization:` scheme (`Basic`, ...),
+and these `name=value` pairs in URLs and text, in any case: `X-Goog-*`, `X-Amz-*` (S3 presigned `Signature`,
+`Credential`, `Security-Token`), `sig` (Azure SAS), `signature`, `token`, `key`, `api_key`, `access_token`,
+`refresh_token`, `id_token`, `client_secret`, `password`, `passwd`, `secret`, `authorization`, `credential`. In
+tool-call arguments and tool-result values the value of an object key named like `password`, `secret`, `token`,
+`api_key`, `authorization`, `credential` or `private_key` (any case, as a substring, so `max_tokens` is replaced
+too) is replaced with `[REDACTED]`. A payload that cannot be built (a throwing `redact`, a payload that cannot
+get under the cap, a wait that ended first) is dropped with an `llm.call.payload.dropped` warning carrying the
+stage, the error class and a fixed sentence, never the error's text, and never fails the call.
+
+`payloads` needs a `sink`, and the sink must declare `acceptsPayloads: true` (`drizzleUsageSink` and
+`RecordingSink` do). Without it `createClient` logs one `llm.config.payloads.sink_ignores_payloads` warning and
+no payload is built. An `async` `redact` or `include` is `bad_request` at `createClient`, and a Promise returned
+at run time drops the payload (or skips the call, for `include`) with a warning.
+
+**What `llm_calls` holds, whatever `payloads` says.** The payload options govern the payload table only. The
+ledger row is written on every attempt and carries text too:
+
+| Where                                                  | What it holds                                                                                                                                                          | Core secret patterns                                          | Governed by `payloads` / `include` / `storePayload` / purge and delete |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `llm_calls.reasoning_text`                             | The model's reasoning text, when the provider returns it (16 KiB cap)                                                                                                  | Yes                                                           | No                                                                     |
+| `llm_calls.tool_calls`                                 | The tool calls the model made: id, name, arguments as JSON                                                                                                             | Yes: every string, and the value of a key named like a secret | No                                                                     |
+| `llm_calls.error_message`                              | The error text of a failed attempt (provider error text, which can echo part of a request; 16 KiB cap)                                                                 | Yes                                                           | No                                                                     |
+| `llm_calls.metadata`                                   | Your `CallMetadata` bag, verbatim                                                                                                                                      | No, never scanned                                             | No                                                                     |
+| `llm_calls.citations`                                  | Source URL, title and source name of a grounded answer                                                                                                                 | No                                                            | No                                                                     |
+| `llm_calls.provider_metadata`, `raw_usage`, `warnings` | Provider-reported JSON and engine diagnostics                                                                                                                          | No                                                            | No                                                                     |
+| `llm_calls.generation_config`                          | The call's settings; `providerOptions` and `httpOptions.headers` are scrubbed                                                                                          | Partly                                                        | No                                                                     |
+| `llm_call_payloads.request`                            | The system prompt; every message part (text, tool-call arguments, tool-result values); media as type, size and SHA-256; file references; tools as name and schema hash | Yes, then your `redact`                                       | Yes                                                                    |
+| `llm_call_payloads.response`                           | The raw model text, or the attempt's error message                                                                                                                     | Yes, then your `redact`                                       | Yes                                                                    |
+
+`storePayload: false`, `include` and the off-by-default setting never keep the `llm_calls` text columns out of
+the ledger, and the purge and delete helpers do not touch them. A host that needs no text at all in the ledger
+does not persist those columns: wrap the sink and drop them before delegating (an example is in
+[`docs/ledger.md`](../../docs/ledger.md#what-each-table-holds)).
+
+Stored text can contain customer data. The library never deletes it: retention and tenant deletion are yours
+(`@gullabs/drizzle` ships `purgeLlmCallPayloads` and `deleteLlmCallPayloads` for the payload table; ADR-038).
 
 ## Middleware, retry and rate limiting
 
