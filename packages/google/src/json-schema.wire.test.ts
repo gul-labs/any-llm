@@ -45,7 +45,16 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const client = createClient({ ...composeProviders([googleProvider()]) })
+const plugin = googleProvider()
+// Gemma is also reachable under a declared alias; the request string is forwarded
+// unchanged, so the profile must follow the resolved descriptor, not that string.
+const aliasedPlugin = {
+  ...plugin,
+  modelDescriptors: plugin.modelDescriptors.map((d) =>
+    d.model === 'gemma-4-31b-it' ? { ...d, aliases: ['models/gemma-4-31b-it'] } : d,
+  ),
+}
+const client = createClient({ ...composeProviders([aliasedPlugin]) })
 const AUTH = { apiKey: 'test-key' }
 const MODEL = 'gemini-3.1-flash-lite'
 
@@ -137,6 +146,66 @@ describe('Google wire: output.jsonSchema', () => {
     const err = await rejected({ output: { jsonSchema: schema as JsonValue } })
     expect(err.message).toContain('output.jsonSchema')
     expect(err.message).toContain(keyword)
+  })
+
+  it.each(['gemma-4-31b-it', 'models/gemma-4-31b-it'])(
+    'holds Gemma to its stricter profile when it is requested as %s',
+    async (model) => {
+      for (const jsonSchema of [
+        { type: 'object', properties: { d: { type: 'string', format: 'date' } } },
+        { type: 'object', properties: { s: { type: 'string', minLength: 1 } } },
+      ] as JsonValue[]) {
+        const err = await rejected({ model, output: { jsonSchema } })
+        expect(err.message).toContain('output.jsonSchema.properties')
+      }
+    },
+  )
+
+  it('lets the same schema through on Gemini', async () => {
+    await generate({
+      output: {
+        jsonSchema: {
+          type: 'object',
+          properties: { d: { type: 'string', format: 'date', minLength: 1 } },
+        },
+      },
+    })
+    expect(sent).toHaveLength(1)
+  })
+
+  it('accepts the no-op propertyNames of z.record(z.string(), X) and sends it verbatim', async () => {
+    const record: JsonValue = {
+      type: 'object',
+      properties: {
+        r: {
+          type: 'object',
+          propertyNames: { type: 'string' },
+          additionalProperties: { type: 'number' },
+        },
+      },
+    }
+    await generate({ output: { jsonSchema: record } })
+    expect(sent[0]?.text).toContain(`"responseJsonSchema":${JSON.stringify(record)}`)
+  })
+
+  it('rejects a constraining propertyNames', async () => {
+    const err = await rejected({
+      output: {
+        jsonSchema: {
+          type: 'object',
+          propertyNames: { type: 'string', pattern: '^k' },
+          additionalProperties: { type: 'number' },
+        },
+      },
+    })
+    expect(err.message).toContain('`propertyNames`')
+  })
+
+  it('rejects a cyclic JavaScript object as bad_request, not unknown', async () => {
+    const node: { [k: string]: JsonValue } = { type: 'object', properties: {} }
+    ;(node['properties'] as { [k: string]: JsonValue })['self'] = node
+    const err = await rejected({ output: { jsonSchema: node } })
+    expect(err.message).toContain('output.jsonSchema.properties.self')
   })
 
   it('rejects the OpenAPI dialect before dispatch', async () => {

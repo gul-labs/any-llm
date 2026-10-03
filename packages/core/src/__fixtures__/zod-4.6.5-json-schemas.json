@@ -871,7 +871,7 @@
     },
     {
       "name": "record",
-      "description": "z.record emits propertyNames",
+      "description": "z.record(z.string(), X) emits propertyNames: { type: 'string' }, a no-op the profiles accept",
       "schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -880,6 +880,86 @@
             "type": "object",
             "propertyNames": {
               "type": "string"
+            },
+            "additionalProperties": {
+              "type": "number"
+            }
+          }
+        },
+        "required": [
+          "r"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "accept"
+        }
+      }
+    },
+    {
+      "name": "record_enum_keys",
+      "description": "z.record with enum keys emits a constraining propertyNames (and required)",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "r": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "enum": [
+                "a",
+                "b"
+              ]
+            },
+            "additionalProperties": {
+              "type": "number"
+            },
+            "required": [
+              "a",
+              "b"
+            ]
+          }
+        },
+        "required": [
+          "r"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "reject",
+          "reason": "`propertyNames`"
+        },
+        "xai": {
+          "verdict": "reject",
+          "reason": "`propertyNames`"
+        },
+        "portable": {
+          "verdict": "reject",
+          "reason": "`propertyNames`"
+        }
+      }
+    },
+    {
+      "name": "record_pattern_keys",
+      "description": "z.record with a regex key schema emits propertyNames with a pattern",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "r": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "pattern": "^k"
             },
             "additionalProperties": {
               "type": "number"
@@ -903,6 +983,130 @@
         "portable": {
           "verdict": "reject",
           "reason": "`propertyNames`"
+        }
+      }
+    },
+    {
+      "name": "string_starts_with",
+      "description": "startsWith emits format: starts_with next to a pattern; the format is not enforced anywhere",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "s": {
+            "type": "string",
+            "format": "starts_with",
+            "pattern": "^a.*"
+          }
+        },
+        "required": [
+          "s"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "reject",
+          "reason": "\"starts_with\""
+        },
+        "xai": {
+          "verdict": "reject",
+          "reason": "\"starts_with\""
+        },
+        "portable": {
+          "verdict": "reject",
+          "reason": "\"starts_with\""
+        }
+      }
+    },
+    {
+      "name": "string_starts_with_format_dropped",
+      "description": "the workaround: .meta({ format: undefined }) removes the format and keeps the pattern",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "s": {
+            "type": "string",
+            "pattern": "^a.*"
+          }
+        },
+        "required": [
+          "s"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "accept"
+        }
+      }
+    },
+    {
+      "name": "string_regex_equivalent",
+      "description": "the other workaround: z.string().regex() emits the pattern alone",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "s": {
+            "type": "string",
+            "pattern": "^a.*"
+          }
+        },
+        "required": [
+          "s"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "accept"
+        }
+      }
+    },
+    {
+      "name": "string_duration",
+      "description": "z.iso.duration emits format: duration and a lookahead pattern, outside every profile",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "s": {
+            "type": "string",
+            "format": "duration",
+            "pattern": "^P(?:(\\d+W)|(?!.*W)(?=\\d|T\\d)(\\d+Y)?(\\d+M)?(\\d+D)?(T(?=\\d)(\\d+H)?(\\d+M)?(\\d+([.,]\\d+)?S)?)?)$"
+          }
+        },
+        "required": [
+          "s"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "reject",
+          "reason": "\"duration\""
+        },
+        "xai": {
+          "verdict": "reject",
+          "reason": "\"duration\""
+        },
+        "portable": {
+          "verdict": "reject",
+          "reason": "\"duration\""
         }
       }
     },

@@ -4,9 +4,9 @@
  *
  * Each case carries the verdict every provider profile and the portable subset
  * must give the pinned output. A Zod upgrade that changes the emitted JSON
- * fails `zod-schema-fixtures.test.ts`; regenerate the fixture with
- * `PIN_ZOD_FIXTURES=1 pnpm vitest run packages/core/src/zod-schema-fixtures.test.ts`,
- * review the diff, and re-decide the verdicts.
+ * fails `zod-schema-fixtures.test.ts`; regenerate the fixture locally with
+ * `PIN_ZOD_FIXTURES=1 pnpm vitest run packages/core/src/zod-schema-fixtures.test.ts`
+ * (refused when `CI` is set), review the diff, and re-decide the verdicts.
  *
  * Test support only: not exported from the package.
  *
@@ -23,6 +23,21 @@ export interface ZodSchemaCase {
   readonly build: () => z.ZodType
   readonly options?: { reused?: 'inline' | 'ref' }
   readonly verdicts: { google: Verdict; xai: Verdict; portable: Verdict }
+}
+
+/**
+ * Whether this run re-pins the fixture (`PIN_ZOD_FIXTURES=1`). Pinning rewrites
+ * the file the same run then compares against, so it would always pass: it is
+ * refused (throws) when `CI` is set.
+ */
+export function pinRequested(env: Readonly<Record<string, string | undefined>>): boolean {
+  if (env['PIN_ZOD_FIXTURES'] !== '1') return false
+  if (env['CI'] !== undefined && env['CI'] !== '') {
+    throw new Error(
+      'PIN_ZOD_FIXTURES=1 rewrites the fixture the tests compare against, so it is refused when CI is set. Re-pin locally and commit the diff.',
+    )
+  }
+  return true
 }
 
 const accept: Verdict = { verdict: 'accept' }
@@ -212,12 +227,65 @@ export const ZOD_SCHEMA_CASES: readonly ZodSchemaCase[] = [
   },
   {
     name: 'record',
-    description: 'z.record emits propertyNames',
+    description:
+      "z.record(z.string(), X) emits propertyNames: { type: 'string' }, a no-op the profiles accept",
     build: () => z.object({ r: z.record(z.string(), z.number()) }),
+    verdicts: acceptAll,
+  },
+  {
+    name: 'record_enum_keys',
+    description:
+      'z.record with enum keys emits a constraining propertyNames (and required)',
+    build: () => z.object({ r: z.record(z.enum(['a', 'b']), z.number()) }),
     verdicts: {
       google: reject('`propertyNames`'),
       xai: reject('`propertyNames`'),
       portable: reject('`propertyNames`'),
+    },
+  },
+  {
+    name: 'record_pattern_keys',
+    description: 'z.record with a regex key schema emits propertyNames with a pattern',
+    build: () => z.object({ r: z.record(z.string().regex(/^k/), z.number()) }),
+    verdicts: {
+      google: reject('`propertyNames`'),
+      xai: reject('`propertyNames`'),
+      portable: reject('`propertyNames`'),
+    },
+  },
+  {
+    name: 'string_starts_with',
+    description:
+      'startsWith emits format: starts_with next to a pattern; the format is not enforced anywhere',
+    build: () => z.object({ s: z.string().startsWith('a') }),
+    verdicts: {
+      google: reject('"starts_with"'),
+      xai: reject('"starts_with"'),
+      portable: reject('"starts_with"'),
+    },
+  },
+  {
+    name: 'string_starts_with_format_dropped',
+    description:
+      'the workaround: .meta({ format: undefined }) removes the format and keeps the pattern',
+    build: () => z.object({ s: z.string().startsWith('a').meta({ format: undefined }) }),
+    verdicts: acceptAll,
+  },
+  {
+    name: 'string_regex_equivalent',
+    description: 'the other workaround: z.string().regex() emits the pattern alone',
+    build: () => z.object({ s: z.string().regex(/^a.*/) }),
+    verdicts: acceptAll,
+  },
+  {
+    name: 'string_duration',
+    description:
+      'z.iso.duration emits format: duration and a lookahead pattern, outside every profile',
+    build: () => z.object({ s: z.iso.duration() }),
+    verdicts: {
+      google: reject('"duration"'),
+      xai: reject('"duration"'),
+      portable: reject('"duration"'),
     },
   },
   {

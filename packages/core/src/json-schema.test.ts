@@ -5,6 +5,7 @@ import {
   assertJsonSchemaProfile,
   assertPortableJsonSchema,
   assertStandardJsonSchema,
+  PORTABLE_JSON_SCHEMA_FORMATS,
   PORTABLE_JSON_SCHEMA_KEYWORDS,
 } from './json-schema.js'
 import type { JsonSchemaProfile } from './json-schema.js'
@@ -193,6 +194,144 @@ describe('assertStandardJsonSchema', () => {
     ).not.toThrow()
   })
 
+  describe('values that are not what their keyword needs', () => {
+    it.each([
+      ['a string property schema', { properties: { a: 'string' } }, 'properties.a'],
+      ['a null property schema', { properties: { a: null } }, 'properties.a'],
+      ['a numeric property schema', { properties: { a: 5 } }, 'properties.a'],
+      ['a string items', { items: 'string' }, 'output.jsonSchema.items'],
+      ['an anyOf with non-schemas', { anyOf: [{ type: 'string' }, 5] }, 'anyOf[1]'],
+      ['a string $defs entry', { $defs: { X: 'x' } }, '$defs.X'],
+      [
+        'a null additionalProperties',
+        { additionalProperties: null },
+        'additionalProperties',
+      ],
+      ['an array as a schema', { not: [] }, 'output.jsonSchema.not'],
+      [
+        'properties that is not an object',
+        { properties: 5 },
+        '`properties` must be an object',
+      ],
+      [
+        'properties that is an array',
+        { properties: [] },
+        '`properties` must be an object',
+      ],
+      ['anyOf that is not an array', { anyOf: 'x' }, '`anyOf` must be an array'],
+      [
+        'prefixItems that is an object',
+        { prefixItems: {} },
+        '`prefixItems` must be an array',
+      ],
+    ])('rejects %s', (_name, schema, text) => {
+      const err = standard(schema as JsonValue)
+      expect(err.kind).toBe('bad_request')
+      expect(err.message).toContain(text)
+    })
+
+    it.each([
+      ['a string maxLength', { type: 'string', maxLength: '3000' }, '`maxLength`'],
+      ['a negative minItems', { type: 'array', minItems: -1 }, '`minItems`'],
+      ['a fractional maxItems', { type: 'array', maxItems: 1.5 }, '`maxItems`'],
+      ['a string minimum', { type: 'number', minimum: '1' }, '`minimum`'],
+      [
+        'a draft-04 boolean exclusiveMinimum',
+        { exclusiveMinimum: true },
+        '`exclusiveMinimum`',
+      ],
+      [
+        'a non-string pattern',
+        { type: 'string', pattern: 5 },
+        '`pattern` must be a string',
+      ],
+      [
+        'an invalid regular expression',
+        { type: 'string', pattern: '(' },
+        'not a valid regular expression',
+      ],
+      ['a string required', { type: 'object', required: 'a' }, '`required`'],
+      ['a required with a non-name', { type: 'object', required: [1] }, '`required`'],
+      ['a string enum', { enum: 'a' }, '`enum` must be an array'],
+      ['a numeric format', { type: 'string', format: 5 }, '`format` must be a string'],
+    ])('rejects %s', (_name, schema, text) => {
+      const err = standard({ type: 'object', properties: { a: schema } } as JsonValue)
+      expect(err.kind).toBe('bad_request')
+      expect(err.message).toContain('output.jsonSchema.properties.a')
+      expect(err.message).toContain(text)
+    })
+
+    it('accepts a required that names a property the schema does not declare', () => {
+      expect(() =>
+        assertStandardJsonSchema({ type: 'object', required: ['later'] }, 'x'),
+      ).not.toThrow()
+    })
+  })
+
+  describe('cyclic and very deep objects', () => {
+    it('rejects a cyclic JavaScript object as bad_request, not a RangeError', () => {
+      const node: { [k: string]: JsonValue } = { type: 'object', properties: {} }
+      ;(node['properties'] as { [k: string]: JsonValue })['self'] = node
+      const err = standard(node)
+      expect(err.kind).toBe('bad_request')
+      expect(err.message).toContain('output.jsonSchema.properties.self')
+      expect(err.message).toContain('$ref')
+    })
+
+    it('accepts one object shared by two siblings (shared is not cyclic)', () => {
+      const shared: JsonValue = { type: 'string' }
+      expect(() =>
+        assertStandardJsonSchema(
+          { type: 'object', properties: { a: shared, b: shared } },
+          'x',
+        ),
+      ).not.toThrow()
+    })
+
+    it('rejects absurd nesting as bad_request, not a RangeError', () => {
+      let schema: JsonValue = { type: 'string' }
+      for (let i = 0; i < 20_000; i += 1) {
+        schema = { type: 'array', items: schema }
+      }
+      const err = standard(schema)
+      expect(err.kind).toBe('bad_request')
+      expect(err.message).toContain('nested more than')
+    })
+
+    it('accepts ordinary depth', () => {
+      let schema: JsonValue = { type: 'string' }
+      for (let i = 0; i < 100; i += 1) schema = { type: 'array', items: schema }
+      expect(() => assertStandardJsonSchema(schema, 'x')).not.toThrow()
+    })
+  })
+
+  describe('paths', () => {
+    it('quotes names that would read as another location', () => {
+      expect(
+        standard({ type: 'object', properties: { 'a.b': { type: 'STRING' } } }).message,
+      ).toContain('output.jsonSchema.properties["a.b"]')
+      expect(
+        standard({ type: 'object', properties: { 'a[0]': { type: 'STRING' } } }).message,
+      ).toContain('output.jsonSchema.properties["a[0]"]')
+      expect(standard({ $defs: { 'x"y': { type: 'STRING' } } }).message).toContain(
+        'output.jsonSchema.$defs["x\\"y"]',
+      )
+    })
+
+    it('tells a dotted name from a nested path', () => {
+      const dotted = standard({
+        type: 'object',
+        properties: { 'a.b': { type: 'STRING' } },
+      }).message
+      const nested = standard({
+        type: 'object',
+        properties: { a: { type: 'object', properties: { b: { type: 'STRING' } } } },
+      }).message
+      expect(dotted).not.toContain('properties.a.b')
+      expect(nested).toContain('properties.a.properties.b')
+    })
+  })
+
   it('ignores a non-object schema value (the engine owns that check)', () => {
     expect(() => assertStandardJsonSchema(true, 'x')).not.toThrow()
     expect(() => assertStandardJsonSchema('x', 'x')).not.toThrow()
@@ -207,6 +346,7 @@ const PROFILE: JsonSchemaProfile = {
     'required',
     'enum',
     'items',
+    'prefixItems',
     'format',
     'pattern',
     '$ref',
@@ -246,7 +386,14 @@ describe('assertJsonSchemaProfile', () => {
     ['allOf', { allOf: [{ type: 'string' }] }, 'Merge'],
     ['multipleOf', { type: 'number', multipleOf: 2 }, 'host-side'],
     ['uniqueItems', { type: 'array', uniqueItems: true }, 'host-side'],
-    ['propertyNames', { type: 'object', propertyNames: { type: 'string' } }, 'z.record'],
+    [
+      'a constraining propertyNames',
+      { type: 'object', propertyNames: { type: 'string', enum: ['a'] } },
+      'z.record',
+    ],
+    ['definitions', { definitions: { X: { type: 'string' } } }, '`$defs`'],
+    ['dependencies', { dependencies: { a: ['b'] } }, 'host-side'],
+    ['$anchor', { $anchor: 'x' }, '`$defs` entry'],
     ['exclusiveMinimum', { type: 'number', exclusiveMinimum: 0 }, '`minimum`'],
     ['an unknown vendor keyword', { 'x-vendor': 1 }, 'host-side'],
   ])('rejects %s', (_name, schema, hint) => {
@@ -305,6 +452,17 @@ describe('assertJsonSchemaProfile', () => {
     expect(err.message).toContain('output.jsonSchema.properties.u')
   })
 
+  it.each([
+    ['starts_with', '`z.string().regex(...)`'],
+    ['ends_with', '`z.string().regex(...)`'],
+    ['includes', '`.meta({ format: undefined })`'],
+    ['duration', 'lookahead'],
+  ])('explains the Zod-emitted format %s', (format, hint) => {
+    const err = profiled({ type: 'string', format, pattern: '^a' })
+    expect(err.message).toContain(`"${format}"`)
+    expect(err.message).toContain(hint)
+  })
+
   it('rejects a limit above the enforced maximum and accepts one at it', () => {
     expect(() =>
       assertJsonSchemaProfile({ type: 'string', minLength: 10 }, 'x', PROFILE),
@@ -340,8 +498,12 @@ describe('assertJsonSchemaProfile', () => {
     ['a backreference', '(a)\\1'],
     ['a named backreference', '(?<n>a)\\k<n>'],
     ['a property escape', '\\p{L}+'],
+    ['a property escape', '^[\\p{L}]+$'],
+    ['a property escape', '^[\\p{L}\\s]+$'],
+    ['a property escape', '[^\\P{L}]'],
+    ['a named backreference', '[\\k<n>]'],
     ['a word boundary', '\\bfoo'],
-    ['an inline modifier', '(?i)abc'],
+    ['an inline modifier', '(?i:abc)'],
   ])('rejects a pattern with %s', (construct, pattern) => {
     expect(profiled({ type: 'string', pattern }).message).toContain(construct)
   })
@@ -360,6 +522,42 @@ describe('assertJsonSchemaProfile', () => {
         assertJsonSchemaProfile({ type: 'string', pattern }, 'x', PROFILE),
       ).not.toThrow()
     }
+  })
+
+  describe('propertyNames', () => {
+    const accepted = (schema: JsonValue) =>
+      expect(() => assertJsonSchemaProfile(schema, 'x', PROFILE)).not.toThrow()
+
+    it('accepts exactly { type: "string" }, which constrains nothing', () => {
+      accepted({
+        type: 'object',
+        propertyNames: { type: 'string' },
+        additionalProperties: { type: 'string' },
+      })
+      accepted({
+        type: 'object',
+        propertyNames: { type: 'string', description: 'keys' },
+        additionalProperties: { type: 'string' },
+      })
+    })
+
+    it.each([
+      ['an enum', { type: 'string', enum: ['a', 'b'] }],
+      ['a pattern', { type: 'string', pattern: '^k' }],
+      ['a length bound', { type: 'string', minLength: 1 }],
+      ['another type', { type: 'integer' }],
+      ['no type', {}],
+      ['a type array', { type: ['string', 'null'] }],
+      ['a $ref', { $ref: '#/$defs/Key' }],
+    ])('rejects propertyNames with %s', (_name, propertyNames) => {
+      const err = profiled({
+        type: 'object',
+        propertyNames,
+        $defs: { Key: { type: 'string' } },
+      } as JsonValue)
+      expect(err.message).toContain('`propertyNames`')
+      expect(err.message).toContain('output.jsonSchema')
+    })
   })
 
   describe('$ref', () => {
@@ -436,6 +634,133 @@ describe('assertJsonSchemaProfile', () => {
       ).not.toThrow()
     })
 
+    it('names the $ref site that closes a root cycle', () => {
+      const err = profiled({
+        type: 'object',
+        properties: { kids: { type: 'array', items: { $ref: '#' } } },
+      })
+      expect(err.message).toContain('output.jsonSchema.properties.kids.items')
+      expect(err.message).toContain('circular')
+    })
+
+    it('names the $ref site that closes a cycle between definitions', () => {
+      const err = profiled({
+        type: 'object',
+        properties: { n: { $ref: '#/$defs/Node' } },
+        $defs: {
+          Node: { type: 'object', properties: { next: { $ref: '#/$defs/Other' } } },
+          Other: { type: 'object', properties: { back: { $ref: '#/$defs/Node' } } },
+        },
+      })
+      expect(err.message).toContain('output.jsonSchema.$defs.Other.properties.back')
+    })
+
+    it('rejects a cyclic definition nothing points at', () => {
+      const err = profiled({
+        type: 'object',
+        properties: { a: { type: 'string' } },
+        $defs: { Dead: { type: 'object', properties: { me: { $ref: '#/$defs/Dead' } } } },
+      })
+      expect(err.message).toContain('output.jsonSchema.$defs.Dead.properties.me')
+      expect(err.message).toContain('circular')
+    })
+
+    it('accepts a $ref to the root from inside a definition when it is not recursive', () => {
+      expect(() =>
+        assertJsonSchemaProfile(
+          {
+            type: 'object',
+            properties: { a: { $ref: '#/$defs/A' } },
+            $defs: { A: { type: 'string' } },
+          },
+          'x',
+          PROFILE,
+        ),
+      ).not.toThrow()
+    })
+
+    it.each([
+      ['a root alias', { $ref: '#' }],
+      [
+        'a self-alias',
+        { properties: { a: { $ref: '#/$defs/A' } }, $defs: { A: { $ref: '#/$defs/A' } } },
+      ],
+      [
+        'an alias pair',
+        {
+          properties: { a: { $ref: '#/$defs/A' } },
+          $defs: { A: { $ref: '#/$defs/B' }, B: { $ref: '#/$defs/A' } },
+        },
+      ],
+    ])('rejects %s, even where recursion is supported', (_name, schema) => {
+      for (const circularRefs of [true, false]) {
+        const err = rejection(() =>
+          assertJsonSchemaProfile(schema as JsonValue, 'output.jsonSchema', {
+            ...PROFILE,
+            circularRefs,
+          }),
+        )
+        expect(err.kind).toBe('bad_request')
+        expect(err.message).toContain('output.jsonSchema')
+        expect(err.message).toMatch(/loop of references|circular/)
+      }
+    })
+
+    it('accepts a productive recursive alias chain when recursion is supported', () => {
+      expect(() =>
+        assertJsonSchemaProfile(
+          {
+            type: 'object',
+            properties: { kids: { type: 'array', items: { $ref: '#/$defs/Alias' } } },
+            $defs: { Alias: { $ref: '#' } },
+          },
+          'x',
+          { ...PROFILE, circularRefs: true },
+        ),
+      ).not.toThrow()
+    })
+
+    it.each([
+      ['a keyword map', '#/properties'],
+      ['an enum entry', '#/$defs/E/enum/0'],
+      ['a default value', '#/$defs/D/default'],
+      ['a required list', '#/required'],
+    ])('rejects a $ref into %s: it points at data, not a schema', (_name, ref) => {
+      const err = profiled({
+        type: 'object',
+        properties: { a: { $ref: ref } },
+        required: ['a'],
+        $defs: { E: { enum: ['x'] }, D: { type: 'object', default: { type: 'string' } } },
+      })
+      expect(err.message).toContain('does not resolve to a schema')
+      expect(err.message).toContain('output.jsonSchema.properties.a')
+    })
+
+    it('resolves $ref into every schema position (items, anyOf, prefixItems, $defs)', () => {
+      expect(() =>
+        assertJsonSchemaProfile(
+          {
+            type: 'object',
+            properties: {
+              l: {
+                type: 'array',
+                items: { type: 'string' },
+                prefixItems: [{ type: 'number' }],
+              },
+              u: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+              a: { $ref: '#/properties/l/items' },
+              b: { $ref: '#/properties/l/prefixItems/0' },
+              c: { $ref: '#/properties/u/anyOf/1' },
+              d: { $ref: '#/$defs/X' },
+            },
+            $defs: { X: { type: 'string' } },
+          },
+          'x',
+          PROFILE,
+        ),
+      ).not.toThrow()
+    })
+
     it('accepts recursion when the profile supports circular references', () => {
       const recursive: JsonValue = {
         type: 'object',
@@ -466,6 +791,43 @@ describe('portable subset', () => {
     expect(PORTABLE_JSON_SCHEMA_KEYWORDS).not.toContain('const')
     expect(PORTABLE_JSON_SCHEMA_KEYWORDS).not.toContain('oneOf')
     expect(PORTABLE_JSON_SCHEMA_KEYWORDS).not.toContain('title')
+  })
+
+  it('cannot be changed by a host: the exported lists are frozen', () => {
+    expect(Object.isFrozen(PORTABLE_JSON_SCHEMA_KEYWORDS)).toBe(true)
+    expect(Object.isFrozen(PORTABLE_JSON_SCHEMA_FORMATS)).toBe(true)
+    expect(() => (PORTABLE_JSON_SCHEMA_KEYWORDS as string[]).push('const')).toThrow(
+      TypeError,
+    )
+    expect(() => (PORTABLE_JSON_SCHEMA_FORMATS as string[]).push('uuid')).toThrow(
+      TypeError,
+    )
+    expect(() => assertPortableJsonSchema({ const: 1 })).toThrow()
+    expect(() => assertPortableJsonSchema({ type: 'string', format: 'uuid' })).toThrow()
+  })
+
+  it('lists the formats both Gemini 3.x and xAI verified: date-time, date, email', () => {
+    expect([...PORTABLE_JSON_SCHEMA_FORMATS]).toEqual(['date-time', 'date', 'email'])
+    expect(() => assertPortableJsonSchema({ type: 'string', format: 'time' })).toThrow(
+      /"time"/,
+    )
+  })
+
+  it('accepts the no-op propertyNames of z.record(z.string(), X) and nothing else', () => {
+    expect(() =>
+      assertPortableJsonSchema({
+        type: 'object',
+        propertyNames: { type: 'string' },
+        additionalProperties: { type: 'number' },
+      }),
+    ).not.toThrow()
+    expect(() =>
+      assertPortableJsonSchema({
+        type: 'object',
+        propertyNames: { type: 'string', pattern: '^k' },
+        additionalProperties: { type: 'number' },
+      }),
+    ).toThrow(/propertyNames/)
   })
 
   it('accepts a schema inside the subset with annotations', () => {

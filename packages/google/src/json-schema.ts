@@ -19,11 +19,23 @@
  *   Ignored on every model and therefore rejected: `const`, `allOf`,
  *   `exclusiveMinimum`, `multipleOf`, `uniqueItems`; `oneOf` with overlapping
  *   branches returned a value a true `oneOf` forbids (read as `anyOf`).
- * - `pattern`, `minLength` and `maxLength` are accepted by Google and obeyed
- *   only probabilistically (P3: violations on some Gemini models). They stay in
- *   the set because Google supports them; hosts must still validate.
- * - Gemma 4 ignored `format` on 7/7 calls and `minLength`/`maxLength` on 13 of
- *   14, so those three are outside the Gemma set.
+ * - The rule for "ignored": a keyword is outside a model family's set when P3
+ *   saw it violated in at least 6 of 7 samples on every model of that family.
+ *   A keyword that was violated less often is supported but soft (obeyed
+ *   probabilistically; the worst Gemini cell was 4 of 7) and stays in the set:
+ *   `pattern`, `minLength` and `maxLength`. Hosts must still validate `output`.
+ * - Gemma 4 violated `format` on 7 of 7 samples on both models and
+ *   `minLength`/`maxLength` on 7 of 7 and 6 of 7, so those three are outside
+ *   the Gemma set (`pattern` was violated on 0 of 7 and 4 of 7: soft, kept).
+ * - `format` values: P3 exercised `date-time`, `date` and `email`. `time` is
+ *   named in Google's guide but no capture exercised it, so it is not enforced
+ *   here; it is rejected until a capture shows it.
+ * - `pattern` is held to the regex subset (`patternSubset`): P3 probed one
+ *   simple pattern (`^[A-Z]{3}-[0-9]{4}$`) and nothing shows lookaround, `\b`,
+ *   backreferences or property escapes are accepted and enforced.
+ * - Tool schemas (`parametersJsonSchema`) use the same profile. Live evidence
+ *   for tools beyond trivial schemas rests on the output-schema probe (P3 ran
+ *   `responseJsonSchema` only); see the package README.
  *
  * @module
  */
@@ -58,8 +70,8 @@ const GEMMA_IGNORED_KEYWORDS: ReadonlySet<string> = new Set([
   'maxLength',
 ])
 
-/** Enforced `format` values: the documented ones plus `email`, which P3 verified. */
-const GOOGLE_FORMATS = ['date-time', 'date', 'time', 'email'] as const
+/** Enforced `format` values: the ones P3 exercised and saw enforced. */
+const GOOGLE_FORMATS = ['date-time', 'date', 'email'] as const
 
 const GEMINI_PROFILE: JsonSchemaProfile = {
   provider: 'google',
@@ -68,7 +80,7 @@ const GEMINI_PROFILE: JsonSchemaProfile = {
   limits: {},
   circularRefs: true,
   booleanItems: true,
-  patternSubset: false,
+  patternSubset: true,
 }
 
 const GEMMA_PROFILE: JsonSchemaProfile = {
@@ -76,7 +88,12 @@ const GEMMA_PROFILE: JsonSchemaProfile = {
   keywords: GEMINI_KEYWORDS.filter((keyword) => !GEMMA_IGNORED_KEYWORDS.has(keyword)),
 }
 
-/** The keyword profile the adapter enforces for `model`. */
-export function googleJsonSchemaProfile(model: string): JsonSchemaProfile {
-  return model.startsWith('gemma-') ? GEMMA_PROFILE : GEMINI_PROFILE
+/**
+ * The keyword profile the adapter enforces for a model.
+ *
+ * @param canonicalModel The resolved descriptor's canonical `model`, never the
+ *   request string (which may be a declared alias).
+ */
+export function googleJsonSchemaProfile(canonicalModel: string): JsonSchemaProfile {
+  return canonicalModel.startsWith('gemma-') ? GEMMA_PROFILE : GEMINI_PROFILE
 }

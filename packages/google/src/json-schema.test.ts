@@ -185,12 +185,78 @@ describe('Google JSON Schema profile, against live probe P3 (2026-10-03)', () =>
     }
   })
 
-  it('accepts only the verified format values', () => {
-    for (const format of ['date-time', 'date', 'time', 'email']) {
+  it('accepts only the format values P3 verified', () => {
+    for (const format of ['date-time', 'date', 'email']) {
       run({ type: 'string', format }, 'gemini-3.1-flash-lite')
     }
     expect(rejection({ type: 'string', format: 'uuid' }).message).toContain('"uuid"')
     expect(rejection({ type: 'string', format: 'uri' }).message).toContain('"uri"')
+    // `time` is in Google's docs but no capture exercised it.
+    expect(rejection({ type: 'string', format: 'time' }).message).toContain('"time"')
+  })
+
+  it('holds patterns to the regex subset: no capture shows lookahead or \\b on Google', () => {
+    for (const model of [...GEMINI, ...GEMMA]) {
+      run({ type: 'string', pattern: '^[A-Z]{3}-[0-9]{4}$' }, model)
+      for (const pattern of ['^(?=a)', '\\bfoo', '^[\\p{L}]+$']) {
+        const err = rejection({ type: 'string', pattern }, model)
+        expect(err.message).toContain('regex subset')
+      }
+    }
+  })
+
+  it('accepts the no-op propertyNames of z.record on every model, and no other', () => {
+    for (const model of [...GEMINI, ...GEMMA]) {
+      run(
+        {
+          type: 'object',
+          propertyNames: { type: 'string' },
+          additionalProperties: { type: 'number' },
+        },
+        model,
+      )
+      expect(
+        rejection(
+          { type: 'object', propertyNames: { type: 'string', enum: ['a'] } },
+          model,
+        ).message,
+      ).toContain('`propertyNames`')
+    }
+  })
+
+  it('keys the Gemma profile on the canonical model, so an alias or a new id still gets it', () => {
+    for (const model of GEMMA) {
+      expect(googleJsonSchemaProfile(model).keywords).not.toContain('format')
+    }
+    expect(googleJsonSchemaProfile('gemma-5-experimental').keywords).not.toContain(
+      'format',
+    )
+    expect(googleJsonSchemaProfile('gemini-3.1-pro-preview').keywords).toContain('format')
+  })
+
+  it('rejects a keyword for a model family exactly when P3 saw it ignored there (>= 6 of 7 violating)', () => {
+    // The rule written in json-schema.ts: ignored on every model of the family.
+    const IGNORED_AT = 6
+    const keywordsOf = {
+      format: ['format'],
+      minLength_maxLength: ['minLength', 'maxLength'],
+      pattern: ['pattern'],
+    }
+    for (const [id, keywords] of Object.entries(keywordsOf)) {
+      const c = p3.cases[id] as P3Case
+      for (const [family, models] of [
+        ['gemini', PROBED_GEMINI],
+        ['gemma', GEMMA],
+      ] as const) {
+        const ignored = models.every((m) => (c.models[m] as Cell).violating >= IGNORED_AT)
+        for (const keyword of keywords) {
+          const sample = googleJsonSchemaProfile(models[0] as string)
+          expect(sample.keywords.includes(keyword), `${keyword} on ${family}`).toBe(
+            !ignored,
+          )
+        }
+      }
+    }
   })
 
   it('accepts annotations everywhere', () => {
@@ -221,21 +287,21 @@ describe('Google JSON Schema profile, against live probe P3 (2026-10-03)', () =>
     run({ anyOf: [{ type: 'string' }, { type: 'null' }] }, 'gemini-3.1-flash-lite')
   })
 
-  it('declares a superset of the portable subset', () => {
-    for (const model of [...GEMINI, ...GEMMA]) {
+  it('declares a superset of the portable subset on every Gemini model; Gemma drops only what it ignored', () => {
+    for (const model of GEMINI) {
       const profile = googleJsonSchemaProfile(model)
       for (const keyword of PORTABLE_JSON_SCHEMA_KEYWORDS) {
-        if (
-          model.startsWith('gemma-') &&
-          ['format', 'minLength', 'maxLength'].includes(keyword)
-        ) {
-          continue
-        }
         expect(profile.keywords, `${keyword} on ${model}`).toContain(keyword)
       }
       for (const format of PORTABLE_JSON_SCHEMA_FORMATS) {
         expect(profile.formats).toContain(format)
       }
+    }
+    for (const model of GEMMA) {
+      const missing = PORTABLE_JSON_SCHEMA_KEYWORDS.filter(
+        (keyword) => !googleJsonSchemaProfile(model).keywords.includes(keyword),
+      )
+      expect(missing.sort()).toEqual(['format', 'maxLength', 'minLength'])
     }
   })
 

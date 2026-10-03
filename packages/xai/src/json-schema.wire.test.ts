@@ -117,6 +117,35 @@ describe('xAI wire: output.jsonSchema', () => {
     expect(err.message).toContain(needle)
   })
 
+  it('accepts the no-op propertyNames of z.record(z.string(), X) and sends it verbatim', async () => {
+    const record: JsonValue = {
+      type: 'object',
+      properties: {
+        r: {
+          type: 'object',
+          propertyNames: { type: 'string' },
+          additionalProperties: { type: 'number' },
+        },
+      },
+    }
+    await generate({ output: { jsonSchema: record } })
+    const format = (sent[0]?.body['text'] as { format: Record<string, unknown> }).format
+    expect(format['schema']).toEqual(record)
+  })
+
+  it.each(['^[\\p{L}]+$', '^[\\p{L}\\s]+$'])(
+    'rejects the property escape inside a character class: %s',
+    async (pattern) => {
+      const err = await rejected({
+        output: {
+          jsonSchema: { type: 'object', properties: { s: { type: 'string', pattern } } },
+        },
+      })
+      expect(err.message).toContain('output.jsonSchema.properties.s')
+      expect(err.message).toContain('property escape')
+    },
+  )
+
   it('rejects the OpenAPI dialect before dispatch', async () => {
     const nullable = await rejected({
       output: {

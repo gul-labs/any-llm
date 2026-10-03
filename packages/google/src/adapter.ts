@@ -885,7 +885,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
           assertJsonSchemaProfile(
             req.outputJsonSchema as JsonValue,
             'output.jsonSchema',
-            googleJsonSchemaProfile(model),
+            googleJsonSchemaProfile(descriptor.model),
           )
           config.responseMimeType = 'application/json'
           config.responseJsonSchema = req.outputJsonSchema
@@ -984,7 +984,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
             { kind: 'bad_request', retryable: false, provider: 'google' },
           )
         }
-        const toolProfile = googleJsonSchemaProfile(model)
+        const toolProfile = googleJsonSchemaProfile(descriptor.model)
         req.tools.forEach((tool, index) => {
           assertJsonSchemaProfile(
             tool.inputJsonSchema,

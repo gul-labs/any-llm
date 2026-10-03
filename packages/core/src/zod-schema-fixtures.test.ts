@@ -5,8 +5,10 @@
  * against the installed Zod and the portable column against core; the provider
  * packages check their own columns against the same JSON.
  *
- * Re-pin after a Zod upgrade: `PIN_ZOD_FIXTURES=1 pnpm vitest run
- * packages/core/src/zod-schema-fixtures.test.ts`.
+ * Re-pin after a Zod upgrade, locally: `PIN_ZOD_FIXTURES=1 pnpm vitest run
+ * packages/core/src/zod-schema-fixtures.test.ts`. Pinning rewrites the fixture
+ * the test then compares against, so it would always pass; it is refused when
+ * `CI` is set.
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -15,7 +17,7 @@ import { z } from 'zod'
 import { LlmError } from './errors.js'
 import { assertPortableJsonSchema } from './json-schema.js'
 import type { JsonValue } from './types.js'
-import { ZOD_SCHEMA_CASES } from './zod-schema-cases.js'
+import { pinRequested, ZOD_SCHEMA_CASES } from './zod-schema-cases.js'
 
 const FIXTURE_URL = new URL('./__fixtures__/zod-4.6.5-json-schemas.json', import.meta.url)
 
@@ -47,7 +49,7 @@ function generate(): Pinned {
   }
 }
 
-if (process.env['PIN_ZOD_FIXTURES'] === '1') {
+if (pinRequested(process.env)) {
   writeFileSync(
     fileURLToPath(FIXTURE_URL),
     `${JSON.stringify(generate(), null, 2)}\n`,
@@ -57,15 +59,33 @@ if (process.env['PIN_ZOD_FIXTURES'] === '1') {
 
 const pinned = JSON.parse(readFileSync(fileURLToPath(FIXTURE_URL), 'utf8')) as Pinned
 
+describe('re-pinning', () => {
+  it('is refused when CI is set, so a stray flag cannot make the pin test pass', () => {
+    expect(() => pinRequested({ PIN_ZOD_FIXTURES: '1', CI: 'true' })).toThrow(/CI/)
+    expect(() => pinRequested({ PIN_ZOD_FIXTURES: '1', CI: '1' })).toThrow(/CI/)
+  })
+
+  it('is allowed locally and off by default', () => {
+    expect(pinRequested({ PIN_ZOD_FIXTURES: '1' })).toBe(true)
+    expect(pinRequested({})).toBe(false)
+    expect(pinRequested({ CI: 'true' })).toBe(false)
+  })
+})
+
 describe('pinned Zod JSON Schema fixture', () => {
   it('was generated with the installed Zod version', () => {
-    expect(pinned.zodVersion).toBe(
-      (
-        JSON.parse(
-          readFileSync(fileURLToPath(import.meta.resolve('zod/package.json')), 'utf8'),
-        ) as { version: string }
-      ).version,
-    )
+    // `zod` is a published runtime dependency (`^4.6.5`), so the range stays open
+    // for hosts. The lockfile holds the pinned version; this is the tripwire when
+    // anything moves it.
+    const installed = (
+      JSON.parse(
+        readFileSync(fileURLToPath(import.meta.resolve('zod/package.json')), 'utf8'),
+      ) as { version: string }
+    ).version
+    expect(
+      pinned.zodVersion,
+      `Zod ${installed} is installed but the fixture was pinned with ${pinned.zodVersion}. Re-pin locally (PIN_ZOD_FIXTURES=1), review the schema and verdict diff, and update zodVersion in generate() and the fixture file name.`,
+    ).toBe(installed)
   })
 
   it('matches what the installed Zod emits today, schemas and verdicts', () => {

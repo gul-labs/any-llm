@@ -20,6 +20,10 @@ const docs = JSON.parse(
     'utf8',
   ),
 ) as {
+  supportedTypesAndKeywords: string[]
+  references: string
+  pattern: { supported: string; notSupported: string[] }
+  rejectedWith400: string[]
   formatsEnforced: string[]
   constraintLimits: Record<string, unknown>
 }
@@ -52,33 +56,34 @@ function rejection(schema: JsonValue, path = 'output.jsonSchema'): LlmError {
 }
 
 describe('xAI JSON Schema profile (docs read 2026-10-03)', () => {
-  it('enforces exactly the keywords the docs list, and no more', () => {
+  it('enforces exactly the keywords the docs fixture names, plus the structural ones it implies', () => {
+    // Keywords the fixture names as such. `type` stands for the listed type names.
+    const documented = new Set<string>([
+      'type',
+      ...docs.supportedTypesAndKeywords.filter((name) =>
+        ['enum', 'const', 'anyOf'].includes(name),
+      ),
+      '$ref',
+      '$defs',
+      'additionalProperties',
+      'format',
+      'pattern',
+      ...Object.keys(docs.constraintLimits)
+        .filter((key) => key !== 'aboveTheLimit')
+        .flatMap((key) => key.split('/')),
+    ])
+    expect(docs.references).toContain('$ref / $defs')
+    expect(docs.pattern.supported).toContain('regular expressions')
+    expect(docs.formatsEnforced.length).toBeGreaterThan(0)
+    // Not listed as keywords in the fixture; implied by the listed `object` and
+    // `array` types and named in its 400 list (`properties`, `prefixItems`). The
+    // fixture says nothing about `required` and `items`, so these four rest on the
+    // types, not on a documented keyword.
+    const implied = ['properties', 'required', 'items', 'prefixItems']
+    expect(docs.rejectedWith400.join(' ')).toContain('properties')
+    expect(docs.rejectedWith400.join(' ')).toContain('prefixItems')
     expect([...XAI_JSON_SCHEMA_PROFILE.keywords].sort()).toEqual(
-      [
-        'type',
-        'properties',
-        'required',
-        'additionalProperties',
-        'enum',
-        'const',
-        'anyOf',
-        '$ref',
-        '$defs',
-        'items',
-        'prefixItems',
-        'minItems',
-        'maxItems',
-        'minimum',
-        'maximum',
-        'exclusiveMinimum',
-        'exclusiveMaximum',
-        'minLength',
-        'maxLength',
-        'minProperties',
-        'maxProperties',
-        'pattern',
-        'format',
-      ].sort(),
+      [...documented, ...implied].sort(),
     )
   })
 
@@ -119,6 +124,14 @@ describe('xAI JSON Schema profile (docs read 2026-10-03)', () => {
     ['uniqueItems (undocumented)', { type: 'array', uniqueItems: true }],
     ['a recursive $ref', { type: 'object', properties: { k: { $ref: '#' } } }],
     ['a lookahead pattern', { type: 'string', pattern: '^(?=a)' }],
+    [
+      'a property escape in a character class',
+      { type: 'string', pattern: '^[\\p{L}]+$' },
+    ],
+    [
+      'a property escape with a class sibling',
+      { type: 'string', pattern: '^[\\p{L}\\s]+$' },
+    ],
     ['a closed tuple (items: false, undocumented)', { type: 'array', items: false }],
   ])('rejects %s', (_name, schema) => {
     const err = rejection(schema as JsonValue)

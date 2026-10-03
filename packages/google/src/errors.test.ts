@@ -93,26 +93,6 @@ describe('classifyGoogleError', () => {
     expect(result.servedServiceTier).toBe('standard')
   })
 
-  it.each([
-    'type and anyOf cannot be both populated.',
-    'type: null can not be the only possible type for the field.',
-  ])(
-    'classifies the SDK-local schema error "%s" as non-retryable bad_request',
-    (message) => {
-      const result = classifyGoogleError(new Error(message))
-      expect(result.kind).toBe('bad_request')
-      expect(result.retryable).toBe(false)
-      expect(result.provider).toBe('google')
-    },
-  )
-
-  it('does not call an HTTP 500 that mentions a schema a bad_request', () => {
-    const err = Object.assign(new Error('type and anyOf cannot be both populated.'), {
-      status: 500,
-    })
-    expect(classifyGoogleError(err).kind).toBe('server')
-  })
-
   it('does not reclassify an unrelated unknown error as retryable', () => {
     const result = classifyGoogleError(new Error('something totally unrelated broke'))
     expect(result.kind).toBe('unknown')

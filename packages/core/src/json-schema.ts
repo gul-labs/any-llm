@@ -5,19 +5,23 @@
  * (2020-12 subset). Three layers, all fail-closed (`LlmError` `bad_request`
  * naming the offending path, before dispatch, never rewriting the schema):
  *
- * 1. {@link assertStandardJsonSchema}: dialect mistakes. The OpenAPI
- *    `nullable` keyword, uppercase type names and boolean subschemas.
+ * 1. {@link assertStandardJsonSchema}: dialect and shape mistakes. The OpenAPI
+ *    `nullable` keyword, uppercase type names, boolean subschemas, a value in a
+ *    schema position that is not a schema, malformed keyword values, a cyclic
+ *    or absurdly deep object.
  * 2. {@link assertJsonSchemaProfile}: a provider's declared profile, the
  *    keywords it enforces. Anything else is a constraint the provider would
  *    silently ignore (or reinterpret), so it is rejected, not forwarded.
- * 3. {@link assertPortableJsonSchema}: the portable subset, the profile every
- *    shipped provider enforces, for hosts that route one schema to several.
+ * 3. {@link assertPortableJsonSchema}: the portable subset, the intersection of
+ *    the Gemini 3.x and xAI profiles, for hosts that route one schema to both.
+ *    It says nothing about Gemma (a stricter profile) or the CLI providers
+ *    (`claude-cli` and `codex-cli` do not run these checks).
  *
  * Keywords fall into three classes. **Annotations** constrain nothing and are
- * accepted everywhere. **Applicators** and **assertions** are checked against
- * the profile. The walk inspects schema positions only, so a property named
- * `nullable`, or an `enum` / `const` / `default` / `examples` value that looks
- * like a keyword, is data and never flagged.
+ * accepted by every profile. **Applicators** and **assertions** are checked
+ * against the profile. The walk inspects schema positions only, so a property
+ * named `nullable`, or an `enum` / `const` / `default` / `examples` value that
+ * looks like a keyword, is data and never flagged.
  *
  * @module
  */
@@ -27,7 +31,10 @@ import type { JsonValue } from './types.js'
 
 type JsonObject = { [k: string]: JsonValue }
 
-/** Keywords that constrain nothing: accepted on every provider and passed through. */
+/** Nesting deeper than this is rejected: no real schema is this deep. */
+const MAX_SCHEMA_DEPTH = 128
+
+/** Keywords that constrain nothing: accepted by every profile and passed through. */
 const ANNOTATION_KEYWORDS: ReadonlySet<string> = new Set([
   '$schema',
   '$id',
@@ -76,11 +83,14 @@ const SCHEMA_MAP_KEYWORDS = [
   'patternProperties',
   'dependentSchemas',
   // Draft-07 `dependencies`: schema-valued entries are walked; array-valued
-  // entries are property-name lists and are skipped by the object check.
+  // entries are property-name lists and are skipped.
   'dependencies',
   '$defs',
   'definitions',
 ] as const
+
+/** The maps that hold named definitions a `$ref` can point at. */
+const DEFINITION_KEYWORDS: ReadonlySet<string> = new Set(['$defs', 'definitions'])
 
 /**
  * Single-subschema keywords whose own boolean form is a documented, probed
@@ -91,6 +101,27 @@ const BOOLEAN_FORM_KEYWORDS: ReadonlySet<string> = new Set([
   'additionalProperties',
   'items',
 ])
+
+/** Keywords whose value must be a non-negative integer. */
+const COUNT_KEYWORDS = [
+  'minLength',
+  'maxLength',
+  'minItems',
+  'maxItems',
+  'minProperties',
+  'maxProperties',
+  'minContains',
+  'maxContains',
+] as const
+
+/** Keywords whose value must be a finite number. */
+const NUMBER_KEYWORDS = [
+  'minimum',
+  'maximum',
+  'exclusiveMinimum',
+  'exclusiveMaximum',
+  'multipleOf',
+] as const
 
 /**
  * What a provider enforces. Declared by the adapter from the provider's own
@@ -114,9 +145,10 @@ export interface JsonSchemaProfile {
   /** True when `items: false` (closed tuple) is enforced. */
   readonly booleanItems: boolean
   /**
-   * True when `pattern` is limited to the ECMAScript subset both shipped
-   * providers compile: no backreferences, property escapes, word boundaries,
-   * lookaround or inline modifiers.
+   * True when `pattern` is limited to the ECMAScript subset the profile's
+   * provider is known to compile: no backreferences, property escapes, word
+   * boundaries, lookaround or inline modifiers. False only when a provider has
+   * been shown to accept those constructs.
    */
   readonly patternSubset: boolean
 }
@@ -133,8 +165,26 @@ function badSchema(message: string, provider: string | undefined): LlmError {
   })
 }
 
+/** Short, single-line rendering of a value for an error message. */
+function show(value: JsonValue): string {
+  const text = JSON.stringify(value)
+  return text.length > 40 ? `${text.slice(0, 37)}...` : text
+}
+
+/** Path to a keyword under a node: `a.b`. */
 function childPath(path: string, segment: string): string {
   return `${path}.${segment}`
+}
+
+/**
+ * Path to a user-chosen name (a property, a `$defs` entry). A name that holds
+ * `.`, `[`, `]`, `"` or `\` is bracket-quoted (`properties["a.b"]`) so the path
+ * cannot be read as a different location.
+ */
+function namePath(path: string, name: string): string {
+  return /^[^.[\]"\\]+$/.test(name)
+    ? `${path}.${name}`
+    : `${path}[${JSON.stringify(name)}]`
 }
 
 /** One subschema position found under a node. */
@@ -152,7 +202,11 @@ function subschemasOf(node: JsonObject, path: string): Subschema[] {
     if (!isPlainObject(map)) continue
     for (const [key, member] of Object.entries(map)) {
       if (keyword === 'dependencies' && Array.isArray(member)) continue
-      found.push({ value: member, path: childPath(path, `${keyword}.${key}`), keyword })
+      found.push({
+        value: member,
+        path: namePath(childPath(path, keyword), key),
+        keyword,
+      })
     }
   }
   for (const keyword of SCHEMA_ARRAY_KEYWORDS) {
@@ -169,19 +223,13 @@ function subschemasOf(node: JsonObject, path: string): Subschema[] {
   for (const keyword of SINGLE_SCHEMA_KEYWORDS) {
     const member = node[keyword]
     if (member === undefined) continue
-    if (keyword === 'items' && Array.isArray(member)) {
-      member.forEach((entry, index) =>
-        found.push({ value: entry, path: childPath(path, `items[${index}]`), keyword }),
-      )
-      continue
-    }
     found.push({ value: member, path: childPath(path, keyword), keyword })
   }
   return found
 }
 
 // ---------------------------------------------------------------------------
-// Layer 1: dialect
+// Layer 1: dialect and shape
 // ---------------------------------------------------------------------------
 
 function assertNodeDialect(node: JsonObject, path: string, provider: string | undefined) {
@@ -211,6 +259,93 @@ function assertNodeDialect(node: JsonObject, path: string, provider: string | un
       provider,
     )
   }
+  assertNodeShape(node, path, provider)
+}
+
+/** Keyword values that are the wrong JSON type or malformed: no provider can read them. */
+function assertNodeShape(node: JsonObject, path: string, provider: string | undefined) {
+  for (const keyword of SCHEMA_MAP_KEYWORDS) {
+    const value = node[keyword]
+    if (value !== undefined && !isPlainObject(value)) {
+      throw badSchema(
+        `${path}: \`${keyword}\` must be an object mapping names to schemas (found ${show(value)}).`,
+        provider,
+      )
+    }
+  }
+  for (const keyword of SCHEMA_ARRAY_KEYWORDS) {
+    const value = node[keyword]
+    if (value !== undefined && !Array.isArray(value)) {
+      throw badSchema(
+        `${path}: \`${keyword}\` must be an array of schemas (found ${show(value)}).`,
+        provider,
+      )
+    }
+  }
+  for (const keyword of COUNT_KEYWORDS) {
+    const value = node[keyword]
+    if (
+      value !== undefined &&
+      !(typeof value === 'number' && Number.isInteger(value) && value >= 0)
+    ) {
+      throw badSchema(
+        `${path}: \`${keyword}\` must be a non-negative integer (found ${show(value)}).`,
+        provider,
+      )
+    }
+  }
+  for (const keyword of NUMBER_KEYWORDS) {
+    const value = node[keyword]
+    if (value !== undefined && !(typeof value === 'number' && Number.isFinite(value))) {
+      throw badSchema(
+        `${path}: \`${keyword}\` must be a number (found ${show(value)}).`,
+        provider,
+      )
+    }
+  }
+  const required = node['required']
+  if (
+    required !== undefined &&
+    !(Array.isArray(required) && required.every((name) => typeof name === 'string'))
+  ) {
+    throw badSchema(
+      `${path}: \`required\` must be an array of property names (found ${show(required)}).`,
+      provider,
+    )
+  }
+  const enumValues = node['enum']
+  if (enumValues !== undefined && !Array.isArray(enumValues)) {
+    throw badSchema(
+      `${path}: \`enum\` must be an array (found ${show(enumValues)}).`,
+      provider,
+    )
+  }
+  const format = node['format']
+  if (format !== undefined && typeof format !== 'string') {
+    throw badSchema(
+      `${path}: \`format\` must be a string (found ${show(format)}).`,
+      provider,
+    )
+  }
+  const pattern = node['pattern']
+  if (pattern !== undefined) {
+    if (typeof pattern !== 'string') {
+      throw badSchema(
+        `${path}: \`pattern\` must be a string (found ${show(pattern)}).`,
+        provider,
+      )
+    }
+    try {
+      new RegExp(pattern)
+    } catch (cause) {
+      throw badSchema(
+        `${path}: \`pattern\` ${JSON.stringify(pattern)} is not a valid regular expression (${
+          cause instanceof Error ? cause.message : String(cause)
+        }).`,
+        provider,
+      )
+    }
+  }
 }
 
 function walkDialect(
@@ -218,6 +353,7 @@ function walkDialect(
   path: string,
   keyword: string | undefined,
   provider: string | undefined,
+  ancestors: Set<JsonObject>,
 ): void {
   if (typeof value === 'boolean') {
     if (keyword !== undefined && BOOLEAN_FORM_KEYWORDS.has(keyword)) return
@@ -226,20 +362,43 @@ function walkDialect(
       provider,
     )
   }
-  if (!isPlainObject(value)) return
-  assertNodeDialect(value, path, provider)
-  for (const sub of subschemasOf(value, path)) {
-    walkDialect(sub.value, sub.path, sub.keyword, provider)
+  if (!isPlainObject(value)) {
+    throw badSchema(
+      `${path}: a schema must be an object (found ${show(value)}).`,
+      provider,
+    )
   }
+  if (ancestors.has(value)) {
+    throw badSchema(
+      `${path}: the schema object contains itself (a cyclic JavaScript object). Express recursion with \`$ref\` and \`$defs\`.`,
+      provider,
+    )
+  }
+  if (ancestors.size >= MAX_SCHEMA_DEPTH) {
+    throw badSchema(
+      `${path}: schemas nested more than ${MAX_SCHEMA_DEPTH} levels deep are not accepted. Flatten the schema or use \`$ref\` and \`$defs\`.`,
+      provider,
+    )
+  }
+  assertNodeDialect(value, path, provider)
+  ancestors.add(value)
+  for (const sub of subschemasOf(value, path)) {
+    walkDialect(sub.value, sub.path, sub.keyword, provider, ancestors)
+  }
+  ancestors.delete(value)
 }
 
 /**
- * Reject an output or tool schema written in the OpenAPI / Gemini dialect.
+ * Reject an output or tool schema written in the OpenAPI / Gemini dialect, or
+ * malformed.
  *
  * Rejects `nullable`, uppercase or unknown `type` names, `items` in its
- * draft-07 array form and boolean subschemas (except the `additionalProperties`
- * and `items` boolean forms). Only schema positions are inspected. Never
- * mutates `schema`. A non-object `schema` is ignored: the engine owns that check.
+ * draft-07 array form, boolean subschemas (except the `additionalProperties`
+ * and `items` boolean forms), a value in a schema position that is not a
+ * schema, malformed keyword values (a string-valued `maxLength`, an invalid
+ * `pattern`, a `required` that is not a list of names), and a cyclic or more
+ * than 128-deep object. Only schema positions are inspected. Never mutates
+ * `schema`. A non-object `schema` is ignored: the engine owns that check.
  *
  * @param path Where the schema sits in the request (`output.jsonSchema`,
  *   `tools[0].inputJsonSchema`); the offending node's path is appended.
@@ -251,7 +410,9 @@ export function assertStandardJsonSchema(
   path: string,
   options?: { readonly provider?: string },
 ): void {
-  if (isPlainObject(schema)) walkDialect(schema, path, undefined, options?.provider)
+  if (isPlainObject(schema)) {
+    walkDialect(schema, path, undefined, options?.provider, new Set())
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -269,14 +430,41 @@ const KEYWORD_HINTS: Readonly<Record<string, string>> = {
     'Providers read `oneOf` as `anyOf`, which drops the exclusive-match rule. Use `anyOf`.',
   allOf: 'Merge the subschemas into one schema.',
   propertyNames:
-    'Constrain map keys in host-side validation (Zod: `z.record` emits `propertyNames`).',
+    "Only `propertyNames: { type: 'string' }` (what `z.record(z.string(), X)` emits) is accepted, because it constrains nothing. Constrain map keys in host-side validation (Zod: `z.record(z.enum([...]), X)` and `z.record(z.string().regex(...), X)` emit a constraining `propertyNames`).",
   exclusiveMinimum: 'Use `minimum` and adjust the bound.',
   exclusiveMaximum: 'Use `maximum` and adjust the bound.',
-  nullable: "List 'null' in `type` instead.",
+  definitions:
+    'Only the 2020-12 spelling is accepted: rename `definitions` to `$defs` and `$ref` pointers from `#/definitions/Name` to `#/$defs/Name`.',
+  dependencies:
+    'Draft-07 `dependencies` is not enforced by any provider. Validate the dependency host-side.',
+  $anchor:
+    'Anchors are not resolved. Point `$ref` at a `$defs` entry (`#/$defs/Name`) instead.',
+}
+
+/** What to do about the non-standard `format` values Zod's string checks emit next to a `pattern`. */
+const ZOD_PATTERN_FORMAT_HINT =
+  'Zod emits it next to a `pattern` that carries the constraint: keep the pattern and drop the `format` (write `z.string().regex(...)`, or chain `.meta({ format: undefined })` after the check).'
+const FORMAT_HINTS: Readonly<Record<string, string>> = {
+  starts_with: ZOD_PATTERN_FORMAT_HINT,
+  ends_with: ZOD_PATTERN_FORMAT_HINT,
+  includes: ZOD_PATTERN_FORMAT_HINT,
+  duration:
+    "Zod's `z.iso.duration()` pattern uses lookahead, which no portable profile enforces: validate durations host-side or write a simple `z.string().regex(...)`.",
 }
 
 function describeProvider(profile: JsonSchemaProfile): string {
   return profile.provider ?? 'the portable subset'
+}
+
+/**
+ * `propertyNames: { type: 'string' }` constrains nothing: JSON object keys are
+ * always strings. It is the one `propertyNames` accepted, because
+ * `z.record(z.string(), X)` emits it. The schema is still sent verbatim.
+ */
+function isNoOpPropertyNames(value: JsonValue | undefined): boolean {
+  if (!isPlainObject(value)) return false
+  const keys = Object.keys(value).filter((key) => !ANNOTATION_KEYWORDS.has(key))
+  return keys.length === 1 && keys[0] === 'type' && value['type'] === 'string'
 }
 
 function assertNodeProfile(node: JsonObject, path: string, profile: JsonSchemaProfile) {
@@ -286,6 +474,7 @@ function assertNodeProfile(node: JsonObject, path: string, profile: JsonSchemaPr
   for (const keyword of Object.keys(node)) {
     if (ANNOTATION_KEYWORDS.has(keyword)) continue
     if (allowed.includes(keyword)) continue
+    if (keyword === 'propertyNames' && isNoOpPropertyNames(node[keyword])) continue
     const hint = KEYWORD_HINTS[keyword]
     throw badSchema(
       `${path}: ${who} does not enforce the JSON Schema keyword \`${keyword}\`; it would be accepted and ignored, or reinterpreted, so the output would not be constrained. ${
@@ -319,11 +508,13 @@ function assertNodeProfile(node: JsonObject, path: string, profile: JsonSchemaPr
   }
 
   const format = node['format']
-  if (format !== undefined && !profile.formats.includes(format as string)) {
+  if (typeof format === 'string' && !profile.formats.includes(format)) {
     throw badSchema(
       `${path}: ${who} enforces \`format\` only for [${profile.formats.join(
         ', ',
-      )}]; ${JSON.stringify(format)} would be accepted and ignored. Remove it and validate host-side.`,
+      )}]; ${JSON.stringify(format)} would be accepted and ignored. ${
+        FORMAT_HINTS[format] ?? 'Remove it and validate host-side.'
+      }`,
       profile.provider,
     )
   }
@@ -358,8 +549,10 @@ function assertNodeProfile(node: JsonObject, path: string, profile: JsonSchemaPr
 }
 
 /**
- * First construct in `pattern` that is outside the regex subset both shipped
- * providers compile, or `undefined`. A character class is skipped as a unit.
+ * First construct in `pattern` that is outside the regex subset the shipped
+ * profiles hold patterns to, or `undefined`. Inside a character class only
+ * property escapes (`[\p{L}]`) and `\k` are flagged: `[\b]` is a backspace and
+ * `[\1]` an octal escape there, and the rest of a class is literal.
  */
 function unsupportedPatternConstruct(pattern: string): string | undefined {
   let inClass = false
@@ -368,10 +561,10 @@ function unsupportedPatternConstruct(pattern: string): string | undefined {
     if (ch === '\\') {
       const next = pattern[i + 1] ?? ''
       i += 1
+      if (next === 'p' || next === 'P') return `a property escape (\\${next})`
+      if (next === 'k') return 'a named backreference (\\k)'
       if (inClass) continue
       if (/[1-9]/.test(next)) return `a backreference (\\${next})`
-      if (next === 'k') return 'a named backreference (\\k)'
-      if (next === 'p' || next === 'P') return `a property escape (\\${next})`
       if (next === 'b' || next === 'B') return `a word boundary (\\${next})`
       continue
     }
@@ -395,9 +588,17 @@ function unsupportedPatternConstruct(pattern: string): string | undefined {
   return undefined
 }
 
+/** A `$ref` found while walking, with the nodes it sits inside. */
 interface RefSite {
   readonly ref: string
   readonly path: string
+  /**
+   * The nodes that contain this site for reachability: from the nearest
+   * `$defs` / `definitions` entry (or the root) down to the node holding the
+   * `$ref`. A definitions map is not part of the schema that owns it, so the
+   * chain restarts at every definition.
+   */
+  readonly within: readonly JsonObject[]
 }
 
 function walkProfile(
@@ -405,25 +606,42 @@ function walkProfile(
   path: string,
   profile: JsonSchemaProfile,
   refs: RefSite[],
+  within: readonly JsonObject[],
 ): void {
   if (!isPlainObject(value)) return
   assertNodeProfile(value, path, profile)
+  const chain = [...within, value]
   const ref = value['$ref']
   if (ref !== undefined) {
     if (typeof ref !== 'string') {
       throw badSchema(`${path}: \`$ref\` must be a string.`, profile.provider)
     }
-    refs.push({ ref, path })
+    refs.push({ ref, path, within: chain })
   }
   for (const sub of subschemasOf(value, path)) {
-    walkProfile(sub.value, sub.path, profile, refs)
+    walkProfile(
+      sub.value,
+      sub.path,
+      profile,
+      refs,
+      DEFINITION_KEYWORDS.has(sub.keyword) ? [] : chain,
+    )
   }
 }
 
+/**
+ * The schema a local `$ref` points at, or `undefined` when the pointer does
+ * not resolve to a schema. Follows schema positions only (`properties/a`,
+ * `$defs/X`, `anyOf/0`, `items`), so a pointer into a keyword's data
+ * (`#/properties`, `#/enum/0`) does not resolve.
+ */
 function resolvePointer(root: JsonObject, ref: string): JsonObject | undefined {
   if (ref === '#') return root
   if (!ref.startsWith('#/')) return undefined
   let current: JsonValue = root
+  // What the next segment names: a keyword of a schema, an entry of a map of
+  // schemas, or an index into an array of schemas.
+  let expect: 'keyword' | 'name' | 'index' = 'keyword'
   for (const raw of ref.slice(2).split('/')) {
     let segment = raw
     try {
@@ -432,29 +650,38 @@ function resolvePointer(root: JsonObject, ref: string): JsonObject | undefined {
       return undefined
     }
     segment = segment.replace(/~1/g, '/').replace(/~0/g, '~')
-    if (Array.isArray(current)) {
+    if (expect === 'index') {
+      if (!Array.isArray(current)) return undefined
       const index = Number(segment)
       if (!Number.isInteger(index) || index < 0 || index >= current.length) {
         return undefined
       }
       current = current[index] as JsonValue
-    } else if (isPlainObject(current) && Object.hasOwn(current, segment)) {
-      current = current[segment] as JsonValue
-    } else {
+      expect = 'keyword'
+      continue
+    }
+    if (!isPlainObject(current) || !Object.hasOwn(current, segment)) return undefined
+    const next: JsonValue = current[segment] as JsonValue
+    if (expect === 'name') {
+      expect = 'keyword'
+    } else if ((SCHEMA_MAP_KEYWORDS as readonly string[]).includes(segment)) {
+      expect = 'name'
+    } else if ((SCHEMA_ARRAY_KEYWORDS as readonly string[]).includes(segment)) {
+      expect = 'index'
+    } else if (!(SINGLE_SCHEMA_KEYWORDS as readonly string[]).includes(segment)) {
       return undefined
     }
+    current = next
   }
-  return isPlainObject(current) ? current : undefined
+  return expect === 'keyword' && isPlainObject(current) ? current : undefined
 }
 
-/** `$ref` values found in the schema positions under `node`, skipping `$defs` maps when asked. */
-function collectRefs(node: JsonObject, skipDefs: boolean, out: string[]): void {
-  const ref = node['$ref']
-  if (typeof ref === 'string') out.push(ref)
-  for (const sub of subschemasOf(node, '')) {
-    if (skipDefs && (sub.keyword === '$defs' || sub.keyword === 'definitions')) continue
-    if (isPlainObject(sub.value)) collectRefs(sub.value, skipDefs, out)
-  }
+/** True when the node says nothing but `$ref` (and annotations). */
+function isPureAlias(node: JsonObject): boolean {
+  return (
+    typeof node['$ref'] === 'string' &&
+    Object.keys(node).every((key) => key === '$ref' || ANNOTATION_KEYWORDS.has(key))
+  )
 }
 
 function assertRefs(
@@ -463,6 +690,7 @@ function assertRefs(
   refs: readonly RefSite[],
   profile: JsonSchemaProfile,
 ): void {
+  const targets = new Map<RefSite, JsonObject>()
   for (const site of refs) {
     if (!site.ref.startsWith('#')) {
       throw badSchema(
@@ -470,37 +698,60 @@ function assertRefs(
         profile.provider,
       )
     }
-    if (resolvePointer(root, site.ref) === undefined) {
+    const target = resolvePointer(root, site.ref)
+    if (target === undefined) {
       throw badSchema(
         `${site.path}: \`$ref\` ${JSON.stringify(site.ref)} does not resolve to a schema in ${rootPath}.`,
         profile.provider,
       )
     }
+    targets.set(site, target)
   }
+
+  // A chain of references that only ever points at another reference never
+  // reaches a schema, on any provider.
+  for (const site of refs) {
+    const seen = new Set<JsonObject>()
+    let node = targets.get(site) as JsonObject
+    while (isPureAlias(node)) {
+      if (seen.has(node)) {
+        throw badSchema(
+          `${site.path}: \`$ref\` ${JSON.stringify(site.ref)} leads to a loop of references that never reaches a schema.`,
+          profile.provider,
+        )
+      }
+      seen.add(node)
+      node = resolvePointer(root, node['$ref'] as string) as JsonObject
+    }
+  }
+
   if (profile.circularRefs) return
 
-  const state = new Map<string, 'visiting' | 'done'>()
-  const visit = (pointer: string, via: string): void => {
-    const status = state.get(pointer)
-    if (status === 'done') return
-    if (status === 'visiting') {
-      throw badSchema(
-        `${via}: \`$ref\` ${JSON.stringify(pointer)} is circular (a recursive schema). ${describeProvider(
-          profile,
-        )} supports non-circular references only.`,
-        profile.provider,
-      )
+  // site A -> site B when B sits inside the schema A points at. A cycle in
+  // that graph is a recursive schema; every site is a start, so a cyclic entry
+  // nothing points at is found too.
+  const state = new Map<RefSite, 'visiting' | 'done'>()
+  const visit = (site: RefSite): void => {
+    state.set(site, 'visiting')
+    const target = targets.get(site) as JsonObject
+    for (const next of refs) {
+      if (!next.within.includes(target)) continue
+      const status = state.get(next)
+      if (status === 'visiting') {
+        throw badSchema(
+          `${site.path}: \`$ref\` ${JSON.stringify(site.ref)} is circular (a recursive schema). ${describeProvider(
+            profile,
+          )} supports non-circular references only.`,
+          profile.provider,
+        )
+      }
+      if (status === undefined) visit(next)
     }
-    state.set(pointer, 'visiting')
-    const target = resolvePointer(root, pointer)
-    if (target !== undefined) {
-      const inner: string[] = []
-      collectRefs(target, pointer === '#', inner)
-      for (const next of inner) visit(next, via)
-    }
-    state.set(pointer, 'done')
+    state.set(site, 'done')
   }
-  visit('#', rootPath)
+  for (const site of refs) {
+    if (state.get(site) === undefined) visit(site)
+  }
 }
 
 /**
@@ -521,7 +772,7 @@ export function assertJsonSchemaProfile(
   })
   if (!isPlainObject(schema)) return
   const refs: RefSite[] = []
-  walkProfile(schema, path, profile, refs)
+  walkProfile(schema, path, profile, refs, [])
   assertRefs(schema, path, refs, profile)
 }
 
@@ -530,12 +781,17 @@ export function assertJsonSchemaProfile(
 // ---------------------------------------------------------------------------
 
 /**
- * The portable subset: keywords every shipped provider enforces. The
- * intersection of the Google and xAI profiles (ADR-034 publishes the table;
- * a test in `@gullabs/any-llm` keeps this equal to that intersection).
- * Annotations are accepted on top of these.
+ * The portable subset: the keywords the Gemini 3.x and xAI profiles both
+ * enforce (ADR-034 publishes the table; a test in `@gullabs/any-llm` keeps this
+ * equal to that intersection over every Gemini 3.x model). Annotations are
+ * accepted on top of these.
+ *
+ * It is not "every provider": Gemma 4 additionally rejects `format`,
+ * `minLength` and `maxLength`, `claude-cli` and `codex-cli` run their own
+ * checks (or none), and `pattern`, `minLength` and `maxLength` are only
+ * probabilistically obeyed on Gemini.
  */
-export const PORTABLE_JSON_SCHEMA_KEYWORDS: readonly string[] = [
+export const PORTABLE_JSON_SCHEMA_KEYWORDS: readonly string[] = Object.freeze([
   'type',
   'properties',
   'required',
@@ -554,30 +810,36 @@ export const PORTABLE_JSON_SCHEMA_KEYWORDS: readonly string[] = [
   'pattern',
   'minLength',
   'maxLength',
-]
+])
 
-/** `format` values enforced by every shipped provider. */
-export const PORTABLE_JSON_SCHEMA_FORMATS: readonly string[] = [
+/** `format` values enforced by both the Gemini 3.x and xAI profiles. */
+export const PORTABLE_JSON_SCHEMA_FORMATS: readonly string[] = Object.freeze([
   'date-time',
   'date',
-  'time',
   'email',
-]
+])
 
-const PORTABLE_PROFILE: JsonSchemaProfile = {
+const PORTABLE_PROFILE: JsonSchemaProfile = Object.freeze({
   keywords: PORTABLE_JSON_SCHEMA_KEYWORDS,
   formats: PORTABLE_JSON_SCHEMA_FORMATS,
-  // The smaller of the providers' limits (only xAI declares any).
-  limits: { minLength: 2048, maxLength: 2048, minItems: 256, maxItems: 256 },
+  // The smaller of the profiles' limits (only xAI declares any), for the
+  // portable keywords.
+  limits: Object.freeze({
+    minLength: 2048,
+    maxLength: 2048,
+    minItems: 256,
+    maxItems: 256,
+  }),
   circularRefs: false,
   booleanItems: false,
   patternSubset: true,
-}
+})
 
 /**
- * Lint a schema against the portable subset, so a schema that routes to any
- * shipped provider is known to be enforced by all of them. Intended for a
- * host build-time test over every call site; adapters do not call it.
+ * Lint a schema against the portable subset, so a schema that routes to Gemini
+ * 3.x or xAI is known to use only keywords both profiles enforce. Intended for
+ * a host build-time test over every call site; adapters do not call it. It
+ * does not cover Gemma's stricter profile or the CLI providers.
  *
  * @param path Label used in messages (default `schema`).
  * @throws {LlmError} `kind: 'bad_request'` naming the offending node's path.
