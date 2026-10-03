@@ -2293,6 +2293,40 @@ Live evidence (2026-10-03):
 - Request-side search intent (one option that means "search" on every provider) is deferred to its own
   decision.
 
+### Amendment A (2026-10-03, grounding audit)
+
+An adversarial audit of the grounding release found money and correctness defects. Item 5 and item 6
+above are replaced by the rules here; everything else stands.
+
+1. **`grounding_missing` retryability depends on the schema.** With an output schema attached the error
+   is `retryable: false`: the capture shows the same schema + Search request missing on every call of
+   five of six Gemini 3 models (0 of 4), so a retry repeats a billed failure, the argument ADR-036 made for
+   `transport_timeout`. Without a schema it stays `retryable: true`: the same models grounded on 4 of 4
+   calls. A retry middleware therefore makes one attempt and writes one billed row for the schema case.
+   A host that wants more attempts overrides `shouldRetry` and accepts the spend. `LlmResult.cost` of a
+   retried success covers only the final attempt; the earlier attempts' spend is in the ledger rows.
+2. **`requireGrounding` is judged after the finish reason.** Only a candidate that finished normally
+   (`STOP`, or no finish reason) is checked for evidence. A `SAFETY`, `RECITATION`, `BLOCKLIST`,
+   `PROHIBITED_CONTENT` or `IMAGE_SAFETY` candidate with no evidence throws `content_filter`,
+   `retryable: false`, usage attached, instead of `grounding_missing`; a filter block is deterministic and
+   the host must see it. A filtered candidate that does carry evidence, and any other non-`STOP` finish
+   (`MAX_TOKENS` is `length`), is returned as it is without the flag.
+3. **Schema + Search opt-in only where it was measured.** `structuredOutputWithTools: false` means a
+   capture showed Search missing and the host may opt in per call. Absent means nothing was measured:
+   the pair is rejected with or without `allowSchemaWithSearch`. Gemini 2.5 and Gemma have no capture
+   (P4 probed Gemini 3.x only), so both reject, with a message saying so. A non-boolean
+   `allowSchemaWithSearch` or `requireGrounding` is a `bad_request` that names the field and the received
+   type, checked before any other rule.
+4. **Queries are non-empty strings.** `web_search_calls` and the `requireGrounding` evidence count only
+   non-empty strings in `webSearchQueries`. An empty array is a known zero; a non-empty array that names
+   no query is unknown (the cost is estimated with an empty `tools` lane and `requireGrounding` fails).
+5. **Tool-use prompt tokens stay unpriced.** `usage.details.tool_use_prompt` is recorded and not priced; a
+   Gemini 2.5 grounded call is therefore understated by those tokens at the input rate (about 176 uUSD on
+   the P5 Pro sample). Whether Google bills them is the open billing question above; no upper bound is
+   guessed into the price.
+6. **`pricingVersion` `gemini-2026-10-03` marks the new grounding lane,** not a token re-read: token rates
+   were last verified 2026-09-25. A row priced under the older version has no `tools` lane.
+
 ---
 
 ## ADR-036: Retry honours provider delays; errors carry typed reasons
@@ -2314,6 +2348,8 @@ out of credits are all `rate_limited, retryable: false`, and a host reacts to ea
    `transport_timeout`, `quota_window`, `daily_quota`, `credits_exhausted`, `spend_ceiling`,
    `grounding_missing`, `search_budget_exceeded`, `cache_not_found`. `kind` and `retryable` stay
    authoritative; `reason` only says why within a kind, and is absent when no named cause applies.
+   `retryable` follows whether a retry can change the outcome: `grounding_missing` is `retryable: true`
+   only when no output schema is attached (a schema + Search call keeps missing, ADR-035 Amendment A).
 2. **The union is closed on purpose,** so adapters cannot invent reasons. Adding a member is a core
    minor release under the lockstep versioning in `RELEASING.md` (pre-1.0, so a minor may break an
    exhaustive `switch`). The changeset lists the new members and hosts keep a `default` branch. There is no

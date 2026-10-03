@@ -446,9 +446,11 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
   `details.web_search_requested`; `details.web_search_calls` is the number of `webSearchQueries`
   occurrences. The pricing source adds the fee to `Cost.details.tools` (Gemini 3: per query; Gemini 2.5:
   per grounded prompt) and a call that ran Search is `estimated`. `requireGrounding: true` throws a
-  retryable `server` error with reason `grounding_missing` (usage attached) unless metadata with at least
-  one query is present. `allowSchemaWithSearch: true` admits `googleSearch` with `output.jsonSchema` on a
-  model that does not admit them by default, and turns `requireGrounding` on unless set to `false`.
+  `server` error with reason `grounding_missing` (usage attached) unless metadata with at least one
+  non-empty query is present; it is `retryable: true` only without an output schema, and is judged only on
+  a `STOP` candidate (a filtered one throws `content_filter`). `allowSchemaWithSearch: true` admits
+  `googleSearch` with `output.jsonSchema` on a model whose descriptor has `structuredOutputWithTools:
+false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless set to `false`.
   `Citation.cited` / `textRange` come from `groundingSupports`; `providerMetadata.google.searchEntryPoint`
   carries Google's required Search Suggestions widget.
 - Errors: classify 401→invalid_auth; 403→invalid_auth unless a provider overlay reclassifies;

@@ -29,7 +29,10 @@
  *
  * **Grounding with Google Search** is a tool lane, not a token rate; see
  * {@link GEMINI_GROUNDING_PRICING}. It was added from the same pricing page
- * on 2026-10-03; the token rates above were not re-read that day.
+ * on 2026-10-03; the token rates above were NOT re-read that day and were last
+ * verified 2026-09-25. {@link pricingVersion} moved to `gemini-2026-10-03`
+ * because the snapshot gained the grounding lane (a grounded call prices
+ * differently under it), not because token rates were re-checked.
  *
  * @module
  */

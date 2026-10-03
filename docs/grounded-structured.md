@@ -11,9 +11,19 @@ below: a grounded call without a schema, then a structured call over its text.
 A host that wants one call can opt in with
 `providerOptions.google.allowSchemaWithSearch: true`. The call is then sent as asked, and
 `requireGrounding` is turned on for it (override with `requireGrounding: false`): unless
-`groundingMetadata` with at least one `webSearchQueries` entry comes back, the call fails with
-a retryable `server` error, reason `grounding_missing`, and the attempt's usage is recorded.
-The measured rates below say how often to expect that failure.
+`groundingMetadata` with at least one non-empty `webSearchQueries` entry comes back, the call fails
+with a `server` error, reason `grounding_missing`, and the attempt's usage is recorded. With a schema
+attached that error is **not retryable**: the same request misses again (rates below), so a retry
+middleware would pay for every attempt and fail each time. The error is retryable only on a call
+without a schema, which grounded on 4 of 4 captured calls. The measured rates below say how often to
+expect the failure.
+
+The opt-in exists only for models with a measured negative result (the six Gemini 3.x models). Gemini
+2.5 and Gemma have no capture of schema plus Search, so that combination is rejected there with or
+without the flag; use the two-call recipe.
+
+A filtered candidate (`SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `IMAGE_SAFETY`) with no
+grounding evidence throws `content_filter` (not retryable), not `grounding_missing`.
 
 Every call that sends `googleSearch` reports `usage.details.web_search_requested` and, when the
 response says, `web_search_calls`. The grounding fee is priced on the `tools` lane, and a call that
@@ -38,7 +48,7 @@ output. Fixture: `packages/google/src/__fixtures__/grounding-schema-matrix-2026-
 The rule for turning the pair on by default was metadata with a query on at least 3 of 4 schema
 calls. No model meets it (the best is 3.1 Pro at 2 of 4), so `structuredOutputWithTools` stays `false`
 everywhere and the combination is opt-in only. With `allowSchemaWithSearch` expect `grounding_missing`
-on most attempts for five of the six models; retry, or use the two-call recipe.
+on most attempts for five of the six models, and that error is not retried: use the two-call recipe.
 
 The prompt-token jump column is not a usable "Search ran" signal. On some models a schema'd call
 shows a several-fold jump in prompt tokens with no metadata (Search probably ran and was not

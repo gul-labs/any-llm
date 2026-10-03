@@ -605,8 +605,11 @@ before dispatch unless the call sets `allowSchemaWithSearch: true`; the message 
 recipe in `docs/grounded-structured.md`. Opting in turns `requireGrounding` on (ADR-035).
 The adapter reports `usage.details.web_search_requested` and `web_search_calls`, the pricing source
 prices the grounding fee on the `tools` lane, and a call that ran Search is costed as
-`confidence: 'estimated'`. `requireGrounding: true` throws a retryable `server` error with reason
-`grounding_missing` unless the response has `groundingMetadata` with at least one query.
+`confidence: 'estimated'`. `requireGrounding: true` throws a `server` error with reason
+`grounding_missing` unless the response has `groundingMetadata` with at least one non-empty query; it
+is retryable only without an output schema (ADR-035 Amendment A). It is judged only on a `STOP`
+candidate: a filtered one throws `content_filter`. A descriptor with `structuredOutputWithTools`
+absent (Gemini 2.5, Gemma) rejects schema + Search even with `allowSchemaWithSearch`.
 
 When grounding is active, `candidate.groundingMetadata` from the response is captured into
 `result.providerMetadata['groundingMetadata']` as `JsonValue`. `promptFeedback`, when present, is

@@ -192,8 +192,9 @@ sets `providerOptions.google.allowSchemaWithSearch: true` (ADR-035), which also 
 `promptFeedback` in `result.providerMetadata`, and `searchEntryPoint` is surfaced at
 `providerMetadata.google.searchEntryPoint`. The adapter reports `usage.details.web_search_requested`
 and `web_search_calls`; the pricing source prices the grounding fee on the `tools` lane and marks a
-call that ran Search `estimated` (ADR-035). `requireGrounding: true` fails the call with a retryable
-`grounding_missing` error unless the response proves Search ran.
+call that ran Search `estimated` (ADR-035). `requireGrounding: true` fails the call with a
+`grounding_missing` error (retryable only without an output schema) unless the response proves Search
+ran.
 
 ### Transport Timeout
 

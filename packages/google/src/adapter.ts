@@ -203,6 +203,21 @@ type MappedGoogleProviderOptions = Partial<GeminiDispatchConfig> & {
   requireGrounding?: boolean
 }
 
+/** The JSON type of a value, for an error message that names what was received. */
+function describeType(value: unknown): string {
+  return value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value
+}
+
+/**
+ * Why a model that never had a measured schema + Search result cannot be sent
+ * both. `structuredOutputWithTools: false` means a capture showed Search
+ * missing and the host may opt in per call; absent means nothing was measured,
+ * so there is no behaviour to opt into.
+ */
+function noSchemaWithSearchEvidence(model: string): string {
+  return `Structured output with googleSearch is not supported for model "${model}": no live capture shows Search running when a response schema is attached to this model (the captures cover Gemini 3.x only), so there is no measured behaviour to opt into and providerOptions.google.allowSchemaWithSearch does not apply. Make two calls instead: grounded research without a schema, then structured synthesis (the two-call recipe in docs/grounded-structured.md).`
+}
+
 function mapGoogleProviderOptions({
   googleOpts,
   model,
@@ -316,6 +331,19 @@ function mapGoogleProviderOptions({
     )
   }
 
+  const allowSchemaWithSearch = googleOpts['allowSchemaWithSearch']
+  if (allowSchemaWithSearch !== undefined && typeof allowSchemaWithSearch !== 'boolean') {
+    throw badGoogleProviderOptions(
+      `providerOptions.google.allowSchemaWithSearch must be a boolean for model "${model}", received ${describeType(allowSchemaWithSearch)}.`,
+    )
+  }
+  const requireGrounding = googleOpts['requireGrounding']
+  if (requireGrounding !== undefined && typeof requireGrounding !== 'boolean') {
+    throw badGoogleProviderOptions(
+      `providerOptions.google.requireGrounding must be a boolean for model "${model}", received ${describeType(requireGrounding)}.`,
+    )
+  }
+
   if (googleOpts['tools'] !== undefined) {
     if (!Array.isArray(googleOpts['tools'])) {
       throw badGoogleProviderOptions(
@@ -330,53 +358,41 @@ function mapGoogleProviderOptions({
       )
     }
 
-    if (
-      structuredOutputRequested &&
-      structuredOutputWithTools !== true &&
-      googleOpts['allowSchemaWithSearch'] !== true
-    ) {
-      throw badGoogleProviderOptions(
-        `Structured output with googleSearch is not enabled for model "${model}": the provider accepts the request but Search does not reliably run when a response schema is attached. Make two calls instead: grounded research without a schema, then structured synthesis (the two-call recipe in docs/grounded-structured.md). To send both in one call anyway, set providerOptions.google.allowSchemaWithSearch: true; the call then fails unless the response proves Search ran (requireGrounding).`,
-      )
+    if (structuredOutputRequested && structuredOutputWithTools !== true) {
+      if (structuredOutputWithTools === undefined) {
+        throw badGoogleProviderOptions(noSchemaWithSearchEvidence(model))
+      }
+      if (allowSchemaWithSearch !== true) {
+        throw badGoogleProviderOptions(
+          `Structured output with googleSearch is not enabled for model "${model}": the provider accepts the request but Search does not reliably run when a response schema is attached. Make two calls instead: grounded research without a schema, then structured synthesis (the two-call recipe in docs/grounded-structured.md). To send both in one call anyway, set providerOptions.google.allowSchemaWithSearch: true; the call then fails unless the response proves Search ran (requireGrounding), and that failure is not retryable because the same call keeps missing.`,
+        )
+      }
     }
 
     mapped.tools = tools
   }
 
   const searchSent = mapped.tools?.some((tool) => 'googleSearch' in tool) === true
-  const allowSchemaWithSearch = googleOpts['allowSchemaWithSearch']
-  if (allowSchemaWithSearch !== undefined) {
-    if (typeof allowSchemaWithSearch !== 'boolean') {
+  if (allowSchemaWithSearch === true) {
+    if (descriptorGrounding !== true) {
       throw badGoogleProviderOptions(
-        `providerOptions.google.allowSchemaWithSearch must be a boolean for model "${model}".`,
+        `providerOptions.google.allowSchemaWithSearch is not supported for model "${model}": the model does not support grounding.`,
       )
     }
-    if (allowSchemaWithSearch) {
-      if (descriptorGrounding !== true) {
-        throw badGoogleProviderOptions(
-          `providerOptions.google.allowSchemaWithSearch is not supported for model "${model}": the model does not support grounding.`,
-        )
-      }
-      if (!searchSent || !structuredOutputRequested) {
-        throw badGoogleProviderOptions(
-          `providerOptions.google.allowSchemaWithSearch requires both providerOptions.google.tools: [{ googleSearch: {} }] and output.jsonSchema for model "${model}".`,
-        )
-      }
+    if (!searchSent || !structuredOutputRequested) {
+      throw badGoogleProviderOptions(
+        `providerOptions.google.allowSchemaWithSearch requires both providerOptions.google.tools: [{ googleSearch: {} }] and output.jsonSchema for model "${model}".`,
+      )
+    }
+    if (structuredOutputWithTools === undefined) {
+      throw badGoogleProviderOptions(noSchemaWithSearchEvidence(model))
     }
   }
 
-  const requireGrounding = googleOpts['requireGrounding']
-  if (requireGrounding !== undefined) {
-    if (typeof requireGrounding !== 'boolean') {
-      throw badGoogleProviderOptions(
-        `providerOptions.google.requireGrounding must be a boolean for model "${model}".`,
-      )
-    }
-    if (requireGrounding && !searchSent) {
-      throw badGoogleProviderOptions(
-        `providerOptions.google.requireGrounding requires providerOptions.google.tools: [{ googleSearch: {} }] for model "${model}".`,
-      )
-    }
+  if (requireGrounding === true && !searchSent) {
+    throw badGoogleProviderOptions(
+      `providerOptions.google.requireGrounding requires providerOptions.google.tools: [{ googleSearch: {} }] for model "${model}".`,
+    )
   }
   const effectiveRequireGrounding = requireGrounding ?? allowSchemaWithSearch === true
   if (effectiveRequireGrounding) mapped.requireGrounding = true
@@ -1266,29 +1282,54 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       const groundingMetadata = candidate.groundingMetadata
 
       // requireGrounding fails closed: only a response that reports at least one
-      // search query proves Search ran. Anything else was billed for tokens (and
-      // possibly for a Search the response did not report), so the attempt's
-      // usage rides on the error and a retry may succeed.
+      // search query proves Search ran. It is judged only on a candidate that
+      // finished normally (STOP, or no finish reason): a filtered candidate
+      // surfaces its real error, and a truncated one returns `length`, because
+      // neither outcome is evidence about Search and a retry would repeat it.
       if (requireGrounding) {
         const queries = countWebSearchQueries(groundingMetadata)
         if (groundingMetadata === undefined || queries === undefined || queries < 1) {
-          const why =
-            groundingMetadata === undefined
-              ? 'the response has no groundingMetadata'
-              : queries === undefined
-                ? 'groundingMetadata has no webSearchQueries'
-                : 'groundingMetadata reports zero webSearchQueries'
-          throw new LlmError(
-            `google: requireGrounding is set but there is no evidence that Search ran: ${why}. The attempt was billed for its tokens; a retry may ground.`,
-            {
-              kind: 'server',
-              retryable: true,
-              reason: 'grounding_missing',
-              provider: 'google',
-              ...billedFailure(response.usageMetadata, groundingMetadata),
-              ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
-            },
-          )
+          const finishReason = mapFinishReason(candidate.finishReason)
+          if (finishReason === 'content_filter') {
+            throw new LlmError(
+              `Gemini candidate was filtered (finishReason ${candidate.finishReason}); the grounding check was not applied. The attempt was billed.`,
+              {
+                kind: 'content_filter',
+                retryable: false,
+                provider: 'google',
+                ...billedFailure(response.usageMetadata, groundingMetadata),
+                ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
+              },
+            )
+          }
+          if (candidate.finishReason === undefined || candidate.finishReason === 'STOP') {
+            const why =
+              groundingMetadata === undefined
+                ? 'the response has no groundingMetadata'
+                : queries === undefined
+                  ? 'groundingMetadata has no webSearchQueries'
+                  : 'groundingMetadata reports zero webSearchQueries'
+            // A call without a response schema grounded in 4 of 4 captured
+            // calls, so a retry may ground. With a schema attached the same
+            // request missed on every capture of five of six Gemini 3 models, so
+            // a retry repeats a billed failure: not retryable.
+            const retryable = !structuredOutputRequested
+            throw new LlmError(
+              `google: requireGrounding is set but there is no evidence that Search ran: ${why}. The attempt was billed for its tokens${
+                retryable
+                  ? '; a retry may ground.'
+                  : '; it is not retryable, because a call with a response schema attached keeps missing (use the two-call recipe in docs/grounded-structured.md).'
+              }`,
+              {
+                kind: 'server',
+                retryable,
+                reason: 'grounding_missing',
+                provider: 'google',
+                ...billedFailure(response.usageMetadata, groundingMetadata),
+                ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
+              },
+            )
+          }
         }
       }
 

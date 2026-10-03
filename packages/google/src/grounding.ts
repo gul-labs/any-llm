@@ -201,16 +201,20 @@ export function normalizeGroundingCitations(
 
 /**
  * The number of search queries Gemini reports in `webSearchQueries`, counted as
- * occurrences (a repeated query counts each time). `undefined` when the
- * metadata is absent or has no `webSearchQueries` array: the count is unknown,
- * which is different from a reported zero.
+ * occurrences (a repeated query counts each time) of non-empty strings: an
+ * empty string or a non-string entry is not a query, and neither is billed nor
+ * proves Search ran. `undefined` when the metadata is absent, has no
+ * `webSearchQueries` array, or has a non-empty array that names no query: the
+ * count is unknown, which is different from a reported zero (an empty array).
  */
 export function countWebSearchQueries(groundingMetadata: unknown): number | undefined {
   if (groundingMetadata === null || typeof groundingMetadata !== 'object') {
     return undefined
   }
   const queries = (groundingMetadata as Record<string, unknown>)['webSearchQueries']
-  return Array.isArray(queries) ? queries.length : undefined
+  if (!Array.isArray(queries)) return undefined
+  const named = queries.filter((q) => typeof q === 'string' && q.length > 0).length
+  return named === 0 && queries.length > 0 ? undefined : named
 }
 
 /**

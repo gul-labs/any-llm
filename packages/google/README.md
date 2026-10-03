@@ -278,7 +278,8 @@ with `bad_request` before dispatch. Make two calls instead (grounded research, t
 structured synthesis); see [`docs/grounded-structured.md`](../../docs/grounded-structured.md).
 To send both in one call anyway, set `providerOptions.google.allowSchemaWithSearch: true`.
 That also turns on `requireGrounding` (override with `requireGrounding: false`), because a
-schema'd call can skip Search without saying so.
+schema'd call can skip Search without saying so. The opt-in exists only for the Gemini 3.x models,
+the only ones with a capture: on Gemini 2.5 and Gemma the pair is rejected with or without it.
 
 ### Search facts, grounding price and `requireGrounding`
 
@@ -286,7 +287,9 @@ A call that sends `googleSearch` reports two facts in `usage.details`:
 `web_search_requested` (`1`) and `web_search_calls`, the number of queries in
 `groundingMetadata.webSearchQueries` counted as occurrences (a repeated query counts each
 time; absent when the response has no metadata or no query list). `tool_use_prompt` records
-`toolUsePromptTokenCount` when Google reports it (Gemini 2.5), unpriced.
+`toolUsePromptTokenCount` when Google reports it (Gemini 2.5). Those tokens are not priced, so a
+grounded 2.5 call is understated by them at the input rate; whether Google bills them is the open
+billing question in ADR-035.
 
 The pricing source puts the grounding fee on `cost.details.tools`: Gemini 3 bills per query
 (`web_search_calls × $0.014`), Gemini 2.5 per grounded prompt (`$0.035`, once however many
@@ -297,9 +300,16 @@ requested but the count is unknown, the tools lane is `0`, the cost is estimated
 says so. Google's billing of repeated queries and of tool-use tokens is not established.
 
 `providerOptions.google.requireGrounding: true` fails the call unless the response proves Search
-ran (`groundingMetadata` with at least one query): a retryable `server` error with
+ran (`groundingMetadata` with at least one non-empty query): a `server` error with
 `reason: 'grounding_missing'` and the attempt's usage attached, so the billed tokens reach the
-ledger. It needs `googleSearch` in the same request.
+ledger. It is `retryable: true` only when no response schema is attached (4 of 4 captured calls
+grounded); with a schema the same request keeps missing, so it is `retryable: false` and a retry
+middleware makes one billed attempt, not three. Use the two-call recipe, or override `shouldRetry`
+and accept the spend. The check applies only to a candidate that finished with `STOP`: a filtered
+candidate (`SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `IMAGE_SAFETY`) with no evidence
+throws `content_filter` (not retryable), and `MAX_TOKENS` returns `finishReason: 'length'`. It needs
+`googleSearch` in the same request. `result.cost` of a call that succeeded on a retry covers the
+last attempt only; the earlier attempts' spend is in their ledger rows.
 
 `result.citations` entries carry `cited` (a `groundingSupports` segment points at the source) and
 `textRange` (the first supported span of `result.text`, UTF-16 offsets). Google requires a grounded

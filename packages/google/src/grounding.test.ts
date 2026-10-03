@@ -158,6 +158,13 @@ describe('countWebSearchQueries', () => {
     expect(countWebSearchQueries(undefined)).toBeUndefined()
     expect(countWebSearchQueries(null)).toBeUndefined()
   })
+
+  it('counts only non-empty strings: an empty string or a non-string is not a query', () => {
+    expect(countWebSearchQueries({ webSearchQueries: ['a', '', null, 3, 'b'] })).toBe(2)
+    // A list that names no real query is malformed, not a reported zero.
+    expect(countWebSearchQueries({ webSearchQueries: [''] })).toBeUndefined()
+    expect(countWebSearchQueries({ webSearchQueries: [null] })).toBeUndefined()
+  })
 })
 
 describe('readSearchEntryPoint', () => {

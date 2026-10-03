@@ -150,7 +150,7 @@ describe('providerOptions.google.allowSchemaWithSearch (R2.2)', () => {
       .catch((e: unknown) => e)) as LlmError
     expect(err).toBeInstanceOf(LlmError)
     expect(err.kind).toBe('server')
-    expect(err.retryable).toBe(true)
+    expect(err.retryable).toBe(false)
     expect(err.reason).toBe('grounding_missing')
     expect(err.usage).toMatchObject({ inputTokens: 100, outputTokens: 20 })
     expect(err.usage?.details['web_search_requested']).toBe(1)
@@ -211,7 +211,6 @@ describe('providerOptions.google.allowSchemaWithSearch (R2.2)', () => {
   it.each([
     ['without googleSearch', { allowSchemaWithSearch: true }, SCHEMA],
     ['without a schema', { ...SEARCH, allowSchemaWithSearch: true }, undefined],
-    ['non-boolean', { ...SEARCH, allowSchemaWithSearch: 'yes' }, SCHEMA],
   ])('rejects the flag %s before dispatch', async (_name, google, schema) => {
     const fake = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
     const err = (await geminiAdapter({ client: fake })
@@ -224,6 +223,66 @@ describe('providerOptions.google.allowSchemaWithSearch (R2.2)', () => {
     expect(err.message).toContain('allowSchemaWithSearch')
     expect(fake.calls).toHaveLength(0)
   })
+
+  it('a non-boolean flag is a type error that names the field and the type, not the opt-in hint', async () => {
+    const fake = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
+    for (const [value, type] of [
+      ['yes', 'string'],
+      [1, 'number'],
+      [null, 'null'],
+    ] as const) {
+      const err = (await geminiAdapter({ client: fake })
+        .run(
+          request(
+            { ...SEARCH, allowSchemaWithSearch: value },
+            { outputJsonSchema: SCHEMA },
+          ),
+          FAKE_CTX,
+        )
+        .catch((e: unknown) => e)) as LlmError
+      expect(err.kind).toBe('bad_request')
+      expect(err.message).toContain('providerOptions.google.allowSchemaWithSearch')
+      expect(err.message).toContain('boolean')
+      expect(err.message).toContain(type)
+      expect(err.message).not.toContain('is not enabled')
+    }
+    for (const [value, type] of [
+      ['yes', 'string'],
+      [1, 'number'],
+    ] as const) {
+      const err = (await geminiAdapter({ client: fake })
+        .run(request({ ...SEARCH, requireGrounding: value }), FAKE_CTX)
+        .catch((e: unknown) => e)) as LlmError
+      expect(err.message).toContain('providerOptions.google.requireGrounding')
+      expect(err.message).toContain(type)
+    }
+    expect(fake.calls).toHaveLength(0)
+  })
+
+  it.each(['gemini-2.5-pro', 'gemini-2.5-flash', 'gemma-4-31b-it', 'gemma-4-26b-a4b-it'])(
+    '%s: schema + search is rejected with or without the opt-in, because no capture shows Search running there',
+    async (model) => {
+      const descriptor = descriptorFor(model)
+      expect(descriptor.capabilities?.structuredOutputWithTools).toBeUndefined()
+      for (const google of [SEARCH, { ...SEARCH, allowSchemaWithSearch: true }]) {
+        const fake = makeFakeGemini(fakeGeminiResponse({ structuredJson: '{}' }))
+        const err = (await geminiAdapter({ client: fake })
+          .run(
+            request(google, {
+              model,
+              modelDescriptor: descriptor,
+              outputJsonSchema: SCHEMA,
+            }),
+            FAKE_CTX,
+          )
+          .catch((e: unknown) => e)) as LlmError
+        expect(err.kind).toBe('bad_request')
+        expect(err.message).toContain('no live capture')
+        expect(err.message).toContain(model)
+        expect(fake.calls).toHaveLength(0)
+      }
+    },
+  )
 
   it('a model that admits schema + search by default needs no flag, and requireGrounding stays opt-in there', async () => {
     const base = descriptorFor(GEMINI_3)
@@ -438,6 +497,23 @@ describe('requireGrounding fails closed (R2.3, D5)', () => {
     },
   )
 
+  it.each([[['']], [[null]]])(
+    'a query list of %j names no query: grounding_missing, and no fee is charged for it',
+    async (queries) => {
+      const { sink, promise } = generate(
+        response(grounded(queries as unknown as string[])),
+        SEARCH,
+      )
+      const result = await promise
+      expect(result.usage.details).not.toHaveProperty('web_search_calls')
+      expect(result.cost?.details.tools).toBe(0)
+      const required = generate(response(grounded(queries as unknown as string[])))
+      const err = (await required.promise.catch((e: unknown) => e)) as LlmError
+      expect(err.reason).toBe('grounding_missing')
+      expect(sink.records).toHaveLength(1)
+    },
+  )
+
   it('positive evidence (metadata with at least one query) passes', async () => {
     const { promise } = generate(response(grounded(['q'])))
     const result = await promise
@@ -488,6 +564,132 @@ describe('requireGrounding fails closed (R2.3, D5)', () => {
       .run(request({ ...SEARCH, requireGrounding: 1 }), FAKE_CTX)
       .catch((e: unknown) => e)) as LlmError
     expect(bad.kind).toBe('bad_request')
+  })
+})
+
+describe('requireGrounding: retry policy and finish reasons (R2.2 audit)', () => {
+  const OPT_IN = { ...SEARCH, allowSchemaWithSearch: true }
+  const retrying = (responses: ReturnType<typeof fakeGeminiResponse>[]) => {
+    const sink = new RecordingSink()
+    const fake = makeFakeGemini(responses)
+    const client = makeClient(fake, sink, [
+      retryMiddleware({ maxAttempts: 3, baseDelayMs: 1 }, { sleep: async () => {} }),
+    ])
+    return { sink, fake, client }
+  }
+  const call = (
+    client: ReturnType<typeof makeClient>,
+    google: Record<string, unknown>,
+    schema?: object,
+  ) =>
+    client
+      .generate(
+        {
+          provider: 'google',
+          model: GEMINI_3,
+          messages,
+          ...(schema !== undefined ? { output: { jsonSchema: schema } } : {}),
+          config: { providerOptions: { google } as never },
+        } as never,
+        { auth: AUTH },
+      )
+      .catch((e: unknown) => e as LlmError)
+  const noMetadata = (extra: { finishReason?: string; text?: string } = {}) =>
+    fakeGeminiResponse({
+      text: extra.text ?? '{"answer":"x"}',
+      promptTokenCount: 1000,
+      candidatesTokenCount: 100,
+      ...(extra.finishReason !== undefined ? { finishReason: extra.finishReason } : {}),
+    })
+
+  it('with a response schema the miss is not retryable: the same schema + Search call keeps missing', async () => {
+    const { sink, fake, client } = retrying([noMetadata(), noMetadata(), noMetadata()])
+    const err = (await call(client, OPT_IN, SCHEMA)) as LlmError
+    expect(err.reason).toBe('grounding_missing')
+    expect(err.kind).toBe('server')
+    expect(err.retryable).toBe(false)
+    // One attempt, one billed row; the retry middleware did not spend two more.
+    expect(fake.calls).toHaveLength(1)
+    expect(sink.records).toHaveLength(1)
+    expect(sink.records[0]!.errorReason).toBe('grounding_missing')
+    expect(sink.records[0]!.costMicroUsd).toBeGreaterThan(0)
+  })
+
+  it('without a schema the miss stays retryable (4 of 4 grounded in the capture)', async () => {
+    const { sink, fake, client } = retrying([
+      noMetadata({ text: 'a' }),
+      noMetadata({ text: 'a' }),
+      noMetadata({ text: 'a' }),
+    ])
+    const err = (await call(client, { ...SEARCH, requireGrounding: true })) as LlmError
+    expect(err.reason).toBe('grounding_missing')
+    expect(err.retryable).toBe(true)
+    expect(fake.calls).toHaveLength(3)
+    expect(sink.records).toHaveLength(3)
+  })
+
+  it('a schema call with an explicit requireGrounding is also non-retryable', async () => {
+    const { fake, client } = retrying([noMetadata(), noMetadata()])
+    const err = (await call(
+      client,
+      { ...SEARCH, allowSchemaWithSearch: true, requireGrounding: true },
+      SCHEMA,
+    )) as LlmError
+    expect(err.retryable).toBe(false)
+    expect(fake.calls).toHaveLength(1)
+  })
+
+  it.each(['SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'IMAGE_SAFETY'])(
+    '%s with no grounding evidence surfaces content_filter, not grounding_missing, in one attempt',
+    async (finishReason) => {
+      const { sink, fake, client } = retrying([
+        noMetadata({ text: 'x', finishReason }),
+        noMetadata({ text: 'x', finishReason }),
+        noMetadata({ text: 'x', finishReason }),
+      ])
+      const err = (await call(client, { ...SEARCH, requireGrounding: true })) as LlmError
+      expect(err).toBeInstanceOf(LlmError)
+      expect(err.kind).toBe('content_filter')
+      expect(err.retryable).toBe(false)
+      expect(err.reason).not.toBe('grounding_missing')
+      expect(err.message).toContain(finishReason)
+      expect(err.usage).toMatchObject({ inputTokens: 1000, outputTokens: 100 })
+      expect(fake.calls).toHaveLength(1)
+      expect(sink.records).toHaveLength(1)
+      expect(sink.records[0]!.status).toBe('content_filter')
+      expect(sink.records[0]!.costMicroUsd).toBeGreaterThan(0)
+    },
+  )
+
+  it('a filtered candidate that does show Search ran is returned as without the flag', async () => {
+    const { client } = retrying([
+      fakeGeminiResponse({
+        text: 'x',
+        finishReason: 'SAFETY',
+        promptTokenCount: 10,
+        groundingMetadata: grounded(['q']),
+      }),
+    ])
+    const result = await call(client, { ...SEARCH, requireGrounding: true })
+    expect((result as { finishReason?: string }).finishReason).toBe('content_filter')
+  })
+
+  it('MAX_TOKENS with no evidence returns finishReason length: the host sees the truncation', async () => {
+    const { fake, client } = retrying([
+      noMetadata({ text: '', finishReason: 'MAX_TOKENS' }),
+    ])
+    const result = (await call(client, { ...SEARCH, requireGrounding: true })) as {
+      finishReason?: string
+    }
+    expect(result.finishReason).toBe('length')
+    expect(fake.calls).toHaveLength(1)
+  })
+
+  it('STOP with no evidence is still grounding_missing', async () => {
+    const stop = noMetadata({ text: 'a', finishReason: 'STOP' })
+    const { client } = retrying([stop, stop, stop])
+    const err = (await call(client, { ...SEARCH, requireGrounding: true })) as LlmError
+    expect(err.reason).toBe('grounding_missing')
   })
 })
 

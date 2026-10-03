@@ -61,8 +61,10 @@ export interface ModelDescriptor {
     grounding?: boolean
     /**
      * Structured output combined with provider built-in tools (Google:
-     * `googleSearch`). Absent or false means the adapter must reject that
-     * combination. The adapter reads this flag and carries no per-model list.
+     * `googleSearch`). `true`: admitted by default. `false`: a capture showed
+     * Search missing, so the call is rejected unless the host opts in per call.
+     * Absent: never measured, so the adapter rejects the combination even with
+     * the opt-in. The adapter reads this flag and carries no per-model list.
      */
     structuredOutputWithTools?: boolean
     functionCalling?: boolean
