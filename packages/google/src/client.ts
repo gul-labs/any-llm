@@ -106,6 +106,14 @@ export interface GeminiCandidateShape {
    * "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", etc.
    */
   finishReason?: string
+  /** Human-readable detail Google sends with some finish reasons. */
+  finishMessage?: string
+  /** Per-category safety ratings of the candidate. */
+  safetyRatings?: unknown[]
+  /** Source-attribution metadata for recited content. */
+  citationMetadata?: unknown
+  /** Retrieval status of each URL the model was asked to read. */
+  urlContextMetadata?: unknown
   /**
    * Grounding metadata returned when Google Search grounding is active.
    * Real SDK type: GroundingMetadata. Kept as `unknown` to avoid a hard
@@ -317,19 +325,24 @@ export interface GeminiGenerateParams {
 }
 
 /**
- * Parameters for models.countTokens.
- * Real type: CountTokensParameters.
+ * Parameters for counting tokens.
+ *
+ * With only `model` and `contents` the call is the SDK's `models.countTokens`.
+ * With `systemInstruction` or `tools` the Developer API's SDK method cannot
+ * carry them (it throws), so `buildGoogleClient` sends the REST `countTokens`
+ * with a full `generateContentRequest` instead; the two forms are mutually
+ * exclusive on the wire, so `contents` then travels inside the request.
  */
 export interface GeminiCountTokensParams {
   model: string
   contents: GeminiContent[]
+  systemInstruction?: { parts: GeminiContentPart[] }
+  tools?: NonNullable<GeminiGenerateConfig['tools']>
   config?: {
     /**
      * Real field: CountTokensConfig.abortSignal. countTokens has no
-     * tier-timeout dance (no flex/standard default ceilings) — `ctx.signal`
+     * tier-timeout dance (no flex/standard default ceilings): `ctx.signal`
      * is forwarded here directly, unlike `run()`'s combined timer signal.
-     * The adapter never sends `systemInstruction` or `tools`: the Developer
-     * API's `countTokens` cannot carry them, so it rejects such requests.
      */
     abortSignal?: AbortSignal
   }
@@ -396,6 +409,9 @@ export async function buildGoogleClient(auth: AuthMaterial): Promise<GeminiClien
       async countTokens(
         params: GeminiCountTokensParams,
       ): Promise<GeminiCountTokensResponseShape> {
+        if (params.systemInstruction !== undefined || params.tools !== undefined) {
+          return countTokensWithRequest(requireApiKey(auth), params)
+        }
         // Cast needed: our structural types are subsets of the real SDK types.
         const result = await (
           ai.models.countTokens as (
@@ -406,4 +422,68 @@ export async function buildGoogleClient(auth: AuthMaterial): Promise<GeminiClien
       },
     },
   }
+}
+
+// ---------------------------------------------------------------------------
+// REST countTokens with a full generateContentRequest
+// ---------------------------------------------------------------------------
+
+/**
+ * Base of the Gemini Developer API (`v1beta`), the version the SDK's Developer
+ * API client uses. Only the REST `countTokens` below builds a URL itself.
+ */
+const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta'
+
+/**
+ * `models.countTokens` with `systemInstruction` and `tools`.
+ *
+ * The SDK's Developer API `countTokens` throws on both fields, but the REST
+ * method accepts a `generateContentRequest` (a `GenerateContentRequest` with a
+ * `models/<id>` name), which counts the whole request. `model` and `contents`
+ * are mutually exclusive with it (ai.google.dev/api/tokens, dated 2026-08-17,
+ * read 2026-10-03), so `contents` goes inside it.
+ *
+ * A non-2xx response is thrown as the SDK's own `ApiError` (status plus the
+ * JSON body as the message), so `classifyGoogleError` reads it exactly like a
+ * `generateContent` failure. `fetch` is the global, resolved per call.
+ */
+async function countTokensWithRequest(
+  apiKey: string,
+  params: GeminiCountTokensParams,
+): Promise<GeminiCountTokensResponseShape> {
+  const { ApiError } = await import('@google/genai')
+  const model = params.model.startsWith('models/')
+    ? params.model
+    : `models/${params.model}`
+  const response = await fetch(`${GEMINI_API_BASE}/${model}:countTokens`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
+    body: JSON.stringify({
+      generateContentRequest: {
+        model,
+        contents: params.contents,
+        ...(params.systemInstruction !== undefined
+          ? { systemInstruction: params.systemInstruction }
+          : {}),
+        ...(params.tools !== undefined ? { tools: params.tools } : {}),
+      },
+    }),
+    ...(params.config?.abortSignal !== undefined
+      ? { signal: params.config.abortSignal }
+      : {}),
+  })
+  if (!response.ok) {
+    const body: unknown =
+      response.headers.get('content-type')?.includes('application/json') === true
+        ? await response.json()
+        : {
+            error: {
+              message: await response.text(),
+              code: response.status,
+              status: response.statusText,
+            },
+          }
+    throw new ApiError({ message: JSON.stringify(body), status: response.status })
+  }
+  return (await response.json()) as GeminiCountTokensResponseShape
 }

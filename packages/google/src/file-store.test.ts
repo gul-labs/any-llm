@@ -183,6 +183,109 @@ describe('GoogleFileStore', () => {
     expect((err as LlmError).retryable).toBe(false)
   })
 
+  it('keeps the provider File.error message and status on FAILED (immediately and while polling)', async () => {
+    const fileError = { code: 3, message: 'The file could not be decoded as video/mp4.' }
+    const failedImmediately = makeClient({
+      upload: vi.fn().mockResolvedValue({
+        name: 'files/abc123',
+        uri: 'https://example.com/files/abc123',
+        mimeType: 'video/mp4',
+        state: 'FAILED',
+        error: fileError,
+      }),
+    })
+    const store = new GoogleFileStore({
+      auth: fakeAuth,
+      client: failedImmediately,
+      sleep: fastSleep,
+    })
+    const first = (await store
+      .upload(new Uint8Array([1]), 'video/mp4')
+      .catch((e) => e)) as LlmError
+    expect(first).toMatchObject({
+      kind: 'bad_request',
+      retryable: false,
+      provider: 'google',
+    })
+    expect(first.message).toContain('The file could not be decoded as video/mp4.')
+    expect(first.cause).toEqual(fileError)
+
+    const failedWhilePolling = makeClient({
+      upload: vi.fn().mockResolvedValue({
+        name: 'files/abc123',
+        uri: 'https://example.com/files/abc123',
+        mimeType: 'video/mp4',
+        state: 'PROCESSING',
+      }),
+      get: vi.fn().mockResolvedValue({
+        name: 'files/abc123',
+        state: 'FAILED',
+        error: fileError,
+      }),
+    })
+    const polling = new GoogleFileStore({
+      auth: fakeAuth,
+      client: failedWhilePolling,
+      sleep: fastSleep,
+    })
+    const second = (await polling
+      .upload(new Uint8Array([1]), 'video/mp4')
+      .catch((e) => e)) as LlmError
+    expect(second.message).toContain('The file could not be decoded as video/mp4.')
+    expect(second.cause).toEqual(fileError)
+  })
+
+  it('a FAILED file with no provider error keeps the plain message', async () => {
+    const client = makeClient({
+      upload: vi.fn().mockResolvedValue({
+        name: 'files/abc123',
+        uri: 'https://example.com/files/abc123',
+        state: 'FAILED',
+      }),
+    })
+    const store = new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+    const err = (await store
+      .upload(new Uint8Array([1]), 'image/png')
+      .catch((e) => e)) as LlmError
+    expect(err.message).toBe('File processing failed immediately after upload')
+    expect(err.cause).toBeUndefined()
+  })
+
+  it('passes the signal to the SDK upload config', async () => {
+    const controller = new AbortController()
+    const client = makeClient()
+    const store = new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+    await store.upload(new Uint8Array([1]), 'image/png', { signal: controller.signal })
+    const call = (client.upload as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      config: { abortSignal?: AbortSignal }
+    }
+    expect(call.config.abortSignal).toBe(controller.signal)
+  })
+
+  it('an abort during the upload rejects with aborted at once, though the SDK call never settles', async () => {
+    const controller = new AbortController()
+    const client = makeClient({ upload: vi.fn().mockReturnValue(new Promise(() => {})) })
+    const store = new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+    const pending = store
+      .upload(new Uint8Array([1]), 'image/png', { signal: controller.signal })
+      .catch((e) => e)
+    controller.abort()
+    const err = (await pending) as LlmError
+    expect(err).toBeInstanceOf(LlmError)
+    expect(err).toMatchObject({ kind: 'aborted', retryable: false })
+  })
+
+  it('an already-aborted signal rejects before the SDK is called', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const client = makeClient()
+    const store = new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+    await expect(
+      store.upload(new Uint8Array([1]), 'image/png', { signal: controller.signal }),
+    ).rejects.toMatchObject({ kind: 'aborted' })
+    expect(client.upload).not.toHaveBeenCalled()
+  })
+
   // 4. Poll timeout → LlmError kind === 'timeout'
   it('throws LlmError timeout when polling exceeds timeoutMs', async () => {
     const client = makeClient({
@@ -210,7 +313,8 @@ describe('GoogleFileStore', () => {
     const err = await store.upload(new Uint8Array([1]), 'image/png').catch((e) => e)
     expect(err).toBeInstanceOf(LlmError)
     expect((err as LlmError).kind).toBe('timeout')
-    expect((err as LlmError).retryable).toBe(true)
+    // Not retryable: a retry would upload the bytes again and orphan the first file.
+    expect((err as LlmError).retryable).toBe(false)
   })
 
   // 5. expiresAt is Date when expirationTime present; absent (not undefined key) when not

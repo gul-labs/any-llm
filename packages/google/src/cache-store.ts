@@ -11,7 +11,7 @@
  */
 
 import type { AuthMaterial, Logger } from '@gullabs/core'
-import type { Content } from '@google/genai'
+import type { Content, Tool, ToolConfig } from '@google/genai'
 
 import { requireApiKey } from './client.js'
 import { LlmError, classifyError, redactSecrets } from '@gullabs/core'
@@ -54,6 +54,8 @@ export interface GeminiCachesClientLike {
     config: {
       contents?: Content[]
       systemInstruction?: Content | string
+      tools?: Tool[]
+      toolConfig?: ToolConfig
       ttl?: string
       displayName?: string
     }
@@ -98,9 +100,9 @@ export interface GoogleCacheStoreOptions {
     minTokens: number
     /**
      * Counts tokens for the exact token-bearing payload of the impending
-     * create — `model` + `contents` + `systemInstruction` only. `ttl` and
-     * `displayName` are excluded: they carry no tokens and are irrelevant to
-     * the pre-flight check.
+     * create — `model` + `contents` + `systemInstruction` + `tools` only.
+     * `toolConfig`, `ttl` and `displayName` are excluded: they carry no tokens
+     * and are irrelevant to the pre-flight check.
      *
      * This callback receives genai-native `Content[]`/`Content|string` — it
      * does NOT receive the library's `Message[]` shape and there is no
@@ -114,6 +116,7 @@ export interface GoogleCacheStoreOptions {
       model: string
       contents?: Content[]
       systemInstruction?: Content | string
+      tools?: Tool[]
     }) => Promise<number>
   }
 }
@@ -253,6 +256,14 @@ export class GoogleCacheStore {
     ttlSeconds: number
     contents?: Content[]
     systemInstruction?: Content | string
+    /**
+     * Tool declarations to store in the cache. Gemini rejects a request that
+     * sends `tools` or `toolConfig` together with `cachedContent`, so a cache
+     * used by a tool-calling call must hold them (the adapter rejects the
+     * combination before dispatch).
+     */
+    tools?: Tool[]
+    toolConfig?: ToolConfig
     displayName?: string
   }): Promise<GoogleCacheHandle> {
     if (this.preflight !== undefined) {
@@ -262,6 +273,7 @@ export class GoogleCacheStore {
         ...(input.systemInstruction !== undefined
           ? { systemInstruction: input.systemInstruction }
           : {}),
+        ...(input.tools !== undefined ? { tools: input.tools } : {}),
       })
       if (counted < this.preflight.minTokens) {
         throw new LlmError(
@@ -278,12 +290,16 @@ export class GoogleCacheStore {
       ttl: string
       contents?: Content[]
       systemInstruction?: Content | string
+      tools?: Tool[]
+      toolConfig?: ToolConfig
       displayName?: string
     } = { ttl: `${input.ttlSeconds}s` }
 
     if (input.contents !== undefined) config.contents = input.contents
     if (input.systemInstruction !== undefined)
       config.systemInstruction = input.systemInstruction
+    if (input.tools !== undefined) config.tools = input.tools
+    if (input.toolConfig !== undefined) config.toolConfig = input.toolConfig
     if (input.displayName !== undefined) config.displayName = input.displayName
 
     let resp: { name?: string; model?: string; expireTime?: string }
@@ -335,6 +351,8 @@ export class GoogleCacheStore {
       ttlSeconds: number
       contents?: Content[]
       systemInstruction?: Content | string
+      tools?: Tool[]
+      toolConfig?: ToolConfig
     }>,
   ): Promise<GoogleCacheHandle> {
     const mapKey = `${key.model}:${key.stableKey}`
@@ -363,6 +381,10 @@ export class GoogleCacheStore {
           : {}),
         ...(factoryResult.systemInstruction !== undefined
           ? { systemInstruction: factoryResult.systemInstruction }
+          : {}),
+        ...(factoryResult.tools !== undefined ? { tools: factoryResult.tools } : {}),
+        ...(factoryResult.toolConfig !== undefined
+          ? { toolConfig: factoryResult.toolConfig }
           : {}),
       })
       this.entries.set(mapKey, { handle, ttlSeconds: factoryResult.ttlSeconds })

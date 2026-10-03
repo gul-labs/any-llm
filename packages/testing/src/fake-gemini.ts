@@ -41,6 +41,11 @@ export interface GeminiCandidateLike {
    * e.g. `'STOP'`, `'MAX_TOKENS'`, `'SAFETY'`, `'OTHER'`.
    */
   finishReason?: string
+  /** Human-readable detail Google sends with some finish reasons. */
+  finishMessage?: string
+  safetyRatings?: unknown[]
+  citationMetadata?: unknown
+  urlContextMetadata?: unknown
   /** Grounding metadata returned when Google Search grounding is active. */
   groundingMetadata?: unknown
 }

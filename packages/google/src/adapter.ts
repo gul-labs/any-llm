@@ -37,6 +37,7 @@ import {
 } from './client.js'
 import { GOOGLE_REASONING_EFFORT_BUDGET } from './reasoning-budget.js'
 import { googleJsonSchemaProfile } from './json-schema.js'
+import { GOOGLE_SAFETY_CATEGORIES, GOOGLE_SAFETY_THRESHOLDS } from './safety-settings.js'
 import {
   countWebSearchQueries,
   normalizeGroundingCitations,
@@ -158,6 +159,9 @@ function parseGoogleTool(tool: unknown, model: string): GeminiAllowedTool {
   }
 }
 
+const SAFETY_CATEGORY_SET: ReadonlySet<string> = new Set(GOOGLE_SAFETY_CATEGORIES)
+const SAFETY_THRESHOLD_SET: ReadonlySet<string> = new Set(GOOGLE_SAFETY_THRESHOLDS)
+
 function parseGoogleSafetySetting(
   setting: unknown,
   index: number,
@@ -179,15 +183,21 @@ function parseGoogleSafetySetting(
     )
   }
 
-  if (typeof setting['category'] !== 'string' || setting['category'].length === 0) {
+  if (
+    typeof setting['category'] !== 'string' ||
+    !SAFETY_CATEGORY_SET.has(setting['category'])
+  ) {
     throw badGoogleProviderOptions(
-      `providerOptions.google.safetySettings[${index}].category must be a non-empty string for model "${model}".`,
+      `providerOptions.google.safetySettings[${index}].category must be one of ${GOOGLE_SAFETY_CATEGORIES.join(', ')} for model "${model}".`,
     )
   }
 
-  if (typeof setting['threshold'] !== 'string' || setting['threshold'].length === 0) {
+  if (
+    typeof setting['threshold'] !== 'string' ||
+    !SAFETY_THRESHOLD_SET.has(setting['threshold'])
+  ) {
     throw badGoogleProviderOptions(
-      `providerOptions.google.safetySettings[${index}].threshold must be a non-empty string for model "${model}".`,
+      `providerOptions.google.safetySettings[${index}].threshold must be one of ${GOOGLE_SAFETY_THRESHOLDS.join(', ')} for model "${model}".`,
     )
   }
 
@@ -437,6 +447,77 @@ export type { GeminiClientLike }
 // FinishReason mapping (Gemini SDK enum → our FinishReason)
 // ---------------------------------------------------------------------------
 
+/**
+ * Largest request Google accepts without the Files API: "Always use the Files
+ * API when the total request size (including the files, text prompt, system
+ * instructions, etc.) is larger than 100 MB. For PDF files, the limit is 50
+ * MB." (ai.google.dev/gemini-api/docs/files and /file-input-methods, both
+ * dated 2026-09-23, read 2026-10-03). MB is read as MiB, the looser reading,
+ * so the check never rejects what Google would accept.
+ */
+const MAX_INLINE_REQUEST_BYTES = 100 * 1024 * 1024
+const MAX_INLINE_PDF_BYTES = 50 * 1024 * 1024
+
+/**
+ * Rejects, before dispatch, a request whose inline data and text certainly
+ * exceed Google's request limit. The size counted is a lower bound of the
+ * request body: base64 characters of inline media, UTF-8 bytes of text and the
+ * system instruction.
+ */
+function assertInlinePayloadWithinLimits(
+  contents: readonly GeminiContent[],
+  system: string | undefined,
+): void {
+  let total = system === undefined ? 0 : Buffer.byteLength(system, 'utf8')
+  contents.forEach((content, mi) => {
+    content.parts.forEach((part, pi) => {
+      if ('text' in part) total += Buffer.byteLength(part.text, 'utf8')
+      if (!('inlineData' in part)) return
+      const { mimeType, data } = part.inlineData
+      total += data.length
+      if (mimeType === 'application/pdf') {
+        const decoded = Math.floor((data.length * 3) / 4)
+        if (decoded > MAX_INLINE_PDF_BYTES) {
+          throw new LlmError(
+            `messages[${mi}].parts[${pi}] is an inline PDF of about ${decoded} bytes, over Google's 50 MB inline PDF limit. Upload it with GoogleFileStore and send a file-uri part.`,
+            {
+              kind: 'bad_request',
+              retryable: false,
+              provider: 'google',
+              issues: [
+                {
+                  path: `messages[${mi}].parts[${pi}]`,
+                  message: 'inline PDF over 50 MB',
+                },
+              ],
+            },
+          )
+        }
+      }
+    })
+  })
+  if (total > MAX_INLINE_REQUEST_BYTES) {
+    throw new LlmError(
+      `The request carries at least ${total} bytes of inline data and text, over Google's 100 MB request limit. Upload large media with GoogleFileStore and send file-uri parts.`,
+      {
+        kind: 'bad_request',
+        retryable: false,
+        provider: 'google',
+        issues: [{ path: 'messages', message: 'request over 100 MB' }],
+      },
+    )
+  }
+}
+
+/** Candidate fields copied to `providerMetadata.google.candidate` when present. */
+const CANDIDATE_METADATA_KEYS = [
+  'finishReason',
+  'finishMessage',
+  'safetyRatings',
+  'citationMetadata',
+  'urlContextMetadata',
+] as const
+
 function mapFinishReason(raw: string | undefined): FinishReason | undefined {
   if (raw === undefined) return undefined
   switch (raw) {
@@ -448,7 +529,10 @@ function mapFinishReason(raw: string | undefined): FinishReason | undefined {
     case 'RECITATION':
     case 'BLOCKLIST':
     case 'PROHIBITED_CONTENT':
+    case 'SPII':
     case 'IMAGE_SAFETY':
+    case 'IMAGE_PROHIBITED_CONTENT':
+    case 'IMAGE_RECITATION':
       return 'content_filter'
     default:
       return 'other'
@@ -737,6 +821,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         req.messages,
         resolved?.bySlot,
       )
+      assertInlinePayloadWithinLimits(contents, req.system)
 
       // ------------------------------------------------------------------
       // 2. Build GenerateContentConfig
@@ -1024,6 +1109,35 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         }
       }
 
+      // Gemini rejects a request that sets `system_instruction`, `tools` or
+      // `tool_config` together with `cachedContent`: they must live in the cache
+      // (`GoogleCacheStore.create` accepts them). Reject before dispatch.
+      if (config.cachedContent !== undefined) {
+        const conflicts = [
+          ...(req.system !== undefined ? ['system'] : []),
+          ...(req.tools !== undefined && req.tools.length > 0 ? ['tools'] : []),
+          ...(googleProviderConfig.tools !== undefined
+            ? ['providerOptions.google.tools']
+            : []),
+        ]
+        if (conflicts.length > 0) {
+          throw new LlmError(
+            `providerOptions.google.cachedContent cannot be combined with ${conflicts.join(
+              ' or ',
+            )} for model "${model}": Gemini requires the system instruction and tools to be stored in the cache. Put them in GoogleCacheStore.create and omit them from the request.`,
+            {
+              kind: 'bad_request',
+              retryable: false,
+              provider: 'google',
+              issues: conflicts.map((path) => ({
+                path,
+                message: 'cannot be sent with cachedContent',
+              })),
+            },
+          )
+        }
+      }
+
       // ------------------------------------------------------------------
       // 5a. Fixed-sampling models reject sampling params even when a custom
       //     descriptor or direct adapter test bypasses core parsing.
@@ -1280,6 +1394,35 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         })
       }
       const groundingMetadata = candidate.groundingMetadata
+      const parts = candidate.content?.parts ?? []
+
+      // An output-side filter stop that produced neither answer text nor a tool
+      // call is a failure, like a blocked prompt: `content_filter`, not
+      // retryable (the same call is refused again), billed. A stop that kept
+      // partial text or a call is returned with `finishReason: 'content_filter'`.
+      const hasAnswer = parts.some(
+        (part) =>
+          (part.thought !== true &&
+            typeof part.text === 'string' &&
+            part.text.length > 0) ||
+          (part.functionCall !== undefined && typeof part.functionCall.name === 'string'),
+      )
+      const filteredCandidateError = (note: string): LlmError =>
+        new LlmError(
+          `Gemini candidate was filtered (finishReason ${candidate.finishReason}${
+            candidate.finishMessage !== undefined ? `: ${candidate.finishMessage}` : ''
+          }); ${note}. The attempt was billed.`,
+          {
+            kind: 'content_filter',
+            retryable: false,
+            provider: 'google',
+            ...billedFailure(response.usageMetadata, groundingMetadata),
+            ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
+          },
+        )
+      if (mapFinishReason(candidate.finishReason) === 'content_filter' && !hasAnswer) {
+        throw filteredCandidateError('it carries no answer text and no tool call')
+      }
 
       // requireGrounding fails closed: only a response that reports at least one
       // search query proves Search ran. It is judged only on a candidate that
@@ -1291,16 +1434,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         if (groundingMetadata === undefined || queries === undefined || queries < 1) {
           const finishReason = mapFinishReason(candidate.finishReason)
           if (finishReason === 'content_filter') {
-            throw new LlmError(
-              `Gemini candidate was filtered (finishReason ${candidate.finishReason}); the grounding check was not applied. The attempt was billed.`,
-              {
-                kind: 'content_filter',
-                retryable: false,
-                provider: 'google',
-                ...billedFailure(response.usageMetadata, groundingMetadata),
-                ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
-              },
-            )
+            throw filteredCandidateError('the grounding check was not applied')
           }
           if (candidate.finishReason === undefined || candidate.finishReason === 'STOP') {
             const why =
@@ -1332,8 +1466,6 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
           }
         }
       }
-
-      const parts = candidate.content?.parts ?? []
 
       // Separate thought parts from text parts, and build the ordered assistant
       // message (provider order, thought parts omitted) with the signatures the
@@ -1513,7 +1645,25 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         ...((): { providerMetadata: JsonValue } | Record<string, never> => {
           const pf = response.promptFeedback
           const gm = groundingMetadata
-          if (pf === undefined && gm === undefined) return {}
+          // The candidate's own fields (raw finish reason and message, safety
+          // ratings, citation and URL-context metadata), so a host can tell a
+          // malformed tool call from a language refusal behind `'other'`.
+          const candidateFields: { [k: string]: JsonValue } = {}
+          for (const key of CANDIDATE_METADATA_KEYS) {
+            const value = (candidate as unknown as Record<string, unknown>)[key]
+            if (value !== undefined) candidateFields[key] = value as JsonValue
+          }
+          const googleMeta: { [k: string]: JsonValue } = {}
+          if (Object.keys(candidateFields).length > 0) {
+            googleMeta['candidate'] = candidateFields
+          }
+          if (
+            pf === undefined &&
+            gm === undefined &&
+            Object.keys(googleMeta).length === 0
+          ) {
+            return {}
+          }
           const meta: { [k: string]: JsonValue } = {}
           if (pf !== undefined) {
             meta['promptFeedback'] = pf as unknown as JsonValue
@@ -1526,11 +1676,12 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
               // row, so the raw copy omits it.
               const { searchEntryPoint: _widget, ...rest } = gm as Record<string, unknown>
               meta['groundingMetadata'] = rest as unknown as JsonValue
-              meta['google'] = { searchEntryPoint }
+              googleMeta['searchEntryPoint'] = searchEntryPoint
             } else {
               meta['groundingMetadata'] = gm as unknown as JsonValue
             }
           }
+          if (Object.keys(googleMeta).length > 0) meta['google'] = googleMeta
           return { providerMetadata: meta as JsonValue }
         })(),
         ...(() => {
@@ -1555,37 +1706,56 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         )
       }
 
-      // The SDK's Gemini Developer API `countTokens` carries no `systemInstruction`
-      // or `tools`, so a count that omitted them would be a lower bound reported
-      // as exact. Fail before dispatch instead of sending a different request.
-      const unsupported: string[] = []
-      // An empty string is not a system prompt: it adds no tokens, so the
-      // count is not a lower bound and it is treated as absent.
-      if (req.system !== undefined && req.system !== '') {
-        unsupported.push('system')
-      }
-      if (req.tools !== undefined && req.tools.length > 0) {
-        unsupported.push('tools')
-      }
-      if (unsupported.length > 0) {
-        throw new LlmError(
-          `Google countTokens does not support ${unsupported.join(' or ')}: the token count would omit them. Count the messages alone, or read inputTokens from a generate() result.`,
-          {
-            kind: 'bad_request',
-            retryable: false,
-            provider: 'google',
-            issues: unsupported.map((path) => ({
-              path,
-              message: 'not supported by Google countTokens',
-            })),
-          },
-        )
+      // The SDK's Gemini Developer API `countTokens` carries only `contents`, so
+      // a `system` or `tools` count goes through the REST `generateContentRequest`
+      // form (see `buildGoogleClient`): the count then covers the same request
+      // `generate()` would send. An empty system string adds no tokens and is
+      // treated as absent.
+      const hasSystem = req.system !== undefined && req.system !== ''
+      const tools =
+        req.tools !== undefined && req.tools.length > 0 ? req.tools : undefined
+      if (tools !== undefined) {
+        const descriptor = ctx.modelDescriptor
+        if (
+          descriptor !== undefined &&
+          descriptor.capabilities?.functionCalling !== true
+        ) {
+          throw new LlmError(
+            `tools is not supported for google model "${req.model}" (capabilities.functionCalling is not true).`,
+            { kind: 'bad_request', retryable: false, provider: 'google' },
+          )
+        }
+        const toolProfile = googleJsonSchemaProfile(descriptor?.model ?? req.model)
+        tools.forEach((tool, index) => {
+          assertJsonSchemaProfile(
+            tool.inputJsonSchema,
+            `tools[${index}].inputJsonSchema`,
+            toolProfile,
+          )
+        })
       }
 
       const contents = mapMessagesToGeminiContents(req.messages)
+      assertInlinePayloadWithinLimits(contents, hasSystem ? req.system : undefined)
       const params: GeminiCountTokensParams = {
         model: req.model,
         contents,
+        ...(hasSystem
+          ? { systemInstruction: { parts: [{ text: req.system as string }] } }
+          : {}),
+        ...(tools !== undefined
+          ? {
+              tools: [
+                {
+                  functionDeclarations: tools.map((tool) => ({
+                    name: tool.name,
+                    description: tool.description,
+                    parametersJsonSchema: tool.inputJsonSchema,
+                  })),
+                },
+              ],
+            }
+          : {}),
         ...(ctx.signal !== undefined ? { config: { abortSignal: ctx.signal } } : {}),
       }
 

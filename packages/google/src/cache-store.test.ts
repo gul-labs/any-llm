@@ -101,6 +101,61 @@ describe('GoogleCacheStore', () => {
     expect(handle.expiresAt.getTime()).toBe(BASE_NOW + ttlSeconds * 1000)
   })
 
+  it('create sends tools and toolConfig to the SDK create config, and the preflight sees the tools', async () => {
+    const client = makeClient()
+    const countTokens = vi.fn().mockResolvedValue(5000)
+    const store = new GoogleCacheStore({
+      auth: fakeAuth,
+      client,
+      now: () => BASE_NOW,
+      preflight: { minTokens: 1024, countTokens },
+    })
+    const tools = [
+      {
+        functionDeclarations: [
+          {
+            name: 'get_weather',
+            description: 'Weather',
+            parametersJsonSchema: { type: 'object' },
+          },
+        ],
+      },
+    ]
+    const toolConfig = { functionCallingConfig: { mode: 'AUTO' as never } }
+
+    await store.create({
+      model: 'gemini-2.5-flash',
+      ttlSeconds: 600,
+      systemInstruction: 'Be brief.',
+      tools,
+      toolConfig,
+    })
+
+    expect(client.create).toHaveBeenCalledWith({
+      model: 'gemini-2.5-flash',
+      config: { ttl: '600s', systemInstruction: 'Be brief.', tools, toolConfig },
+    })
+    expect(countTokens).toHaveBeenCalledWith({
+      model: 'gemini-2.5-flash',
+      systemInstruction: 'Be brief.',
+      tools,
+    })
+  })
+
+  it('getOrCreate forwards tools and toolConfig from the factory', async () => {
+    const client = makeClient()
+    const store = new GoogleCacheStore({ auth: fakeAuth, client, now: () => BASE_NOW })
+    const tools = [{ functionDeclarations: [{ name: 'f', description: 'd' }] }]
+    await store.getOrCreate({ model: 'm', stableKey: 'k' }, async () => ({
+      ttlSeconds: 60,
+      tools,
+    }))
+    expect(client.create).toHaveBeenCalledWith({
+      model: 'm',
+      config: { ttl: '60s', tools },
+    })
+  })
+
   it('create falls back to local clock expiry when server omits expireTime', async () => {
     const ttlSeconds = 1800
     const client = makeClient({

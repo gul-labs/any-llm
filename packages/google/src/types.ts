@@ -10,9 +10,13 @@
  * @module
  */
 
+import type { GoogleSafetyCategory, GoogleSafetyThreshold } from './safety-settings.js'
+
 export type GoogleSafetySetting = {
-  category: string
-  threshold: string
+  /** A documented `HarmCategory`; see `safety-settings.ts` for the source. */
+  category: GoogleSafetyCategory
+  /** A documented `HarmBlockThreshold`. */
+  threshold: GoogleSafetyThreshold
 }
 
 export type GoogleSearchTool = {

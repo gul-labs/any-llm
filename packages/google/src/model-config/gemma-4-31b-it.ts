@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { GOOGLE_SAFETY_CATEGORIES, GOOGLE_SAFETY_THRESHOLDS } from '../safety-settings.js'
+
 export const Gemma431bItConfigSchema = z
   .strictObject({
     temperature: z
@@ -77,13 +79,13 @@ export const Gemma431bItConfigSchema = z
             safetySettings: z
               .array(
                 z.strictObject({
-                  category: z.string().min(1).meta({
+                  category: z.enum(GOOGLE_SAFETY_CATEGORIES).meta({
                     title: 'Safety Category',
-                    description: 'Google safety category identifier.',
+                    description: 'Documented Google safety category.',
                   }),
-                  threshold: z.string().min(1).meta({
+                  threshold: z.enum(GOOGLE_SAFETY_THRESHOLDS).meta({
                     title: 'Safety Threshold',
-                    description: 'Google safety threshold identifier.',
+                    description: 'Documented Google safety threshold.',
                   }),
                 }),
               )

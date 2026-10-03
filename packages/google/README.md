@@ -12,20 +12,22 @@ pnpm add @gullabs/google @gullabs/core @google/genai
 
 ## Key exports
 
-| Export                                                                     | What it is                                                                            |
-| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `googleProvider(opts?)`                                                    | `ProviderPlugin` factory — bundles the adapter, model descriptors, and pricing source |
-| `geminiAdapter(opts?)`                                                     | Creates the `ProviderAdapter` for Gemini                                              |
-| `GeminiAdapterOptions`                                                     | `{ client?: GeminiClientLike }` — inject a pre-built or fake client                   |
-| `GeminiClientLike`                                                         | Structural interface the adapter depends on (satisfied by real SDK and fakes)         |
-| `buildGoogleClient(auth)`                                                  | Builds the real `@google/genai` client from `AuthMaterial`                            |
-| `isGeminiCapacityError(err)`                                               | Detects Gemini Flex shared-capacity errors for built-in fallback                      |
-| `geminiModelDescriptors`, `gemmaModelDescriptors`, `defaultGeminiRegistry` | Built-in model descriptors + pre-built registry                                       |
-| `geminiPricingSource()`, `GEMINI_PRICING`, `resolveGeminiRates`            | Built-in Gemini pricing snapshot (concrete standard / flex / batch rates)             |
-| `GoogleFileStore`                                                          | Files API: upload + poll ACTIVE + delete                                              |
-| `FileDeleteOptions`                                                        | `{ failClosed?, signal? }` — opt-in fail-closed delete (parity with `@gullabs/xai`)   |
+| Export                                                                     | What it is                                                                             |
+| -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `googleProvider(opts?)`                                                    | `ProviderPlugin` factory — bundles the adapter, model descriptors, and pricing source  |
+| `geminiAdapter(opts?)`                                                     | Creates the `ProviderAdapter` for Gemini                                               |
+| `GeminiAdapterOptions`                                                     | `{ client?: GeminiClientLike }` — inject a pre-built or fake client                    |
+| `GeminiClientLike`                                                         | Structural interface the adapter depends on (satisfied by real SDK and fakes)          |
+| `buildGoogleClient(auth)`                                                  | Builds the real `@google/genai` client from `AuthMaterial`                             |
+| `isGeminiCapacityError(err)`                                               | Detects Gemini Flex capacity errors (503, or 429 without a quota failure) for fallback |
+| `geminiModelDescriptors`, `gemmaModelDescriptors`, `defaultGeminiRegistry` | Built-in model descriptors + pre-built registry                                        |
+| `geminiPricingSource()`, `GEMINI_PRICING`, `resolveGeminiRates`            | Built-in Gemini pricing snapshot (concrete standard / flex / batch rates)              |
+| `GoogleFileStore`                                                          | Files API: upload + poll ACTIVE + delete                                               |
+| `FileDeleteOptions`                                                        | `{ failClosed?, signal? }` — opt-in fail-closed delete (parity with `@gullabs/xai`)    |
 
 ## File store delete modes
+
+`GoogleFileStore.upload` takes an `AbortSignal` (an abort releases the caller at once; bytes already sent may still be stored by Google), keeps Google's own `File.error` when a file ends `FAILED`, and its polling timeout is **not retryable** (the upload succeeded; a retry would upload again and orphan the file).
 
 `GoogleFileStore.delete` defaults to **fail-open** (errors → `onDeleteError`, resolve). Pass `{ failClosed: true }` when the host gates durable state on known success; HTTP/SDK not-found remains success (idempotent). Empty `handle.name` always throws `bad_request`.
 
@@ -202,7 +204,10 @@ when any part carries one.
 - `output.jsonSchema` → `responseMimeType: 'application/json'` + verbatim `responseJsonSchema` when native structured output is enabled, and `tools[].inputJsonSchema` → `parametersJsonSchema` (both standard JSON Schema, in your key order; see "JSON Schema" below); the engine returns parsed output and `outputParsed` without validating shape
 - `providerOptions.google.*` → typed provider-extension lane for admitted keys such as `cachedContent`, `safetySettings`, and exact tool declarations
 - Usage: `promptTokenCount`→`inputTokens`, `candidatesTokenCount`+`thoughtsTokenCount`→`outputTokens` (GROSS)
-- Errors: `401` and a bare `403` default to `invalid_auth`; `429`→`rate_limited`; `5xx`→`server`; timeouts; Gemini safety blocks are a 200-path `content_filter` when `promptFeedback.blockReason` is set. A candidate-less 200 without a block reason is retryable `server`.
+- Errors: `401` and a bare `403` default to `invalid_auth`; `429`→`rate_limited`; `5xx`→`server`; timeouts; Gemini safety blocks are a 200-path `content_filter` when `promptFeedback.blockReason` is set, and so is an output filter stop (`SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_*`) that produced no text and no tool call (not retryable, usage attached; a stop that kept partial text is a success with `finishReason: 'content_filter'`). A candidate-less 200 without a block reason is retryable `server`. The structured body adds: `RetryInfo.retryDelay` → `retryAfterMs`; a per-day quota (`QuotaFailure` quota id containing `PerDay`) → `rate_limited`, not retryable, `reason: 'daily_quota'`; `API_KEY_INVALID` / `API_KEY_EXPIRED` (Google sends the first as HTTP 400) → `invalid_auth`; a stale `cachedContent` (HTTP 403, "CachedContent not found") → `bad_request`, `reason: 'cache_not_found'`.
+- `providerOptions.google.safetySettings` → `category` is one of `HARM_CATEGORY_HARASSMENT`, `_HATE_SPEECH`, `_SEXUALLY_EXPLICIT`, `_DANGEROUS_CONTENT`, `_CIVIC_INTEGRITY`, `_JAILBREAK` and `threshold` one of `HARM_BLOCK_THRESHOLD_UNSPECIFIED`, `BLOCK_LOW_AND_ABOVE`, `BLOCK_MEDIUM_AND_ABOVE`, `BLOCK_ONLY_HIGH`, `BLOCK_NONE`, `OFF` (Google's safety-settings guide, dated 2026-09-17); anything else is `bad_request` before dispatch.
+- `providerOptions.google.cachedContent` cannot be sent with `system`, `tools` or `providerOptions.google.tools`: Gemini needs them stored in the cache, so pass `tools` / `toolConfig` (and `systemInstruction`) to `GoogleCacheStore.create` instead. The adapter rejects the combination before dispatch.
+- Inline media is checked against Google's request limits before dispatch: an inline PDF over 50 MB, or a request whose inline data and text exceed 100 MB, is `bad_request`; upload it with `GoogleFileStore` and send a `file-uri` part. The result's `providerMetadata.google.candidate` holds the candidate's raw `finishReason`, `finishMessage`, `safetyRatings`, `citationMetadata` and `urlContextMetadata` when Google sent them.
 
 ## JSON Schema
 
@@ -325,9 +330,11 @@ Google requires a grounded answer to display its Search Suggestions: the widget 
 as untrusted markup. Render it in a sandboxed `<iframe>` (for example `sandbox` with no
 `allow-scripts` and `srcdoc`), never inject it into your page's DOM with `innerHTML`.
 
-`countTokens` takes `messages` only on Google: `system` or `tools` fails with
-`bad_request`, because the Developer API's count cannot include them and a count
-without them would be a lower bound reported as exact.
+`countTokens` counts `messages`, `system` and `tools`. The SDK's Developer API method cannot carry
+`system` or `tools`, so with either present the library calls the REST `countTokens` with a full
+`generateContentRequest` (a messages-only count still goes through the SDK), and the count covers the
+same request `generate()` would send. Tool schemas are held to the same JSON Schema profile as
+`generate()`. `cachedContent` is not part of a count.
 
 ## Registered models
 

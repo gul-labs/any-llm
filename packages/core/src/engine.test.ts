@@ -1509,7 +1509,9 @@ describe('engine — providerOptions strict merge', () => {
         providerOptions: {
           google: {
             httpOptions: { timeout: 1_000 },
-            safetySettings: [{ category: 'harm', threshold: 'block_only_high' }],
+            safetySettings: [
+              { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
+            ],
           },
         },
       },
@@ -1539,7 +1541,7 @@ describe('engine — providerOptions strict merge', () => {
     expect(google['httpOptions']).toEqual({ timeout: 2_000 })
     expect(google['cachedContent']).toBe('cached/abc123')
     expect(google['safetySettings']).toEqual([
-      { category: 'harm', threshold: 'block_only_high' },
+      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
     ])
   })
 

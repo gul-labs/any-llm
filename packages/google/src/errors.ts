@@ -2,81 +2,118 @@
  * classifyGoogleError — reclassify a raw thrown value into a typed
  * {@link LlmError} for @gullabs/google.
  *
- * Thin wrapper around `@gullabs/core`'s `classifyError`: applies the shared
- * HTTP-status/timeout/abort classification, tags `provider: 'google'`, and
- * widens the retryable bucket to cover connection-level transport failures
- * that never produced an HTTP response for `classifyError` to route by
- * status.
+ * Thin wrapper around `@gullabs/core`'s `classifyError`, which already routes
+ * by HTTP status first, treats a transport failure (`fetch failed`, an errno on
+ * the cause chain) as a retryable `server` error and maps 404/413 to
+ * `bad_request`. This module adds the overlays Gemini's structured error body
+ * supports (ADR-028 style: only the parsed body, never free text):
  *
- * `@google/genai`'s underlying `fetch` (undici, in Node) throws a plain
- * `TypeError: fetch failed` for DNS failures, connection refusals, and
- * severed sockets — wrapping the underlying errno error as `.cause`.
- * `classifyError` has no HTTP status to classify these by, so they
- * previously fell through to `kind: 'unknown', retryable: false`, which
- * Temporal treats as non-retryable and uses to kill the host run outright
- * instead of retrying a transient network blip (live-observed 2026-07-10).
- *
- * These are reclassified `kind: 'server', retryable: true` — the same
- * "provider fault, not caller fault, safe to retry" bucket already used
- * elsewhere in this adapter for provider-side failures with no HTTP status
- * (see the malformed-`countTokens`-response case in `adapter.ts`).
+ * - `RetryInfo.retryDelay` becomes `retryAfterMs` (the SDK's `ApiError` keeps no
+ *   headers, so the body is the only place Google puts the delay).
+ * - A `QuotaFailure` whose quota id contains `PerDay` is a daily quota: it
+ *   cannot recover before the next day, so it is `rate_limited` with
+ *   `retryable: false` and `reason: 'daily_quota'`.
+ * - `ErrorInfo.reason` `API_KEY_INVALID` / `API_KEY_EXPIRED` is `invalid_auth`.
+ *   Google sends the invalid-key case as HTTP 400, which would otherwise read
+ *   as a caller bug (live capture, probe P6, 2026-10-03). `API_KEY_EXPIRED` is
+ *   mapped from Google's documented reason set; an expired key could not be
+ *   produced to capture it.
+ * - A 403 whose body message is `CachedContent not found (or permission
+ *   denied)` is a stale `cachedContent` reference: `bad_request` with
+ *   `reason: 'cache_not_found'` (probe P6). Google sends no structured reason
+ *   for it, so the body's `message` field is the only signal, and a genuine
+ *   permission failure cannot be told apart.
  *
  * @module
  */
 
-import { LlmError, classifyError } from '@gullabs/core'
+import { LlmError, classifyError, parseRetryAfter } from '@gullabs/core'
 
-/**
- * Message/errno signatures of a transport-level failure: the request never
- * reached Google's servers (or the connection was severed mid-flight), so
- * there is no HTTP response for `classifyHttpStatus` to route by status.
- * Covers undici's own default message (`"fetch failed"`) plus the
- * Node/undici errno codes that surface when the underlying socket fails
- * before a response arrives.
- */
-const GOOGLE_TRANSPORT_ERROR_PATTERN =
-  /fetch failed|connection error|econnreset|econnrefused|etimedout|eai_again|epipe|socket hang up/i
+/** The structured body the SDK serializes into `ApiError.message`. */
+export interface GoogleErrorBody {
+  /** `error.status`, the gRPC status name (`RESOURCE_EXHAUSTED`, `UNAVAILABLE`, ...). */
+  status?: string
+  /** `error.message`. */
+  message?: string
+  /** `error.details`, as sent. */
+  details: readonly Record<string, unknown>[]
+}
 
-/** True iff `err.message` or `err.code` matches a known transport-failure signature. */
-function matchesGoogleTransportSignature(err: unknown): boolean {
-  if (!(err instanceof Error)) return false
-  if (GOOGLE_TRANSPORT_ERROR_PATTERN.test(err.message)) return true
-  const code = (err as { code?: unknown }).code
-  return typeof code === 'string' && GOOGLE_TRANSPORT_ERROR_PATTERN.test(code)
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**
- * True iff `rawErr` is (or wraps) a transport-level connection failure.
- *
- * Detection order:
- * 1. `rawErr.message` / `rawErr.code` matches a known transport-failure
- *    signature.
- * 2. A wrapped `rawErr.cause` matches the same — undici's `fetch failed`
- *    `TypeError` attaches the underlying socket/DNS errno error as
- *    `.cause`.
+ * Reads the structured Gemini error body from a raw thrown `ApiError`, or from
+ * an `LlmError` whose `cause` is one. `undefined` when the value carries no
+ * parseable `{ error: {...} }` body (a transport failure, a plain `Error`).
  */
-function isGoogleTransportError(rawErr: unknown): boolean {
-  if (matchesGoogleTransportSignature(rawErr)) return true
-  if (rawErr instanceof Error) {
-    const cause = (rawErr as { cause?: unknown }).cause
-    if (matchesGoogleTransportSignature(cause)) return true
-  }
-  return false
-}
-
-/** The SDK serializes structured Gemini API errors into ApiError.message. */
-function isGoogleModelNotFound(rawErr: unknown): boolean {
-  if (!(rawErr instanceof Error)) return false
-  if ((rawErr as Error & { status?: unknown }).status !== 404) return false
+export function parseGoogleErrorBody(rawErr: unknown): GoogleErrorBody | undefined {
+  const source = rawErr instanceof LlmError ? rawErr.cause : rawErr
+  if (!(source instanceof Error)) return undefined
+  let parsed: unknown
   try {
-    const parsed = JSON.parse(rawErr.message) as {
-      error?: { code?: unknown; status?: unknown }
-    }
-    return parsed.error?.code === 404 && parsed.error.status === 'NOT_FOUND'
+    parsed = JSON.parse(source.message)
   } catch {
-    return false
+    return undefined
+  }
+  if (!isRecord(parsed) || !isRecord(parsed['error'])) return undefined
+  const error = parsed['error']
+  const details = Array.isArray(error['details']) ? error['details'].filter(isRecord) : []
+  return {
+    ...(typeof error['status'] === 'string' ? { status: error['status'] } : {}),
+    ...(typeof error['message'] === 'string' ? { message: error['message'] } : {}),
+    details,
   }
 }
+
+function detailOfType(body: GoogleErrorBody, type: string): Record<string, unknown>[] {
+  return body.details.filter((d) => d['@type'] === `type.googleapis.com/${type}`)
+}
+
+/** `ErrorInfo.reason` values of the details, in order. */
+function errorInfoReasons(body: GoogleErrorBody): string[] {
+  return detailOfType(body, 'google.rpc.ErrorInfo').flatMap((d) =>
+    typeof d['reason'] === 'string' ? [d['reason']] : [],
+  )
+}
+
+/** True when the body carries a `QuotaFailure` violation, which marks a quota limit. */
+export function hasQuotaFailure(body: GoogleErrorBody): boolean {
+  return detailOfType(body, 'google.rpc.QuotaFailure').length > 0
+}
+
+/** True when a `QuotaFailure` violation's `quotaId` names a per-day quota. */
+function isDailyQuota(body: GoogleErrorBody): boolean {
+  return detailOfType(body, 'google.rpc.QuotaFailure').some(
+    (failure) =>
+      Array.isArray(failure['violations']) &&
+      failure['violations'].some(
+        (v) =>
+          isRecord(v) &&
+          typeof v['quotaId'] === 'string' &&
+          v['quotaId'].includes('PerDay'),
+      ),
+  )
+}
+
+/**
+ * `RetryInfo.retryDelay` in milliseconds. It is a protobuf Duration written as
+ * decimal seconds with an `s` suffix (`"34s"`, `"34.5s"`); core's
+ * `parseRetryAfter` reads that form and applies the shared rounding and cap.
+ */
+function retryDelayMs(body: GoogleErrorBody): number | undefined {
+  for (const info of detailOfType(body, 'google.rpc.RetryInfo')) {
+    const delay = info['retryDelay']
+    if (typeof delay !== 'string') continue
+    const ms = parseRetryAfter({ 'retry-after': delay }, Date.now())
+    if (ms !== undefined) return ms
+  }
+  return undefined
+}
+
+const API_KEY_REASONS = new Set(['API_KEY_INVALID', 'API_KEY_EXPIRED'])
+const STALE_CACHE_MESSAGE = 'CachedContent not found'
 
 /** Optional extra fields threaded onto the returned {@link LlmError}. */
 export interface ClassifyGoogleErrorExtra {
@@ -88,36 +125,53 @@ export interface ClassifyGoogleErrorExtra {
  * Classify a raw error thrown from a `@google/genai` client call into a
  * typed {@link LlmError} always tagged `provider: 'google'`.
  *
- * Delegates to `@gullabs/core`'s `classifyError` for HTTP-status/timeout/
- * abort classification (an already-classified `LlmError` passes through
- * `classifyError` unchanged, per its own contract), then rebuilds the
- * result with `provider: 'google'` forced on — every error surfaced by this
- * adapter is tagged, even one injected pre-classified (e.g. by a test
- * double) without a provider of its own. It also reclassifies the
- * `kind: 'unknown'` fallback as `kind: 'server', retryable: true` when the
- * raw error matches a known transport-failure signature (see
- * {@link isGoogleTransportError}). A connection that never reached Google is
- * not the caller's fault and is safe to retry; it must never be surfaced as
- * the non-retryable `unknown` kind.
+ * Delegates to `@gullabs/core`'s `classifyError` (an already-classified
+ * `LlmError` passes through unchanged), applies the structured-body overlays
+ * described in the module header, and rebuilds the result with
+ * `provider: 'google'` forced on, so every error surfaced by this adapter is
+ * tagged even one injected pre-classified.
  */
 export function classifyGoogleError(
   rawErr: unknown,
   extra?: ClassifyGoogleErrorExtra,
 ): LlmError {
   const base = classifyError(rawErr)
-  const reclassifyAsTransport = base.kind === 'unknown' && isGoogleTransportError(rawErr)
-  const reclassifyAsBadRequest = base.kind === 'unknown' && isGoogleModelNotFound(rawErr)
+  const body = parseGoogleErrorBody(rawErr)
+
+  let kind = base.kind
+  let retryable = base.retryable
+  let reason = base.reason
+  let retryAfterMs = base.retryAfterMs
+
+  if (body !== undefined && base.httpStatus !== undefined) {
+    if (errorInfoReasons(body).some((r) => API_KEY_REASONS.has(r))) {
+      kind = 'invalid_auth'
+      retryable = false
+    } else if (
+      base.httpStatus === 403 &&
+      body.message?.startsWith(STALE_CACHE_MESSAGE) === true
+    ) {
+      kind = 'bad_request'
+      retryable = false
+      reason = 'cache_not_found'
+    } else if (base.httpStatus === 429) {
+      if (isDailyQuota(body)) {
+        kind = 'rate_limited'
+        retryable = false
+        reason = 'daily_quota'
+        retryAfterMs = undefined
+      } else {
+        retryAfterMs = retryDelayMs(body) ?? retryAfterMs
+      }
+    }
+  }
 
   return new LlmError(base.message, {
-    kind: reclassifyAsTransport
-      ? 'server'
-      : reclassifyAsBadRequest
-        ? 'bad_request'
-        : base.kind,
-    retryable: reclassifyAsTransport ? true : base.retryable,
-    ...(base.reason !== undefined ? { reason: base.reason } : {}),
+    kind,
+    retryable,
+    ...(reason !== undefined ? { reason } : {}),
     ...(base.httpStatus !== undefined ? { httpStatus: base.httpStatus } : {}),
-    ...(base.retryAfterMs !== undefined ? { retryAfterMs: base.retryAfterMs } : {}),
+    ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     provider: 'google',
     cause: base.cause ?? rawErr,
     ...(extra?.servedServiceTier !== undefined

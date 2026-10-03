@@ -26,6 +26,7 @@ import {
 } from '@gullabs/testing'
 import { geminiAdapter } from './adapter.js'
 import { isGeminiCapacityError } from './flex-fallback.js'
+import { classifyGoogleError } from './errors.js'
 import { FLEX_DEFAULT_TIMEOUT_MS } from './client.js'
 import type { GeminiClientLike, GeminiResponseShape } from './client.js'
 import { GOOGLE_REASONING_EFFORT_BUDGET } from './reasoning-budget.js'
@@ -314,43 +315,53 @@ describe('service tier', () => {
 // ---------------------------------------------------------------------------
 
 describe('flex fallback', () => {
-  it('classifies only 503 server errors and capacity-flavored 429s as fallbackable', () => {
+  /** An SDK `ApiError` as the SDK throws it: status plus the JSON body as the message. */
+  const apiError = (status: number, error: Record<string, unknown>): Error =>
+    Object.assign(new Error(JSON.stringify({ error: { code: status, ...error } })), {
+      status,
+    })
+  const QUOTA_FAILURE = {
+    '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+    violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel' }],
+  }
+
+  it('decides capacity from the structured error: 503, or 429 RESOURCE_EXHAUSTED without a QuotaFailure', () => {
+    const capacity = (err: Error): boolean =>
+      isGeminiCapacityError(classifyGoogleError(err))
+    expect(capacity(apiError(503, { status: 'UNAVAILABLE', message: 'x' }))).toBe(true)
+    expect(capacity(apiError(500, { status: 'INTERNAL', message: 'x' }))).toBe(false)
     expect(
-      isGeminiCapacityError(
-        new LlmError('unavailable', {
-          kind: 'server',
-          retryable: true,
-          httpStatus: 503,
-        }),
-      ),
+      capacity(apiError(429, { status: 'RESOURCE_EXHAUSTED', message: 'anything' })),
     ).toBe(true)
     expect(
-      isGeminiCapacityError(
-        new LlmError('internal error', {
-          kind: 'server',
-          retryable: true,
-          httpStatus: 500,
+      capacity(
+        apiError(429, {
+          status: 'RESOURCE_EXHAUSTED',
+          message: 'anything',
+          details: [QUOTA_FAILURE],
         }),
       ),
     ).toBe(false)
+  })
+
+  it('never reads the message text: capacity words in a quota 429 or a bodyless 429 do not count', () => {
+    const capacity = (err: unknown): boolean =>
+      isGeminiCapacityError(classifyGoogleError(err))
+    // The old regex fell back on "capacity" in the message; a quota body wins now.
     expect(
-      isGeminiCapacityError(
-        new LlmError('shared capacity is overloaded', {
-          kind: 'rate_limited',
-          retryable: true,
-          httpStatus: 429,
-        }),
-      ),
-    ).toBe(true)
-    expect(
-      isGeminiCapacityError(
-        new LlmError('quota exceeded for project billing account', {
-          kind: 'rate_limited',
-          retryable: true,
-          httpStatus: 429,
+      capacity(
+        apiError(429, {
+          status: 'RESOURCE_EXHAUSTED',
+          message: 'shared capacity is overloaded, try again',
+          details: [QUOTA_FAILURE],
         }),
       ),
     ).toBe(false)
+    // No parseable body: no structured evidence, whatever the text says.
+    expect(capacity({ status: 429, message: 'shared capacity is overloaded' })).toBe(
+      false,
+    )
+    expect(capacity(new Error('no capacity available'))).toBe(false)
   })
 
   it('falls back from flex 503 capacity error to one standard attempt', async () => {
@@ -1169,12 +1180,12 @@ describe('providerOptions.google lockdown', () => {
 
     const safetySettings = [
       {
-        category: 'HARM_CATEGORY_HATE_SPEECH',
-        threshold: 'BLOCK_MEDIUM_AND_ABOVE',
+        category: 'HARM_CATEGORY_HATE_SPEECH' as const,
+        threshold: 'BLOCK_MEDIUM_AND_ABOVE' as const,
       },
       {
-        category: 'HARM_CATEGORY_HARASSMENT',
-        threshold: 'BLOCK_ONLY_HIGH',
+        category: 'HARM_CATEGORY_HARASSMENT' as const,
+        threshold: 'BLOCK_ONLY_HIGH' as const,
       },
     ]
 

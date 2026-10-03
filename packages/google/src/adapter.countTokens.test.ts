@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { createClient, LlmError } from '@gullabs/core'
+import { createClient } from '@gullabs/core'
 import type { AdapterCtx, TokenCountRequest, Message } from '@gullabs/core'
 import { makeFakeGemini } from '@gullabs/testing'
 import { geminiAdapter, mapMessagesToGeminiContents } from './adapter.js'
@@ -57,57 +57,15 @@ describe('geminiAdapter.countTokens — happy path', () => {
   })
 })
 
-describe('geminiAdapter.countTokens — system and tools are rejected before dispatch (R1.8)', () => {
-  const tool = {
-    name: 'get_temperature',
-    description: 'Get temperature',
-    inputJsonSchema: { type: 'object' as const },
-  }
-
-  it.each([
-    ['system', { system: 'Be brief.' }, ['system']],
-    ['tools', { tools: [tool] }, ['tools']],
-    ['system and tools', { system: 'Be brief.', tools: [tool] }, ['system', 'tools']],
-  ])('%s → bad_request naming the field, no SDK call', async (_name, extra, paths) => {
-    const client = makeFakeGemini({ candidates: [] }, { totalTokens: 9 })
-    const adapter = geminiAdapter({ client })
-
-    const err = (await adapter.countTokens!(makeCountReq(extra), FAKE_CTX).catch(
-      (e: unknown) => e,
-    )) as LlmError
-
-    expect(err).toBeInstanceOf(LlmError)
-    expect(err.kind).toBe('bad_request')
-    expect(err.retryable).toBe(false)
-    expect(err.provider).toBe('google')
-    expect(err.issues?.map((i) => i.path)).toEqual(paths)
-    expect(client.countTokensCalls).toHaveLength(0)
-  })
-
-  it('an empty tools array is not a tool declaration and is accepted', async () => {
-    const client = makeFakeGemini({ candidates: [] }, { totalTokens: 9 })
-    const adapter = geminiAdapter({ client })
-    const result = await adapter.countTokens!(makeCountReq({ tools: [] }), FAKE_CTX)
-    expect(result.accuracy).toBe('exact')
-    expect(client.countTokensCalls).toHaveLength(1)
-  })
-
-  it('an empty system string is not a system prompt: treated as absent and counted', async () => {
-    const client = makeFakeGemini({ candidates: [] }, { totalTokens: 9 })
-    const adapter = geminiAdapter({ client })
-    const result = await adapter.countTokens!(makeCountReq({ system: '' }), FAKE_CTX)
-    expect(result.totalTokens).toBe(9)
-    expect(result.accuracy).toBe('exact')
-    expect(client.countTokensCalls).toHaveLength(1)
-    expect((client.countTokensCalls[0] as { config?: unknown }).config).toBeUndefined()
-  })
-
-  it('messages alone send neither systemInstruction nor tools', async () => {
+describe('geminiAdapter.countTokens — messages only', () => {
+  it('sends neither systemInstruction nor tools nor config when there is nothing to carry', async () => {
     const client = makeFakeGemini({ candidates: [] }, { totalTokens: 9 })
     const adapter = geminiAdapter({ client })
     await adapter.countTokens!(makeCountReq(), FAKE_CTX)
-    const call = client.countTokensCalls[0] as { config?: unknown }
-    expect(call.config).toBeUndefined()
+    const call = client.countTokensCalls[0] as Record<string, unknown>
+    expect(call).not.toHaveProperty('systemInstruction')
+    expect(call).not.toHaveProperty('tools')
+    expect(call['config']).toBeUndefined()
   })
 })
 

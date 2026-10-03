@@ -128,6 +128,12 @@ const STRICT_REGISTRY = createModelRegistry([
   },
 ])
 const TEST_AUTH = { apiKey: 'test-key' }
+const SAFETY_CATEGORIES = [
+  'HARM_CATEGORY_HARASSMENT',
+  'HARM_CATEGORY_HATE_SPEECH',
+  'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+  'HARM_CATEGORY_DANGEROUS_CONTENT',
+] as const
 const MESSAGES = [
   { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'Hi' }] },
 ]
@@ -1416,7 +1422,7 @@ describe('surface-stress: providerOptions.google strict allowlist', () => {
               google: {
                 safetySettings: [
                   {
-                    category: `HARM_CATEGORY_TEST_${i}`,
+                    category: SAFETY_CATEGORIES[i % SAFETY_CATEGORIES.length]!,
                     threshold: 'BLOCK_ONLY_HIGH',
                   },
                 ],
@@ -1435,7 +1441,7 @@ describe('surface-stress: providerOptions.google strict allowlist', () => {
       expect(googleBlock['httpOptions']).toEqual({ timeout: 60_000 + uniqueVal })
       expect(googleBlock['safetySettings']).toEqual([
         {
-          category: `HARM_CATEGORY_TEST_${i}`,
+          category: SAFETY_CATEGORIES[i % SAFETY_CATEGORIES.length]!,
           threshold: 'BLOCK_ONLY_HIGH',
         },
       ])

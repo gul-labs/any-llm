@@ -1,0 +1,160 @@
+{
+  "_note": "Gemini error bodies. `captured` entries are live responses from probe P6 (2026-10-03), bodies verbatim; the probe keys were synthetic and are not echoed by Google. `docDerived` entries are NOT captures: they are built from the field names in googleapis/googleapis google/rpc/error_details.proto (RetryInfo.retry_delay as a protobuf Duration written as decimal seconds with an 's' suffix; QuotaFailure.Violation.quota_id; ErrorInfo.reason), read 2026-10-03, because no 429 body could be captured without exhausting a quota (ADR-013).",
+  "captured": {
+    "invalidApiKey": {
+      "status": 400,
+      "body": {
+        "error": {
+          "code": 400,
+          "message": "API key not valid. Please pass a valid API key.",
+          "status": "INVALID_ARGUMENT",
+          "details": [
+            {
+              "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+              "reason": "API_KEY_INVALID",
+              "domain": "googleapis.com",
+              "metadata": {
+                "service": "generativelanguage.googleapis.com"
+              }
+            },
+            {
+              "@type": "type.googleapis.com/google.rpc.LocalizedMessage",
+              "locale": "en-US",
+              "message": "API key not valid. Please pass a valid API key."
+            }
+          ]
+        }
+      }
+    },
+    "emptyApiKey": {
+      "status": 403,
+      "body": {
+        "error": {
+          "code": 403,
+          "message": "Method doesn't allow unregistered callers (callers without established identity). Please use API Key or other form of API consumer identity to call this API.",
+          "status": "PERMISSION_DENIED"
+        }
+      }
+    },
+    "staleCachedContent": {
+      "status": 403,
+      "body": {
+        "error": {
+          "code": 403,
+          "message": "CachedContent not found (or permission denied)",
+          "status": "PERMISSION_DENIED"
+        }
+      }
+    },
+    "malformedCacheName": {
+      "status": 400,
+      "body": {
+        "error": {
+          "code": 400,
+          "message": "Could not parse the CachedContent name",
+          "status": "INVALID_ARGUMENT"
+        }
+      }
+    }
+  },
+  "docDerived": {
+    "expiredApiKey": {
+      "status": 400,
+      "body": {
+        "error": {
+          "code": 400,
+          "message": "API key expired. Please renew the API key.",
+          "status": "INVALID_ARGUMENT",
+          "details": [
+            {
+              "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+              "reason": "API_KEY_EXPIRED",
+              "domain": "googleapis.com",
+              "metadata": {
+                "service": "generativelanguage.googleapis.com"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "perMinuteQuota": {
+      "status": 429,
+      "body": {
+        "error": {
+          "code": 429,
+          "message": "You exceeded your current quota.",
+          "status": "RESOURCE_EXHAUSTED",
+          "details": [
+            {
+              "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+              "violations": [
+                {
+                  "quotaMetric": "generativelanguage.googleapis.com/generate_content_requests",
+                  "quotaId": "GenerateRequestsPerMinutePerProjectPerModel",
+                  "quotaDimensions": {
+                    "model": "gemini-2.5-flash"
+                  },
+                  "quotaValue": "10"
+                }
+              ]
+            },
+            {
+              "@type": "type.googleapis.com/google.rpc.RetryInfo",
+              "retryDelay": "34s"
+            }
+          ]
+        }
+      }
+    },
+    "perDayQuota": {
+      "status": 429,
+      "body": {
+        "error": {
+          "code": 429,
+          "message": "You exceeded your current quota.",
+          "status": "RESOURCE_EXHAUSTED",
+          "details": [
+            {
+              "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+              "violations": [
+                {
+                  "quotaMetric": "generativelanguage.googleapis.com/generate_content_requests",
+                  "quotaId": "GenerateRequestsPerDayPerProjectPerModel",
+                  "quotaDimensions": {
+                    "model": "gemini-2.5-flash"
+                  },
+                  "quotaValue": "250"
+                }
+              ]
+            },
+            {
+              "@type": "type.googleapis.com/google.rpc.RetryInfo",
+              "retryDelay": "34s"
+            }
+          ]
+        }
+      }
+    },
+    "capacity429": {
+      "status": 429,
+      "body": {
+        "error": {
+          "code": 429,
+          "message": "Resource exhausted.",
+          "status": "RESOURCE_EXHAUSTED"
+        }
+      }
+    },
+    "capacity503": {
+      "status": 503,
+      "body": {
+        "error": {
+          "code": 503,
+          "message": "The system is currently at capacity.",
+          "status": "UNAVAILABLE"
+        }
+      }
+    }
+  }
+}
