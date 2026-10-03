@@ -944,8 +944,9 @@ The library ships three observability primitives:
 3. **Per-attempt `LlmCallRecord`** with `callId` (stable across retries), `attemptId`
    (minted per attempt; it only absorbs an at-least-once sink re-delivering the same record, ADR-031), `attemptNumber` (1-based ordinal), `latencyMs`, token counts, `costMicroUsd`,
    `errorKind`, and verbatim `metadata`. Records are written via `UsageSink` (fail-open). Secret
-   redaction (`redactSecrets`) is applied before persistence to `errorMessage`,
-   `generationConfig.providerOptions`, and `generationConfig.httpOptions.headers`. Standard
+   redaction (`redactSecrets`) is applied before persistence to `errorMessage` and
+   `generationConfig.providerOptions` (the Google adapter admits only `httpOptions.timeout`, so no
+   headers are stored). Standard
    generation knobs and host-supplied `metadata` are not scanned.
 
 The following are **explicitly deferred as consumer concerns**:
@@ -1313,7 +1314,7 @@ countTokens` (`packages/google/src/client.ts`) is a REQUIRED addition to the str
 `any-llm` enforces OUTPUT contracts thoroughly (`outputJsonSchema`, structured-output retry,
 strict per-model config schemas per ADR-009/ADR-010) but enforced zero INPUT contracts — nothing
 in `packages/core` checked whether the business content of a request was complete or sane before
-dispatch. A live incident (a host application, 2026-07-09/10, `docs/input-validation-middleware-proposal.md`)
+dispatch. A live incident (a host application, 2026-07-09/10, `docs/archive/input-validation-middleware-proposal.md`)
 dispatched a prompt template filled from a request object carrying only 2 of ~9 expected context
 fields; the rendered prompt reached the provider with literal blank template labels and null-filled
 JSON, and two different providers returned schema-valid-but-degenerate responses. Three LLM calls
@@ -1334,7 +1335,7 @@ and quota refusals produced no row at all.
 
 **Decision:**
 Four settled rulings from the proposal's maintainer ruling, then the reshaped engine-level design
-implementing them (`docs/input-contracts-plan.md`, codex-approved):
+implementing them (`docs/archive/input-contracts-plan.md`, codex-approved):
 
 1. **Middleware shape withdrawn — validation is engine-level.** The middleware seam sees only the
    post-render `ResolvedRequest` and never the raw inputs that break; input contracts are checked
@@ -1407,7 +1408,7 @@ Implementing surfaces:
   `@gullabs/quota` refusals with zero quota-package changes — refusals that previously left no
   ledger row now appear as `error_kind: 'rate_limited'`, `attemptNumber: 0`, zero-usage rows.
 
-**Row-less prologue boundary** (§3 of `docs/input-contracts-plan.md`):
+**Row-less prologue boundary** (§3 of `docs/archive/input-contracts-plan.md`):
 
 | Failure                                          | Where it throws                      | Ledger row                     |
 | ------------------------------------------------ | ------------------------------------ | ------------------------------ |
@@ -3039,7 +3040,7 @@ decision 3 lists every text-bearing place.
    | `llm_calls.metadata`                                   | The host's `CallMetadata` bag, verbatim                                                                                                                                | No, never scanned                                             | No                                                                     |
    | `llm_calls.citations`                                  | Source URL, title and source name of a grounded answer                                                                                                                 | No                                                            | No                                                                     |
    | `llm_calls.provider_metadata`, `raw_usage`, `warnings` | Provider-reported JSON and engine diagnostics                                                                                                                          | No                                                            | No                                                                     |
-   | `llm_calls.generation_config`                          | The call's settings; `providerOptions` and `httpOptions.headers` are scrubbed                                                                                          | Partly                                                        | No                                                                     |
+   | `llm_calls.generation_config`                          | The call's settings; `providerOptions` is scrubbed (the Google adapter admits only `httpOptions.timeout`, so no headers are ever in it)                                | Partly                                                        | No                                                                     |
    | `llm_call_payloads.request`                            | The system prompt; every message part (text, tool-call arguments, tool-result values); media as type, size and SHA-256; file references; tools as name and schema hash | Yes, then the host's `redact`                                 | Yes                                                                    |
    | `llm_call_payloads.response`                           | The raw model text, or the attempt's error message                                                                                                                     | Yes, then the host's `redact`                                 | Yes                                                                    |
 

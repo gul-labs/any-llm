@@ -68,7 +68,7 @@ Library-local facts (this repo, live-verified 2026-07-09 unless noted):
 - `packages/xai/src/models.ts`, `packages/xai/src/pricing.ts`,
   `packages/xai/src/model-config/grok-4-5.ts`
 - `packages/xai/README.md`
-- `docs/openai-strict-output-schema-plan.md` (14 live `json_schema` probes
+- `docs/archive/openai-strict-output-schema-plan.md` (14 live `json_schema` probes
   on 4.5)
 
 ## Headline

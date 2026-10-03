@@ -1,14 +1,14 @@
 # Plan: File-store fail-closed delete + host follow-ons
 
-| Field                    | Value                                                                                         |
-| ------------------------ | --------------------------------------------------------------------------------------------- |
-| **Status**               | SHIPPED — `@gullabs/xai@0.4.0` / `@gullabs/google@0.9.0` / `@gullabs/testing@0.5.0`           |
-| **Date**                 | 2026-08-12                                                                                    |
-| **Origin**               | Host feedback after Files v1 publish                                                          |
-| **Packages (P0)**        | `packages/xai` (`XaiFileStore`), `packages/google` (`GoogleFileStore`)                        |
-| **Packages (P1, later)** | `packages/xai` (usage/cost), `packages/testing` (fake), docs / meta-package                   |
-| **Related**              | [`docs/PLAN-xai-files-store.md`](./PLAN-xai-files-store.md) (B-002 shipped), DESIGN.md **P5** |
-| **Consumer**             | Host applications using provider Files for multi-call document attach                         |
+| Field                    | Value                                                                                                 |
+| ------------------------ | ----------------------------------------------------------------------------------------------------- |
+| **Status**               | SHIPPED — `@gullabs/xai@0.4.0` / `@gullabs/google@0.9.0` / `@gullabs/testing@0.5.0`                   |
+| **Date**                 | 2026-08-12                                                                                            |
+| **Origin**               | Host feedback after Files v1 publish                                                                  |
+| **Packages (P0)**        | `packages/xai` (`XaiFileStore`), `packages/google` (`GoogleFileStore`)                                |
+| **Packages (P1, later)** | `packages/xai` (usage/cost), `packages/testing` (fake), docs / meta-package                           |
+| **Related**              | [`docs/archive/PLAN-xai-files-store.md`](./PLAN-xai-files-store.md) (B-002 shipped), DESIGN.md **P5** |
+| **Consumer**             | Host applications using provider Files for multi-call document attach                                 |
 
 P0 (`failClosed`) shipped in the versions above. §1–§2 keep the original problem statement as context. Host finally-catch vs sweep-retry patterns in §3.4 / §8 remain the documented host contract.
 

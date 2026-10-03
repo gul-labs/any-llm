@@ -16,7 +16,7 @@
  * see can never drift apart.
  *
  * ## Backend rules (live-verified 2026-07-09 against the real `codex`
- * binary + backend, 12 probes — see `docs/openai-strict-output-schema-plan.md`)
+ * binary + backend, 12 probes — see `docs/archive/openai-strict-output-schema-plan.md`)
  *
  * codex CLI's `--output-schema` mode is backed by the OpenAI Responses API
  * structured-outputs validator. As of the 2026-07-09 probes it rejects

@@ -2,7 +2,7 @@
  * Published-artifact enforcement for the `google` lane of `ProviderOptionsMap`.
  *
  * This is the actual enforcement mechanism for the "published-artifact"
- * contract described in `docs/provider-plugins-and-xai-grok-4-5-plan.md`
+ * contract described in `docs/archive/provider-plugins-and-xai-grok-4-5-plan.md`
  * §2.1. It is distinct from `packages/google/src/provider-options.test.ts`,
  * which only checks source-level type inference within the monorepo's
  * single shared tsconfig program: the root `tsconfig.json` compiles all

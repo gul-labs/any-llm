@@ -2,7 +2,7 @@
  * Published-artifact enforcement for the `xai` lane of `ProviderOptionsMap`.
  *
  * This is the actual enforcement mechanism for the "published-artifact"
- * contract described in `docs/provider-plugins-and-xai-grok-4-5-plan.md`
+ * contract described in `docs/archive/provider-plugins-and-xai-grok-4-5-plan.md`
  * §2.1 (mirrors `packages/google/src/dist-augmentation.test.ts`). It is
  * distinct from any source-level provider-options test: the root
  * `tsconfig.json` compiles all `packages/*\/src` together via `paths`

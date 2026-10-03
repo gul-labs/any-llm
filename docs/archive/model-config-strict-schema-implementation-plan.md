@@ -12,15 +12,15 @@ writing.
 
 The model references below are also a historical freeze. The 2026-09-25
 refresh deleted `gemini-3.5-flash` and `gemini-3-flash-preview`; see
-[`model-config-provider-evidence.md`](./model-config-provider-evidence.md#2026-09-25-refresh)
+[`model-config-provider-evidence.md`](../model-config-provider-evidence.md#2026-09-25-refresh)
 for the current catalog.
 
-Draft plan for implementation after `docs/model-config-strict-schema-design.md`.
+Draft plan for implementation after `docs/archive/model-config-strict-schema-design.md`.
 
 Inputs:
 
-- Local audit: `docs/model-config-contract-audit.md`
-- Signed-off design: `docs/model-config-strict-schema-design.md`
+- Local audit: `docs/archive/model-config-contract-audit.md`
+- Signed-off design: `docs/archive/model-config-strict-schema-design.md`
 - Repo-wide P0 rule: `CLAUDE.md`, `AGENTS.md`, and `DECISIONS.md` say backward
   compatibility is not a design constraint and legacy/dead compatibility code
   must be deleted.

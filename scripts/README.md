@@ -5,13 +5,13 @@ manual and never run in CI.
 
 ## Offline checks (part of `pnpm quality`)
 
-| Script                        | pnpm script                        | What it checks                                                                                                    |
-| ----------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `check-doc-snippets.mjs`      | `check:docs`                       | Every `ts` code fence in the READMEs and live docs typechecks against the built packages (`ts no-check` opts out) |
-| `runtime-smoke/`              | `test:runtime`                     | Built ESM entries load with `node:` blocked; fake-backed calls run without `Buffer` or `process`                  |
-| `audit.mjs`                   | `audit:gate` / `test:audit-gate`   | Dependency advisories, distinguishing "vulnerable" from "the advisory service is down"                            |
-| `packed-install.mjs`          | `test:packed-install` (own CI job) | The packed tarballs install under pnpm and npm, resolve one core, and mixed versions are rejected                 |
-| `recapture-fixtures.test.mjs` | `test:scripts`                     | The re-capture tool's refusals, redaction, diff and failure handling (stubbed `fetch`), offline                   |
+| Script                        | pnpm script                        | What it checks                                                                                                                                        |
+| ----------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `check-doc-snippets.mjs`      | `check:docs`                       | Every `ts` code fence in every discovered Markdown file (root, `docs/`, `packages/*/`) typechecks against the built packages (`ts no-check` opts out) |
+| `runtime-smoke/`              | `test:runtime`                     | Built ESM entries load with `node:` blocked; fake-backed calls run without `Buffer` or `process`                                                      |
+| `audit.mjs`                   | `audit:gate` / `test:audit-gate`   | Dependency advisories, distinguishing "vulnerable" from "the advisory service is down"                                                                |
+| `packed-install.mjs`          | `test:packed-install` (own CI job) | The packed tarballs install under pnpm and npm, resolve one core, and mixed versions are rejected                                                     |
+| `recapture-fixtures.test.mjs` | `test:scripts`                     | The re-capture tool's refusals, redaction, diff and failure handling (stubbed `fetch`), offline                                                       |
 
 ## Live tools (manual, spend real money, never in CI)
 

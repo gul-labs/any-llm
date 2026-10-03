@@ -18,7 +18,7 @@ paths to other repos.
 
 - **Priority:** P0 (production document attach without re-sending full corpus tokens)
 - **Status:** shipped (`@gullabs/xai@0.3.0+`, `@gullabs/core@0.11.0+` with `FileRefPart`).
-- **Plan:** [`docs/PLAN-xai-files-store.md`](./docs/PLAN-xai-files-store.md)
+- **Plan:** [`docs/archive/PLAN-xai-files-store.md`](./docs/archive/PLAN-xai-files-store.md)
 - **Origin:** Hosts need provider-scoped Files upload / `file_id` attach / TTL / idempotent
   delete, parity with `@gullabs/google` `GoogleFileStore`.
 - **Scope:** `XaiFileStore` (upload with `expires_after`, get, list, idempotent delete);
@@ -35,7 +35,7 @@ paths to other repos.
 
 - **Priority:** P0 (hosts that gate durable release state on known delete success)
 - **Status:** shipped (`@gullabs/xai@0.4.0`, `@gullabs/google@0.9.0`, `@gullabs/testing@0.5.0`).
-- **Plan:** [`docs/PLAN-file-store-fail-closed-delete.md`](./docs/PLAN-file-store-fail-closed-delete.md)
+- **Plan:** [`docs/archive/PLAN-file-store-fail-closed-delete.md`](./docs/archive/PLAN-file-store-fail-closed-delete.md)
 - **Origin:** Fail-open-only delete cannot gate host DB “released” markers on 5xx/network;
   empty `fileId` should throw.
 - **Scope (P0):** per-call `delete(id, { failClosed?: boolean })` on xAI + Google; 404 success
@@ -85,9 +85,9 @@ paths to other repos.
 - **Priority:** P2
 - **Status:** IMPLEMENTED as ADR-025 (PR #30, 2026-07-10) — strict interpolation
   default, `CallSite.inputSchema`, `LlmRequest.inputContract`, `requireInputContract`,
-  callId⇒ledger-row rule. See `docs/input-contracts-plan.md`.
+  callId⇒ledger-row rule. See `docs/archive/input-contracts-plan.md`.
 - **Origin:** host pipeline incident and proposal in
-  `docs/input-validation-middleware-proposal.md`.
+  `docs/archive/input-validation-middleware-proposal.md`.
 - **Next step:** none — done.
 
 ---
@@ -108,7 +108,7 @@ paths to other repos.
 
 - **Priority:** TBD
 - **Status:** proposal dropped by owner, awaiting triage.
-- **Origin:** `docs/response-chaining-enhancement.md`.
+- **Origin:** `docs/archive/response-chaining-enhancement.md`.
 - **Next step:** owner triage decision.
 
 ---

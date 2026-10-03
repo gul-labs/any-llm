@@ -71,7 +71,7 @@ credentials file, an instance metadata service, or any other ambient source. The
 
 **Per-call model.** `auth` is a required option on every `generate()` and `runStructured()` call:
 
-```ts
+```ts no-check
 client.generate(request, { auth: { apiKey } })
 client.runStructured(callSite, { auth: { apiKey }, vars: { ... } })
 ```
@@ -109,7 +109,7 @@ the `google` key only appears on the type once `@gullabs/google` is imported.
 This is not an unbounded forwarding lane, either: `GoogleProviderOptions` is a strict allowlist
 (`cachedContent`, `safetySettings`, `tools`, `httpOptions`, `flexFallback`) enforced per-model by
 each Gemini/Gemma descriptor's own `configSchema` (see
-[`docs/model-config-strict-schema-design.md`](./docs/model-config-strict-schema-design.md)) —
+[`docs/archive/model-config-strict-schema-design.md`](./docs/archive/model-config-strict-schema-design.md)) —
 reserved fields such as `temperature`, `serviceTier`, or `thinkingConfig` are rejected inside
 `providerOptions.google` rather than silently forwarded, and the adapter maps allowlisted fields
 one-by-one instead of `Object.assign`-ing the raw object onto the SDK call. A brand-new SDK

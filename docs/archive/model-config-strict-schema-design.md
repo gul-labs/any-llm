@@ -7,12 +7,12 @@ Draft for implementation.
 Historical design snapshot from before the 2026-09-25 model refresh. The
 `gemini-3.5-flash` and `gemini-3-flash-preview` rows below describe the
 earlier catalog; both ids are now deleted. See
-[`model-config-provider-evidence.md`](./model-config-provider-evidence.md#2026-09-25-refresh)
+[`model-config-provider-evidence.md`](../model-config-provider-evidence.md#2026-09-25-refresh)
 for the current catalog.
 
 Review inputs:
 
-- Local audit: `docs/model-config-contract-audit.md`
+- Local audit: `docs/archive/model-config-contract-audit.md`
 - Architecture/API expert: signed off on the boundary direction; requested public
   factory/helper removal and stricter `providerOptions` guardrails.
 - Provider-contract expert: changes-requested on current implementation; findings

@@ -229,7 +229,7 @@ One changeset: `xai` + `any-llm` patch.
 - `packages/google/README.md`: stop saying `401/403`→`invalid_auth` as if definitional; say 401/bare 403 default to auth, Gemini safety is the 200-path `content_filter`.
 - `packages/core/src/errors.ts` and `packages/core/src/record.ts` comments: `content_filter` is input or output safety refusal.
 - `DECISIONS.md` ADR-028 recording this rule.
-- Historical plan docs that still say "HTTP 401/403 → `invalid_auth`" as a hard Files rule (`docs/PLAN-xai-files-store.md`, `docs/PLAN-file-store-fail-closed-delete.md`): one-line clarification that a structured safety body overlays to `content_filter`. Do not rewrite those plans for technical revisions; anonymization and shipped-status updates are fine.
+- Historical plan docs that still say "HTTP 401/403 → `invalid_auth`" as a hard Files rule (`docs/archive/PLAN-xai-files-store.md`, `docs/archive/PLAN-file-store-fail-closed-delete.md`): one-line clarification that a structured safety body overlays to `content_filter`. Do not rewrite those plans for technical revisions; anonymization and shipped-status updates are fine.
 - This file remains the design source; ADR is the accepted decision.
 
 ### 6.11 Overlay field contract (this PR, xAI only)

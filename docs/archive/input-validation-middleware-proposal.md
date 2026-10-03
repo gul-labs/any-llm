@@ -3,18 +3,18 @@
 ## Status
 
 Accepted and implemented. Recorded as ADR-025 in `DECISIONS.md`, per the reshaped
-engine-level design in `docs/input-contracts-plan.md`.
+engine-level design in `docs/archive/input-contracts-plan.md`.
 
 Attribution: proposed by the a host application pipeline team, from a live incident during
-the V2 pipeline (2026-07-10). Owner will triage with the any-llm team.
+its pipeline (2026-07-10). Owner will triage with the any-llm team.
 
 ## Purpose
 
 `any-llm` enforces OUTPUT contracts thoroughly: response schemas
 (`outputJsonSchema`), structured-output retry and OpenAI-strict preflight at the
-tool-call layer (`docs/openai-strict-output-schema-plan.md`), and — as of
+tool-call layer (`docs/archive/openai-strict-output-schema-plan.md`), and — as of
 ADR-009/ADR-010 and the model-config work in
-`docs/model-config-strict-schema-design.md` — strict per-model config contracts.
+`docs/archive/model-config-strict-schema-design.md` — strict per-model config contracts.
 It enforces zero INPUT contracts. Nothing in `packages/core` checks whether the
 _business_ content of a request — the values a consumer's prompt template was
 filled from — is complete or sane before the request is dispatched to a provider.
@@ -101,7 +101,7 @@ mechanism.
    unmodified request will fail identically. The error lists every failing path
    (e.g. `context.photographer`, `context.virtualAlias`, 5 more), mirroring the
    exact-field-list precision Zod's `.strict()` mode already gives the
-   model-config contract (`docs/model-config-contract-audit.md`). Zero tokens
+   model-config contract (`docs/archive/model-config-contract-audit.md`). Zero tokens
    are spent: the middleware sits outside `runAttempt`, so the provider adapter
    is never reached.
 

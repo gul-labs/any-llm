@@ -1,7 +1,7 @@
 # Model Config Provider Evidence
 
 Checked on 2026-07-05 for the strict model-config work tracked in
-[`docs/model-config-strict-schema-implementation-plan.md`](./model-config-strict-schema-implementation-plan.md).
+[`docs/archive/model-config-strict-schema-implementation-plan.md`](./archive/model-config-strict-schema-implementation-plan.md).
 
 This file freezes the public-doc and live-probe evidence for the built-in
 `generateContent` descriptors that the strict schema work is allowed to ship.

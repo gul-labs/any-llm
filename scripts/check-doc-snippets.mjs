@@ -3,7 +3,7 @@
  * Typechecks the TypeScript code fences in the user-facing docs against the BUILT
  * packages (`pnpm -r build` first), so a README example cannot drift from the API.
  *
- *   node scripts/check-doc-snippets.mjs [file.md ...]   (default: the files in `FILES`)
+ *   node scripts/check-doc-snippets.mjs [file.md ...]   (default: every file `discoverFiles` finds)
  *
  * Rules (deterministic, offline):
  *
@@ -15,8 +15,11 @@
  *     almost complete should be completed instead.
  *   - Other languages (`bash`, `sql`, `json`, ...) are ignored.
  *
- * Scope: the files listed in `FILES`. Design records (ADRs, plans, audits, the
- * archive) describe what was decided at a point in time and are not checked.
+ * Scope: every markdown file `discoverFiles` finds (the root `*.md`, `docs/` without
+ * `docs/archive/`, everything under `packages/<name>/` including the shipped SKILL.md).
+ * A file added later is checked without anyone listing it. Changelogs and the ADRs
+ * describe what was decided at a point in time and are not checked; superseded plans
+ * belong in `docs/archive/`.
  *
  * How it compiles: the snippets are written to `node_modules/.cache/doc-snippets`,
  * one file per fence, next to a `node_modules` of symlinks: `@gullabs/*` point at
@@ -44,20 +47,62 @@ import { fileURLToPath } from 'node:url'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const outDir = join(root, 'node_modules', '.cache', 'doc-snippets')
 
-/** Markdown files whose `ts` fences are compiled, relative to the repo root. */
-const FILES = [
-  'README.md',
-  'CONTRIBUTING.md',
-  ...readdirSync(join(root, 'packages'))
-    .sort()
-    .map((name) => `packages/${name}/README.md`)
-    .filter((file) => existsSync(join(root, file))),
-  'docs/architecture.md',
-  'docs/grounded-structured.md',
-  'docs/ledger.md',
-  'docs/multi-runtime.md',
-  'docs/structured-output-validation.md',
-]
+/**
+ * Markdown that is history, not documentation of the current API, and is not checked:
+ * the changelogs are generated from the changesets at release time, and the ADRs
+ * (`DECISIONS.md`) record what was decided at a point in time.
+ */
+const HISTORY = new Set(['CHANGELOG.md', 'DECISIONS.md'])
+
+/** Directory names that never hold documentation. */
+const SKIP_DIRS = new Set(['node_modules', 'dist', 'coverage'])
+
+function markdownIn(dir, { recursive, skip = () => false }) {
+  const found = []
+  for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+    a.name < b.name ? -1 : 1,
+  )) {
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      if (recursive && !SKIP_DIRS.has(entry.name) && !skip(path))
+        found.push(...markdownIn(path, { recursive, skip }))
+    } else if (entry.name.endsWith('.md') && !HISTORY.has(entry.name)) {
+      found.push(path)
+    }
+  }
+  return found
+}
+
+/**
+ * Every markdown file whose `ts` fences are compiled, relative to the repo root, found
+ * by walking the tree rather than from a list that someone has to remember to extend:
+ *
+ *   - `*.md` in the repository root (README, SPEC, DESIGN, ...);
+ *   - `docs/**` except `docs/archive/` (superseded documents live there);
+ *   - `packages/<name>/**`, which includes each package README and the shipped
+ *     `skills/**\/SKILL.md`.
+ *
+ * Dot directories, `node_modules`, `dist`, `coverage` and the {@link HISTORY} files are
+ * not walked.
+ *
+ * @param {string} [base] the repository root
+ */
+export function discoverFiles(base = root) {
+  const archive = join(base, 'docs', 'archive')
+  const paths = [
+    ...markdownIn(base, { recursive: false }),
+    ...(existsSync(join(base, 'docs'))
+      ? markdownIn(join(base, 'docs'), { recursive: true, skip: (p) => p === archive })
+      : []),
+    ...(existsSync(join(base, 'packages'))
+      ? readdirSync(join(base, 'packages'), { withFileTypes: true })
+          .filter((d) => d.isDirectory())
+          .sort((a, b) => (a.name < b.name ? -1 : 1))
+          .flatMap((d) => markdownIn(join(base, 'packages', d.name), { recursive: true }))
+      : []),
+  ]
+  return paths.map((path) => relative(base, path))
+}
 
 /** Extract `{ file, line, code }` for each checked `ts` fence of one markdown file. */
 export function extractFences(markdown) {
@@ -234,5 +279,5 @@ if (
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
   const args = process.argv.slice(2)
-  main(args.length > 0 ? args : FILES)
+  main(args.length > 0 ? args : discoverFiles())
 }

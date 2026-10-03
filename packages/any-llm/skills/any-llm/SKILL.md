@@ -46,7 +46,7 @@ explicit dependency control. Import names are identical either way.
 `generate()` and `runStructured()` call requires `opts.auth = { apiKey: string }`
 explicitly. `createClient()` itself takes no credentials.
 
-```ts
+```ts no-check
 // WRONG — GenerateOptions.auth is a required field; this will not type-check, and if
 // bypassed with `as any` it throws LlmError({ kind: 'invalid_auth' }) before any I/O.
 const client = createClient({
@@ -83,6 +83,8 @@ import { createClient, composeProviders, googleProvider } from '@gullabs/any-llm
 // (or: composeProviders from '@gullabs/core', googleProvider from '@gullabs/google',
 // if using modular install)
 
+declare const myResolvedGeminiKey: string // however your app resolves the key
+
 const client = createClient({
   ...composeProviders([googleProvider()]),
 })
@@ -113,6 +115,11 @@ throws `LlmError('bad_request')` when the pair is unregistered or the resolved a
 doesn't implement token counting (`ProviderAdapter.countTokens` is optional).
 
 ```ts
+import { createClient, composeProviders, googleProvider } from '@gullabs/any-llm'
+
+const client = createClient({ ...composeProviders([googleProvider()]) })
+declare const myResolvedGeminiKey: string
+
 const count = await client.countTokens(
   {
     provider: 'google',
@@ -143,6 +150,8 @@ as `googleProvider()`:
 import { createClient, composeProviders } from '@gullabs/core'
 import { googleProvider } from '@gullabs/google'
 import { xaiProvider } from '@gullabs/xai'
+
+declare const myResolvedXaiKey: string
 
 const client = createClient({
   ...composeProviders([googleProvider(), xaiProvider()]),
@@ -201,8 +210,17 @@ plain text parts, or any `Part` sub-field this library can't losslessly represen
 naming the offending field — nothing is ever silently dropped.
 
 ```ts
-import { geminiContentToMessages } from '@gullabs/google'
+import {
+  createClient,
+  composeProviders,
+  googleProvider,
+  geminiContentToMessages,
+} from '@gullabs/any-llm'
 import type { Content } from '@google/genai'
+
+const client = createClient({ ...composeProviders([googleProvider()]) })
+declare const myResolvedGeminiKey: string
+declare const data: string // base64 image bytes
 
 const contents: Content[] = [
   {
@@ -221,7 +239,12 @@ const { system, messages } = geminiContentToMessages({
 })
 
 const result = await client.generate(
-  { provider: 'google', model: 'gemini-2.5-pro', system, messages },
+  {
+    provider: 'google',
+    model: 'gemini-2.5-pro',
+    ...(system !== undefined ? { system } : {}),
+    messages,
+  },
   { auth: { apiKey: myResolvedGeminiKey } },
 )
 ```
@@ -248,6 +271,11 @@ hand-made `{ status }` objects, and build results with `fakeLlmResult`. Host cod
 
 ```ts
 import { defineCallSite } from '@gullabs/core'
+import type { AuthMaterial, Client } from '@gullabs/core'
+
+declare const client: Client
+declare const auth: AuthMaterial
+declare const text: string
 
 const summarize = defineCallSite({
   id: 'summarize-article', // persisted as callSiteId on every record
@@ -279,6 +307,10 @@ request is built — zero tokens spent:
 
 ```ts
 import { defineCallSite, LlmError } from '@gullabs/core'
+import type { AuthMaterial, Client } from '@gullabs/core'
+
+declare const client: Client
+declare const auth: AuthMaterial
 
 const summarize = defineCallSite({
   id: 'summarize-article',
@@ -306,7 +338,13 @@ valibot, ...) before interpolation runs, so a missing business field surfaces in
 schema's vocabulary instead of as a downstream placeholder violation:
 
 ```ts
+import { defineCallSite } from '@gullabs/core'
+import type { AuthMaterial, Client } from '@gullabs/core'
 import { z } from 'zod'
+
+declare const client: Client
+declare const auth: AuthMaterial
+declare const diff: string
 
 const reviewCallSite = defineCallSite({
   id: 'code-review',
@@ -330,6 +368,15 @@ await client.runStructured(
 path (callers who render their own prompt strings and never touch `CallSite`):
 
 ```ts
+import type { AuthMaterial, Client } from '@gullabs/core'
+import { z } from 'zod'
+
+declare const client: Client
+declare const auth: AuthMaterial
+declare const renderedPrompt: string
+declare const sourceContext: { article: string }
+const myZodSchema = z.object({ article: z.string() })
+
 const result = await client.generate(
   {
     provider: 'google',
@@ -402,6 +449,8 @@ merging. `@gullabs/google` and `@gullabs/xai` are the two reference implementati
 (`packages/google/src/types.ts`, `packages/xai/src/types.ts`):
 
 ```ts
+import type { GoogleProviderOptions } from '@gullabs/google'
+
 declare module '@gullabs/core' {
   interface ProviderOptionsMap {
     google?: GoogleProviderOptions
@@ -447,6 +496,9 @@ validation** — this library does not validate output shape itself.
 ```ts
 import { createClient, composeProviders, googleProvider } from '@gullabs/any-llm'
 import type { StandardSchemaV1 } from '@gullabs/core'
+
+declare const myResolvedGeminiKey: string
+declare const mySchema: StandardSchemaV1
 
 const client = createClient({
   ...composeProviders([googleProvider()]),
@@ -504,13 +556,21 @@ discriminant (from `packages/core/src/errors.ts`):
 
 ```ts
 import { LlmError } from '@gullabs/core'
+import type { AuthMaterial, Client, LlmRequest } from '@gullabs/core'
+
+declare const client: Client
+declare const request: LlmRequest
+declare const auth: AuthMaterial
+declare function scheduleRetry(afterMs: number | undefined): void
+declare function reportCredentialsError(error: LlmError): void
 
 try {
   const result = await client.generate(request, { auth })
+  console.log(result.text)
 } catch (e) {
   if (e instanceof LlmError) {
     if (e.retryable) scheduleRetry(e.retryAfterMs)
-    else if (e.kind === 'invalid_auth') /* surface a credentials error */
+    else if (e.kind === 'invalid_auth') reportCredentialsError(e)
     else throw e
   } else {
     throw e // never expected — the engine always throws LlmError
@@ -540,7 +600,7 @@ library is telling you the config is invalid, not transiently rejected.
 
 ## Reasoning / thinking budgets
 
-```ts
+```ts no-check
 config: {
   reasoning: { effort: 'medium', includeThoughts: true }
 }
@@ -590,6 +650,11 @@ mirrors the selected model's explicit-caching minimum (1024 on Gemini 3.x;
 
 ```ts
 import { GoogleCacheStore } from '@gullabs/google'
+import type { Content, GoogleGenAI } from '@google/genai'
+
+declare const myResolvedGeminiKey: string
+declare const genaiClient: GoogleGenAI
+declare const myGenaiContents: Content[]
 
 const cacheStore = new GoogleCacheStore({
   auth: { apiKey: myResolvedGeminiKey },
@@ -598,8 +663,15 @@ const cacheStore = new GoogleCacheStore({
     // Receives genai-native Content[]/Content|string — NOT the library's
     // Message[] shape; there is no automatic conversion. Hosts building from
     // Message[] should call client.countTokens separately instead.
-    countTokens: async (payload) => {
-      const result = await genaiClient.models.countTokens(payload)
+    countTokens: async ({ model, contents, systemInstruction, tools }) => {
+      const result = await genaiClient.models.countTokens({
+        model,
+        contents: contents ?? [],
+        config: {
+          ...(systemInstruction !== undefined ? { systemInstruction } : {}),
+          ...(tools !== undefined ? { tools } : {}),
+        },
+      })
       return result.totalTokens ?? 0
     },
   },

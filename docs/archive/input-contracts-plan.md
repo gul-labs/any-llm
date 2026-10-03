@@ -3,7 +3,7 @@
 Status: APPROVED by codex in 3 rounds (final session 019f4a84-e2e5-7af1-91e4-db2c11891f4d, 2026-07-10). Implementation in progress on this branch.
 Date: 2026-07-10
 Branch: `feat/input-contracts`
-Origin: `docs/input-validation-middleware-proposal.md` (a host application incident 2026-07-09/10),
+Origin: `docs/archive/input-validation-middleware-proposal.md` (a host application incident 2026-07-09/10),
 triaged and ruled in that doc's "Maintainer ruling (2026-07-10)" section. This plan
 implements the four-piece reshaped design plus the two rulings. If approved, the design
 becomes ADR-025 in `DECISIONS.md`.
@@ -213,7 +213,7 @@ Deliberate and documented — see §3 boundary note.
   quota-observability consequence, and the row-less prologue boundary.
 - `docs/architecture.md`: pipeline diagram/description updated — where input contracts
   run relative to interpolation, callId, middleware, quota, retry, attempts.
-- `docs/input-validation-middleware-proposal.md`: Status updated to point at ADR-025
+- `docs/archive/input-validation-middleware-proposal.md`: Status updated to point at ADR-025
   and this plan (record only; no content rewrite).
 - `packages/any-llm/skills/any-llm/SKILL.md`: new section — strict interpolation
   default, `inputSchema`/`inputContract`/`requireInputContract` usage, `issues` payload,

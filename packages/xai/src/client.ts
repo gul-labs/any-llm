@@ -121,7 +121,7 @@ export type XaiTextFormat =
 /**
  * Parameters for `client.responses.create`.
  * Structurally modeled from live-captured xAI Responses API fixtures
- * (see docs/provider-plugins-and-xai-grok-4-5-plan.md §3.1), not from the
+ * (see docs/archive/provider-plugins-and-xai-grok-4-5-plan.md §3.1), not from the
  * `openai` npm package's TS types — xAI's actual endpoint shape differs.
  */
 export interface XaiResponseCreateParams {

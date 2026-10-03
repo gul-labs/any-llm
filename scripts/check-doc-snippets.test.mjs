@@ -7,12 +7,12 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { extractFences } from './check-doc-snippets.mjs'
+import { discoverFiles, extractFences } from './check-doc-snippets.mjs'
 
 const script = join(dirname(fileURLToPath(import.meta.url)), 'check-doc-snippets.mjs')
 const fence = '```'
@@ -57,5 +57,62 @@ try {
   )
 } finally {
   rmSync(dir, { recursive: true, force: true })
+}
+
+// Discovery: the files are found by walking the tree, not from a list.
+const found = new Set(discoverFiles())
+for (const file of [
+  'README.md',
+  'SPEC.md',
+  'DESIGN.md',
+  'CONTRIBUTING.md',
+  'docs/ledger.md',
+  'docs/architecture.md',
+  'packages/core/README.md',
+  'packages/any-llm/README.md',
+  'packages/any-llm/skills/any-llm/SKILL.md',
+]) {
+  assert.ok(found.has(file), `${file} is checked`)
+}
+for (const file of found) {
+  assert.ok(!file.startsWith('docs/archive/'), `${file} is archived history`)
+  assert.ok(!file.includes('node_modules'), `${file} is vendored`)
+  assert.ok(!/(^|\/)(CHANGELOG|DECISIONS)\.md$/.test(file), `${file} is history`)
+}
+
+const tree = mkdtempSync(join(tmpdir(), 'doc-discovery-test-'))
+try {
+  const put = (file) => {
+    mkdirSync(dirname(join(tree, file)), { recursive: true })
+    writeFileSync(join(tree, file), '# x\n')
+  }
+  for (const file of [
+    'README.md',
+    'NEW-ROOT-DOC.md',
+    'docs/brand-new.md',
+    'docs/nested/deeper.md',
+    'docs/archive/old-plan.md',
+    'packages/one/README.md',
+    'packages/one/skills/s/SKILL.md',
+    'packages/one/docs/extra.md',
+    'packages/one/CHANGELOG.md',
+    'packages/one/node_modules/dep/README.md',
+    'packages/one/dist/notes.md',
+    'node_modules/top/README.md',
+    '.hidden/notes.md',
+    'examples/notes.md',
+  ])
+    put(file)
+  assert.deepEqual(discoverFiles(tree).sort(), [
+    'NEW-ROOT-DOC.md',
+    'README.md',
+    'docs/brand-new.md',
+    'docs/nested/deeper.md',
+    'packages/one/README.md',
+    'packages/one/docs/extra.md',
+    'packages/one/skills/s/SKILL.md',
+  ])
+} finally {
+  rmSync(tree, { recursive: true, force: true })
 }
 console.log('check-doc-snippets: ok')

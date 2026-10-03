@@ -83,7 +83,7 @@ provider packages (`core`, `google`, `xai`, `quota`, `drizzle`, `any-llm`) impor
 
 ## Core types (`@gullabs/core`)
 
-```ts
+```ts no-check
 export type JsonValue =
   null | boolean | number | string | JsonValue[] | { [k: string]: JsonValue }
 
@@ -193,7 +193,7 @@ export interface Cost {
 
 ### Errors (`errors.ts`)
 
-```ts
+```ts no-check
 export type LlmErrorKind =
   | 'invalid_auth'
   | 'rate_limited'
@@ -230,7 +230,7 @@ export class LlmError extends Error {
 
 ## Ports (`@gullabs/core` — host/companion implements)
 
-```ts
+```ts no-check
 export interface ProviderAdapter {
   id: string // 'google'
   // returns the RAW result (the adapter JSON.parses structured output into rawStructured); the engine
@@ -394,7 +394,7 @@ Invariants of the middleware chain (ADR-037) and model resolution (ADR-033):
 
 ### Config resolution & call sites (`callsite.ts`)
 
-```ts
+```ts no-check
 defineCallSite({ id, provider, model, schema, system, userTemplate, config }) // (provider, model) — one-line swap
 // resolution: libDefaults → callSite.config → opts.config  (deep-merge; per-call wins)
 // v1 keeps this runtime-validated (no compile-time ConfigFor<M> — that machinery was cut).
@@ -435,7 +435,7 @@ details = { input, cached, output }   // thinking billed at output rate (folded 
 
 ## Persisted record (`record.ts`) + reference schema (`@gullabs/drizzle`)
 
-```ts
+```ts no-check
 export interface LlmCallRecord {
   recordSchemaVersion: 2 // 2 added the three cost fields (ADR-039)
   callId: string

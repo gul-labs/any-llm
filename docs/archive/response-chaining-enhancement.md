@@ -4,7 +4,7 @@
 
 Proposed — not yet triaged.
 
-Attribution: proposed by the a host application pipeline team, from the V2 pipeline's
+Attribution: proposed by the a host application pipeline team, from its pipeline's
 revise/regen loop design (2026-07-10). Owner will triage with the any-llm team.
 
 ## Purpose
@@ -19,7 +19,7 @@ default.
 
 ## Motivating use case
 
-The a host application V2 pipeline's revise/regen loop currently re-sends the full
+The a host application pipeline's revise/regen loop currently re-sends the full
 assembled context (~19k tokens) on every round, plus a filtered copy of the
 model's previous output, so the model can revise against reviewer feedback.
 This mechanism is consumer-side and provider-neutral by design: it works
