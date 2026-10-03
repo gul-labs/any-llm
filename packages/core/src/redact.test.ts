@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { redactSecrets } from './redact.js'
+import { redactJsonValue, redactSecrets } from './redact.js'
 
 // ---------------------------------------------------------------------------
 // 1. Google API keys
@@ -287,5 +287,207 @@ describe('redactSecrets — combined patterns', () => {
     // Both are acceptable; we only assert that the original value is gone.
     expect(out).toContain('key=')
     expect(out).toContain('sig=REDACTED')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 6. Linear time on hostile input (P1-1)
+// ---------------------------------------------------------------------------
+
+describe('redactSecrets — linear time on adversarial input', () => {
+  const BUDGET_MS = 200
+  function timed(input: string): number {
+    const start = performance.now()
+    redactSecrets(input)
+    return performance.now() - start
+  }
+
+  it('280 KB of X-Goog- repeated (no =) finishes under the budget', () => {
+    expect(timed('X-Goog-'.repeat(40_000))).toBeLessThan(BUDGET_MS)
+  })
+
+  it('1 MB of A finishes under the budget', () => {
+    expect(timed('A'.repeat(1_000_000))).toBeLessThan(BUDGET_MS)
+  })
+
+  it.each([
+    'AIza',
+    'Bearer ',
+    'Bearer\t',
+    'Basic ',
+    'Authorization: ',
+    'authorization:Basic ',
+    'X-Goog-',
+    'X-Amz-',
+    'X-Amz-Signature',
+    'key',
+    'key=',
+    'sig',
+    'sig=',
+    'token=',
+    'sk-',
+    'sk-aaaaaaaa',
+    'ghp_',
+    'github_pat_',
+    'xai-',
+    'ya29.',
+    'AKIA',
+    '\u0000',
+    ' ',
+    '=',
+    '-',
+  ])('a long run of %j finishes under the budget', (prefix) => {
+    const input = prefix.repeat(Math.ceil(300_000 / prefix.length))
+    expect(timed(input)).toBeLessThan(BUDGET_MS)
+  })
+
+  it('long runs with a near-miss tail (the shape that backtracks) finish under the budget', () => {
+    for (const unit of ['Bearer ', 'AIza', 'sk-', 'X-Goog-', 'key=']) {
+      const input = `${unit.repeat(40_000)}!`
+      expect(timed(input)).toBeLessThan(BUDGET_MS)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 7. Wider coverage (P1-3)
+// ---------------------------------------------------------------------------
+
+describe('redactSecrets — signed URLs and header forms', () => {
+  it('S3 presigned URL parameters', () => {
+    const url =
+      'https://b.s3.amazonaws.com/o?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAABCDEFGHIJKLMNOP%2F20261003%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Security-Token=FwoGZXIvYXdzEJr&X-Amz-Signature=deadbeef0123&X-Amz-Date=20261003T000000Z'
+    const out = redactSecrets(url)
+    expect(out).not.toContain('AKIAABCDEFGHIJKLMNOP')
+    expect(out).not.toContain('FwoGZXIvYXdzEJr')
+    expect(out).not.toContain('deadbeef0123')
+    expect(out).toContain('X-Amz-Signature=REDACTED')
+    expect(out).toContain('X-Amz-Credential=REDACTED')
+    expect(out).toContain('X-Amz-Security-Token=REDACTED')
+  })
+
+  it('Azure SAS sig= and GCS X-Goog-Signature', () => {
+    const out = redactSecrets(
+      'https://a.blob.core.windows.net/c/b?sv=2024-01-01&sig=Zm9vYmFy%2Bbaz&se=2026',
+    )
+    expect(out).not.toContain('Zm9vYmFy')
+    expect(out).toContain('sv=2024-01-01')
+    expect(redactSecrets('?X-Goog-Signature=0a1b2c')).toBe('?X-Goog-Signature=REDACTED')
+  })
+
+  it('is case-insensitive for bearer and parameter names', () => {
+    expect(redactSecrets('authorization: bearer abc.def')).toBe(
+      'authorization: Bearer …REDACTED',
+    )
+    expect(redactSecrets('BEARER abcdef123456')).toBe('Bearer …REDACTED')
+    expect(redactSecrets('?Token=abc&Signature=zzz&SIG=q')).toBe(
+      '?Token=REDACTED&Signature=REDACTED&SIG=REDACTED',
+    )
+    expect(redactSecrets('?Password=hunter2&Secret=s3')).toBe(
+      '?Password=REDACTED&Secret=REDACTED',
+    )
+  })
+
+  it('Authorization: Basic and other schemes', () => {
+    const out = redactSecrets('Authorization: Basic dXNlcjpwYXNzd29yZA== next')
+    expect(out).not.toContain('dXNlcjpwYXNzd29yZA')
+    expect(out).toContain('Authorization: Basic …REDACTED')
+    expect(redactSecrets('authorization=Digest abc')).not.toContain('abc')
+  })
+
+  it('does not treat prose containing Basic as a credential', () => {
+    const text = 'Basic understanding of the problem is required.'
+    expect(redactSecrets(text)).toBe(text)
+  })
+
+  it.each([
+    ['sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789'],
+    ['sk-proj-abcdefghijklmnopqrstuvwxyz012345'],
+    ['ghp_abcdefghijklmnopqrstuvwxyz0123456789'],
+    ['gho_abcdefghijklmnopqrstuvwxyz0123456789'],
+    ['github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz'],
+    ['xai-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH'],
+    ['AIzaSyA1234567890abcdefghijklmnopqrstuv'],
+    ['ya29.a0AfH6SMBabcdefghijklmnopqrstuvwxyz'],
+    ['AKIAABCDEFGHIJKLMNOP'],
+  ])('redacts the provider key %s wherever it appears', (key) => {
+    const out = redactSecrets(`prefix ${key} suffix`)
+    expect(out).not.toContain(key.slice(4, 24))
+    expect(out.startsWith('prefix ')).toBe(true)
+    expect(out.endsWith(' suffix')).toBe(true)
+  })
+
+  it('leaves look-alikes inside ordinary words alone', () => {
+    const text = 'the task-management-system uses desk-lamp-assembly and a monkey=banana'
+    expect(redactSecrets(text)).toBe(text)
+  })
+
+  it('is idempotent', () => {
+    const text =
+      'Bearer abc.def key=AIzaSyA1234567890abcdefghijklmnop Authorization: Basic Zm9vOmJhcg== ?X-Amz-Signature=ab sk-ant-api03-AbCdEfGhIjKlMnOp'
+    const once = redactSecrets(text)
+    expect(redactSecrets(once)).toBe(once)
+  })
+})
+
+describe('redactJsonValue', () => {
+  it('replaces the value of a key named like a secret, in any case, at any depth', () => {
+    const out = redactJsonValue({
+      Password: 'p',
+      nested: {
+        API_KEY: 'k',
+        apiKey: 'k2',
+        'api-key': 'k3',
+        list: [{ authorization: 'x' }],
+      },
+      client_secret: { a: 1 },
+      accessToken: 12345,
+      credentials: ['a'],
+      privateKey: 'pk',
+      private_key: 'pk',
+      keep: 'visible',
+      count: 3,
+    })
+    expect(out).toEqual({
+      Password: '[REDACTED]',
+      nested: {
+        API_KEY: '[REDACTED]',
+        apiKey: '[REDACTED]',
+        'api-key': '[REDACTED]',
+        list: [{ authorization: '[REDACTED]' }],
+      },
+      client_secret: '[REDACTED]',
+      accessToken: '[REDACTED]',
+      credentials: '[REDACTED]',
+      privateKey: '[REDACTED]',
+      private_key: '[REDACTED]',
+      keep: 'visible',
+      count: 3,
+    })
+  })
+
+  it('redacts string values by pattern and a secret used as a key name', () => {
+    const out = redactJsonValue({
+      'sk-ant-api03-AbCdEfGhIjKlMnOpQrStUv': 1,
+      url: 'https://x.test?X-Amz-Signature=abc',
+    }) as Record<string, unknown>
+    expect(JSON.stringify(out)).not.toContain('AbCdEfGhIjKlMnOp')
+    expect(out['url']).toBe('https://x.test?X-Amz-Signature=REDACTED')
+  })
+
+  it('keeps a __proto__ key as data and does not touch the prototype', () => {
+    const input = JSON.parse('{"__proto__":{"polluted":true},"a":1}') as unknown
+    const out = redactJsonValue(input) as Record<string, unknown>
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype)
+    expect(Object.keys(out)).toEqual(['__proto__', 'a'])
+    expect(JSON.stringify(out)).toBe('{"__proto__":{"polluted":true},"a":1}')
+    expect(({} as Record<string, unknown>)['polluted']).toBeUndefined()
+  })
+
+  it('does not mutate its input and passes null, booleans and numbers through', () => {
+    const input = { a: [1, true, null], password: 'x' }
+    const copy = structuredClone(input)
+    expect(redactJsonValue(input)).toEqual({ a: [1, true, null], password: '[REDACTED]' })
+    expect(input).toEqual(copy)
   })
 })

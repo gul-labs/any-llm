@@ -19,7 +19,7 @@ import type {
 } from './types.js'
 import type { LlmErrorKind, LlmErrorReason, LlmError } from './errors.js'
 import { assertNever } from './assert.js'
-import { redactSecrets } from './redact.js'
+import { cleanText, redactJsonValue, redactSecrets, setOwn } from './redact.js'
 
 // ---------------------------------------------------------------------------
 // Record interface
@@ -678,38 +678,6 @@ function capRecordText(text: string): { text: string; truncated: boolean } {
 // ---------------------------------------------------------------------------
 
 /**
- * Postgres `text` cannot hold U+0000 and `jsonb` rejects it, and `jsonb` also
- * rejects an unpaired surrogate (`JSON.stringify` writes one as a `\ud800`-style
- * escape). Provider-controlled text can carry either, and a row that fails to
- * insert is a billed row lost (the sink is fail-open). `cleanText` removes
- * U+0000 and replaces each unpaired surrogate with U+FFFD.
- */
-function cleanText(text: string): string {
-  let out: string | undefined
-  let from = 0
-  for (let i = 0; i < text.length; i += 1) {
-    const c = text.charCodeAt(i)
-    let replacement: string | undefined
-    if (c === 0) {
-      replacement = ''
-    } else if (c >= 0xd800 && c <= 0xdbff) {
-      const next = text.charCodeAt(i + 1)
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        i += 1
-        continue
-      }
-      replacement = '\ufffd'
-    } else if (c >= 0xdc00 && c <= 0xdfff) {
-      replacement = '\ufffd'
-    }
-    if (replacement === undefined) continue
-    out = (out ?? '') + text.slice(from, i) + replacement
-    from = i + 1
-  }
-  return out === undefined ? text : out + text.slice(from)
-}
-
-/**
  * Deep copy-on-write {@link cleanText} over every string and object key in a
  * record value. A subtree with nothing to clean is returned as the same
  * object, so the caller's data is never mutated and clean records alias their
@@ -744,9 +712,9 @@ export function cleanDeep<T>(value: T, state: { changed: boolean }): T {
         copy ??= Object.fromEntries(
           entries.slice(0, index).map(([k, v]) => [k, v] as const),
         )
-        copy[cleanedKey] = cleaned
+        setOwn(copy, cleanedKey, cleaned)
       } else if (copy !== undefined) {
-        copy[key] = item
+        setOwn(copy, key, item)
       }
     })
     return (copy ?? value) as T
@@ -799,14 +767,27 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
     ),
   ]
 
-  // Provider-controlled free text is capped; the live result and error keep the
-  // full text. `errorMessage` is redacted first so a secret cannot be cut in half
-  // and survive as an unrecognisable fragment.
+  // Postgres-unsafe text (U+0000, unpaired surrogates) is cleaned BEFORE
+  // redaction: a secret split by a NUL (`AIza\0Sy...`) is only recognisable
+  // once the NUL is gone, and redacting first would let the strip reassemble it.
+  // `state.changed` still drives the record warning.
+  const state = { changed: false }
+  const clean = (text: string): string => {
+    const cleaned = cleanText(text)
+    if (cleaned !== text) state.changed = true
+    return cleaned
+  }
+
+  // Provider-controlled free text is redacted, then capped; the live result and
+  // error keep the full text. Redaction runs first so a secret cannot be cut in
+  // half and survive as an unrecognisable fragment.
   const reasoning =
-    input.reasoningText !== undefined ? capRecordText(input.reasoningText) : undefined
+    input.reasoningText !== undefined
+      ? capRecordText(redactSecrets(clean(input.reasoningText)))
+      : undefined
   const errorText =
     input.error !== undefined
-      ? capRecordText(redactSecrets(input.error.message))
+      ? capRecordText(redactSecrets(clean(input.error.message)))
       : undefined
   if (reasoning?.truncated === true) {
     allWarnings.push({
@@ -821,6 +802,16 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
     })
   }
 
+  // The model's tool-call arguments are redacted like any stored text: secret
+  // patterns in every string, and the value of a key named like a secret.
+  const toolCalls =
+    input.toolCalls !== undefined && input.toolCalls.length > 0
+      ? input.toolCalls.map((call) => ({
+          ...call,
+          args: redactJsonValue(cleanDeep(call.args, state)) as JsonValue,
+        }))
+      : undefined
+
   // C1: Scoped provider extension redaction.
   // Only secret-bearing provider lanes are redacted; all standard generation knobs
   // (temperature, topP, maxOutputTokens, stopSequences, serviceTier, etc.) pass
@@ -833,7 +824,7 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
     gcMut = {
       ...gcMut,
       providerOptions: JSON.parse(
-        redactSecrets(JSON.stringify(gcMut['providerOptions'])),
+        redactSecrets(JSON.stringify(cleanDeep(gcMut['providerOptions'], state))),
       ) as unknown,
     }
   }
@@ -897,9 +888,7 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
     ...(input.citations !== undefined && input.citations.length > 0
       ? { citations: input.citations }
       : {}),
-    ...(input.toolCalls !== undefined && input.toolCalls.length > 0
-      ? { toolCalls: input.toolCalls }
-      : {}),
+    ...(toolCalls !== undefined ? { toolCalls } : {}),
     ...(input.toolNames !== undefined && input.toolNames.length > 0
       ? { toolNames: input.toolNames, toolCount: input.toolNames.length }
       : {}),
@@ -928,8 +917,7 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
   }
 
   // Provider-controlled text can carry what Postgres cannot store; clean the whole
-  // record once, last, so redaction and the byte cap saw the original text.
-  const state = { changed: false }
+  // record once, last (the free text above was cleaned before redaction).
   const cleaned = cleanDeep(record, state)
   if (!state.changed) return record
   return {

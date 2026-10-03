@@ -783,3 +783,98 @@ describe('buildRecord — text Postgres cannot store (U+0000, lone surrogates)',
     expect(warnings[0]?.message).toBe(`w${NUL}`)
   })
 })
+
+describe('buildRecord — the ledger row redacts what it stores (P1-2, P2-1)', () => {
+  const NUL = '\u0000'
+  const KEY = 'AIzaSyA1234567890abcdefghijklmnopqrstuv'
+
+  it('redacts secrets in reasoningText, and does so before the byte cap', () => {
+    const r = buildRecord(
+      makeBaseInput({ reasoningText: `think ${KEY} and Bearer abcdef123456 done` }),
+    )
+    expect(r.reasoningText).toBe('think AIza…REDACTED and Bearer …REDACTED done')
+  })
+
+  it('redacts tool-call arguments by pattern and by secret-looking key name', () => {
+    const r = buildRecord(
+      makeBaseInput({
+        toolCalls: [
+          {
+            toolCallId: 'c1',
+            toolName: 'http',
+            args: {
+              url: `https://x.test/?X-Amz-Signature=abc&api=1`,
+              headers: { Authorization: 'Bearer abcdef123456', accept: 'json' },
+              password: 'hunter2',
+              body: 'PATIENT SSN 123-45-6789',
+            },
+          },
+        ],
+      }),
+    )
+    expect(r.toolCalls).toEqual([
+      {
+        toolCallId: 'c1',
+        toolName: 'http',
+        args: {
+          url: 'https://x.test/?X-Amz-Signature=REDACTED&api=1',
+          headers: { Authorization: '[REDACTED]', accept: 'json' },
+          password: '[REDACTED]',
+          // personal data is not a credential pattern: the host's custom sink redacts it
+          body: 'PATIENT SSN 123-45-6789',
+        },
+      },
+    ])
+  })
+
+  it('does not mutate the tool calls it was given', () => {
+    const toolCalls = [
+      { toolCallId: 'c', toolName: 't', args: { token: 'secret-value' } },
+    ]
+    buildRecord(makeBaseInput({ toolCalls }))
+    expect(toolCalls[0]?.args).toEqual({ token: 'secret-value' })
+  })
+
+  it('a secret split by U+0000 is redacted whole, then the NUL is stripped (error, reasoning, tool args, provider options)', () => {
+    const split = `AIza${NUL}SyA1234567890abcdefghijklmnopqrstuv`
+    const bearer = `Bearer ${NUL}abcdef1234567890SECRET`
+    const r = buildRecord(
+      makeBaseInput({
+        error: new LlmError(`failed ${split}`, { kind: 'server', retryable: false }),
+        status: 'api_error',
+        reasoningText: `r ${split} ${bearer}`,
+        toolCalls: [{ toolCallId: 'c', toolName: 't', args: { note: split } }],
+        generationConfig: makeConfig({ providerOptions: { x: { v: split } } } as never),
+      }),
+    )
+    const json = JSON.stringify(r)
+    expect(json).not.toContain('SyA1234567890')
+    expect(json).not.toContain('abcdef1234567890SECRET')
+    expect(json).not.toContain('\\u0000')
+    expect(r.errorMessage).toBe('failed AIza…REDACTED')
+    expect(JSON.stringify(r.warnings)).toContain('U+0000 was removed')
+  })
+})
+
+describe('buildRecord — a __proto__ key is data (P3-1)', () => {
+  it('cleaning a record that also holds U+0000 keeps a __proto__ key in metadata and tool arguments', () => {
+    const metadata = JSON.parse('{"__proto__":{"a":1},"b":"x\\u0000y"}') as never
+    const r = buildRecord(
+      makeBaseInput({
+        metadata,
+        toolCalls: [
+          {
+            toolCallId: 'c',
+            toolName: 't',
+            args: JSON.parse('{"__proto__":{"k":"v"},"n":"a\\u0000b"}') as never,
+          },
+        ],
+      }),
+    )
+    expect(JSON.stringify(r.metadata)).toBe('{"__proto__":{"a":1},"b":"xy"}')
+    expect(JSON.stringify(r.toolCalls?.[0]?.args)).toBe(
+      '{"__proto__":{"k":"v"},"n":"ab"}',
+    )
+    expect(Object.getPrototypeOf(r.metadata)).toBe(Object.prototype)
+  })
+})
