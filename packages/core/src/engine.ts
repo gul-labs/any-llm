@@ -1846,7 +1846,15 @@ export function createClient(config: ClientConfig): Client {
             },
           )
         }
-        return next(req, ctx)
+        // A middleware that swaps `modelDescriptor` (a quota policy reads it)
+        // is overwritten here, so what inner middleware see is what dispatch
+        // uses. Provider and model were checked above.
+        return next(
+          req.modelDescriptor === callDescriptor
+            ? req
+            : { ...req, modelDescriptor: callDescriptor },
+          ctx,
+        )
       }
     const chain: Handler = middleware.reduceRight(
       (next: Handler, mw: Middleware): Handler =>

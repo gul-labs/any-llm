@@ -2037,7 +2037,9 @@ The owner decided hosts own routing and fallback; the library offers neither.
    the provider, the exact model string the host sent (a declared alias stays an alias, ADR-033) and
    the descriptor object it resolved. `runAttempt` dispatches, validates config, prices, routes and
    authenticates with these and never reads `provider`, `model` or `modelDescriptor` from the
-   request it receives.
+   request it receives. The boundary also overwrites a swapped `modelDescriptor` with the
+   pinned one before an inner middleware sees it, so a quota policy that reads the descriptor counts
+   under the model that is dispatched.
 3. **Scope.** The library does not copy or freeze requests or descriptors to defend against a
    middleware that mutates nested data in place after calling `next`. That is a host bug the
    boundary check cannot see, and guarding it needs deep copies and frozen descriptors, which break

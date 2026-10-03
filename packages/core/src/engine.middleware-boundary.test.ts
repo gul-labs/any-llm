@@ -209,6 +209,7 @@ describe('middleware cannot change the provider or model (ADR-037)', () => {
     }
 
     const seen: Array<{ req: ResolvedRequest; ctx: AdapterCtx }> = []
+    const observed: unknown[] = []
     const inner = new FakeAdapter('google', result('g-pro'))
     const capturing: ProviderAdapter = {
       id: 'google',
@@ -226,13 +227,25 @@ describe('middleware cannot change the provider or model (ADR-037)', () => {
       sink,
       clock: new FakeClock(),
       ids: new FakeIds(),
-      middleware: [swapped],
+      middleware: [
+        swapped,
+        {
+          id: 'observer',
+          async intercept(req, ctx, next) {
+            observed.push(req.modelDescriptor)
+            return next(req, ctx)
+          },
+        },
+      ],
     })
 
     const out = await client.generate(
       { provider: 'google', model: 'g-pro', messages: MESSAGES },
       { auth: { apiKey: 'call-key', keyId: 'k1' } },
     )
+
+    // Inner middleware (a quota policy reads the descriptor) see the pinned one.
+    expect(observed).toEqual([G_PRO])
 
     expect(xai.calls).toHaveLength(0)
     expect(seen).toHaveLength(1)

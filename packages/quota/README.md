@@ -84,11 +84,28 @@ core doc comment points back here for the quota-specific tradeoffs and limitatio
   by the readonly `Middleware.role` the factories set (`'quota'`, `'retry'`), not by `id`, so custom
   ids do not change the rule.
 - **A quota unit is not refunded** when something else fails the call afterwards (a provider
-  error, or an offending middleware outside quota). It counts dispatches attempted, not successes.
-- **Long deferrals are not slept through.** `providerQuotaMiddleware({ maxDeferMs })` (default
-  30 000 ms): a deferral whose `retryAfterMs` exceeds it, a per-day window for instance, fails with
-  `rate_limited`, `retryable: false`, `reason: 'quota_window'` (and keeps `retryAfterMs`), so the
-  retry middleware returns at once and the host can reschedule. Shorter deferrals stay retryable.
+  error, or an offending middleware outside quota). It counts attempts that reached quota, not
+  successes: an attempt that is then refused before dispatch (per-attempt config validation, routing,
+  the rate limiter) or aborted after the store call was sent still spent its unit.
+- **Long deferrals are not slept through.** `providerQuotaMiddleware({ maxDeferMs })` and
+  `providerQuotaRateLimiter({ maxDeferMs })` share one rule and one default, 60 000 ms. A deferral
+  whose `retryAfterMs` exceeds it, a per-day window for instance, fails with `rate_limited`,
+  `retryable: false`, `reason: 'quota_window'` (and keeps `retryAfterMs`), so the retry middleware
+  returns at once and the host can reschedule. The cap exists to stop multi-hour windows being slept
+  on, not per-minute ones: an `rpm` deferral waits at most 60 s, so it stays retryable at the default.
+  `maxDeferMs` must be a finite number >= 0 (`bad_request` otherwise); `0` makes every deferral
+  non-retryable. Every deferral that stays retryable consumes one of the retry middleware's
+  `maxAttempts`, and the retry sleeps `min(retryAfterMs, maxDelayMs)` (retry's default `maxDelayMs`
+  is 30 s, `maxAttempts` 3), so it can wake before the window rolls over and be deferred again:
+  raise `maxDelayMs` or `maxAttempts` when you want a call to wait out a per-minute window.
+- **Limits are looked up by the canonical model id.** The middleware resolves a declared alias to
+  its model before it asks the policy, so `quotaPolicyForGemini({ models })` must be keyed by the
+  canonical id. A table keyed by an alias would never match, and the model would silently be
+  unlimited, so the policy throws `bad_request` on the first call that sees such a key. (The
+  `RateLimiter` path receives only the canonical id and cannot make that check.)
+- **Windows use the caller's clock.** Bucket keys and TTLs come from `now()` / the engine clock
+  (rounded up to whole milliseconds for `PEXPIRE`). Hosts whose clocks disagree near a minute or UTC
+  day boundary can over-admit for the skew; keep clocks synchronised (NTP) when exactness matters.
 
 ## Decision model
 
@@ -111,6 +128,12 @@ store exhausts (which yields a retryable `defer`, not a `deny`).
 
 ## Known limitations
 
+- The Lua script is atomic because Redis runs a script as one step, but the default test suite
+  exercises it through a JavaScript port of its logic (the script body is the same string, and a typo
+  in it would not be caught there). `consume-on-allow.test.ts` also runs the shipped script on a real
+  Lua interpreter against a small Redis shim; that block is opt-in and skipped when no `lua` binary is
+  on `PATH` (for example `brew install lua`). Nothing exercises it on a real Redis or Upstash in CI,
+  and the suite does not prove behaviour under truly concurrent connections.
 - `classifyError` in `@gullabs/core` maps every HTTP `429` to `kind: 'rate_limited'` uniformly.
   The only capacity-versus-quota split anywhere in this repo is regex text matching in
   `@gullabs/google`'s `flex-fallback.ts` (`CAPACITY_PATTERNS` / `QUOTA_PATTERNS`). That is an

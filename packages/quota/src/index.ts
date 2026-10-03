@@ -42,7 +42,14 @@ export type QuotaEventHandler = (event: QuotaEvent) => void
 
 export interface QuotaPolicyInput {
   provider: string
+  /** The canonical model id (a declared alias is resolved to it by the middleware). */
   model: string
+  /**
+   * The model's declared aliases, when the caller knows them (the middleware
+   * does; the rate-limiter path does not). `quotaPolicyForGemini` uses it to
+   * refuse a limits table keyed by an alias, which would never match.
+   */
+  aliases?: readonly string[]
 }
 
 export interface ProviderQuotaRule {
@@ -88,6 +95,8 @@ export interface QuotaStore {
 export interface CheckProviderQuotaOptions {
   provider: string
   model: string
+  /** Declared aliases of `model`, passed through to {@link QuotaPolicyInput.aliases}. */
+  aliases?: readonly string[]
   policy: ProviderQuotaPolicy
   store: QuotaStore
   nowMs?: number
@@ -100,7 +109,7 @@ export interface EnforceProviderQuotaOptions extends CheckProviderQuotaOptions {
    * Longest `retryAfterMs` a deferral may carry and still be thrown as a
    * retryable `rate_limited` error. A longer deferral is thrown as
    * `rate_limited`, `retryable: false`, `reason: 'quota_window'`. Unset means
-   * no cap.
+   * no cap. When set it must be a finite number >= 0, else `bad_request`.
    */
   maxDeferMs?: number
 }
@@ -116,7 +125,13 @@ export interface ProviderQuotaMiddlewareOptions {
    * retryable `rate_limited` error. A deferral that would wait longer (a
    * per-day window, say) fails with `rate_limited`, `retryable: false`,
    * `reason: 'quota_window'`, so the retry middleware does not sleep through
-   * it. Default 30 000.
+   * it. Default 60 000: the cap exists to stop multi-hour windows (a per-day
+   * limit) being slept on, so every per-minute deferral (at most 60 s) stays
+   * retryable. Must be a finite number >= 0, else `bad_request` at
+   * construction. Every deferral that stays retryable consumes one of the retry
+   * middleware's `maxAttempts`, and the retry sleeps `min(retryAfterMs,
+   * maxDelayMs)`, so it can wake before the window rolls over and be deferred
+   * again.
    */
   maxDeferMs?: number
 }
@@ -126,6 +141,13 @@ export interface ProviderQuotaRateLimiterOptions {
   store: QuotaStore
   onEvent?: QuotaEventHandler
   now?: () => number
+  /**
+   * Same cap and default as {@link ProviderQuotaMiddlewareOptions.maxDeferMs}:
+   * a deferral longer than this fails with `rate_limited`, `retryable: false`,
+   * `reason: 'quota_window'` instead of making the retry middleware sleep
+   * through it.
+   */
+  maxDeferMs?: number
 }
 
 export interface GeminiQuotaLimits {
@@ -163,7 +185,18 @@ interface ResolvedQuotaRule {
 
 const NOOP_RELEASE: Release = () => {}
 
-const DEFAULT_MAX_DEFER_MS = 30_000
+const DEFAULT_MAX_DEFER_MS = 60_000
+
+function validateMaxDeferMs(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new LlmError(
+      `Invalid quota option "maxDeferMs": must be a finite number >= 0, got ${String(value)}`,
+      { kind: 'bad_request', retryable: false },
+    )
+  }
+  return value
+}
 
 export function quotaPolicyForGemini(
   opts: GeminiQuotaPolicyOptions,
@@ -173,6 +206,16 @@ export function quotaPolicyForGemini(
   return {
     getRule(input: QuotaPolicyInput): ProviderQuotaRule | undefined {
       if (input.provider !== provider) return undefined
+
+      if (
+        opts.models[input.model] === undefined &&
+        (input.aliases ?? []).some((alias) => opts.models[alias] !== undefined)
+      ) {
+        throw new LlmError(
+          `Quota limits for "${input.model}" are keyed by one of its aliases; limits are looked up by the canonical model id "${input.model}", so the alias key would never match. Key the limits by "${input.model}".`,
+          { kind: 'bad_request', retryable: false },
+        )
+      }
 
       const limits = opts.models[input.model] ?? opts.defaultLimits
       if (limits === undefined) return undefined
@@ -197,7 +240,7 @@ export async function checkProviderQuota(
   opts: CheckProviderQuotaOptions,
 ): Promise<QuotaDecision> {
   const nowMs = opts.nowMs ?? Date.now()
-  const resolved = resolveQuotaRule(opts.policy, opts.provider, opts.model)
+  const resolved = resolveQuotaRule(opts.policy, opts.provider, opts.model, opts.aliases)
   return evaluateQuotaDecision(resolved, opts.store, nowMs, opts.signal)
 }
 
@@ -205,7 +248,8 @@ export async function enforceProviderQuota(
   opts: EnforceProviderQuotaOptions,
 ): Promise<void> {
   const nowMs = opts.nowMs ?? Date.now()
-  const resolved = resolveQuotaRule(opts.policy, opts.provider, opts.model)
+  const maxDeferMs = validateMaxDeferMs(opts.maxDeferMs)
+  const resolved = resolveQuotaRule(opts.policy, opts.provider, opts.model, opts.aliases)
 
   try {
     const decision = await evaluateQuotaDecision(resolved, opts.store, nowMs, opts.signal)
@@ -231,7 +275,7 @@ export async function enforceProviderQuota(
         })
         throw new LlmError(
           messageForDefer(decision.reason, decision.scope, decision.retryAfterMs),
-          opts.maxDeferMs !== undefined && decision.retryAfterMs > opts.maxDeferMs
+          maxDeferMs !== undefined && decision.retryAfterMs > maxDeferMs
             ? {
                 kind: 'rate_limited',
                 retryable: false,
@@ -292,6 +336,7 @@ export async function enforceProviderQuota(
 export function providerQuotaMiddleware(
   opts: ProviderQuotaMiddlewareOptions,
 ): Middleware {
+  const maxDeferMs = validateMaxDeferMs(opts.maxDeferMs) ?? DEFAULT_MAX_DEFER_MS
   return {
     id: opts.id ?? 'provider-quota',
     // Not configurable: `createClient` reads `role` (never `id`) to reject a
@@ -300,12 +345,17 @@ export function providerQuotaMiddleware(
     async intercept(req, ctx, next) {
       const enforceOptions: EnforceProviderQuotaOptions = {
         provider: req.provider,
-        // The canonical id, so a declared alias is limited like its model.
+        // The canonical id, so a declared alias is limited like its model. The
+        // engine pins `modelDescriptor` at every middleware boundary.
         model: req.modelDescriptor?.model ?? req.model,
         policy: opts.policy,
         store: opts.store,
         nowMs: opts.now?.() ?? ctx.clock.now(),
-        maxDeferMs: opts.maxDeferMs ?? DEFAULT_MAX_DEFER_MS,
+        maxDeferMs,
+      }
+      const aliases = req.modelDescriptor?.aliases
+      if (aliases !== undefined) {
+        enforceOptions.aliases = aliases
       }
 
       if (opts.onEvent !== undefined) {
@@ -325,6 +375,7 @@ export function providerQuotaMiddleware(
 export function providerQuotaRateLimiter(
   opts: ProviderQuotaRateLimiterOptions,
 ): RateLimiter {
+  const maxDeferMs = validateMaxDeferMs(opts.maxDeferMs) ?? DEFAULT_MAX_DEFER_MS
   return {
     async acquire(key: string, signal?: AbortSignal): Promise<Release> {
       const { provider, model } = parseRateLimiterKey(key)
@@ -335,6 +386,7 @@ export function providerQuotaRateLimiter(
         policy: opts.policy,
         store: opts.store,
         nowMs: opts.now?.() ?? Date.now(),
+        maxDeferMs,
       }
 
       if (opts.onEvent !== undefined) {
@@ -464,8 +516,13 @@ function resolveQuotaRule(
   policy: ProviderQuotaPolicy,
   provider: string,
   model: string,
+  aliases?: readonly string[],
 ): ResolvedQuotaRule {
-  const rule = policy.getRule({ provider, model })
+  const rule = policy.getRule({
+    provider,
+    model,
+    ...(aliases !== undefined ? { aliases } : {}),
+  })
   const scope = rule?.scope ?? defaultScope(provider, model)
   const resolved: ResolvedQuotaRule = {
     configured: rule !== undefined,
@@ -729,11 +786,12 @@ function utcDayBucket(nowMs: number): string {
 
 function timeUntilNextMinute(nowMs: number): number {
   const nextMinute = Math.floor(nowMs / 60_000) * 60_000 + 60_000
-  return Math.max(nextMinute - nowMs, 1)
+  // Integer: `PEXPIRE` rejects a fractional TTL after `INCR` already ran.
+  return Math.max(Math.ceil(nextMinute - nowMs), 1)
 }
 
 function timeUntilNextUtcDay(nowMs: number): number {
   const d = new Date(nowMs)
   const nextDay = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1)
-  return Math.max(nextDay - nowMs, 1)
+  return Math.max(Math.ceil(nextDay - nowMs), 1)
 }
