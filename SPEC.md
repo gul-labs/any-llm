@@ -43,7 +43,9 @@ Seams are present; machinery is intentionally small.
   `thinkingTokens` is a SUBSET of `outputTokens`. Cost math must not double-count.
 - **Cost is frozen at write time:** integer micro-USD + `pricingVersion` on every record.
 - **Side effects fail-open; the call fails-closed.** A broken sink/telemetry/cost never fails
-  the LLM call; a broken call throws a typed `LlmError`.
+  the LLM call, and a sink that hangs is abandoned after `sinkTimeoutMs` (default 5 s); a broken call
+  throws a typed `LlmError`. `generate`, `runStructured` and `countTokens` reject only with
+  `LlmError`; whatever else is thrown on the way is classified and kept as `cause`.
 - **No real network in tests.** Provider SDKs are mocked via structural fakes
   (`makeFakeGemini`, `makeFakeXai`); we stress the surface, not the providers.
 
@@ -308,7 +310,7 @@ runStructured(callSite, vars?, opts?)  /  generate(request)
   9. normalize usage  (GROSS convention enforced; details map + raw populated by adapter)
  10. parse structured output  (JSON.parse result → output + outputParsed; caller validates)
  11. pricing.price()  → Cost (micro-USD, frozen)   [fail-open → cost absent on pricing error]
- 12. build LlmCallRecord  + sink.record()           [fail-open: swallow+log sink errors]
+ 12. build LlmCallRecord  + sink.record()           [fail-open: swallow+log sink errors; bounded by sinkTimeoutMs]
  13. telemetry.onSuccess + log 'llm.call.success'
  14. return LlmResult
   (any throw → classify → telemetry.onError + log 'llm.call.error' + record status + rethrow LlmError)

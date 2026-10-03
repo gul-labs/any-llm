@@ -208,11 +208,21 @@ attempt. Steps:
    one fires when the caller's `AbortSignal` fires, one fires after `timeoutMs`. The timeout
    promise rejects **before** calling `AbortController.abort()` on the combined signal — this
    ordering guarantees `kind: 'timeout'` wins the `Promise.race` even against a synchronously
-   aborting adapter.
+   aborting adapter. The attempt's window is what the logical-call deadline has left, so an
+   attempt that starts late cannot run past `timeoutMs`.
+
+   **The logical-call deadline.** `timeoutMs` is armed when the call starts (ADR-036), not when
+   an attempt does, so middleware time counts against it. `EngineCtx.signal` is the caller's
+   signal merged with that deadline. While no attempt is in flight (middleware is what is taking
+   the time) the deadline ends the call with `LlmError('timeout')` even if the middleware ignores
+   the signal, and a continuation of the middleware that wakes later never dispatches. While an
+   attempt is in flight the attempt enforces the deadline itself and records the failure as its
+   own row.
 
 4. **Rate-limiter acquire.** `rateLimiter.acquire("${provider}:${model}", signal)` (once per
    attempt, so once per retry; `model` is the descriptor's canonical id, so aliases share a
-   bucket) is raced
+   bucket; `acquire` must honour the signal, and a late-resolved `acquire` whose race was lost is
+   released by the engine) is raced
    against the cancellation promises. On rejection (caller abort, timeout, or limiter error),
    the call fails. On resolution, a `Release` function is returned; it is called on every exit
    path (success and error). Time spent waiting here is recorded as `queueDelayMs` and excluded
@@ -241,9 +251,11 @@ attempt. Steps:
    `warnings`, `generationConfig`) are stored as JSONB-compatible `JsonValue`. `authKeyId` (ADR-026)
    is populated from the resolved `AuthMaterial`'s `keyId`, omitted otherwise; it is never redacted.
 
-10. **Sink write.** `sink.record(record)` is called inside a try/catch. Failure logs
-    `llm.call.sink.failed` and is swallowed (fail-open). A record is written on both the success
-    path and the error path (postmortem record with whatever usage was known).
+10. **Sink write.** `sink.record(record)` is called inside a try/catch and raced against
+    `ClientConfig.sinkTimeoutMs` (default 5 s). Failure logs `llm.call.sink.failed` and is
+    swallowed (fail-open); a sink still pending at the timeout is abandoned and logged as
+    `llm.call.sink.timeout`, and the result or error goes on unchanged. A record is written on
+    both the success path and the error path (postmortem record with whatever usage was known).
 
 11. **Return `LlmResult`.** The result carries `usage`, `cost` (including derived `cost.usd`),
     `message` (ordered assistant output) and `continuation`, `text`, parsed `output` +
@@ -266,16 +278,16 @@ narrow by `kind` or read `retryable` without parsing message strings.
 
 ### Error Kinds
 
-| `kind`           | HTTP             | `retryable` | Description                                                                                                                                                                              |
-| ---------------- | ---------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `invalid_auth`   | 401; 403 default | No          | Wrong or missing credentials, or a 403 the adapter did not reclassify.                                                                                                                   |
-| `rate_limited`   | 429              | Yes         | Provider quota exceeded; `retryAfterMs` may be set.                                                                                                                                      |
-| `server`         | 5xx              | Yes         | Transient provider error.                                                                                                                                                                |
-| `timeout`        | 408              | Yes         | Request exceeded `timeoutMs` or network timeout.                                                                                                                                         |
-| `aborted`        | —                | No          | Caller cancelled via `AbortSignal`. Never retried.                                                                                                                                       |
-| `bad_request`    | 400, 422         | No          | Malformed request; retrying without change will not help.                                                                                                                                |
-| `content_filter` | overlay / 200    | No          | Provider refused the call for safety / AUP. Google output blocks are 200-path; xAI input blocks are the 403 overlay. Unrecorded xAI 200 incomplete reasons stay `finishReason: 'other'`. |
-| `unknown`        | other            | No          | Uncategorised; inspect `cause` for details.                                                                                                                                              |
+| `kind`           | HTTP               | `retryable` | Description                                                                                                                                                                              |
+| ---------------- | ------------------ | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `invalid_auth`   | 401; 403 default   | No          | Wrong or missing credentials, or a 403 the adapter did not reclassify.                                                                                                                   |
+| `rate_limited`   | 429                | Yes         | Provider quota exceeded; `retryAfterMs` may be set.                                                                                                                                      |
+| `server`         | 5xx; transport     | Yes         | Transient provider error, or a connection that never produced a response.                                                                                                                |
+| `timeout`        | 408                | Yes         | Request exceeded `timeoutMs` or network timeout.                                                                                                                                         |
+| `aborted`        | —                  | No          | Caller cancelled via `AbortSignal`. Never retried.                                                                                                                                       |
+| `bad_request`    | 400, 404, 413, 422 | No          | Malformed request; retrying without change will not help.                                                                                                                                |
+| `content_filter` | overlay / 200      | No          | Provider refused the call for safety / AUP. Google output blocks are 200-path; xAI input blocks are the 403 overlay. Unrecorded xAI 200 incomplete reasons stay `finishReason: 'other'`. |
+| `unknown`        | other              | No          | Uncategorised; inspect `cause` for details.                                                                                                                                              |
 
 ### Classification
 
@@ -283,11 +295,24 @@ narrow by `kind` or read `retryable` without parsing message strings.
 
 1. Already an `LlmError` — returned as-is.
 2. `Error.name === 'AbortError'` → `aborted`.
-3. `Error.name === 'TimeoutError'` or message matches `/timeout|timed? out/i` → `timeout`.
-4. Any object with a recognizable `status`, `code`, or `response.status` numeric property →
-   routed through `classifyHttpStatus`, with `retryAfterMs` extracted from `Retry-After` /
-   `x-ratelimit-reset` headers.
-5. Anything else → `unknown`.
+3. Any object with a recognizable numeric HTTP `status`, `code`, or `response.status` /
+   `error.status` / `error.code` (100-599) → routed through `classifyHttpStatus`, with
+   `retryAfterMs` read by `parseRetryAfter` from the response headers.
+4. `Error.name === 'TimeoutError'` → `timeout`.
+5. A transport failure (`isTransportError`): `ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`,
+   `EAI_AGAIN`, `EPIPE` or `UND_ERR_*` on the error or its `cause` chain, or the messages
+   "fetch failed", "connection error", "socket hang up" → `server`, retryable. An undici
+   deadline (`UND_ERR_*_TIMEOUT`) → `timeout`.
+6. An `Error` whose message matches `/timeout|timed? out/i` → `timeout`. This is the last and
+   weakest signal; it never overrides a status or an errno.
+7. Anything else → `unknown`.
+
+`classifyHttpStatus` maps 404 and 413 to `bad_request` (the request names a model or resource the
+provider does not have, or is too large) and leaves 409 as `unknown`. `parseRetryAfter(headers, now)`
+reads `retry-after-ms`, `retry-after` (delta-seconds with decimals, an HTTP-date, or a duration such
+as `6m0s`) and the `x-ratelimit-reset*` family (a value above 1e9 is epoch seconds), and caps the
+result at 24 hours. Adapters use `isTransportError` and `parseRetryAfter` rather than keeping their
+own copies.
 
 `classifyHttpStatus` maps an HTTP code to a _default_ kind. HTTP status is a hint,
 not a kind: providers overload codes (xAI invalid keys arrive as 400; xAI input
@@ -307,8 +332,10 @@ linked by `callId`.
 
 **Backoff.** Two modes:
 
-- `retryAfterMs` present on the error (from a 429): the sleep duration is
-  `min(retryAfterMs, maxDelayMs)`.
+- `retryAfterMs` present on the error (from a 429): the sleep duration is exactly
+  `retryAfterMs`. It is never shortened: a delay longer than `maxDelayMs`, or longer than the
+  remaining `timeoutMs` budget, stops the retry and rethrows the attempt's own error with
+  `retryAfterMs` intact (ADR-036).
 - No hint: exponential backoff with full jitter —
   `rand() * min(maxDelayMs, baseDelayMs * 2^(attempt-1))`.
 
@@ -320,11 +347,15 @@ because it prevents retry storms when many callers fail simultaneously.
 `LlmError('aborted')`.
 
 **Terminal conditions.** `kind === 'aborted'` is always terminal — even a custom `shouldRetry`
-returning true for `aborted` is overridden. Exhausting `maxAttempts` rethrows the last error.
+returning true for `aborted` is overridden. Exhausting `maxAttempts` rethrows the last error. So
+does a backoff that is not shorter than the remaining `timeoutMs` budget: the attempt's own error
+is rethrown at once instead of sleeping the budget away and replacing it with a synthetic
+`timeout`. The only synthetic deadline error is the pre-attempt "budget exhausted" one; it is a
+retryable `timeout` (every `timeout` is) and carries the last attempt's error as `cause`.
 
-**Per-attempt timeout.** Each call to `next()` (each attempt) builds its own independent
-cancellation race with a fresh timeout window. The timeout clock resets between attempts; the
-retry delay is not counted against the per-attempt timeout.
+**Per-attempt timeout.** Each call to `next()` (each attempt) builds its own cancellation race.
+`timeoutMs` is the overall budget, so the attempt's window is the budget that is left
+(`attemptTimeoutMs`), never a fresh one: backoff and middleware time are counted against it.
 
 ---
 

@@ -123,7 +123,9 @@ your name if it differs.
 
 Two ways to find out before rows are lost:
 
-- Alert on the `llm.call.sink.failed` log event (it is stable).
+- Alert on the `llm.call.sink.failed` log event (it is stable). A sink that does not answer within
+  `sinkTimeoutMs` (default 5 s) is abandoned and logged as `llm.call.sink.timeout` (same fields, plus
+  `timeoutMs`); the row may or may not be written later, so alert on that event too.
 - Call `assertLlmCallsSchema(db)` from `@gullabs/drizzle`. It selects every column the schema names with
   `LIMIT 0`, writes nothing, and rejects with an error that points at `sql/upgrades/`. It needs no client,
   so run it from a deploy or CI step, a readiness endpoint, or at boot.
