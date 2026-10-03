@@ -76,6 +76,12 @@ export interface QuotaStoreCheckResult {
 }
 
 export interface QuotaStore {
+  /**
+   * Check every configured window and consume one unit from each **only if all
+   * of them are under their limits**. A denied call leaves every counter
+   * unchanged. The check and the consumption must be atomic: concurrent callers
+   * at the limit admit exactly the remaining capacity.
+   */
   checkAndConsume(input: QuotaStoreCheckInput): Promise<QuotaStoreCheckResult>
 }
 
@@ -90,6 +96,13 @@ export interface CheckProviderQuotaOptions {
 
 export interface EnforceProviderQuotaOptions extends CheckProviderQuotaOptions {
   onEvent?: QuotaEventHandler
+  /**
+   * Longest `retryAfterMs` a deferral may carry and still be thrown as a
+   * retryable `rate_limited` error. A longer deferral is thrown as
+   * `rate_limited`, `retryable: false`, `reason: 'quota_window'`. Unset means
+   * no cap.
+   */
+  maxDeferMs?: number
 }
 
 export interface ProviderQuotaMiddlewareOptions {
@@ -98,6 +111,14 @@ export interface ProviderQuotaMiddlewareOptions {
   store: QuotaStore
   onEvent?: QuotaEventHandler
   now?: () => number
+  /**
+   * Longest quota deferral, in milliseconds, the middleware will surface as a
+   * retryable `rate_limited` error. A deferral that would wait longer (a
+   * per-day window, say) fails with `rate_limited`, `retryable: false`,
+   * `reason: 'quota_window'`, so the retry middleware does not sleep through
+   * it. Default 30 000.
+   */
+  maxDeferMs?: number
 }
 
 export interface ProviderQuotaRateLimiterOptions {
@@ -141,6 +162,8 @@ interface ResolvedQuotaRule {
 }
 
 const NOOP_RELEASE: Release = () => {}
+
+const DEFAULT_MAX_DEFER_MS = 30_000
 
 export function quotaPolicyForGemini(
   opts: GeminiQuotaPolicyOptions,
@@ -208,11 +231,18 @@ export async function enforceProviderQuota(
         })
         throw new LlmError(
           messageForDefer(decision.reason, decision.scope, decision.retryAfterMs),
-          {
-            kind: 'rate_limited',
-            retryable: true,
-            retryAfterMs: decision.retryAfterMs,
-          },
+          opts.maxDeferMs !== undefined && decision.retryAfterMs > opts.maxDeferMs
+            ? {
+                kind: 'rate_limited',
+                retryable: false,
+                reason: 'quota_window',
+                retryAfterMs: decision.retryAfterMs,
+              }
+            : {
+                kind: 'rate_limited',
+                retryable: true,
+                retryAfterMs: decision.retryAfterMs,
+              },
         )
 
       case 'deny':
@@ -264,13 +294,18 @@ export function providerQuotaMiddleware(
 ): Middleware {
   return {
     id: opts.id ?? 'provider-quota',
+    // Not configurable: `createClient` reads `role` (never `id`) to reject a
+    // client that places quota outside retry.
+    role: 'quota',
     async intercept(req, ctx, next) {
       const enforceOptions: EnforceProviderQuotaOptions = {
         provider: req.provider,
-        model: req.model,
+        // The canonical id, so a declared alias is limited like its model.
+        model: req.modelDescriptor?.model ?? req.model,
         policy: opts.policy,
         store: opts.store,
         nowMs: opts.now?.() ?? ctx.clock.now(),
+        maxDeferMs: opts.maxDeferMs ?? DEFAULT_MAX_DEFER_MS,
       }
 
       if (opts.onEvent !== undefined) {
@@ -316,51 +351,96 @@ export function providerQuotaRateLimiter(
   }
 }
 
+/**
+ * Atomic check-and-consume for N windows (N = #KEYS).
+ *
+ * KEYS[i]      window counter key
+ * ARGV[2i-1]   window limit
+ * ARGV[2i]     counter TTL in ms (time until the window rolls over)
+ *
+ * Reads every counter first. Only when ALL are under their limits does it
+ * increment them all, so a denied call consumes nothing. Returns
+ * `{ ok, count_1 … count_N }`: counts after the increment when `ok` is 1,
+ * current counts (untouched) when `ok` is 0.
+ */
+const CHECK_AND_CONSUME_LUA = `
+local n = #KEYS
+local counts = {}
+local ok = 1
+for i = 1, n do
+  local v = redis.call('GET', KEYS[i])
+  counts[i] = v and tonumber(v) or 0
+  if counts[i] >= tonumber(ARGV[2 * i - 1]) then
+    ok = 0
+  end
+end
+if ok == 1 then
+  for i = 1, n do
+    counts[i] = redis.call('INCR', KEYS[i])
+    redis.call('PEXPIRE', KEYS[i], ARGV[2 * i])
+  end
+end
+local out = { ok }
+for i = 1, n do
+  out[i + 1] = counts[i]
+end
+return out
+`
+
 export function upstashQuotaStore(opts: UpstashQuotaStoreOptions): QuotaStore {
   const prefix = opts.prefix ?? 'gullabs:quota'
   const invoke = opts.invoke ?? buildUpstashInvoker(opts)
 
   return {
     async checkAndConsume(input: QuotaStoreCheckInput): Promise<QuotaStoreCheckResult> {
-      const commands: UpstashPipelineCommand[] = []
-      const windows: Array<{ kind: 'rpm' | 'rpd'; limit: number; retryAfterMs: number }> =
-        []
+      const windows: Array<{
+        kind: 'rpm' | 'rpd'
+        key: string
+        limit: number
+        retryAfterMs: number
+      }> = []
 
       if (input.rpm !== undefined && input.rpm > 0) {
-        const retryAfterMs = timeUntilNextMinute(input.nowMs)
-        commands.push(['INCR', bucketKey(prefix, input.scope, 'rpm', input.nowMs)])
-        commands.push([
-          'PEXPIRE',
-          bucketKey(prefix, input.scope, 'rpm', input.nowMs),
-          retryAfterMs,
-        ])
-        windows.push({ kind: 'rpm', limit: input.rpm, retryAfterMs })
+        windows.push({
+          kind: 'rpm',
+          key: bucketKey(prefix, input.scope, 'rpm', input.nowMs),
+          limit: input.rpm,
+          retryAfterMs: timeUntilNextMinute(input.nowMs),
+        })
       }
 
       if (input.rpd !== undefined && input.rpd > 0) {
-        const retryAfterMs = timeUntilNextUtcDay(input.nowMs)
-        commands.push(['INCR', bucketKey(prefix, input.scope, 'rpd', input.nowMs)])
-        commands.push([
-          'PEXPIRE',
-          bucketKey(prefix, input.scope, 'rpd', input.nowMs),
-          retryAfterMs,
-        ])
-        windows.push({ kind: 'rpd', limit: input.rpd, retryAfterMs })
+        windows.push({
+          kind: 'rpd',
+          key: bucketKey(prefix, input.scope, 'rpd', input.nowMs),
+          limit: input.rpd,
+          retryAfterMs: timeUntilNextUtcDay(input.nowMs),
+        })
       }
 
-      if (commands.length === 0) {
+      if (windows.length === 0) {
         return {}
       }
 
-      const rawResults = await invoke(commands, input.signal)
+      const command: UpstashPipelineCommand = [
+        'EVAL',
+        CHECK_AND_CONSUME_LUA,
+        windows.length,
+        ...windows.map((w) => w.key),
+        ...windows.flatMap((w) => [w.limit, w.retryAfterMs]),
+      ]
+      const rawResults = await invoke([command], input.signal)
+      const reply = arrayPipelineResult(rawResults[0], windows.length + 1)
+      const consumed = reply[0] === 1
       const decision: QuotaStoreCheckResult = {}
 
       for (const [i, window] of windows.entries()) {
-        const count = numericPipelineResult(rawResults[i * 2])
-        const remaining = Math.max(window.limit - count, 0)
+        const count = reply[i + 1] ?? 0
         const result: QuotaStoreWindowResult = {
-          allowed: count <= window.limit,
-          remaining,
+          // On a denial only the windows that are themselves at their limit are
+          // "not allowed"; the others were under their limit but not consumed.
+          allowed: consumed || count < window.limit,
+          remaining: Math.max(window.limit - count, 0),
           used: count,
         }
 
@@ -567,12 +647,14 @@ function buildUpstashInvoker(opts: UpstashQuotaStoreOptions): UpstashPipelineInv
   }
 }
 
-function numericPipelineResult(value: unknown): number {
+function arrayPipelineResult(value: unknown, length: number): readonly number[] {
   const unwrapped = unwrapPipelineResult(value)
-  if (typeof unwrapped === 'number') return unwrapped
-  if (typeof unwrapped === 'string' && unwrapped.length > 0) {
-    const parsed = Number(unwrapped)
-    if (Number.isFinite(parsed)) return parsed
+  if (
+    Array.isArray(unwrapped) &&
+    unwrapped.length === length &&
+    unwrapped.every((n) => typeof n === 'number' && Number.isFinite(n))
+  ) {
+    return unwrapped as number[]
   }
 
   throw new Error(`Unexpected Upstash pipeline result: ${JSON.stringify(value)}`)
