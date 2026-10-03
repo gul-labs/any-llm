@@ -651,12 +651,13 @@ function resolvePointer(root: JsonObject, ref: string): JsonObject | undefined {
     }
     segment = segment.replace(/~1/g, '/').replace(/~0/g, '~')
     if (expect === 'index') {
-      if (!Array.isArray(current)) return undefined
+      // The previous segment was a schema-array keyword; layer 1 checked it is an array.
+      const members = current as JsonValue[]
       const index = Number(segment)
-      if (!Number.isInteger(index) || index < 0 || index >= current.length) {
+      if (!Number.isInteger(index) || index < 0 || index >= members.length) {
         return undefined
       }
-      current = current[index] as JsonValue
+      current = members[index] as JsonValue
       expect = 'keyword'
       continue
     }

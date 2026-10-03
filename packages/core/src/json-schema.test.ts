@@ -736,6 +736,26 @@ describe('assertJsonSchemaProfile', () => {
       expect(err.message).toContain('output.jsonSchema.properties.a')
     })
 
+    it.each([
+      ['a malformed percent escape', '#/$defs/%E0%A4%A'],
+      ['a non-numeric index', '#/properties/u/anyOf/x'],
+      ['an index past the end', '#/properties/u/anyOf/9'],
+      ['a negative index', '#/properties/u/anyOf/-1'],
+      ['a missing keyword', '#/properties/u/items'],
+      ['a boolean schema', '#/properties/t/items'],
+    ])('rejects a $ref with %s', (_name, ref) => {
+      const err = profiled({
+        type: 'object',
+        properties: {
+          a: { $ref: ref },
+          u: { anyOf: [{ type: 'string' }] },
+          t: { type: 'array', items: true },
+        },
+        $defs: {},
+      })
+      expect(err.message).toContain('does not resolve to a schema')
+    })
+
     it('resolves $ref into every schema position (items, anyOf, prefixItems, $defs)', () => {
       expect(() =>
         assertJsonSchemaProfile(
