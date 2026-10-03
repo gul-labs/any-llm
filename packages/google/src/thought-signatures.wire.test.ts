@@ -1177,7 +1177,7 @@ describe('trimming and rewinding the history', () => {
     expect(wireContents[1]?.parts[0]?.['thoughtSignature']).toBe(sig(16, 'y'))
   })
 
-  it('compaction: one summary takes the place of the range\'s first message, as the README says', async () => {
+  it("compaction: one summary takes the place of the range's first message, as the README says", async () => {
     const { history, state } = await longConversation()
     const summary: Message = {
       role: 'user',
