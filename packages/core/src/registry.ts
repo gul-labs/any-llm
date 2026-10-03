@@ -43,8 +43,8 @@ export interface ModelDescriptor {
   provider: string
   /**
    * Key into the pricing table (e.g. `"gemini-2.5-pro"`).
-   * When omitted, cost computation falls back to the pricing table's own
-   * prefix-match logic.
+   * When omitted, the canonical {@link ModelDescriptor.model} is the pricing
+   * key. Lookup is exact; there is no prefix matching.
    */
   pricingFamily?: string
   /** Capability flags for routing and adapter logic. */
@@ -166,6 +166,23 @@ export function assertModelMatchesDescriptor(
   }
 }
 
+/** Longest model string echoed in a message or scored for suggestions. */
+const MAX_MODEL_TEXT = 128
+
+/**
+ * A host that forwards user-chosen model names must not pay CPU or log volume
+ * proportional to the string it was handed: cap it before it is scored or
+ * echoed.
+ *
+ * @internal
+ */
+export function boundedModelText(model: string): string {
+  const text = String(model)
+  return text.length <= MAX_MODEL_TEXT
+    ? text
+    : `${text.slice(0, MAX_MODEL_TEXT)}… (${text.length} characters)`
+}
+
 function levenshtein(a: string, b: string): number {
   let prev = Array.from({ length: b.length + 1 }, (_, i) => i)
   for (let i = 1; i <= a.length; i++) {
@@ -194,7 +211,9 @@ export function unknownModelMessage(
   provider: string,
   model: string,
 ): string {
-  const base = `No registered model for provider "${provider}" model "${model}".`
+  const shown = boundedModelText(model)
+  const scored = String(model).slice(0, MAX_MODEL_TEXT)
+  const base = `No registered model for provider "${boundedModelText(provider)}" model "${shown}".`
   const candidates: string[] = []
   for (const d of registry.listDescriptors?.() ?? []) {
     if (d.provider !== provider) continue
@@ -202,7 +221,7 @@ export function unknownModelMessage(
   }
   if (candidates.length === 0) return base
   const closest = candidates
-    .map((id) => ({ id, distance: levenshtein(model, id) }))
+    .map((id) => ({ id, distance: levenshtein(scored, id) }))
     .sort((x, y) => x.distance - y.distance || x.id.localeCompare(y.id))
     .slice(0, 3)
     .map((c) => `"${c.id}"`)

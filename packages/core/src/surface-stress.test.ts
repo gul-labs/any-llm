@@ -820,7 +820,6 @@ describe('surface-stress: cost property', () => {
     'gemini-2.5-flash-lite',
     'gemini-3.1-flash-lite',
     'gemini-3.1-pro-preview',
-    'gemini-2.5-pro-001', // prefix match → gemini-2.5-pro
   ]
   const UNKNOWN_MODELS = [
     'gpt-4',
@@ -927,7 +926,7 @@ describe('surface-stress: cost property', () => {
   it('sum(details)===microUsd on the engine result vs record (50 iterations)', async () => {
     const rand = mulberry32(0xa1b2c3d4)
     for (let i = 0; i < 50; i++) {
-      const model = KNOWN_MODELS[Math.floor(rand() * (KNOWN_MODELS.length - 1))]! // skip prefix-match variant
+      const model = KNOWN_MODELS[Math.floor(rand() * KNOWN_MODELS.length)]!
       const input = Math.floor(rand() * 300_000) + 1
       const cached = Math.floor(rand() * Math.min(input, 100_000))
       const output = Math.floor(rand() * 5_000) + 1

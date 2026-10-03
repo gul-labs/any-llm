@@ -271,7 +271,9 @@ The union is closed so adapters cannot invent reasons; a new member arrives in a
 `GenConfig.maxOutputTokens` includes reasoning tokens on providers that reason. When a call ends with
 `finishReason: 'length'`, produced no answer text and no tool call, and spent reasoning tokens, the result
 and the record carry a warning that the cap was used up by reasoning. Raise the cap or lower the reasoning
-effort.
+effort. A whitespace-only text counts as no answer. Only the Google and xAI adapters report
+`finishReason: 'length'`; the `claude-cli` and `codex-cli` adapters never do, so the warning cannot fire for
+them.
 
 ### LlmCallRecord and UsageSink
 
@@ -281,8 +283,11 @@ idempotent on `r.attemptId`. Key traceability fields: `callId` (stable across re
 `queueDelayMs`, and `metadata` (host-supplied, stored verbatim). `latencyMs` measures provider
 dispatch only; `queueDelayMs` measures pre-send wait inside `RateLimiter.acquire`.
 
-Every attempt is its own billed row with its own minted `attemptId`, including pre-attempt refusal
-rows (`attemptNumber: 0`). The library never deduplicates provider calls, and nothing a host passes
+Every provider attempt is its own billed row with its own minted `attemptId`. A call whose final
+error did not come out of an attempt (input-contract refusal, middleware refusal, quota deferral, retry
+budget exhausted) also writes one zero-usage, unbilled refusal row: `attemptNumber: 0` when no attempt
+had run, otherwise the refused attempt's number. A gap in attempt numbers means "refused before
+dispatch". The library never deduplicates provider calls, and nothing a host passes
 in becomes an `attemptId`. To tie host-level retries of one operation together, give every retry the
 same `externalId`: it is persisted on every attempt row (indexed in `@gullabs/drizzle`), so a host
 retry that reuses it shows up as extra rows under one `externalId`, each with the spend it caused.
@@ -298,8 +303,8 @@ is released when that attempt ends.
 
 - **Middleware cannot reroute.** The `next` a middleware receives refuses a request whose `provider`
   or `model` differs from the call's: the call fails with `LlmError('bad_request')` as the offender
-  calls `next` (before any inner middleware or the provider runs) and a pre-attempt refusal row is
-  written. The engine dispatches, validates, prices and authenticates with the identity it recorded
+  calls `next` (before any inner middleware or the provider runs) and a zero-usage refusal row is
+  written (`attemptNumber: 0` when no attempt had run, otherwise the refused attempt's number). The engine dispatches, validates, prices and authenticates with the identity it recorded
   at call start, so a middleware cannot change them even by mutating the request. Route in the host
   instead; see "Fallback" in the [root README](../../README.md#fallback). A quota unit taken by a
   middleware outside the offender is not refunded: the offender is a host bug.
@@ -309,7 +314,11 @@ is released when that attempt ends.
 - **Quota goes inside retry.** `[retryMiddleware(...), providerQuotaMiddleware(...)]` accounts one
   quota unit per provider dispatch. `createClient` rejects the opposite order with `bad_request`. It
   identifies the built-ins by the readonly `Middleware.role` they set (`'retry'`, `'quota'`), never
-  by `id`.
+  by `id`. The check runs over a copy of the list frozen at `createClient`. A wrapper or composed
+  middleware that does not carry the inner one's `role` is not detected.
+- **Registry results are re-checked.** After `registry.resolve` the engine verifies that the descriptor
+  belongs to the provider and that the requested string is its canonical id or a declared alias, so a
+  host `ModelRegistry` that prefix-matches or falls back is refused, not mispriced.
 
 ### Redaction
 

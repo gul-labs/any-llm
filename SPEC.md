@@ -304,7 +304,9 @@ Invariants of the middleware chain (ADR-037) and model resolution (ADR-033):
   There is no prefix matching.
 - A call's `{ provider, requestedModel, descriptor }` is fixed at call start. A middleware whose
   `next` receives a request with a different `provider` or `model` is refused with `bad_request`
-  (and a pre-attempt `attemptNumber: 0` row); `runAttempt` never reads them from the request.
+  (and a zero-usage refusal row: `attemptNumber: 0` when no attempt had run, otherwise the refused
+  attempt's number); `runAttempt` never reads them from the request. The identity is captured
+  synchronously at the top of `generate()` / `runStructured()`, before any `await`.
   Hosts route and fall back by making a new call.
 - A quota middleware (`role: 'quota'`) must be inside a retry middleware (`role: 'retry'`);
   `createClient` rejects the other order.

@@ -915,7 +915,7 @@ The library ships three observability primitives:
    `debug` breadcrumb (`llm.telemetry.hook.failed`).
 
 3. **Per-attempt `LlmCallRecord`** with `callId` (stable across retries), `attemptId`
-   (idempotency key), `attemptNumber` (1-based ordinal), `latencyMs`, token counts, `costMicroUsd`,
+   (minted per attempt; it only absorbs an at-least-once sink re-delivering the same record, ADR-031), `attemptNumber` (1-based ordinal), `latencyMs`, token counts, `costMicroUsd`,
    `errorKind`, and verbatim `metadata`. Records are written via `UsageSink` (fail-open). Secret
    redaction (`redactSecrets`) is applied before persistence to `errorMessage`,
    `generationConfig.providerOptions`, and `generationConfig.httpOptions.headers`. Standard
@@ -973,7 +973,7 @@ Identity is the explicit pair (`provider`, `model`) — structured fields, never
 - `LlmRequest` and `CallSite` carry a required top-level `provider`; `model` stays the bare
   provider-native string, forwarded verbatim to the SDK/CLI.
 - `ModelRegistry.resolve(provider, model)`; descriptors rename `id` → `model` and are keyed by
-  the pair. Longest-prefix matching is scoped within one provider. The same bare `model` under
+  the pair. Matching is exact within one provider (ADR-033 removed prefix matching). The same bare `model` under
   different providers is allowed; duplicate exact pairs throw.
 - Routing is always `adapterMap.get(req.provider)`. `deriveProvider()`, the slash-convention
   parse, the `'unknown'` fallback, and the single-adapter bypass are deleted. After any router
@@ -1366,12 +1366,10 @@ Implementing surfaces:
   started, the engine writes one synthetic `LlmCallRecord`: `status` via the existing
   `errorKindToStatus` mapping (no new status value, `recordSchemaVersion` stays `1`), all-zero
   usage, `cost` omitted (the existing "nothing was priced" convention, not a new `cost: 0` literal),
-  `attemptNumber: 0`. `attemptId` followed the first-attempt idempotency rule —
-  `request.idempotencyKey` when supplied, a freshly minted id otherwise (superseded by ADR-031:
-  `idempotencyKey` is deleted and every row, refusal rows included, gets a minted id). `record.ts`'s `attemptNumber`/`attemptId` doc contracts are rewritten:
-  `attemptNumber` is documented as "0 = refused before any attempt ran; real attempts are 1-based";
-  `attemptId` on `attemptNumber: 0` is documented as derived by the attempt-1 rule and remaining the
-  idempotency key. **Deliberate telemetry divergence:** `CallErrorEvent.attemptId` stays absent when
+  `attemptNumber: 0`. `attemptId` is a freshly minted id (ADR-031 deleted `idempotencyKey`; the
+  original first-attempt idempotency rule no longer exists). `record.ts`'s `attemptNumber`/`attemptId`
+  doc contracts are rewritten: `attemptNumber` is documented as "0 = refused before any attempt ran;
+  real attempts are 1-based". **Deliberate telemetry divergence:** `CallErrorEvent.attemptId` stays absent when
   no attempt ran (its existing documented semantics, unchanged) — the synthetic record's minted
   `attemptId` has no telemetry counterpart, and this divergence is intentional, not an oversight.
   **Quota-refusal observability consequence:** this is the same code path that covers
@@ -1981,8 +1979,8 @@ out of credits are all `rate_limited, retryable: false`, and a host reacts to ea
    namespaced extension form: a provider-specific condition that needs a reason gets a core member.
 3. **The reason is persisted and observable.** `LlmCallRecord.errorReason` (absent on success and when
    the error has no reason), the `error_reason` text column of `llm_calls`, and
-   `CallErrorEvent.reason`. It is written on provider-attempt rows and on `attemptNumber: 0` refusal rows
-   alike.
+   `CallErrorEvent.reason`. It is written on provider-attempt rows and on refusal rows
+   alike (ADR-037 item 6).
 4. **The database column has no CHECK constraint.** The vocabulary lives in the TypeScript union; a new
    member must never need SQL. A host that wants database-side validation can add its own constraint and
    owns keeping it in step with the changeset notes.
@@ -2031,9 +2029,11 @@ The owner decided hosts own routing and fallback; the library offers neither.
    `bad_request` ("middleware may not change the provider or model; route in the host and make a
    new call") with an `issues` entry per changed field. The offender is caught as it calls `next`,
    before anything inside it runs, so quota middleware inside it consumes nothing. A middleware
-   outside the offender has already run and is not refunded. The rejection writes a pre-attempt
-   refusal row (`attemptNumber: 0`, no provider call).
-2. **Call identity.** At call start the engine records `{ provider, requestedModel, descriptor }`:
+   outside the offender has already run and is not refunded. The rejection writes a zero-usage
+   refusal row: `attemptNumber: 0` when no attempt had run yet, otherwise the number of the refused
+   attempt (see item 6).
+2. **Call identity.** At call start (synchronously at the top of `generate()` / `runStructured()`,
+   before any `await`, so a host reusing and reassigning one request object cannot change it) the engine records `{ provider, requestedModel, descriptor }`:
    the provider, the exact model string the host sent (a declared alias stays an alias, ADR-033) and
    the descriptor object it resolved. `runAttempt` dispatches, validates config, prices, routes and
    authenticates with these and never reads `provider`, `model` or `modelDescriptor` from the
@@ -2050,7 +2050,20 @@ The owner decided hosts own routing and fallback; the library offers neither.
 5. **Quota placement.** `Middleware` gains a readonly `role?: 'retry' | 'quota'`, set by
    `retryMiddleware` and `providerQuotaMiddleware` and not configurable. `createClient` rejects, with
    `bad_request`, a client that puts a quota middleware before a retry middleware: quota accounts
-   one unit per provider dispatch, which needs it inside retry. The check reads `role`, never `id`.
+   one unit per provider dispatch, which needs it inside retry. The check reads `role`, never `id`,
+   runs over a copy of the list frozen at `createClient` (reordering the host's array afterwards
+   changes nothing), and cannot see a wrapper or composed middleware that does not carry the inner
+   one's `role`.
+6. **Refusal rows.** The call's final error is always in the ledger. When it did not come out of
+   `runAttempt` (input-contract refusal, boundary refusal, quota deferral, retry budget exhausted,
+   abort during back-off) the engine writes one zero-usage, unbilled row with the error's kind and
+   `reason`: `attemptNumber: 0` when no attempt had run, otherwise the refused attempt's number (never
+   below the last real attempt + 1). An attempt a middleware refused and a later attempt re-ran
+   leaves no row, so a gap in attempt numbers means "refused before dispatch".
+7. **The engine re-checks the registry (ADR-033).** After `registry.resolve`, `generate`,
+   `runStructured` and `countTokens` verify that the descriptor belongs to the provider and that the
+   requested string is its canonical id or a declared alias, so a host registry that prefix-matches
+   or falls back is refused instead of mispricing.
 
 **Consequences:**
 

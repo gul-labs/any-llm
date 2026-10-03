@@ -650,8 +650,9 @@ export type Handler = (req: ResolvedRequest, ctx: EngineCtx) => Promise<LlmResul
  * - **Middleware cannot reroute.** The `next` a middleware receives refuses a
  *   request whose `provider` or `model` differs from the call's: the call fails
  *   with `LlmError('bad_request')`, as the offender calls `next`, before any
- *   inner middleware or the provider runs, and a pre-attempt refusal row
- *   (`attemptNumber: 0`) is written. The engine routes, validates config,
+ *   inner middleware or the provider runs, and a zero-usage refusal row is
+ *   written (`attemptNumber: 0` when no attempt had run yet, otherwise the
+ *   refused attempt's number). The engine routes, validates config,
  *   prices and authenticates with the identity it recorded at call start and
  *   never reads `provider`, `model` or `modelDescriptor` from the request a
  *   middleware passes on. To use another provider or model, catch the error in
@@ -677,7 +678,8 @@ export interface Middleware {
    * `'quota'`). `createClient` reads it, never the `id`, to reject a client
    * that places a quota middleware outside (before) a retry middleware: quota
    * accounts one unit per provider dispatch, which needs it inside retry.
-   * Host middleware leaves it unset.
+   * Host middleware leaves it unset; a wrapper or composed middleware that
+   * does not carry the inner one's role is not detected by that check.
    */
   readonly role?: 'retry' | 'quota'
   /**

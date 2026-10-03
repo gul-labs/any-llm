@@ -84,6 +84,14 @@ describe('reasoning used up the output cap (R1.9)', () => {
     )
   })
 
+  it('treats a whitespace-only text as no answer', async () => {
+    const { client } = makeClient(adapterResult({ text: '\n  \n' }))
+    const result = await client.generate(REQUEST, { auth: AUTH })
+    expect(result.warnings.some((w) => w.message.includes('used up by reasoning'))).toBe(
+      true,
+    )
+  })
+
   it('names the provider default when the call set no cap', async () => {
     const { client } = makeClient(adapterResult())
     const result = await client.generate({ ...REQUEST, config: {} }, { auth: AUTH })

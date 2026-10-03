@@ -11,6 +11,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { createClient, createModelRegistry, LlmError, retryMiddleware } from './index.js'
+import type { ModelRegistry } from './index.js'
 import type {
   AdapterCtx,
   AdapterResult,
@@ -356,6 +357,82 @@ describe('middleware cannot change the provider or model (ADR-037)', () => {
   })
 })
 
+describe('call identity is captured at call start, not read from the live request', () => {
+  it('generate: a request mutated right after the call starts changes neither dispatch, price nor ledger', async () => {
+    const seen: ResolvedRequest[] = []
+    const capturing: ProviderAdapter = {
+      id: 'google',
+      async run(req) {
+        seen.push(req)
+        return result('g-pro')
+      },
+    }
+    const xai = new FakeAdapter('xai', result('x-model'))
+    const sink = new RecordingSink()
+    const client = createClient({
+      adapters: [capturing, xai],
+      pricingSources: { google: GOOGLE_PRICING, xai: XAI_PRICING },
+      modelRegistry: REGISTRY,
+      sink,
+      clock: new FakeClock(),
+      ids: new FakeIds(),
+    })
+    const request = { provider: 'google', model: 'g-pro', messages: MESSAGES }
+    const pending = client.generate(request, { auth: AUTH })
+    // A host reusing one request object (fallback loop) reassigns it while the
+    // first call is still awaiting config validation.
+    request.model = 'g-flash'
+    request.provider = 'xai'
+    const out = await pending
+
+    expect(xai.calls).toHaveLength(0)
+    expect(seen).toHaveLength(1)
+    expect(seen[0]!.provider).toBe('google')
+    expect(seen[0]!.model).toBe('g-pro')
+    expect(seen[0]!.modelDescriptor).toBe(G_PRO)
+    expect(out.cost?.microUsd).toBe(1_000_000)
+    expect(sink.records[0]).toMatchObject({
+      provider: 'google',
+      model: 'g-pro',
+      costMicroUsd: 1_000_000,
+    })
+  })
+
+  it('runStructured: a call site mutated right after the call starts changes nothing', async () => {
+    const seen: ResolvedRequest[] = []
+    const capturing: ProviderAdapter = {
+      id: 'google',
+      async run(req) {
+        seen.push(req)
+        return result('g-pro')
+      },
+    }
+    const sink = new RecordingSink()
+    const client = createClient({
+      adapters: [capturing],
+      pricingSources: { google: GOOGLE_PRICING },
+      modelRegistry: GOOGLE_ONLY,
+      sink,
+      clock: new FakeClock(),
+      ids: new FakeIds(),
+    })
+    const callSite = {
+      id: 'cs-1',
+      provider: 'google',
+      model: 'g-pro',
+      userTemplate: 'hi',
+    }
+    const pending = client.runStructured(callSite, { auth: AUTH })
+    callSite.model = 'g-flash'
+    const out = await pending
+
+    expect(seen[0]!.model).toBe('g-pro')
+    expect(seen[0]!.modelDescriptor).toBe(G_PRO)
+    expect(out.cost?.microUsd).toBe(1_000_000)
+    expect(sink.records[0]).toMatchObject({ model: 'g-pro', costMicroUsd: 1_000_000 })
+  })
+})
+
 describe('quota placement relative to retry (role)', () => {
   const retry = retryMiddleware({ maxAttempts: 3, baseDelayMs: 0 })
 
@@ -415,5 +492,241 @@ describe('quota placement relative to retry (role)', () => {
 
     expect(flaky.calls).toHaveLength(3)
     expect(counter.units).toBe(3)
+  })
+})
+
+describe('refusals after an earlier attempt are persisted (ledger)', () => {
+  const retry = retryMiddleware({ maxAttempts: 3, baseDelayMs: 0 })
+  const SERVER_DOWN = new LlmError('503', { kind: 'server', retryable: true })
+
+  it('a boundary refusal on attempt 2 writes a zero-usage row numbered 2', async () => {
+    let calls = 0
+    const lateRerouter: Middleware = {
+      id: 'late-rerouter',
+      async intercept(req, ctx, next) {
+        calls++
+        return next(calls >= 2 ? { ...req, model: 'g-flash' } : req, ctx)
+      },
+    }
+    const google = new FakeAdapter('google', [SERVER_DOWN, result('g-pro')])
+    const sink = new RecordingSink()
+    const client = createClient({
+      adapters: [google],
+      pricingSources: { google: GOOGLE_PRICING },
+      modelRegistry: GOOGLE_ONLY,
+      sink,
+      clock: new FakeClock(),
+      ids: new FakeIds(),
+      middleware: [retry, lateRerouter],
+    })
+
+    const err = await client
+      .generate(
+        { provider: 'google', model: 'g-pro', messages: MESSAGES },
+        { auth: AUTH },
+      )
+      .catch((e: unknown) => e)
+
+    expect(err).toMatchObject({ kind: 'bad_request', retryable: false })
+    expect(google.calls).toHaveLength(1)
+    expect(sink.records.map((r) => [r.attemptNumber, r.errorKind])).toEqual([
+      [1, 'server'],
+      [2, 'bad_request'],
+    ])
+    expect(sink.records[1]!.costMicroUsd).toBeUndefined()
+    expect(sink.records[1]!.inputTokens).toBe(0)
+  })
+
+  it('a terminal quota_window on attempt 2 reaches the error_reason of a row', async () => {
+    let calls = 0
+    const deferringQuota: Middleware = {
+      id: 'deferring-quota',
+      role: 'quota',
+      async intercept(req, ctx, next) {
+        calls++
+        if (calls >= 2) {
+          throw new LlmError('window closed', {
+            kind: 'rate_limited',
+            retryable: false,
+            reason: 'quota_window',
+          })
+        }
+        return next(req, ctx)
+      },
+    }
+    const google = new FakeAdapter('google', [SERVER_DOWN, result('g-pro')])
+    const sink = new RecordingSink()
+    const client = createClient({
+      adapters: [google],
+      modelRegistry: GOOGLE_ONLY,
+      sink,
+      clock: new FakeClock(),
+      ids: new FakeIds(),
+      middleware: [retry, deferringQuota],
+    })
+
+    await expect(
+      client.generate(
+        { provider: 'google', model: 'g-pro', messages: MESSAGES },
+        { auth: AUTH },
+      ),
+    ).rejects.toMatchObject({ reason: 'quota_window' })
+
+    expect(
+      sink.records.map((r) => [r.attemptNumber, r.errorKind, r.errorReason]),
+    ).toEqual([
+      [1, 'server', undefined],
+      [2, 'rate_limited', 'quota_window'],
+    ])
+  })
+
+  it('an error that came out of an attempt is not recorded twice', async () => {
+    const google = new FakeAdapter('google', [SERVER_DOWN, SERVER_DOWN, SERVER_DOWN])
+    const sink = new RecordingSink()
+    const client = createClient({
+      adapters: [google],
+      modelRegistry: GOOGLE_ONLY,
+      sink,
+      clock: new FakeClock(),
+      ids: new FakeIds(),
+      middleware: [retry],
+    })
+    await expect(
+      client.generate(
+        { provider: 'google', model: 'g-pro', messages: MESSAGES },
+        { auth: AUTH },
+      ),
+    ).rejects.toMatchObject({ kind: 'server' })
+    expect(sink.records.map((r) => r.attemptNumber)).toEqual([1, 2, 3])
+  })
+})
+
+describe('middleware list is frozen at construction', () => {
+  it('a middleware pushed onto the host array after construction is not run', async () => {
+    const counter = { units: 0 }
+    const list: Middleware[] = [retryMiddleware({ maxAttempts: 2, baseDelayMs: 0 })]
+    const client = createClient({
+      adapters: [new FakeAdapter('google', result('g-pro'))],
+      modelRegistry: GOOGLE_ONLY,
+      middleware: list,
+    })
+    list.unshift(countingQuota(counter))
+
+    await client.generate(
+      { provider: 'google', model: 'g-pro', messages: MESSAGES },
+      { auth: AUTH },
+    )
+    expect(counter.units).toBe(0)
+  })
+
+  it('reordering the host array after construction cannot place quota outside retry', async () => {
+    const counter = { units: 0 }
+    const list: Middleware[] = [
+      retryMiddleware({ maxAttempts: 3, baseDelayMs: 0 }),
+      countingQuota(counter),
+    ]
+    const flaky = new FakeAdapter('google', [
+      new LlmError('t', { kind: 'server', retryable: true }),
+      result('g-pro'),
+    ])
+    const client = createClient({
+      adapters: [flaky],
+      modelRegistry: GOOGLE_ONLY,
+      middleware: list,
+    })
+    list.reverse()
+    await client.generate(
+      { provider: 'google', model: 'g-pro', messages: MESSAGES },
+      { auth: AUTH },
+    )
+    // Still inside retry: one unit per dispatch.
+    expect(counter.units).toBe(2)
+  })
+})
+
+describe('the engine re-checks the registry result (ADR-033)', () => {
+  // A host registry that still prefix-matches.
+  const prefixRegistry: ModelRegistry = {
+    resolve: (provider, model) =>
+      provider === 'google' && model.startsWith('g-pro') ? G_PRO : undefined,
+  }
+
+  function prefixClient() {
+    const seen: string[] = []
+    const adapter: ProviderAdapter = {
+      id: 'google',
+      async run(req) {
+        seen.push(req.model)
+        return result('g-pro')
+      },
+      async countTokens(req) {
+        seen.push(req.model)
+        return { totalTokens: 1, accuracy: 'exact', raw: null }
+      },
+    }
+    const sink = new RecordingSink()
+    const client = createClient({
+      adapters: [adapter],
+      pricingSources: { google: GOOGLE_PRICING },
+      modelRegistry: prefixRegistry,
+      sink,
+    })
+    return { client, seen, sink }
+  }
+
+  it('generate rejects a descriptor whose model is neither the requested id nor an alias', async () => {
+    const { client, seen, sink } = prefixClient()
+    await expect(
+      client.generate(
+        { provider: 'google', model: 'g-pro-image', messages: MESSAGES },
+        { auth: AUTH },
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
+    expect(seen).toHaveLength(0)
+    expect(sink.records).toHaveLength(0)
+  })
+
+  it('runStructured and countTokens reject it too; the canonical id and an alias still work', async () => {
+    const { client, seen } = prefixClient()
+    await expect(
+      client.runStructured(
+        { id: 'cs', provider: 'google', model: 'g-pro-image', userTemplate: 'hi' },
+        { auth: AUTH },
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request' })
+    await expect(
+      client.countTokens(
+        { provider: 'google', model: 'g-pro-image', messages: MESSAGES },
+        { auth: AUTH },
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request' })
+    expect(seen).toHaveLength(0)
+
+    await client.generate(
+      { provider: 'google', model: 'g-pro-001', messages: MESSAGES },
+      { auth: AUTH },
+    )
+    await client.generate(
+      { provider: 'google', model: 'g-pro', messages: MESSAGES },
+      { auth: AUTH },
+    )
+    expect(seen).toEqual(['g-pro-001', 'g-pro'])
+  })
+})
+
+describe('unknown model messages are bounded', () => {
+  it('a megabyte model string is truncated in the message and scored on a bounded prefix', async () => {
+    const { client } = setup([])
+    const huge = 'x'.repeat(1_000_000)
+    const started = performance.now()
+    const err = await client
+      .generate({ provider: 'google', model: huge, messages: MESSAGES }, { auth: AUTH })
+      .catch((e: unknown) => e)
+    const elapsed = performance.now() - started
+
+    expect(err).toMatchObject({ kind: 'bad_request' })
+    expect((err as LlmError).message.length).toBeLessThan(1_000)
+    expect((err as LlmError).message).toContain('1000000 characters')
+    expect(elapsed).toBeLessThan(500)
   })
 })

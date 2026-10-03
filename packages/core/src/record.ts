@@ -56,6 +56,11 @@ export interface LlmCallRecord {
    * or any other `LlmError` a middleware throws before the engine's
    * innermost handler begins). Real attempts are 1-based: `1` = first
    * attempt, `2` = first retry, and so on.
+   *
+   * A refusal after an earlier attempt ran (a quota deferral or boundary
+   * refusal on attempt 2, say) is a zero-usage row numbered with the refused
+   * attempt. An attempt a middleware refused and a later attempt re-ran leaves
+   * no row, so a gap in attempt numbers means "refused before dispatch".
    */
   attemptNumber: number
   /** Optional call-site identifier for grouping by prompt template. */

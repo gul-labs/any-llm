@@ -155,10 +155,10 @@ interpolation and config-layer merging before handing off to the shared core.
    - Because both checks here run after `callId` assignment, a violation writes a synthetic
      zero-usage `attemptNumber: 0` ledger record (step 7 below) rather than staying row-less.
 
-7. **Pre-attempt refusal record** (ADR-025). Any `LlmError` thrown after `callId` assignment but
-   before `runAttempt` starts — a request input-contract violation (step 6), or a pre-attempt
-   refusal from a middleware such as `@gullabs/quota` — writes one synthetic `LlmCallRecord`:
-   `attemptNumber: 0`, all-zero usage, `cost` omitted, `status` derived from the error's `kind`
+7. **Refusal record** (ADR-025, ADR-037). Any final `LlmError` that did not come out of `runAttempt`
+   — a request input-contract violation (step 6), a refusal from a middleware such as
+   `@gullabs/quota`, an exhausted retry budget — writes one synthetic `LlmCallRecord`:
+   `attemptNumber: 0` when no attempt had run, otherwise the refused attempt's number, all-zero usage, `cost` omitted, `status` derived from the error's `kind`
    via the same `errorKindToStatus` mapping used for real attempts. `attemptId` is minted like
    any attempt's (ADR-031). A middleware that tries to change the call's provider or model is
    refused the same way (ADR-037). This is the only ledger-visible trace of a pre-attempt refusal; errors thrown
