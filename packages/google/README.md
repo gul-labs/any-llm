@@ -218,27 +218,44 @@ thinking may consume the whole cap and leave no answer"). It is a warning, not a
 thinking can under- or overflow the budget, so the combination is a risk, not an invalid request. The
 common trap is `effort: 'high'` (24,576) with a small `maxOutputTokens`.
 
+Gemini 3.x models take a level, not a budget, so there is nothing to compare with the cap. The adapter warns
+when `reasoning.effort` is `high` and `maxOutputTokens` is below 4,096 (measured: thinking reached 4,000 tokens
+in 7 of 72 3.x calls at `high`, up to 8,859). It does not warn at `low` or `medium` (no 3.x call reached 4,000
+tokens there, and a smaller figure would rest on a prompt-dependent tail the sample cannot place), nor when
+`reasoning` is omitted (the default level was not measured). Warnings never reject.
+
 Measured thinking is prompt-driven and heavy-tailed: `docs/thinking-token-distribution.md` has p50, p95
-and max per model and effort (336 calls, 2026-10-03). At `high`, p95 was 2.5 to 6 times the p50, and the largest value was
+and max per model and effort (336 calls, 2026-10-03; the raw records are kept outside this repository). At `high`, p95 was 2.5 to 6 times the p50, and the largest value was
 8,859 tokens, so size `maxOutputTokens` for the answer **plus** thinking: under 4,096 is unsafe at `high`
 and 1,024 was used up by thinking in most `high` calls.
 
 ## Model limits and input media types
 
-Every descriptor states `limits: { contextWindow, maxOutputTokens }`, and every config schema caps
-`maxOutputTokens` at `limits.maxOutputTokens` (a larger value is `bad_request` before dispatch). Sources: the
-Gemini model pages (`ai.google.dev/gemini-api/docs/models/<id>`, read 2026-10-03) give 1,048,576 input
-and 65,536 output tokens for every registered Gemini model. The Gemma 4 model card gives a 256K window
-(262,144) and no output limit, so `maxOutputTokens` is the window; see `BACKLOG.md`.
+Every descriptor states `limits: { contextWindow, maxOutputTokens }`. The Gemini model pages
+(`ai.google.dev/gemini-api/docs/models/<id>`, read 2026-10-03) give 1,048,576 input and 65,536 output tokens
+for every registered Gemini model, and their config schemas cap `maxOutputTokens` at 65,536 (a larger value is
+`bad_request` before dispatch). The Gemma 4 model card gives a 256K window (262,144) and **no output limit**, so
+Gemma's `limits.maxOutputTokens` is `null`: no figure is invented, its schema applies no cap, and Google decides
+what it accepts.
 
-`capabilities.inputMimeTypes` is the exact list of media types a model takes in `inline-media` and `file-uri`
-parts; anything else is `bad_request` naming `messages[i].parts[j]` before dispatch (and in `countTokens`).
-Gemini: `image/png`, `image/jpeg`, `image/webp`, `image/heic`, `image/heif`; audio `audio/wav`, `audio/mp3`,
-`audio/aiff`, `audio/aac`, `audio/ogg`, `audio/flac`, `audio/mpeg`, `audio/m4a`, `audio/l16`, `audio/opus`,
-`audio/alaw`, `audio/mulaw`, `audio/webm`; video `video/mp4`, `video/mpeg`, `video/mov`, `video/avi`,
-`video/x-flv`, `video/mpg`, `video/webm`, `video/wmv`, `video/3gpp`; documents `application/pdf` and the
-plain-text types `text/plain`, `text/markdown`, `text/html`, `text/xml` (only PDF is understood visually; the
-others are extracted as text). Gemma 4: `image/png` and `image/jpeg` only. Matching is exact.
+`capabilities.inputMimeTypes` is what a model takes in `inline-media` and `file-uri` parts; anything else, and an
+empty type, is `bad_request` naming `messages[i].parts[j]` before dispatch (and in `countTokens`). Matching
+ignores case and `; parameters` (`IMAGE/PNG`, `text/plain; charset=utf-8` pass) and the string you sent goes to
+Google unchanged.
+
+- **Gemini:** `application/pdf` and the families `text/*`, `image/*`, `audio/*`, `video/*`. Google lists image
+  types (PNG, JPEG, WebP, HEIC, HEIF), audio and video types, but publishes no closed list for documents: its
+  document page says PDF is understood natively and "you can pass other MIME types for document understanding,
+  like TXT, Markdown, HTML, XML, etc." (extracted as plain text). The library therefore admits the documented
+  families by prefix and leaves a type inside a family that Google does not take (for example an image format
+  it does not decode) to Google's own error. `application/json`, `application/xml` and other `application/*`
+  types are in no documented family and are rejected. A YouTube URL is a `file-uri` part: give it any
+  `video/*` type (for example `video/mp4`).
+- **Gemma 4:** `image/*` and `video/*`. The model card lists image input and video as frames (up to 60
+  seconds at one frame per second) for the 31B and 26B A4B models and names no media types; audio input
+  belongs to other Gemma sizes. That the Gemini API's Gemma endpoint takes a video part has not been probed.
+- **`GoogleFileStore.upload`** applies the same Gemini rule (one shared function), so an empty or unadmitted type
+  is `bad_request` before any bytes are sent, and a file that uploads can be used in `generate`.
 
 ## What it maps
 

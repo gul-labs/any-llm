@@ -126,10 +126,13 @@ export {
   createModelRegistry,
   assertModelMatchesDescriptor,
   assertInputMimeTypesAdmitted,
+  assertMediaTypeAdmitted,
+  isMediaTypeAdmitted,
 } from './registry.js'
 export {
   toConfigJsonSchema,
   toConfigKeys,
+  maxOutputTokensSchema,
   zodToStandardSchema,
 } from './model-config/index.js'
 

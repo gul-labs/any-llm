@@ -146,7 +146,6 @@ export const codexCliModelDescriptors: ModelDescriptor[] = CODEX_CLI_MODEL_IDS.m
         reasoningApi: 'level',
         admittedReasoningEfforts: CODEX_CLI_REASONING_EFFORTS,
         sampling: 'fixed',
-        vision: false,
       },
       configSchema,
       configKeys: toConfigKeys(configSchema),

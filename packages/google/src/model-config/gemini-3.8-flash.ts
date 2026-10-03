@@ -1,3 +1,4 @@
+import { maxOutputTokensSchema } from '@gullabs/core'
 import { z } from 'zod'
 
 import { GOOGLE_MAX_TIMEOUT_MS } from '../client.js'
@@ -7,11 +8,7 @@ import { GOOGLE_SAFETY_CATEGORIES, GOOGLE_SAFETY_THRESHOLDS } from '../safety-se
 export const Gemini38FlashConfigSchema = z
   .union([
     z.strictObject({
-      maxOutputTokens: z
-        .number()
-        .int()
-        .positive()
-        .max(GOOGLE_MODEL_LIMITS['gemini-3.8-flash'].maxOutputTokens)
+      maxOutputTokens: maxOutputTokensSchema(GOOGLE_MODEL_LIMITS['gemini-3.8-flash'])
         .optional()
         .meta({
           title: 'Max Output Tokens',
@@ -136,11 +133,7 @@ export const Gemini38FlashConfigSchema = z
         }),
     }),
     z.strictObject({
-      maxOutputTokens: z
-        .number()
-        .int()
-        .positive()
-        .max(GOOGLE_MODEL_LIMITS['gemini-3.8-flash'].maxOutputTokens)
+      maxOutputTokens: maxOutputTokensSchema(GOOGLE_MODEL_LIMITS['gemini-3.8-flash'])
         .optional()
         .meta({
           title: 'Max Output Tokens',

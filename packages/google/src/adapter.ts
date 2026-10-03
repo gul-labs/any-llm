@@ -36,7 +36,10 @@ import {
   STANDARD_DEFAULT_TIMEOUT_MS,
   TRANSPORT_TIMEOUT_BUFFER_MS,
 } from './client.js'
-import { GOOGLE_REASONING_EFFORT_BUDGET } from './reasoning-budget.js'
+import {
+  GOOGLE_HIGH_EFFORT_MIN_OUTPUT_TOKENS,
+  GOOGLE_REASONING_EFFORT_BUDGET,
+} from './reasoning-budget.js'
 import { googleJsonSchemaProfile } from './json-schema.js'
 import { GOOGLE_SAFETY_CATEGORIES, GOOGLE_SAFETY_THRESHOLDS } from './safety-settings.js'
 import {
@@ -1082,6 +1085,20 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
               default:
                 assertNever(reasoning.effort)
             }
+          }
+
+          // A level model has no budget to compare with the cap, so the rule is
+          // the measured one: at `high`, thinking reached 4,000+ tokens in about 10%
+          // of calls (docs/thinking-token-distribution.md). A risk, not a rejection.
+          if (
+            thinkingLevel === 'HIGH' &&
+            genConfig.maxOutputTokens !== undefined &&
+            genConfig.maxOutputTokens < GOOGLE_HIGH_EFFORT_MIN_OUTPUT_TOKENS
+          ) {
+            warnings.push({
+              type: 'other',
+              message: `google: reasoning.effort "high" can spend several thousand thinking tokens (measured up to 8,859) and maxOutputTokens is ${genConfig.maxOutputTokens}, below ${GOOGLE_HIGH_EFFORT_MIN_OUTPUT_TOKENS}; thinking may consume the whole cap and leave no answer. Raise maxOutputTokens or lower the effort.`,
+            })
           }
 
           config.thinkingConfig = {

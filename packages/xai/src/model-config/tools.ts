@@ -2,7 +2,9 @@
  * Structurally representable Zod schemas for xAI Live Search tools.
  *
  * Public config constraints are encoded as unions of exclusive shapes so
- * derived JSON Schema is exact (no `superRefine` / `check`).
+ * derived JSON Schema is exact. The one exception is the cross-field rule that
+ * `providerOptions.xai.searchBudget` needs the tools it counts: a `superRefine`
+ * on the provider options, which JSON Schema cannot express.
  *
  * @module
  */
@@ -102,6 +104,47 @@ export const XaiToolsSchema = z
       'xAI Live Search tools. At most one web_search and at most one x_search.',
   })
 
+const maxWebSearchCalls = z
+  .number()
+  .int()
+  .min(1)
+  .meta({
+    title: 'Max Web Search Calls',
+    description:
+      "Ceiling on web_search calls. Requires a web_search tool. Compared with xAI's " +
+      'reported counter after the call.',
+  })
+
+const maxXItems = z
+  .number()
+  .int()
+  .min(1)
+  .meta({
+    title: 'Max X Items',
+    description:
+      'Ceiling on X posts plus users fetched. Requires an x_search tool. Compared ' +
+      "with xAI's reported counters after the call.",
+  })
+
+/**
+ * At least one ceiling, as a union of shapes so the derived JSON Schema says it
+ * exactly: `{}` is not a budget.
+ */
+const XaiSearchBudgetSchema = z
+  .union([
+    z.strictObject({ maxWebSearchCalls, maxXItems: maxXItems.optional() }),
+    z.strictObject({ maxWebSearchCalls: maxWebSearchCalls.optional(), maxXItems }),
+  ])
+  .meta({
+    title: 'Search Budget',
+    description:
+      'Observed after the call, never sent to xAI (which has no per-call search ' +
+      'ceiling). Over budget: a warning and usage.details.search_budget_exceeded = 1; ' +
+      'the already-billed result is still returned. Needs at least one ceiling, and ' +
+      'the tool each ceiling counts (maxWebSearchCalls: web_search, maxXItems: ' +
+      'x_search) in tools.',
+  })
+
 /**
  * `toolChoice` and `maxTurns` need a non-empty `tools`; the adapter enforces
  * that dependency. Encoding it here as a union of shapes made zod report an
@@ -150,40 +193,29 @@ export const XaiProviderOptionsSchema = z
           'server-side search tools. Requires `tools`. A turn can run several ' +
           'searches. Not enforced by xAI as of 2026-10-02.',
       }),
-    searchBudget: z
-      .strictObject({
-        maxWebSearchCalls: z
-          .number()
-          .int()
-          .min(1)
-          .optional()
-          .meta({
-            title: 'Max Web Search Calls',
-            description:
-              "Ceiling on web_search calls. Requires a web_search tool. Compared with xAI's " +
-              'reported counter after the call.',
-          }),
-        maxXItems: z
-          .number()
-          .int()
-          .min(1)
-          .optional()
-          .meta({
-            title: 'Max X Items',
-            description:
-              'Ceiling on X posts plus users fetched. Requires an x_search tool. Compared ' +
-              "with xAI's reported counters after the call.",
-          }),
-      })
-      .optional()
-      .meta({
-        title: 'Search Budget',
-        description:
-          'Observed after the call, never sent to xAI (which has no per-call search ' +
-          'ceiling). Over budget: a warning and usage.details.search_budget_exceeded = 1; ' +
-          'the already-billed result is still returned. Requires tools and at least one ' +
-          'ceiling.',
-      }),
+    searchBudget: XaiSearchBudgetSchema.optional(),
+  })
+  .superRefine((options, ctx) => {
+    // `searchBudget` counts what the search tools did, so each ceiling needs its
+    // tool. Stated here, not left to the adapter, so the schema accepts exactly
+    // what the adapter does and a bad budget never reaches a ledger row.
+    const budget = options.searchBudget
+    if (budget === undefined) return
+    const kinds = new Set((options.tools ?? []).map((tool) => tool.type))
+    const need = (ceiling: 'maxWebSearchCalls' | 'maxXItems', tool: string): void => {
+      if (
+        budget[ceiling] !== undefined &&
+        !kinds.has(tool as 'web_search' | 'x_search')
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['searchBudget', ceiling],
+          message: `searchBudget.${ceiling} requires ${tool === 'x_search' ? 'an' : 'a'} ${tool} tool in tools.`,
+        })
+      }
+    }
+    need('maxWebSearchCalls', 'web_search')
+    need('maxXItems', 'x_search')
   })
   .meta({
     title: 'xAI Provider Options',

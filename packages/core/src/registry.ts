@@ -15,13 +15,14 @@
 import type * as z from 'zod'
 
 import { LlmError } from './errors.js'
-import { configKeysOfJsonSchema } from './model-config/index.js'
+import { toConfigJsonSchema, toConfigKeys } from './model-config/index.js'
 import type { StandardSchemaV1 } from './standard-schema.js'
 import type { JsonValue, Message, ReasoningEffort } from './types.js'
 
 /**
  * Token limits of a model, taken from the provider's own documentation (the
- * descriptor's source comment names the page and the date it was read).
+ * descriptor's source comment names the page and the date it was read). A
+ * number here is a figure the provider publishes; nothing is estimated.
  */
 export interface ModelLimits {
   /**
@@ -31,12 +32,13 @@ export interface ModelLimits {
   contextWindow: number
   /**
    * Largest `maxOutputTokens` the provider documents for the model. It counts
-   * reasoning tokens on providers that reason. A provider that documents no
-   * separate output limit gets `contextWindow` here: output is bounded by the
-   * window, and the provider rejects what it cannot serve. The model's config
-   * schema caps `maxOutputTokens` at this value.
+   * reasoning tokens on providers that reason. `null` means the provider
+   * documents no output limit for this model: the descriptor does not invent
+   * one, the config schema applies no cap, and the provider decides what it
+   * accepts. Never read `null` as "unlimited" or as the context window. A
+   * number is the schema's cap: `maxOutputTokens` above it is `bad_request`.
    */
-  maxOutputTokens: number
+  maxOutputTokens: number | null
 }
 
 export interface ModelDescriptor {
@@ -78,14 +80,19 @@ export interface ModelDescriptor {
     reasoning?: boolean
     structuredOutput?: boolean
     nativeStructuredOutput?: boolean
-    vision?: boolean
-    audioInput?: boolean
     /**
-     * IANA media types the model accepts in `inline-media` and `file-uri`
-     * parts, as the provider documents them. Adapters reject any other media
-     * type with `bad_request` before dispatch (see
-     * {@link assertInputMimeTypesAdmitted}). Absent or empty: the model admits
-     * no media part. Text, tool-call and tool-result parts are not media.
+     * What media the model accepts in `inline-media` and `file-uri` parts, as
+     * the provider documents it. This is the one statement of multimodal
+     * support (there are no separate `vision` / `audioInput` flags to
+     * disagree with it): a host asks whether the model takes images with
+     * {@link isMediaTypeAdmitted}. Each entry is a lower-case IANA media type
+     * (`image/png`) or a family wildcard (`image/*`, every subtype of that
+     * family) for providers that document a family, not a closed list.
+     * Adapters reject any other media type with `bad_request` before dispatch
+     * (see {@link assertInputMimeTypesAdmitted}); the match ignores case and
+     * `; parameters`, and the string sent to the provider is never rewritten.
+     * Absent or empty: the model admits no media part. Text, tool-call and
+     * tool-result parts are not media.
      */
     inputMimeTypes?: readonly string[]
     reasoningApi?: 'budget' | 'level'
@@ -129,12 +136,15 @@ export interface ModelDescriptor {
    * each object shape, across all branches of a union (Gemini's tier branches
    * name `serviceTier` differently, so the key appears once). Derive it with
    * {@link toConfigKeys}; `createModelRegistry` rejects a descriptor whose
-   * list differs from what its `configJsonSchema` names, so it cannot go
-   * stale. It lists names only: a key can be admitted on one branch and not
-   * another, so the schema stays the authority for what a given config may hold.
+   * list differs from what its `configSchema` names. It lists names only: a key
+   * can be admitted on one branch and not another, so the schema stays the
+   * authority for what a given config may hold.
    */
   configKeys: readonly string[]
-  /** JSON Schema derived from {@link configSchema}. */
+  /**
+   * JSON Schema derived from {@link configSchema} with {@link toConfigJsonSchema};
+   * `createModelRegistry` rejects a descriptor whose value differs.
+   */
   configJsonSchema: JsonValue
   /** Standard Schema adapter derived from {@link configSchema}. */
   validateConfig: StandardSchemaV1
@@ -152,9 +162,18 @@ export interface ModelRegistry {
    * it chose. Exact match, like `resolve`.
    */
   findByModel(model: string): readonly ModelDescriptor[]
-  /** Every registered descriptor, in registration order (a copy). */
+  /**
+   * Every registered descriptor, in registration order (a copy). Like `resolve`
+   * and `findByModel`, it answers from the list the registry was built with:
+   * descriptors added to the caller's array afterwards are not part of it.
+   */
   listDescriptors(): readonly ModelDescriptor[]
 }
+
+/** A media type's `type` and `subtype` token (RFC 6838, lower case). */
+const MEDIA_TOKEN = '[a-z0-9][a-z0-9!#$&^_.+-]*'
+const MEDIA_ESSENCE = new RegExp(`^${MEDIA_TOKEN}/${MEDIA_TOKEN}$`)
+const MEDIA_ADMISSION_ENTRY = new RegExp(`^${MEDIA_TOKEN}/(?:${MEDIA_TOKEN}|\\*)$`)
 
 function assertConfigKeys(descriptor: ModelDescriptor): void {
   const where = `Model descriptor for provider "${descriptor.provider}" model "${descriptor.model}"`
@@ -165,13 +184,24 @@ function assertConfigKeys(descriptor: ModelDescriptor): void {
       retryable: false,
     })
   }
-  const expected = configKeysOfJsonSchema(descriptor.configJsonSchema)
+  // The keys and the JSON Schema are recomputed from the real `configSchema`:
+  // a declared artifact is only trusted when it equals what the schema yields.
+  const expectedJsonSchema = toConfigJsonSchema(descriptor.configSchema)
+  if (
+    JSON.stringify(descriptor.configJsonSchema) !== JSON.stringify(expectedJsonSchema)
+  ) {
+    throw new LlmError(
+      `${where} has a stale configJsonSchema: it differs from toConfigJsonSchema(configSchema).`,
+      { kind: 'bad_request', retryable: false },
+    )
+  }
+  const expected = toConfigKeys(descriptor.configSchema)
   if (
     declared.length !== expected.length ||
     declared.some((key, i) => key !== expected[i])
   ) {
     throw new LlmError(
-      `${where} has stale configKeys [${declared.map(String).join(', ')}]: its configJsonSchema names [${expected.join(', ')}]. Derive configKeys with toConfigKeys(configSchema).`,
+      `${where} has stale configKeys [${declared.map(String).join(', ')}]: its configSchema names [${expected.join(', ')}]. Derive configKeys with toConfigKeys(configSchema).`,
       { kind: 'bad_request', retryable: false },
     )
   }
@@ -181,23 +211,30 @@ function assertLimits(descriptor: Partial<ModelDescriptor>): void {
   const where = `Model descriptor for provider "${descriptor.provider ?? '<unknown>'}" model "${
     descriptor.model ?? '<unknown>'
   }"`
-  const limits = descriptor.limits as Partial<ModelLimits> | undefined
-  if (limits === undefined || typeof limits !== 'object') {
+  const limits = descriptor.limits as Partial<ModelLimits> | null | undefined
+  if (limits === undefined || limits === null || typeof limits !== 'object') {
     throw new LlmError(`${where} is missing required limits.`, {
       kind: 'bad_request',
       retryable: false,
     })
   }
-  for (const key of ['contextWindow', 'maxOutputTokens'] as const) {
-    const value = limits[key]
-    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
-      throw new LlmError(
-        `${where} has invalid limits.${key}: expected a positive integer.`,
-        { kind: 'bad_request', retryable: false },
-      )
-    }
+  const isCount = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isSafeInteger(value) && value >= 1
+  if (!isCount(limits.contextWindow)) {
+    throw new LlmError(
+      `${where} has invalid limits.contextWindow: expected a positive integer.`,
+      { kind: 'bad_request', retryable: false },
+    )
   }
-  if ((limits.maxOutputTokens as number) > (limits.contextWindow as number)) {
+  // `null` is the documented "the provider publishes no output limit"; an
+  // omitted value is a mistake, so it is refused instead of read as `null`.
+  if (limits.maxOutputTokens !== null && !isCount(limits.maxOutputTokens)) {
+    throw new LlmError(
+      `${where} has invalid limits.maxOutputTokens: expected a positive integer, or null when the provider documents no output limit.`,
+      { kind: 'bad_request', retryable: false },
+    )
+  }
+  if (limits.maxOutputTokens !== null && limits.maxOutputTokens > limits.contextWindow) {
     throw new LlmError(
       `${where} declares limits.maxOutputTokens above limits.contextWindow.`,
       {
@@ -224,6 +261,33 @@ function assertDescriptorSchemaArtifacts(descriptor: Partial<ModelDescriptor>): 
         retryable: false,
       },
     )
+  }
+}
+
+function assertInputMimeTypes(descriptor: ModelDescriptor): void {
+  const list: unknown = descriptor.capabilities?.inputMimeTypes
+  if (list === undefined) return
+  const where = `Model descriptor for provider "${descriptor.provider}" model "${descriptor.model}"`
+  if (!Array.isArray(list)) {
+    throw new LlmError(`${where} has inputMimeTypes that is not an array.`, {
+      kind: 'bad_request',
+      retryable: false,
+    })
+  }
+  const seen = new Set<unknown>()
+  for (const entry of list) {
+    if (
+      typeof entry !== 'string' ||
+      entry !== entry.toLowerCase() ||
+      !MEDIA_ADMISSION_ENTRY.test(entry) ||
+      seen.has(entry)
+    ) {
+      throw new LlmError(
+        `${where} has an invalid or duplicate inputMimeTypes entry ${JSON.stringify(entry)}: expected a lower-case "type/subtype" or "type/*", listed once.`,
+        { kind: 'bad_request', retryable: false },
+      )
+    }
+    seen.add(entry)
   }
 }
 
@@ -276,12 +340,85 @@ export function assertModelMatchesDescriptor(
 }
 
 /**
+ * The media type of a MIME string as the admission check reads it: parameters
+ * (`; charset=utf-8`) dropped, surrounding whitespace trimmed, lower-cased.
+ * Used for matching only; the string sent to a provider is never replaced by
+ * this.
+ */
+function mediaTypeEssence(mimeType: string): string {
+  const semicolon = mimeType.indexOf(';')
+  return (semicolon === -1 ? mimeType : mimeType.slice(0, semicolon)).trim().toLowerCase()
+}
+
+/**
+ * Whether `mimeType` is admitted by `admitted` (a descriptor's
+ * {@link ModelDescriptor.capabilities}`.inputMimeTypes`). Case and `; parameters`
+ * are ignored; an entry `family/*` admits every `family/<subtype>`. An empty or
+ * malformed string is never admitted. Nothing is mapped: `image/jpg` is not
+ * `image/jpeg`.
+ */
+export function isMediaTypeAdmitted(
+  mimeType: string,
+  admitted: readonly string[],
+): boolean {
+  if (typeof mimeType !== 'string') return false
+  const essence = mediaTypeEssence(mimeType)
+  if (!MEDIA_ESSENCE.test(essence)) return false
+  const family = `${essence.slice(0, essence.indexOf('/'))}/*`
+  return admitted.includes(essence) || admitted.includes(family)
+}
+
+/**
+ * Throws `LlmError('bad_request')` unless `mimeType` is admitted by `admitted`
+ * (see {@link isMediaTypeAdmitted}). An empty or missing media type gets its own
+ * message, since no list can admit it. The one rule behind
+ * {@link assertInputMimeTypesAdmitted} and any other place that takes a media
+ * type before a call (a file upload, for one), so they cannot disagree.
+ *
+ * @param path - Where the media type was given, for the message and `issues`.
+ * @param subject - The provider and model (or operation) the list belongs to.
+ */
+export function assertMediaTypeAdmitted(
+  mimeType: unknown,
+  admitted: readonly string[],
+  path: string,
+  provider: string,
+  subject: string,
+): void {
+  const missing = typeof mimeType !== 'string' || mediaTypeEssence(mimeType).length === 0
+  if (!missing && isMediaTypeAdmitted(mimeType, admitted)) return
+  const shown = missing ? '' : boundedModelText(mimeType)
+  const list =
+    admitted.length === 0
+      ? 'it admits no media input'
+      : `admitted types: ${admitted.join(', ')}`
+  const message = missing
+    ? `${path}: a media type is required for ${subject}, got ${
+        typeof mimeType === 'string' ? 'an empty string' : String(mimeType)
+      } (${list}).`
+    : `${path}: ${subject} does not accept media type "${shown}" (${list}).`
+  throw new LlmError(message, {
+    kind: 'bad_request',
+    retryable: false,
+    provider,
+    issues: [
+      {
+        path,
+        message: missing
+          ? 'a media type is required'
+          : `media type "${shown}" is not admitted`,
+      },
+    ],
+  })
+}
+
+/**
  * Adapter-side guard: every `inline-media` and `file-uri` part in `messages`
  * must carry a media type the descriptor admits
- * ({@link ModelDescriptor.capabilities}`.inputMimeTypes`). The match is exact
- * on the string the host sent; nothing is normalised or mapped. Throws
- * `LlmError('bad_request')` naming the first offending part and the admitted
- * types.
+ * ({@link ModelDescriptor.capabilities}`.inputMimeTypes`). The match ignores
+ * case and `; parameters` and the string the host sent is forwarded unchanged;
+ * an empty or missing media type is refused. Throws `LlmError('bad_request')`
+ * naming the first offending part and the admitted types.
  */
 export function assertInputMimeTypesAdmitted(
   messages: readonly Message[],
@@ -292,25 +429,12 @@ export function assertInputMimeTypesAdmitted(
   messages.forEach((message, mi) => {
     message.parts.forEach((part, pi) => {
       if (part.kind !== 'inline-media' && part.kind !== 'file-uri') return
-      if (admitted.includes(part.mimeType)) return
-      const path = `messages[${mi}].parts[${pi}]`
-      const list =
-        admitted.length === 0
-          ? 'the model admits no media input'
-          : `admitted types: ${admitted.join(', ')}`
-      throw new LlmError(
-        `${path}: ${adapterProvider} model "${descriptor.model}" does not accept media type "${boundedModelText(part.mimeType)}" (${list}).`,
-        {
-          kind: 'bad_request',
-          retryable: false,
-          provider: adapterProvider,
-          issues: [
-            {
-              path,
-              message: `media type "${boundedModelText(part.mimeType)}" is not admitted`,
-            },
-          ],
-        },
+      assertMediaTypeAdmitted(
+        part.mimeType,
+        admitted,
+        `messages[${mi}].parts[${pi}]`,
+        adapterProvider,
+        `${adapterProvider} model "${descriptor.model}"`,
       )
     })
   })
@@ -378,7 +502,10 @@ export function unknownModelMessage(
   return `${base} Model ids are matched exactly; closest registered ids: ${closest.join(', ')}.`
 }
 
-export function createModelRegistry(descriptors: ModelDescriptor[]): ModelRegistry {
+export function createModelRegistry(input: readonly ModelDescriptor[]): ModelRegistry {
+  // One snapshot: every answer below comes from this list, not from an array the
+  // caller can still change.
+  const descriptors = input.slice()
   // Exact (provider, model-or-alias) -> descriptor. No prefix matching.
   const exactMap = new Map<string, ModelDescriptor>()
 
@@ -386,7 +513,16 @@ export function createModelRegistry(descriptors: ModelDescriptor[]): ModelRegist
     assertDescriptorSchemaArtifacts(descriptor)
     assertConfigKeys(descriptor)
     assertLimits(descriptor)
+    assertInputMimeTypes(descriptor)
     assertContinuationCapabilities(descriptor)
+    // A table shared by several descriptors must not be writable through any
+    // one of them (the checks above ran once, at construction).
+    Object.freeze(descriptor.limits)
+    if (descriptor.capabilities?.inputMimeTypes !== undefined) {
+      Object.freeze(descriptor.capabilities.inputMimeTypes)
+    }
+    Object.freeze(descriptor.configKeys)
+    if (descriptor.aliases !== undefined) Object.freeze(descriptor.aliases)
 
     const key = descriptorKey(descriptor.provider, descriptor.model)
     if (exactMap.has(key)) {

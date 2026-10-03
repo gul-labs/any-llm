@@ -1,3 +1,4 @@
+import { maxOutputTokensSchema } from '@gullabs/core'
 import { z } from 'zod'
 
 import { GOOGLE_MAX_TIMEOUT_MS } from '../client.js'
@@ -24,11 +25,7 @@ export const Gemma426bA4bItConfigSchema = z
       title: 'Top K',
       description: 'Top-k sampling limit for gemma-4-26b-a4b-it.',
     }),
-    maxOutputTokens: z
-      .number()
-      .int()
-      .positive()
-      .max(GOOGLE_MODEL_LIMITS['gemma-4-26b-a4b-it'].maxOutputTokens)
+    maxOutputTokens: maxOutputTokensSchema(GOOGLE_MODEL_LIMITS['gemma-4-26b-a4b-it'])
       .optional()
       .meta({
         title: 'Max Output Tokens',

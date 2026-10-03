@@ -3,6 +3,7 @@ import { z } from 'zod'
 
 import {
   assertInputMimeTypesAdmitted,
+  isMediaTypeAdmitted,
   assertModelMatchesDescriptor,
   createModelRegistry,
   LlmError,
@@ -258,7 +259,15 @@ describe('descriptor limits', () => {
   })
 
   it('requires positive integer limits', () => {
-    for (const bad of [0, -1, 1.5, Number.NaN, '100', Number.MAX_SAFE_INTEGER + 1]) {
+    for (const bad of [
+      0,
+      -1,
+      1.5,
+      Number.NaN,
+      '100',
+      Number.MAX_SAFE_INTEGER + 1,
+      undefined,
+    ]) {
       expect(() =>
         createModelRegistry([withLimits({ contextWindow: bad, maxOutputTokens: 1 })]),
       ).toThrow(/limits\.contextWindow/)
@@ -266,6 +275,27 @@ describe('descriptor limits', () => {
         createModelRegistry([withLimits({ contextWindow: 10, maxOutputTokens: bad })]),
       ).toThrow(/limits\.maxOutputTokens/)
     }
+  })
+
+  it('accepts a null maxOutputTokens (no documented output limit) and exposes it', () => {
+    const d = withLimits({ contextWindow: 100, maxOutputTokens: null })
+    expect(createModelRegistry([d]).resolve('p', 'm')?.limits).toEqual({
+      contextWindow: 100,
+      maxOutputTokens: null,
+    })
+  })
+
+  it('freezes the limits so a table shared by several descriptors cannot be edited through one', () => {
+    const shared = { contextWindow: 100, maxOutputTokens: 50 }
+    const a = { ...makeDescriptor('a', 'p'), limits: shared }
+    const b = { ...makeDescriptor('b', 'p'), limits: shared }
+    const registry = createModelRegistry([a, b])
+    expect(() => {
+      ;(
+        registry.resolve('p', 'a')?.limits as { maxOutputTokens: number }
+      ).maxOutputTokens = 5
+    }).toThrow(TypeError)
+    expect(registry.resolve('p', 'b')?.limits.maxOutputTokens).toBe(50)
   })
 
   it('rejects a maxOutputTokens above the context window', () => {
@@ -343,16 +373,106 @@ describe('assertInputMimeTypesAdmitted', () => {
     ).toThrow(/video\/mp4/)
   })
 
-  it('matches exactly: no case folding, parameters or aliases', () => {
-    for (const type of ['IMAGE/PNG', 'image/png; charset=x', 'image/jpg']) {
+  it('matches case-insensitively and ignores parameters, without rewriting anything', () => {
+    for (const type of [
+      'IMAGE/PNG',
+      'image/png; charset=binary',
+      ' Image/Png ;q=1',
+      'image/jpeg;x=y',
+    ]) {
+      const msgs = messages(inline(type))
       expect(() =>
-        assertInputMimeTypesAdmitted(
-          messages(inline(type)),
-          descriptor(['image/png', 'image/jpeg']),
-          'p',
-        ),
-      ).toThrow(/does not accept media type/)
+        assertInputMimeTypesAdmitted(msgs, descriptor(['image/png', 'image/jpeg']), 'p'),
+      ).not.toThrow()
+      const part = msgs[0]?.parts[0]
+      expect(part?.kind === 'inline-media' && part.mimeType).toBe(type)
     }
+  })
+
+  it('does not map aliases: image/jpg is not image/jpeg', () => {
+    expect(() =>
+      assertInputMimeTypesAdmitted(
+        messages(inline('image/jpg')),
+        descriptor(['image/png', 'image/jpeg']),
+        'p',
+      ),
+    ).toThrow(/does not accept media type "image\/jpg"/)
+  })
+
+  it('an entry family/* admits every subtype of that family and nothing else', () => {
+    const d = descriptor(['image/*', 'application/pdf'])
+    for (const type of [
+      'image/png',
+      'image/x-anything',
+      'IMAGE/GIF; a=b',
+      'application/pdf',
+    ]) {
+      expect(() =>
+        assertInputMimeTypesAdmitted(messages(inline(type)), d, 'p'),
+      ).not.toThrow()
+    }
+    for (const type of [
+      'video/mp4',
+      'application/json',
+      'image',
+      'image/',
+      'image/*',
+      '*/*',
+    ]) {
+      expect(() => assertInputMimeTypesAdmitted(messages(inline(type)), d, 'p')).toThrow(
+        LlmError,
+      )
+    }
+  })
+
+  it('refuses an empty or missing media type with a message of its own', () => {
+    for (const type of ['', '   ', '; charset=utf-8', undefined, null] as unknown[]) {
+      try {
+        assertInputMimeTypesAdmitted(
+          messages(inline(type as string)),
+          descriptor(['image/*']),
+          'p',
+        )
+        expect.unreachable()
+      } catch (err) {
+        const e = err as LlmError
+        expect(e.kind).toBe('bad_request')
+        expect(e.message).toContain('a media type is required')
+        expect(e.message).toContain('messages[0].parts[0]')
+        expect(e.issues?.[0]?.path).toBe('messages[0].parts[0]')
+      }
+    }
+  })
+
+  it('isMediaTypeAdmitted is the same rule for callers outside a message', () => {
+    expect(isMediaTypeAdmitted('Image/PNG; a=b', ['image/png'])).toBe(true)
+    expect(isMediaTypeAdmitted('video/mp4', ['image/*'])).toBe(false)
+    expect(isMediaTypeAdmitted('', ['image/*'])).toBe(false)
+    expect(isMediaTypeAdmitted('image/png', [])).toBe(false)
+  })
+
+  it('the registry validates and freezes inputMimeTypes entries', () => {
+    const withTypes = (inputMimeTypes: unknown): ModelDescriptor => ({
+      ...makeDescriptor('m', 'p'),
+      capabilities: { inputMimeTypes: inputMimeTypes as string[] },
+    })
+    for (const bad of [
+      ['IMAGE/PNG'],
+      ['image/png; q=1'],
+      ['image'],
+      ['*/*'],
+      [''],
+      ['image/png', 'image/png'],
+      [42],
+      'image/png',
+    ]) {
+      expect(() => createModelRegistry([withTypes(bad)]), JSON.stringify(bad)).toThrow(
+        /inputMimeTypes/,
+      )
+    }
+    const list = ['image/png', 'video/*']
+    const resolved = createModelRegistry([withTypes(list)]).resolve('p', 'm')
+    expect(Object.isFrozen(resolved?.capabilities?.inputMimeTypes)).toBe(true)
   })
 
   it('treats an absent or empty list as no media input', () => {
@@ -417,6 +537,18 @@ describe('registry introspection (findByModel, listDescriptors, configKeys)', ()
     expect(registry.listDescriptors()).toHaveLength(3)
   })
 
+  it('listDescriptors, findByModel and resolve all answer from the construction-time snapshot', () => {
+    const source = [makeDescriptor('one', 'p1')]
+    const snap = createModelRegistry(source)
+    source.push(makeDescriptor('late', 'p1'))
+    source.shift()
+    expect(snap.listDescriptors().map((d) => d.model)).toEqual(['one'])
+    expect(snap.findByModel('late')).toEqual([])
+    expect(snap.resolve('p1', 'late')).toBeUndefined()
+    expect(snap.findByModel('one')).toHaveLength(1)
+    expect(snap.resolve('p1', 'one')).toBeDefined()
+  })
+
   it('an empty registry finds and lists nothing', () => {
     const empty = createModelRegistry([])
     expect(empty.findByModel('x')).toEqual([])
@@ -466,16 +598,75 @@ describe('configKeys', () => {
     expect(toConfigKeys(Recursive)).toEqual(['child'])
   })
 
-  it('a JSON Schema whose keys sit behind a $ref is refused, not skipped', () => {
-    expect(() =>
+  it('a local $ref into $defs is followed, so a schema with .meta({ id }) lists its keys', () => {
+    const Base = z
+      .strictObject({ b: z.number().optional(), a: z.string() })
+      .meta({ id: 'Base' })
+    expect(toConfigKeys(Base)).toEqual(['a', 'b'])
+    expect(toConfigKeys(z.union([Base, z.strictObject({ c: z.string() })]))).toEqual([
+      'a',
+      'b',
+      'c',
+    ])
+    expect(
       configKeysOfJsonSchema({
         $ref: '#/$defs/config',
-        $defs: { config: { properties: {} } },
+        $defs: { config: { properties: { x: {} } } },
       }),
-    ).toThrow(/\$ref/)
+    ).toEqual(['x'])
+  })
+
+  it('a $ref that loops terminates, and one that does not resolve or leaves $defs is refused', () => {
+    expect(
+      configKeysOfJsonSchema({
+        $ref: '#/$defs/a',
+        $defs: {
+          a: {
+            properties: { x: {} },
+            anyOf: [{ $ref: '#/$defs/a' }, { $ref: '#/$defs/b' }],
+          },
+          b: { properties: { y: {} } },
+        },
+      }),
+    ).toEqual(['x', 'y'])
+    expect(() => configKeysOfJsonSchema({ $ref: '#/$defs/missing', $defs: {} })).toThrow(
+      /does not resolve/,
+    )
     expect(() =>
       configKeysOfJsonSchema({ anyOf: [{ properties: { a: {} } }, { $ref: '#/x' }] }),
     ).toThrow(/\$ref/)
+    expect(() => configKeysOfJsonSchema({ $ref: 'https://x.test/s.json' })).toThrow(
+      /\$ref/,
+    )
+  })
+
+  it('a schema JSON Schema cannot represent fails with an LlmError, not a plain Error', () => {
+    const Transformed = z.strictObject({ a: z.string().transform((v) => v) })
+    for (const fn of [
+      () => toConfigJsonSchema(Transformed),
+      () => toConfigKeys(Transformed),
+    ]) {
+      try {
+        fn()
+        expect.unreachable()
+      } catch (err) {
+        expect(err).toBeInstanceOf(LlmError)
+        expect((err as LlmError).kind).toBe('bad_request')
+        expect((err as LlmError).cause).toBeInstanceOf(Error)
+      }
+    }
+  })
+
+  it('a descriptor whose schema carries .meta({ id }) registers', () => {
+    const Base = z.strictObject({ a: z.number().optional() }).meta({ id: 'Base' })
+    const d: ModelDescriptor = {
+      ...makeDescriptor('m', 'p'),
+      configSchema: Base,
+      configJsonSchema: toConfigJsonSchema(Base),
+      configKeys: toConfigKeys(Base),
+      validateConfig: zodToStandardSchema(Base),
+    }
+    expect(createModelRegistry([d]).resolve('p', 'm')?.configKeys).toEqual(['a'])
   })
 
   it('matches the keys the descriptor schema accepts, per descriptor', () => {
@@ -515,5 +706,33 @@ describe('configKeys', () => {
         },
       ]),
     ).toThrow(/stale configKeys/)
+  })
+
+  it('checks keys and JSON Schema against the real configSchema, not the declared artifact', () => {
+    const A = z.strictObject({ a: z.number().optional() })
+    const B = z.strictObject({ b: z.number().optional() })
+    const base = makeDescriptor('m', 'p')
+    // configSchema names `a`; the declared JSON Schema and keys were derived from `b`.
+    expect(() =>
+      createModelRegistry([
+        {
+          ...base,
+          configSchema: A,
+          configJsonSchema: toConfigJsonSchema(B),
+          configKeys: toConfigKeys(B),
+        },
+      ]),
+    ).toThrow(/stale configJsonSchema/)
+    // JSON Schema correct, keys derived from the other schema.
+    expect(() =>
+      createModelRegistry([
+        {
+          ...base,
+          configSchema: A,
+          configJsonSchema: toConfigJsonSchema(A),
+          configKeys: toConfigKeys(B),
+        },
+      ]),
+    ).toThrow(/stale configKeys \[b\]/)
   })
 })

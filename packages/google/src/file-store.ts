@@ -8,10 +8,11 @@
  */
 
 import type { AuthMaterial, Logger } from '@gullabs/core'
-import { LlmError, redactSecrets } from '@gullabs/core'
+import { LlmError, assertMediaTypeAdmitted, redactSecrets } from '@gullabs/core'
 
 import { requireApiKey } from './client.js'
 import { classifyGoogleError } from './errors.js'
+import { GEMINI_INPUT_MIME_TYPES } from './model-limits.js'
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -113,12 +114,11 @@ async function buildFilesClient(auth: AuthMaterial): Promise<GeminiFilesClientLi
       // (the type of params.file) may structurally include.
       const fileArg: Blob =
         params.file instanceof Uint8Array
-          ? new Blob(
-              [Uint8Array.from(params.file)],
-              params.config?.mimeType !== undefined && params.config.mimeType.length > 0
+          ? new Blob([Uint8Array.from(params.file)], {
+              ...(params.config?.mimeType !== undefined
                 ? { type: params.config.mimeType }
-                : {},
-            )
+                : {}),
+            })
           : params.file
 
       const result = await (ai.files.upload as (p: unknown) => Promise<FileResp>)({
@@ -216,7 +216,11 @@ export class GoogleFileStore {
    * Upload bytes to the Gemini File API and wait until the file is ACTIVE.
    *
    * @param source  - Raw bytes or Blob.
-   * @param mimeType - IANA media type, e.g. `"image/png"`.
+   * @param mimeType - IANA media type, e.g. `"image/png"`. It must pass the same
+   *   admission rule `generate` applies to a Gemini model's parts (one shared
+   *   function, so a file that uploads can be used): an empty or unadmitted type
+   *   is `bad_request` before any bytes are sent. The string is sent to Google
+   *   unchanged.
    * @param opts    - Optional display name.
    */
   async upload(
@@ -225,6 +229,13 @@ export class GoogleFileStore {
     opts?: { displayName?: string; signal?: AbortSignal },
   ): Promise<GoogleFileHandle> {
     const signal = opts?.signal
+    assertMediaTypeAdmitted(
+      mimeType,
+      GEMINI_INPUT_MIME_TYPES,
+      'mimeType',
+      'google',
+      'a Google file upload',
+    )
     const client = await this.getClient()
 
     if (signal?.aborted === true) {

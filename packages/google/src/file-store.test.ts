@@ -8,7 +8,11 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { LlmError } from '@gullabs/core'
+import { LlmError, createClient } from '@gullabs/core'
+import { RecordingSink, fakeGeminiResponse, makeFakeGemini } from '@gullabs/testing'
+import { geminiAdapter } from './adapter.js'
+import { geminiPricingSource } from './cost.js'
+import { defaultGeminiRegistry } from './models.js'
 import { GoogleFileStore } from './file-store.js'
 import type { GeminiFilesClientLike, GoogleFileHandle } from './file-store.js'
 
@@ -75,6 +79,91 @@ function makeClient(
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+describe('GoogleFileStore media-type admission (same rule as generate)', () => {
+  it('uploads admitted types, case and parameters aside, sending the string unchanged', async () => {
+    for (const type of [
+      'text/csv',
+      'video/quicktime',
+      'IMAGE/PNG',
+      'text/plain; charset=utf-8',
+    ]) {
+      const client = makeClient()
+      const store = new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+      await store.upload(new Uint8Array([1]), type)
+      expect(client.upload).toHaveBeenCalledWith(
+        expect.objectContaining({ config: expect.objectContaining({ mimeType: type }) }),
+      )
+    }
+  })
+
+  it('rejects an empty or unadmitted type before the SDK is called', async () => {
+    for (const type of ['', ' ', 'application/json', 'image/*']) {
+      const client = makeClient()
+      const store = new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+      await expect(store.upload(new Uint8Array([1]), type), type).rejects.toMatchObject({
+        kind: 'bad_request',
+        retryable: false,
+      })
+      expect(client.upload).not.toHaveBeenCalled()
+    }
+  })
+
+  it('a type generate accepts is a type upload accepts, and the reverse', async () => {
+    const { client: llm, fake } = (() => {
+      const f = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
+      return {
+        fake: f,
+        client: createClient({
+          adapters: [geminiAdapter({ client: f })],
+          pricingSources: { google: geminiPricingSource() },
+          modelRegistry: defaultGeminiRegistry,
+          sink: new RecordingSink(),
+        }),
+      }
+    })()
+    for (const type of [
+      'text/csv',
+      'video/mov',
+      'application/pdf',
+      'application/json',
+      'font/ttf',
+      '',
+    ]) {
+      const uploadOk = await new GoogleFileStore({
+        auth: fakeAuth,
+        client: makeClient(),
+        sleep: fastSleep,
+      })
+        .upload(new Uint8Array([1]), type)
+        .then(
+          () => true,
+          () => false,
+        )
+      const before = fake.calls.length
+      const generateOk = await llm
+        .generate(
+          {
+            provider: 'google',
+            model: 'gemini-3.6-flash',
+            messages: [
+              {
+                role: 'user',
+                parts: [{ kind: 'file-uri', mimeType: type, uri: 'https://x.test/f' }],
+              },
+            ],
+          },
+          { auth: fakeAuth },
+        )
+        .then(
+          () => true,
+          () => false,
+        )
+      expect(generateOk, `generate ${type}`).toBe(uploadOk)
+      expect(fake.calls.length > before, type).toBe(generateOk)
+    }
+  })
+})
 
 describe('GoogleFileStore', () => {
   // 1. ACTIVE immediately — no polling
@@ -871,17 +960,17 @@ describe('GoogleFileStore', () => {
       expect(constructorCalls).toHaveLength(1)
     })
 
-    it('lazily-built client converts a Uint8Array with empty mimeType to a Blob without a type', async () => {
+    it('lazily-built client converts a Uint8Array to a Blob typed with the admitted mimeType', async () => {
       constructorCalls.length = 0
       uploadMock.mockClear()
       const store = new GoogleFileStore({ auth: fakeAuth, sleep: fastSleep })
 
-      await store.upload(new Uint8Array([1, 2, 3]), '')
+      await store.upload(new Uint8Array([1, 2, 3]), 'image/png')
 
       expect(uploadMock).toHaveBeenCalledTimes(1)
       const callArg = uploadMock.mock.calls[0]![0] as { file: Blob }
       expect(callArg.file).toBeInstanceOf(Blob)
-      expect(callArg.file.type).toBe('')
+      expect(callArg.file.type).toBe('image/png')
     })
 
     it('lazily-built client passes a Blob source through untouched (no re-wrapping)', async () => {

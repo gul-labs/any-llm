@@ -61,9 +61,10 @@ describe('Grok46ConfigSchema', () => {
     expect(result.success).toBe(true)
   })
 
-  it('caps maxOutputTokens at the context window, the only documented bound', () => {
-    expect(Grok46ConfigSchema.safeParse({ maxOutputTokens: 500_000 }).success).toBe(true)
-    expect(Grok46ConfigSchema.safeParse({ maxOutputTokens: 500_001 }).success).toBe(false)
+  it('accepts a huge maxOutputTokens: xAI documents no output limit (live-verified)', () => {
+    for (const maxOutputTokens of [500_001, 1_000_000, 100_000_000]) {
+      expect(Grok46ConfigSchema.safeParse({ maxOutputTokens }).success).toBe(true)
+    }
   })
 
   it('rejects a non-positive maxOutputTokens', () => {

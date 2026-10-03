@@ -923,7 +923,6 @@ describe('structured output', () => {
       capabilities: {
         structuredOutput: true,
         nativeStructuredOutput: false,
-        vision: true,
         sampling: 'tunable' as const,
         serviceTiers: ['flex', 'standard'] as ['flex', 'standard'],
       },

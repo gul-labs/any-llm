@@ -86,10 +86,16 @@ const result = await client.runStructured(
 `runStructured` takes the same per-call options as `generate`: `externalId` (a correlation id persisted on every
 attempt row), `attachments` (parts appended to the rendered user message, after its text), `history` (earlier
 turns, prepended and sent unchanged) and `transientProviderState` (the previous result's continuation state, for
-models that declare `capabilities.providerState`). A template that renders to nothing is fine when there are
-attachments (the message is the attachments alone); with neither, the call is `bad_request` before dispatch.
-`history` is validated like `generate`'s `messages` (tool-call and tool-result pairing, no empty assistant
-message). The library still does not validate `output` (ADR-009): validate it yourself and retry as you see fit.
+models that declare `capabilities.providerState`). A template that renders to nothing (or to whitespace) is fine
+when there are attachments (the message is the attachments alone); with neither, the call is `bad_request` before
+dispatch. Every `attachments` element must be a part object and every `history` element a `{ role, parts }`
+message, else `bad_request` naming the path (`history[1].parts[0].kind`); `generate` checks `messages` the same
+way. `history` also gets `generate`'s checks (no empty assistant message) and is sent as given: a history that
+ends in a user message gives two consecutive user turns, never merged. A call site declares no tools, so
+`tool-call` and `tool-result` parts in `attachments` or `history` are `bad_request`; a tool loop is a `generate`
+loop (below). `history` continues a text or media conversation, and `transientProviderState` lets a follow-up
+structured call reuse what the provider returned with the earlier result. The library still does not validate
+`output` (ADR-009): validate it yourself and retry as you see fit.
 
 ## Tool loops: `message`, `continuation`, `transientProviderState`
 
@@ -210,21 +216,32 @@ unchanged, the call is priced under the canonical descriptor, and the ledger row
 the host sent. Adapters check their descriptor with `assertModelMatchesDescriptor`.
 
 Every descriptor states `limits: { contextWindow, maxOutputTokens }` (required, taken from the provider's
-documentation; `createModelRegistry` rejects missing or inconsistent limits), and its config schema caps
-`maxOutputTokens` at `limits.maxOutputTokens`. `capabilities.inputMimeTypes` lists the exact media types the
-model accepts in `inline-media` and `file-uri` parts (absent or empty: no media). Adapters reject any other
-type with `bad_request` before dispatch through `assertInputMimeTypesAdmitted`; a host-authored descriptor
-for a model that takes media must list its types. Where a provider documents no separate output limit,
-`maxOutputTokens` equals `contextWindow`. See ADR-033, Amendment A.
+documentation; `createModelRegistry` rejects missing or inconsistent limits). `maxOutputTokens` is a number the
+provider documents, or `null` when it documents no output limit for the model (xAI Grok 4.x, Gemma 4): nothing
+is invented, the config schema applies no cap, and the provider decides what it accepts. `null` is not
+"unlimited" and not the context window. A numeric limit caps the config schema's `maxOutputTokens`
+(`maxOutputTokensSchema(limits)` builds that field). `capabilities.inputMimeTypes` is the one statement of what
+media a model takes in `inline-media` and `file-uri` parts: lower-case `type/subtype` entries, or a family
+wildcard `type/*`; absent or empty means no media. Adapters reject any other type, and an empty or missing one,
+with `bad_request` before dispatch through `assertInputMimeTypesAdmitted`. The match ignores case and
+`; parameters` (`IMAGE/PNG`, `text/plain; charset=utf-8`) and the string you sent goes to the provider
+unchanged; nothing is mapped, so `image/jpg` is not `image/jpeg`. `isMediaTypeAdmitted(type, list)` and
+`assertMediaTypeAdmitted` expose the same rule. There are no `vision` / `audioInput` flags: read
+`inputMimeTypes`. A host-authored descriptor for a model that takes media must list its types. The registry
+freezes each descriptor's `limits`, `inputMimeTypes`, `aliases` and `configKeys`. See ADR-033, Amendments A
+and C.
 
 Introspection (ADR-033, Amendment B): `registry.findByModel(model)` returns every descriptor that names the
 string as its canonical id or a declared alias, across providers (an array, empty when unknown; the same bare id
 can exist under several providers), and `registry.listDescriptors()` lists them all. `descriptor.configKeys` is
 the sorted list of top-level config keys the model's schema names, flattened across the branches of a union
-(`toConfigKeys(configSchema)` derives it; `createModelRegistry` rejects a stale list). It lists names, not
+(`toConfigKeys(configSchema)` derives it; `createModelRegistry` rejects a list, or a `configJsonSchema`, that
+differs from what `configSchema` yields). It lists names, not
 which combinations are valid: the schema decides that. There is no helper that prunes a config for a model: a
 host with provider-neutral config builds each target's config explicitly and can check it against `configKeys`.
-A custom `ModelRegistry` must implement `resolve`, `findByModel` and `listDescriptors`.
+`resolve`, `findByModel` and `listDescriptors` all answer from the list of descriptors the registry was built
+with (a copy taken at construction; descriptors added to your array later are not part of it). A custom
+`ModelRegistry` must implement all three.
 
 Model-specific reminders:
 
@@ -353,7 +370,7 @@ carries the same total for a call that failed.
 
 `LlmError.kind` and `retryable` say what class of failure happened. `LlmError.reason` says why within
 the kind, from the closed `LlmErrorReason` union (`transport_timeout`, `quota_window`, `daily_quota`,
-`credits_exhausted`, `spend_ceiling`, `grounding_missing`, `search_budget_exceeded`,
+`credits_exhausted`, `spend_ceiling`, `grounding_missing`, `search_budget_exceeded` (reserved: nothing emits it until streaming ships, so do not branch on it yet),
 `cache_not_found`). It is absent when no named cause applies. The reason is also persisted:
 `LlmCallRecord.errorReason`, the `error_reason` column of `@gullabs/drizzle`, and `CallErrorEvent.reason`.
 The union is closed so adapters cannot invent reasons; a new member arrives in a core minor, so keep a
@@ -418,12 +435,15 @@ is released when that attempt ends.
 - **`spendPreflightMiddleware({ limitMicroUsd, key, spentSoFar })` is an advisory spend check.** Your
   `spentSoFar(key)` reads the total (micro-USD) from your own ledger; at or above `limitMicroUsd` the call
   fails before dispatch with `rate_limited`, `retryable: false`, `reason: 'spend_ceiling'` (so retry does not
-  sleep on it) and a refusal row is written. `key` is a string, or a function of the request for a client
+  sleep on it) and a refusal row is written. A ledger read that throws or rejects fails the call closed with
+  `server`, `retryable: false` and your error as `cause` (not `rate_limited`, since no ceiling was reached, and not
+  retryable, since a retry would read the same ledger). `key` is a string, or a function of the request for a client
   serving several scopes. It is **not an enforced ceiling**: the read and the dispatch are not atomic, so
   concurrent workers can overshoot; the call that crosses the ceiling is allowed; and billed calls whose usage
   is unknown (`microUsd: null`) are counted only if your ledger counts them. It sets no `role` and works
   anywhere in the list: first (outside retry) it runs once per logical call and consumes no quota; inside
-  retry it re-reads `spentSoFar` before each attempt. An enforced ceiling needs atomic reservation and
+  retry it re-reads `spentSoFar` before each attempt, and a provider failure followed by a ceiling hit leaves you
+  with the `spend_ceiling` error (the provider's error is in the earlier attempt's row). An enforced ceiling needs atomic reservation and
   reconciliation (`BACKLOG.md`).
 - **One deadline for the whole call.** `config.timeoutMs` starts when the call starts and is measured on
   the client `clock`. `ctx.deadlineAt` is its end and `ctx.signal` aborts when it passes, so a

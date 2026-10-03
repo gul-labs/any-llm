@@ -58,6 +58,21 @@ describe('assertRegistryInvariants limits', () => {
     ).toThrow(/accept maxOutputTokens up to/)
   })
 
+  it('accepts a null output limit with a schema that applies no cap', () => {
+    expect(() =>
+      check(descriptor(UncappedSchema, { contextWindow: 5000, maxOutputTokens: null })),
+    ).not.toThrow()
+    expect(() =>
+      check(descriptor(NoKeySchema, { contextWindow: 5000, maxOutputTokens: null })),
+    ).not.toThrow()
+  })
+
+  it('rejects a null output limit with a schema that invents a cap', () => {
+    expect(() =>
+      check(descriptor(CappedSchema, { contextWindow: 5000, maxOutputTokens: null })),
+    ).toThrow(/must not cap maxOutputTokens/)
+  })
+
   it('rejects configKeys that differ from the schema', () => {
     expect(() =>
       check(

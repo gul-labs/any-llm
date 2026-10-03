@@ -48,34 +48,50 @@ const image = (mimeType: string) => [
 ]
 
 describe('xai descriptor limits (docs read 2026-10-03)', () => {
-  it('states the 500,000-token window and, with no documented output limit, the window', () => {
+  it('states the 500,000-token window and a null output limit (none is documented)', () => {
     for (const d of xaiModelDescriptors) {
-      expect(d.limits).toEqual({ contextWindow: 500_000, maxOutputTokens: 500_000 })
+      expect(d.limits).toEqual({ contextWindow: 500_000, maxOutputTokens: null })
     }
   })
 
-  it('every config schema caps maxOutputTokens at limits.maxOutputTokens', () => {
+  it('limits objects are frozen and not shared between descriptors', () => {
+    expect(new Set(xaiModelDescriptors.map((d) => d.limits)).size).toBe(
+      xaiModelDescriptors.length,
+    )
     for (const d of xaiModelDescriptors) {
-      const cap = d.limits.maxOutputTokens
-      expect(d.configSchema.safeParse({ maxOutputTokens: cap }).success).toBe(true)
-      expect(d.configSchema.safeParse({ maxOutputTokens: cap + 1 }).success).toBe(false)
+      expect(Object.isFrozen(d.limits)).toBe(true)
+      expect(() => {
+        ;(d.limits as { maxOutputTokens: number | null }).maxOutputTokens = 5
+      }).toThrow(TypeError)
     }
   })
 
-  it('the engine rejects an over-cap maxOutputTokens before dispatch', async () => {
+  it('no config schema invents a maxOutputTokens cap; non-positive values stay rejected', () => {
+    for (const d of xaiModelDescriptors) {
+      for (const value of [128_000, 150_000, 500_001, 1_000_000, 100_000_000]) {
+        expect(
+          d.configSchema.safeParse({ maxOutputTokens: value }).success,
+          `${d.model} accepts ${value}`,
+        ).toBe(true)
+      }
+      expect(d.configSchema.safeParse({ maxOutputTokens: 0 }).success).toBe(false)
+      expect(d.configSchema.safeParse({ maxOutputTokens: 1.5 }).success).toBe(false)
+    }
+  })
+
+  it('the engine dispatches a 1,000,000 maxOutputTokens (live-verified acceptance)', async () => {
     const { fake, client } = clientFor()
-    await expect(
-      client.generate(
-        {
-          provider: 'xai',
-          model: 'grok-4.6',
-          messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
-          config: { maxOutputTokens: 500_001 },
-        },
-        { auth: { apiKey: 'k' } },
-      ),
-    ).rejects.toMatchObject({ kind: 'bad_request' })
-    expect(fake.calls).toHaveLength(0)
+    await client.generate(
+      {
+        provider: 'xai',
+        model: 'grok-4.6',
+        messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
+        config: { maxOutputTokens: 1_000_000 },
+      },
+      { auth: { apiKey: 'k' } },
+    )
+    expect(fake.calls).toHaveLength(1)
+    expect(JSON.stringify(fake.calls[0])).toContain('"max_output_tokens":1000000')
   })
 })
 
@@ -97,7 +113,35 @@ describe('xai admitted input media types', () => {
     }
   })
 
-  it.each(['image/webp', 'image/gif', 'image/jpg', 'application/pdf'])(
+  it('matches case-insensitively and ignores parameters, sending the string unchanged', async () => {
+    for (const mimeType of ['IMAGE/PNG', 'image/jpeg; q=1', ' Image/Jpeg ']) {
+      const { fake, client } = clientFor()
+      await client.generate(
+        { provider: 'xai', model: 'grok-4.5', messages: image(mimeType) },
+        { auth: { apiKey: 'k' } },
+      )
+      expect(JSON.stringify(fake.calls[0])).toContain(`data:${mimeType};base64,`)
+    }
+  })
+
+  it.each(['', '   ', '; charset=utf-8'])(
+    'rejects the empty media type %j with a clear message',
+    async (mimeType) => {
+      const { fake, client } = clientFor()
+      const err = await client
+        .generate(
+          { provider: 'xai', model: 'grok-4.5', messages: image(mimeType) },
+          { auth: { apiKey: 'k' } },
+        )
+        .catch((e: unknown) => e)
+      expect(err).toMatchObject({ kind: 'bad_request', retryable: false })
+      expect((err as Error).message).toContain('a media type is required')
+      expect((err as Error).message).toContain('messages[0].parts[1]')
+      expect(fake.calls).toHaveLength(0)
+    },
+  )
+
+  it.each(['image/webp', 'image/gif', 'image/jpg', 'image/*', 'application/pdf'])(
     'rejects %s before dispatch with the path and the admitted types',
     async (mimeType) => {
       const { fake, client } = clientFor()
@@ -277,27 +321,52 @@ describe('providerOptions.xai.searchBudget', () => {
     }
   })
 
-  it('is part of the config schema', () => {
-    expect(
-      grok45ModelDescriptor.configSchema.safeParse({
-        providerOptions: {
-          xai: {
-            tools: [{ type: 'web_search' }],
-            searchBudget: { maxWebSearchCalls: 2 },
-          },
-        },
-      }).success,
-    ).toBe(true)
-    expect(
-      grok45ModelDescriptor.configSchema.safeParse({
-        providerOptions: { xai: { searchBudget: { maxWebSearchCalls: 0 } } },
-      }).success,
-    ).toBe(false)
-    expect(
-      grok45ModelDescriptor.configSchema.safeParse({
-        providerOptions: { xai: { searchBudget: { other: 1 } } },
-      }).success,
-    ).toBe(false)
+  it('the config schema accepts exactly the budgets the adapter accepts', async () => {
+    const web = { type: 'web_search' }
+    const x = { type: 'x_search' }
+    const cases: Array<Record<string, unknown>> = [
+      { tools: [web], searchBudget: { maxWebSearchCalls: 2 } },
+      { tools: [x], searchBudget: { maxXItems: 2 } },
+      { tools: [web, x], searchBudget: { maxWebSearchCalls: 2, maxXItems: 2 } },
+      { tools: [x, web], searchBudget: { maxXItems: 2 } },
+      { tools: [web, x], searchBudget: {} },
+      { tools: [web], searchBudget: { maxWebSearchCalls: 0 } },
+      { tools: [web], searchBudget: { maxWebSearchCalls: 1.5 } },
+      { tools: [web], searchBudget: { maxWebSearchCalls: 1, other: 1 } },
+      { searchBudget: { maxWebSearchCalls: 1 } },
+      { tools: [x], searchBudget: { maxWebSearchCalls: 1 } },
+      { tools: [web], searchBudget: { maxXItems: 1 } },
+      { tools: [web], searchBudget: { maxWebSearchCalls: 1, maxXItems: 1 } },
+    ]
+    for (const xai of cases) {
+      const schemaOk = grok45ModelDescriptor.configSchema.safeParse({
+        providerOptions: { xai },
+      }).success
+      const { client, promise } = run(usage({ web_search_calls: 1 }), xai)
+      const adapterOk = await promise.then(
+        () => true,
+        () => false,
+      )
+      expect(schemaOk, JSON.stringify(xai)).toBe(adapterOk)
+      expect(client.calls.length > 0, JSON.stringify(xai)).toBe(adapterOk)
+    }
+  })
+
+  it('a bad budget is refused by the config schema before any adapter work', () => {
+    for (const searchBudget of [{}, { maxWebSearchCalls: 0 }, { other: 1 }]) {
+      expect(
+        grok45ModelDescriptor.configSchema.safeParse({
+          providerOptions: { xai: { tools: [{ type: 'web_search' }], searchBudget } },
+        }).success,
+      ).toBe(false)
+    }
+    const result = grok45ModelDescriptor.configSchema.safeParse({
+      providerOptions: { xai: { searchBudget: { maxXItems: 1 } } },
+    })
+    expect(result.success).toBe(false)
+    expect(JSON.stringify(result.error?.issues)).toContain(
+      'searchBudget.maxXItems requires an x_search tool',
+    )
   })
 })
 

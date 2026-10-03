@@ -1188,8 +1188,10 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
         params.top_p = genConfig.topP
       }
 
-      // max_output_tokens — no artificial ceiling; truncation surfaces as
-      // finishReason:'length', not an error (see mapFinishReason).
+      // max_output_tokens — forwarded as given. xAI documents no output limit,
+      // so the schema applies no cap (`limits.maxOutputTokens` is null) and the
+      // provider decides; truncation surfaces as finishReason:'length', not an
+      // error (see mapFinishReason).
       if (genConfig.maxOutputTokens !== undefined) {
         params.max_output_tokens = genConfig.maxOutputTokens
       }

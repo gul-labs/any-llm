@@ -11,6 +11,7 @@
  * @module
  */
 
+import { maxOutputTokensSchema } from '@gullabs/core'
 import { z } from 'zod'
 
 import { XAI_MODEL_LIMITS } from '../model-limits.js'
@@ -27,18 +28,15 @@ export const Grok47ConfigSchema = z
       title: 'Top P',
       description: 'Nucleus sampling parameter forwarded verbatim to grok-4.7.',
     }),
-    maxOutputTokens: z
-      .number()
-      .int()
-      .positive()
-      .max(XAI_MODEL_LIMITS['grok-4.7'].maxOutputTokens)
+    maxOutputTokens: maxOutputTokensSchema(XAI_MODEL_LIMITS['grok-4.7'])
       .optional()
       .meta({
         title: 'Max Output Tokens',
         description:
-          'Maximum output token cap for grok-4.7, including reasoning tokens. Capped at ' +
-          'the 500,000-token context window: xAI documents no separate output ' +
-          "limit. Truncation surfaces as finishReason:'length', not an error.",
+          'Maximum output token cap for grok-4.7, including reasoning tokens. No ' +
+          'ceiling is applied: xAI documents no output limit and has accepted very ' +
+          "large values (live-verified). Truncation surfaces as finishReason:'length', " +
+          'not an error.',
       }),
     reasoning: z
       .strictObject({

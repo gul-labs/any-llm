@@ -145,7 +145,6 @@ export const claudeCliModelDescriptors: ModelDescriptor[] = CLAUDE_CLI_MODEL_IDS
         admittedReasoningEfforts:
           id === 'claude-haiku-4-5-20251001' ? [] : CLAUDE_CLI_EFFORTS,
         sampling: 'fixed',
-        vision: false,
       },
       configSchema,
       configKeys: toConfigKeys(configSchema),

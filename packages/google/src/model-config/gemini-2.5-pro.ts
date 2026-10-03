@@ -1,3 +1,4 @@
+import { maxOutputTokensSchema } from '@gullabs/core'
 import { z } from 'zod'
 
 import { GOOGLE_MAX_TIMEOUT_MS } from '../client.js'
@@ -25,11 +26,7 @@ export const Gemini25ProConfigSchema = z
         title: 'Top K',
         description: 'Top-k sampling limit for gemini-2.5-pro.',
       }),
-      maxOutputTokens: z
-        .number()
-        .int()
-        .positive()
-        .max(GOOGLE_MODEL_LIMITS['gemini-2.5-pro'].maxOutputTokens)
+      maxOutputTokens: maxOutputTokensSchema(GOOGLE_MODEL_LIMITS['gemini-2.5-pro'])
         .optional()
         .meta({
           title: 'Max Output Tokens',
@@ -182,11 +179,7 @@ export const Gemini25ProConfigSchema = z
         title: 'Top K',
         description: 'Top-k sampling limit for gemini-2.5-pro.',
       }),
-      maxOutputTokens: z
-        .number()
-        .int()
-        .positive()
-        .max(GOOGLE_MODEL_LIMITS['gemini-2.5-pro'].maxOutputTokens)
+      maxOutputTokens: maxOutputTokensSchema(GOOGLE_MODEL_LIMITS['gemini-2.5-pro'])
         .optional()
         .meta({
           title: 'Max Output Tokens',
