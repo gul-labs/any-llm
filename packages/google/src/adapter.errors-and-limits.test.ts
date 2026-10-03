@@ -16,6 +16,7 @@ import {
   composeProviders,
   createClient,
   createModelRegistry,
+  retryMiddleware,
 } from '@gullabs/core'
 import type { AdapterCtx, ResolvedRequest, TokenCountRequest } from '@gullabs/core'
 import { fakeGeminiResponse, makeFakeGemini, RecordingSink } from '@gullabs/testing'
@@ -973,5 +974,86 @@ describe('R4.16 countTokens on the wire (real @google/genai, stubbed fetch)', ()
       { auth: { apiKey: 'wire-key' } },
     )
     expect(result.totalTokens).toBe(31)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A Gemini 429 delay against the default retry policy (maxDelayMs 60 s)
+// ---------------------------------------------------------------------------
+
+describe('Gemini RetryInfo against the default retryMiddleware', () => {
+  const quota429 = (retryDelay: string): Error =>
+    Object.assign(
+      new Error(
+        JSON.stringify({
+          error: {
+            code: 429,
+            status: 'RESOURCE_EXHAUSTED',
+            details: [
+              { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay },
+            ],
+          },
+        }),
+      ),
+      { status: 429 },
+    )
+
+  const generateWith = async (
+    retryDelay: string,
+    succeedOnSecond: boolean,
+  ): Promise<{ sleeps: number[]; calls: number; outcome: unknown }> => {
+    const sleeps: number[] = []
+    let calls = 0
+    const fake = makeFakeGemini(() => {
+      calls += 1
+      if (calls === 1 || !succeedOnSecond) throw quota429(retryDelay)
+      return fakeGeminiResponse({ text: 'ok' })
+    })
+    const client = createClient({
+      adapters: [geminiAdapter({ client: fake })],
+      pricingSources: { google: geminiPricingSource() },
+      modelRegistry: createModelRegistry(geminiModelDescriptors),
+      middleware: [
+        // The default policy: 3 attempts, maxDelayMs 60 s.
+        retryMiddleware(
+          {},
+          {
+            sleep: async (ms: number) => {
+              sleeps.push(ms)
+            },
+            random: () => 0,
+          },
+        ),
+      ],
+    })
+    const outcome = await client
+      .generate(
+        {
+          provider: 'google',
+          model: 'gemini-2.5-flash',
+          messages: [{ role: 'user', parts: [{ kind: 'text', text: 'x' }] }],
+        },
+        { auth: { apiKey: 'k' } },
+      )
+      .catch((e: unknown) => e)
+    return { sleeps, calls, outcome }
+  }
+
+  it('a typical per-minute delay (34 s) is slept in full and the call is retried', async () => {
+    const { sleeps, calls, outcome } = await generateWith('34s', true)
+    expect(calls).toBe(2)
+    expect(sleeps[0]).toBeGreaterThanOrEqual(34_000)
+    expect((outcome as { text: string }).text).toBe('ok')
+  })
+
+  it('a delay over 60 s is not retried in process: one dispatch, the 429 surfaces with retryAfterMs for a scheduler', async () => {
+    const { sleeps, calls, outcome } = await generateWith('90s', false)
+    expect(calls).toBe(1)
+    expect(sleeps).toEqual([])
+    expect(outcome).toMatchObject({
+      kind: 'rate_limited',
+      retryable: true,
+      retryAfterMs: 90_000,
+    })
   })
 })

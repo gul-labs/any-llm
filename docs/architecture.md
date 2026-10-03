@@ -287,16 +287,16 @@ narrow by `kind` or read `retryable` without parsing message strings.
 
 ### Error Kinds
 
-| `kind`           | HTTP               | `retryable` | Description                                                                                                                                                                                                                                   |
-| ---------------- | ------------------ | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `invalid_auth`   | 401; 403 default   | No          | Wrong or missing credentials, or a 403 the adapter did not reclassify.                                                                                                                                                                        |
-| `rate_limited`   | 429                | Yes         | Provider quota exceeded; `retryAfterMs` may be set. Not retryable with `reason` `daily_quota` (Google per-day quota) or `credits_exhausted` (xAI).                                                                                            |
-| `server`         | 5xx; transport     | Yes         | Transient provider error, or a connection that never produced a response.                                                                                                                                                                     |
-| `timeout`        | 408                | Yes         | Request exceeded `timeoutMs` or network timeout.                                                                                                                                                                                              |
-| `aborted`        | —                  | No          | Caller cancelled via `AbortSignal`. Never retried.                                                                                                                                                                                            |
-| `bad_request`    | 400, 404, 413, 422 | No          | Malformed request; retrying without change will not help.                                                                                                                                                                                     |
-| `content_filter` | overlay / 200      | No          | Provider refused the call for safety / AUP. Google output blocks are 200-path (a filter stop with no text and no tool call throws); xAI input blocks are the 403 overlay. Unrecorded xAI 200 incomplete reasons stay `finishReason: 'other'`. |
-| `unknown`        | other              | No          | Uncategorised; inspect `cause` for details.                                                                                                                                                                                                   |
+| `kind`           | HTTP               | `retryable` | Description                                                                                                                                                                                                                                                                          |
+| ---------------- | ------------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `invalid_auth`   | 401; 403 default   | No          | Wrong or missing credentials, or a 403 the adapter did not reclassify.                                                                                                                                                                                                               |
+| `rate_limited`   | 429                | Yes         | Provider quota exceeded; `retryAfterMs` may be set. Not retryable with `reason` `daily_quota` (Google per-day quota) or `credits_exhausted` (xAI). A Flex 429 is this ordinary path; only a 503 falls back to Standard.                                                              |
+| `server`         | 5xx; transport     | Yes         | Transient provider error, or a connection that never produced a response. A call that creates a provider resource (`GoogleFileStore` polling timeout, a malformed upload or cache-create payload) is `server` with `retryable: false`: repeating it would orphan the first resource. |
+| `timeout`        | 408                | Yes         | Request exceeded `timeoutMs` or network timeout. Always retryable, except an adapter's `transport_timeout` reason (xAI).                                                                                                                                                             |
+| `aborted`        | —                  | No          | Caller cancelled via `AbortSignal`. Never retried.                                                                                                                                                                                                                                   |
+| `bad_request`    | 400, 404, 413, 422 | No          | Malformed request; retrying without change will not help.                                                                                                                                                                                                                            |
+| `content_filter` | overlay / 200      | No          | Provider refused the call for safety / AUP. Google output blocks are 200-path (a filter stop with no text and no tool call throws); xAI input blocks are the 403 overlay. Unrecorded xAI 200 incomplete reasons stay `finishReason: 'other'`.                                        |
+| `unknown`        | other              | No          | Uncategorised; inspect `cause` for details.                                                                                                                                                                                                                                          |
 
 ### Classification
 
@@ -438,8 +438,11 @@ helper classes in `@gullabs/google` handle the stateful upload and cache lifecyc
 Wraps the Gemini Files API. Not part of the engine; not imported by `@gullabs/core`.
 
 - `upload(source, mimeType, opts?)` — uploads bytes (`Uint8Array` or `Blob`) and polls until
-  the file reaches `ACTIVE` state (default poll interval: 3 s; default timeout: 120 s). Returns a
-  `GoogleFileHandle` with `name`, `uri`, `mimeType`, and optional `expiresAt`.
+  the file reaches `ACTIVE` state (default poll interval: 3 s; default timeout: 300 s). Returns a
+  `GoogleFileHandle` with `name`, `uri`, `mimeType`, and optional `expiresAt`. Every SDK failure (here and in
+  `GoogleCacheStore`) is classified by `classifyGoogleError`; a `FAILED` file follows `File.error.code`
+  (transient codes are a retryable `server` error, others `bad_request`), and a polling timeout is a
+  non-retryable `server` error.
 - The returned `handle.uri` maps directly to `FileUriPart.uri`; no conversion needed.
 - `delete(handle)` and `deleteAll(handles)` are fail-open: errors go to an injectable
   `onDeleteError` callback and are not rethrown.

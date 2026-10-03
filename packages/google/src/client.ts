@@ -518,5 +518,5 @@ async function countTokensWithRequest(
       provider: 'google',
     })
   }
-  return parsed as GeminiCountTokensResponseShape
+  return parsed
 }
