@@ -715,7 +715,7 @@ function cleanText(text: string): string {
  * object, so the caller's data is never mutated and clean records alias their
  * inputs exactly as before. `changed` is set when anything was cleaned.
  */
-function cleanDeep<T>(value: T, state: { changed: boolean }): T {
+export function cleanDeep<T>(value: T, state: { changed: boolean }): T {
   if (typeof value === 'string') {
     const cleaned = cleanText(value)
     if (cleaned !== value) state.changed = true

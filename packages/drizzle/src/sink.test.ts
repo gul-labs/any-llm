@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { drizzleUsageSink, llmCalls, type InsertableDb } from './index.js'
-import type { JsonValue, LlmCallRecord } from '@gullabs/core'
+import { drizzleUsageSink, llmCallPayloads, llmCalls, type PostgresDb } from './index.js'
+import type { JsonValue, LlmCallPayload, LlmCallRecord, Logger } from '@gullabs/core'
 
 type InsertCall = {
+  /** Which transaction handle ran the insert: the outer one or the savepoint. */
+  handle: 'tx' | 'savepoint'
   table: unknown
   values: Record<string, unknown>
   conflictTarget: unknown
@@ -46,14 +48,31 @@ function makeRecord(overrides: Partial<LlmCallRecord> = {}): LlmCallRecord {
   }
 }
 
-function makeDb(spy: InsertCall[]): InsertableDb {
-  return {
+interface MockOptions {
+  /** Throw from the insert into this table (by object identity). */
+  failInsertInto?: unknown
+  /** Count of transactions opened (outer and nested). */
+  log?: string[]
+}
+
+/**
+ * A structural stand-in for a Drizzle Postgres database: `transaction` hands the
+ * callback a transaction handle whose own `transaction` is the savepoint, and
+ * every insert is recorded with the handle that ran it.
+ */
+function makeDb(spy: InsertCall[], options: MockOptions = {}): PostgresDb {
+  const log = options.log ?? []
+  const handle = (kind: 'tx' | 'savepoint') => ({
     insert(table: unknown) {
       return {
         values(values: Record<string, unknown>) {
           return {
             async onConflictDoNothing({ target }: { target: unknown }) {
+              if (table === options.failInsertInto) {
+                throw new Error('insert failed', { cause: new Error('driver: boom') })
+              }
               spy.push({
+                handle: kind,
                 table,
                 values,
                 conflictTarget: target,
@@ -65,13 +84,25 @@ function makeDb(spy: InsertCall[]): InsertableDb {
         },
       }
     },
-  }
+    async transaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> {
+      log.push('savepoint')
+      return fn(handle('savepoint'))
+    },
+  })
+  return {
+    async transaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> {
+      log.push('begin')
+      const result = await fn(handle('tx'))
+      log.push('commit')
+      return result
+    },
+  } as unknown as PostgresDb
 }
 
 describe('drizzleUsageSink', () => {
   it('writes the cost v2 fields (ADR-039) to their columns', async () => {
     const calls: InsertCall[] = []
-    await drizzleUsageSink(makeDb(calls)).record(
+    await drizzleUsageSink({ db: makeDb(calls) }).record(
       makeRecord({
         costConfidence: 'estimated',
         costDetails: { input: 300, cached: 40, output: 100, tools: 16 },
@@ -89,7 +120,7 @@ describe('drizzleUsageSink', () => {
   it('maps every record field and dedupes retries with onConflictDoNothing', async () => {
     const calls: InsertCall[] = []
     const db = makeDb(calls)
-    const sink = drizzleUsageSink(db)
+    const sink = drizzleUsageSink({ db })
     const record = makeRecord({ authKeyId: 'gemini-paid' })
 
     await sink.record(record)
@@ -142,7 +173,7 @@ describe('drizzleUsageSink', () => {
   it('persists api_error postmortem fields', async () => {
     const calls: InsertCall[] = []
     const db = makeDb(calls)
-    const sink = drizzleUsageSink(db)
+    const sink = drizzleUsageSink({ db })
 
     await sink.record(
       makeRecord({
@@ -162,7 +193,7 @@ describe('drizzleUsageSink', () => {
 
   it('maps errorReason through to the insert values', async () => {
     const calls: InsertCall[] = []
-    const sink = drizzleUsageSink(makeDb(calls))
+    const sink = drizzleUsageSink({ db: makeDb(calls) })
 
     await sink.record(
       makeRecord({
@@ -181,7 +212,7 @@ describe('drizzleUsageSink', () => {
   it('maps rawUsage null through to the insert values (EMPTY_USAGE sentinel, error path)', async () => {
     const calls: InsertCall[] = []
     const db = makeDb(calls)
-    const sink = drizzleUsageSink(db)
+    const sink = drizzleUsageSink({ db })
 
     await sink.record(
       makeRecord({
@@ -201,7 +232,7 @@ describe('drizzleUsageSink', () => {
   it('maps rawUsage null for an ADR-025 attemptNumber:0 pre-attempt refusal record', async () => {
     const calls: InsertCall[] = []
     const db = makeDb(calls)
-    const sink = drizzleUsageSink(db)
+    const sink = drizzleUsageSink({ db })
 
     await sink.record(
       makeRecord({
@@ -222,7 +253,7 @@ describe('drizzleUsageSink', () => {
   it('writes authKeyId as undefined (no column value) when absent from the record', async () => {
     const calls: InsertCall[] = []
     const db = makeDb(calls)
-    const sink = drizzleUsageSink(db)
+    const sink = drizzleUsageSink({ db })
     // makeRecord()'s defaults omit authKeyId — mirrors buildRecord's
     // conditional-spread convention (absent, not present-as-undefined).
     const record = makeRecord()
@@ -230,5 +261,112 @@ describe('drizzleUsageSink', () => {
     await sink.record(record)
 
     expect(calls[0]?.values['authKeyId']).toBeUndefined()
+  })
+})
+
+const PAYLOAD: LlmCallPayload = {
+  request: {
+    system: 'be brief',
+    messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hello' }] }],
+  },
+  response: { text: 'hi' },
+}
+
+function recordingLogger(): { logger: Logger; errors: Array<[unknown, string]> } {
+  const errors: Array<[unknown, string]> = []
+  return {
+    errors,
+    logger: {
+      debug() {},
+      info() {},
+      warn() {},
+      error: (fields, message) => void errors.push([fields, message]),
+    },
+  }
+}
+
+describe('drizzleUsageSink payloads (ADR-038)', () => {
+  it('writes the ledger row on the transaction, then the payload on a nested transaction (savepoint)', async () => {
+    const calls: InsertCall[] = []
+    const log: string[] = []
+    await drizzleUsageSink({ db: makeDb(calls, { log }) }).record(makeRecord(), {
+      payload: PAYLOAD,
+    })
+    expect(log).toEqual(['begin', 'savepoint', 'commit'])
+    expect(calls.map((c) => [c.handle, c.table])).toEqual([
+      ['tx', llmCalls],
+      ['savepoint', llmCallPayloads],
+    ])
+    expect(calls[1]?.conflictTarget).toBe(llmCallPayloads.attemptId)
+    expect(calls[1]?.values).toEqual({
+      attemptId: 'attempt_1',
+      request: PAYLOAD.request,
+      response: PAYLOAD.response,
+      createdAt: new Date('2026-06-27T00:00:00.000Z'),
+    })
+  })
+
+  it('a record with no payload opens no savepoint and writes no payload row', async () => {
+    const calls: InsertCall[] = []
+    const log: string[] = []
+    await drizzleUsageSink({ db: makeDb(calls, { log }) }).record(makeRecord())
+    expect(log).toEqual(['begin', 'commit'])
+    expect(calls.map((c) => c.table)).toEqual([llmCalls])
+  })
+
+  it('the host transaction helper is used when given: db.transaction is not, and every statement runs on the helper handle', async () => {
+    const dbCalls: InsertCall[] = []
+    const dbLog: string[] = []
+    const hostCalls: InsertCall[] = []
+    const hostLog: string[] = []
+    const hostDb = makeDb(hostCalls, { log: hostLog })
+    const sink = drizzleUsageSink({
+      db: makeDb(dbCalls, { log: dbLog }),
+      transaction: (fn) => hostDb.transaction(fn),
+    })
+    await sink.record(makeRecord(), { payload: PAYLOAD })
+    await sink.record(makeRecord({ attemptId: 'attempt_2' }))
+    expect(dbLog).toEqual([])
+    expect(dbCalls).toEqual([])
+    expect(hostLog).toEqual(['begin', 'savepoint', 'commit', 'begin', 'commit'])
+    expect(hostCalls.map((c) => [c.handle, c.table])).toEqual([
+      ['tx', llmCalls],
+      ['savepoint', llmCallPayloads],
+      ['tx', llmCalls],
+    ])
+  })
+
+  it('a failing payload insert is logged as llm.call.payload.failed with the driver error, and record() resolves', async () => {
+    const calls: InsertCall[] = []
+    const { logger, errors } = recordingLogger()
+    const log: string[] = []
+    await expect(
+      drizzleUsageSink({
+        db: makeDb(calls, { failInsertInto: llmCallPayloads, log }),
+      }).record(makeRecord(), { payload: PAYLOAD, logger }),
+    ).resolves.toBeUndefined()
+    // The ledger row was written and the outer transaction committed.
+    expect(calls.map((c) => c.table)).toEqual([llmCalls])
+    expect(log).toEqual(['begin', 'savepoint', 'commit'])
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.[1]).toBe('llm.call.payload.failed')
+    expect(errors[0]?.[0]).toMatchObject({
+      callId: 'call_1',
+      attemptId: 'attempt_1',
+      error: 'driver: boom',
+    })
+  })
+
+  it('a failing ledger insert rejects record() and never attempts the payload', async () => {
+    const calls: InsertCall[] = []
+    const log: string[] = []
+    await expect(
+      drizzleUsageSink({ db: makeDb(calls, { failInsertInto: llmCalls, log }) }).record(
+        makeRecord(),
+        { payload: PAYLOAD },
+      ),
+    ).rejects.toThrow('insert failed')
+    expect(calls).toEqual([])
+    expect(log).toEqual(['begin'])
   })
 })

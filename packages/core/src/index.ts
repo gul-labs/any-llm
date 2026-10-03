@@ -158,6 +158,16 @@ export { retryMiddleware, computeBackoffMs } from './retry.js'
 export type { SpendPreflightOptions } from './spend-preflight.js'
 export { spendPreflightMiddleware } from './spend-preflight.js'
 
+// Opt-in payload storage (ADR-038)
+export type {
+  LlmCallPayload,
+  PayloadsConfig,
+  StoredMessage,
+  StoredPart,
+  StoredTool,
+  UsageSinkContext,
+} from './payload.js'
+
 // Utilities
 export { canonicalJson } from './canonical-json.js'
 

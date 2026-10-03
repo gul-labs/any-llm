@@ -29,6 +29,7 @@ import type {
 import type { LlmCallRecord } from './record.js'
 import type { LlmError, LlmErrorKind, LlmErrorReason } from './errors.js'
 import type { ModelDescriptor } from './registry.js'
+import type { UsageSinkContext } from './payload.js'
 
 // ---------------------------------------------------------------------------
 // Adapter seam
@@ -403,8 +404,13 @@ export interface UsageSink {
   /**
    * Record a completed call.
    * Implementations should be idempotent on `attemptId` (e.g. `onConflictDoNothing`).
+   *
+   * `ctx.payload` is present only when the client opted into payload storage
+   * (`ClientConfig.payloads`, ADR-038) and storage applies to this attempt. It
+   * is already redacted and capped. A sink that has nowhere to put it ignores
+   * the second argument.
    */
-  record(r: LlmCallRecord): Promise<void>
+  record(r: LlmCallRecord, ctx?: UsageSinkContext): Promise<void>
 }
 
 /**

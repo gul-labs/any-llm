@@ -11,6 +11,10 @@
  *   CHECK definitions as a fresh install (the CHECKs NOT VALID until
  *   `upgrades/0002-validate-checks.sql` runs), keeps existing rows, and is safe to
  *   run twice, statement by statement and not only as one transaction.
+ * - `upgrades/0003-llm-call-payloads.sql` takes the previous shape (0.7.2 plus 0001 and
+ *   0002) to the same tables, columns, index and foreign key as a fresh install,
+ *   leaves `llm_calls` and its rows alone, is idempotent statement by statement,
+ *   and refuses to run over a table of the same name that is not ours.
  * - Definitions (types, defaults, index and CHECK expressions as Postgres
  *   reports them) are compared, never just names: `schema.ts` against
  *   `install.sql`, and the upgraded table against a fresh install.
@@ -29,8 +33,9 @@ import { getTableColumns } from 'drizzle-orm'
 import { PgDialect, getTableConfig } from 'drizzle-orm/pg-core'
 import { drizzle } from 'drizzle-orm/pglite'
 import { describe, expect, it } from 'vitest'
-import { assertLlmCallsSchema, drizzleUsageSink, type InsertableDb } from './sink.js'
-import { llmCalls } from './schema.js'
+import { assertLlmCallsSchema, drizzleUsageSink } from './sink.js'
+import { llmCallPayloads, llmCalls } from './schema.js'
+import { assertLlmCallPayloadsSchema } from './payloads.js'
 import { LlmError, createClient, createModelRegistry } from '@gullabs/core'
 import type { AdapterResult, LlmCallRecord, Logger } from '@gullabs/core'
 import { FakeAdapter, FakeClock, FakeIds } from '@gullabs/testing'
@@ -113,12 +118,13 @@ interface ColumnInfo {
   column_default: string | null
 }
 
-async function describeTable(pg: PGlite): Promise<ColumnInfo[]> {
+async function describeTable(pg: PGlite, table = 'llm_calls'): Promise<ColumnInfo[]> {
   const res = await pg.query<ColumnInfo>(
     `SELECT column_name, data_type, udt_name, datetime_precision, is_nullable, column_default
        FROM information_schema.columns
-      WHERE table_name = 'llm_calls'
+      WHERE table_name = $1
       ORDER BY column_name`,
+    [table],
   )
   return res.rows
 }
@@ -137,9 +143,10 @@ async function checkConstraints(pg: PGlite): Promise<ConstraintInfo[]> {
   return res.rows
 }
 
-async function indexNames(pg: PGlite): Promise<string[]> {
+async function indexNames(pg: PGlite, table = 'llm_calls'): Promise<string[]> {
   const res = await pg.query<{ indexname: string }>(
-    `SELECT indexname FROM pg_indexes WHERE tablename = 'llm_calls' ORDER BY indexname`,
+    `SELECT indexname FROM pg_indexes WHERE tablename = $1 ORDER BY indexname`,
+    [table],
   )
   return res.rows.map((r) => r.indexname)
 }
@@ -147,9 +154,11 @@ async function indexNames(pg: PGlite): Promise<string[]> {
 /** `CREATE INDEX ...` text exactly as Postgres reports it, by index name. */
 async function indexDefs(
   pg: PGlite,
+  table = 'llm_calls',
 ): Promise<Array<{ indexname: string; indexdef: string }>> {
   const res = await pg.query<{ indexname: string; indexdef: string }>(
-    `SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'llm_calls' ORDER BY indexname`,
+    `SELECT indexname, indexdef FROM pg_indexes WHERE tablename = $1 ORDER BY indexname`,
+    [table],
   )
   return res.rows
 }
@@ -329,7 +338,7 @@ describe('install.sql (fresh install)', () => {
     }
 
     const db = drizzle({ client: pg })
-    const sink = drizzleUsageSink(db as unknown as InsertableDb)
+    const sink = drizzleUsageSink({ db })
     await sink.record(
       makeRecord({ errorReason: 'a_future_member' as unknown as 'quota_window' }),
     )
@@ -342,7 +351,7 @@ describe('install.sql (fresh install)', () => {
   it('rejects a status or error_kind outside the core vocabularies', async () => {
     const pg = new PGlite()
     await pg.exec(sqlFile('install.sql'))
-    const sink = drizzleUsageSink(drizzle({ client: pg }) as unknown as InsertableDb)
+    const sink = drizzleUsageSink({ db: drizzle({ client: pg }) })
     await expect(
       sink.record(makeRecord({ status: 'weird' as unknown as 'ok' })),
     ).rejects.toThrow()
@@ -361,7 +370,7 @@ describe('install.sql (fresh install)', () => {
     const pg = new PGlite()
     await pg.exec(sqlFile('install.sql'))
     const db = drizzle({ client: pg })
-    const sink = drizzleUsageSink(db as unknown as InsertableDb)
+    const sink = drizzleUsageSink({ db })
     await sink.record(
       makeRecord({
         costMicroUsd: 1500,
@@ -445,7 +454,7 @@ describe('upgrades/0001-add-error-reason.sql (from the 0.7.2 shape)', () => {
     await pg.exec(sqlFile('upgrades/0002-ledger-v2.sql'))
 
     const db = drizzle({ client: pg })
-    const sink = drizzleUsageSink(db as unknown as InsertableDb)
+    const sink = drizzleUsageSink({ db })
     await sink.record(makeRecord({ errorReason: 'quota_window' }))
 
     const rows = await db.select().from(llmCalls)
@@ -457,7 +466,7 @@ describe('upgrades/0001-add-error-reason.sql (from the 0.7.2 shape)', () => {
     const pg = new PGlite()
     await pg.exec(PUBLISHED_0_7_2_SQL)
     const db = drizzle({ client: pg })
-    const sink = drizzleUsageSink(db as unknown as InsertableDb)
+    const sink = drizzleUsageSink({ db })
     await expect(sink.record(makeRecord())).rejects.toThrow()
   })
 })
@@ -640,7 +649,7 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
     it('new rows are enforced at once even though the legacy rows are not validated', async () => {
       const pg = await legacyTable()
       await runStatementwise(pg, sqlFile(UPGRADE_0002))
-      const sink = drizzleUsageSink(drizzle({ client: pg }) as unknown as InsertableDb)
+      const sink = drizzleUsageSink({ db: drizzle({ client: pg }) })
       await expect(
         sink.record(makeRecord({ status: 'weird' as unknown as 'ok' })),
       ).rejects.toThrow()
@@ -726,7 +735,7 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
     const db = drizzle({ client: pg })
     await expect(assertLlmCallsSchema(db)).resolves.toBeUndefined()
 
-    const sink = drizzleUsageSink(db as unknown as InsertableDb)
+    const sink = drizzleUsageSink({ db })
     await sink.record(
       makeRecord({ costMicroUsd: 7, costConfidence: 'exact', costDetails: costLanes }),
     )
@@ -740,7 +749,7 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
     await pg.exec(AFTER_0001_SQL)
     const db = drizzle({ client: pg })
     await expect(assertLlmCallsSchema(db)).rejects.toThrow(/sql\/upgrades/)
-    const sink = drizzleUsageSink(db as unknown as InsertableDb)
+    const sink = drizzleUsageSink({ db })
     await expect(sink.record(makeRecord())).rejects.toThrow()
   })
 })
@@ -822,7 +831,7 @@ describe('a table that was not migrated is detectable, and the engine logs every
       modelRegistry: createModelRegistry([
         makePermissiveTestDescriptor({ provider: 'google', model: 'm' }),
       ]),
-      sink: drizzleUsageSink(drizzle({ client: pg }) as unknown as InsertableDb),
+      sink: drizzleUsageSink({ db: drizzle({ client: pg }) }),
       clock: new FakeClock(),
       ids: new FakeIds(),
       logger,
@@ -857,5 +866,297 @@ describe('a table that was not migrated is detectable, and the engine logs every
     expect(sinkFailures.every((e) => typeof e.ctx['callId'] === 'string')).toBe(true)
     expect(sinkFailures.every((e) => typeof e.ctx['attemptId'] === 'string')).toBe(true)
     expect((await pg.query('SELECT 1 FROM llm_calls')).rows).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// llm_call_payloads: fresh install and upgrade 0003
+// ---------------------------------------------------------------------------
+
+const PAYLOADS = 'llm_call_payloads'
+const UPGRADE_0003 = 'upgrades/0003-llm-call-payloads.sql'
+
+/** The previously published shape of the whole schema: 0.7.2 plus upgrades 0001 and 0002. */
+const AFTER_0002_SQL = `${AFTER_0001_SQL}\n${sqlFile(UPGRADE_0002)}`
+
+/** Every constraint on `table`, as Postgres reports it (primary key, foreign key, check). */
+async function constraintDefs(
+  pg: PGlite,
+  table: string,
+): Promise<
+  Array<{ conname: string; contype: string; def: string; convalidated: boolean }>
+> {
+  const res = await pg.query<{
+    conname: string
+    contype: string
+    def: string
+    convalidated: boolean
+  }>(
+    `SELECT conname, contype, pg_get_constraintdef(oid) AS def, convalidated
+       FROM pg_constraint WHERE conrelid = $1::regclass ORDER BY conname`,
+    [table],
+  )
+  return res.rows
+}
+
+describe('install.sql: llm_call_payloads', () => {
+  it('has exactly the columns, types, nullability and defaults schema.ts declares', async () => {
+    const pg = new PGlite()
+    await pg.exec(sqlFile('install.sql'))
+    const columns = await describeTable(pg, PAYLOADS)
+    const declared = getTableColumns(llmCallPayloads)
+
+    expect(columns.map((c) => c.column_name).sort()).toEqual(
+      Object.values(declared)
+        .map((c) => c.name)
+        .sort(),
+    )
+    for (const column of Object.values(declared)) {
+      const actual = columns.find((c) => c.column_name === column.name)
+      expect(actual?.data_type, `type of ${column.name}`).toBe(
+        column.getSQLType().replace(/\s*\(\d+\)/, ''),
+      )
+      expect(actual?.is_nullable === 'NO', `not null of ${column.name}`).toBe(
+        column.notNull,
+      )
+      expect(actual?.column_default !== null, `default of ${column.name}`).toBe(
+        column.hasDefault,
+      )
+    }
+    expect(columns.find((c) => c.column_name === 'created_at')?.column_default).toBe(
+      'now()',
+    )
+  })
+
+  it('declares in schema.ts the same primary key, foreign key and index install.sql creates', async () => {
+    const pg = new PGlite()
+    await pg.exec(sqlFile('install.sql'))
+    const config = getTableConfig(llmCallPayloads)
+
+    const index = config.indexes[0]
+    expect(config.indexes).toHaveLength(1)
+    expect(await indexDefs(pg, PAYLOADS)).toEqual([
+      {
+        indexname: index?.config.name,
+        indexdef: `CREATE INDEX ${index?.config.name} ON public.${PAYLOADS} USING btree (${index?.config.columns
+          .map((c) => (c as { name: string }).name)
+          .join(', ')})`,
+      },
+      expect.objectContaining({ indexname: 'llm_call_payloads_pkey' }),
+    ])
+
+    const fk = config.foreignKeys[0]?.reference()
+    expect(config.foreignKeys).toHaveLength(1)
+    const declaredForeignKey = {
+      conname: config.foreignKeys[0]?.getName(),
+      def: `FOREIGN KEY (${fk?.columns.map((c) => c.name).join(', ')}) REFERENCES ${getTableConfig(fk!.foreignTable).name}(${fk?.foreignColumns
+        .map((c) => c.name)
+        .join(', ')}) ON DELETE ${config.foreignKeys[0]?.onDelete?.toUpperCase()}`,
+    }
+    const installed = (await constraintDefs(pg, PAYLOADS)).filter(
+      (c) => c.contype === 'f',
+    )
+    expect(installed.map(({ conname, def }) => ({ conname, def }))).toEqual([
+      declaredForeignKey,
+    ])
+    expect(declaredForeignKey.def).toBe(
+      'FOREIGN KEY (attempt_id) REFERENCES llm_calls(attempt_id) ON DELETE CASCADE',
+    )
+  })
+
+  it('a payload cannot exist without its ledger row, and deleting the ledger row deletes it', async () => {
+    const pg = new PGlite()
+    await pg.exec(sqlFile('install.sql'))
+    await expect(
+      pg.exec(
+        `INSERT INTO llm_call_payloads (attempt_id, request, response) VALUES ('orphan', '{}', '{}')`,
+      ),
+    ).rejects.toThrow(/foreign key|violates/)
+
+    const sink = drizzleUsageSink({ db: drizzle({ client: pg }) })
+    await sink.record(makeRecord(), {
+      payload: { request: { messages: [] }, response: { text: 'hi' } },
+    })
+    expect((await pg.query(`SELECT 1 FROM llm_call_payloads`)).rows).toHaveLength(1)
+    await pg.exec(`DELETE FROM llm_calls WHERE attempt_id = 'new_attempt'`)
+    expect((await pg.query(`SELECT 1 FROM llm_call_payloads`)).rows).toHaveLength(0)
+  })
+})
+
+describe('upgrades/0003-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 and 0002)', () => {
+  it('the previous shape has no payload table', async () => {
+    const pg = new PGlite()
+    await pg.exec(AFTER_0002_SQL)
+    expect(await describeTable(pg, PAYLOADS)).toEqual([])
+  })
+
+  it('yields the same tables, columns, indexes and constraints as a fresh install, and keeps existing rows', async () => {
+    const upgraded = new PGlite()
+    await upgraded.exec(AFTER_0002_SQL)
+    await upgraded.exec(OLD_ROW_SQL)
+    const callsBefore = {
+      table: await describeTable(upgraded),
+      indexes: await indexDefs(upgraded),
+      checks: await checkConstraints(upgraded),
+    }
+    await upgraded.exec(sqlFile(UPGRADE_0003))
+
+    const fresh = new PGlite()
+    await fresh.exec(sqlFile('install.sql'))
+
+    // The new table: type, precision, nullability, default; index text; every constraint.
+    expect(await describeTable(upgraded, PAYLOADS)).toEqual(
+      await describeTable(fresh, PAYLOADS),
+    )
+    expect(await indexDefs(upgraded, PAYLOADS)).toEqual(await indexDefs(fresh, PAYLOADS))
+    expect(await constraintDefs(upgraded, PAYLOADS)).toEqual(
+      await constraintDefs(fresh, PAYLOADS),
+    )
+    expect(await invalidIndexes(upgraded)).toEqual([])
+
+    // llm_calls is untouched: shape and rows.
+    expect({
+      table: await describeTable(upgraded),
+      indexes: await indexDefs(upgraded),
+      checks: await checkConstraints(upgraded),
+    }).toEqual(callsBefore)
+    const old = await upgraded.query<{ attempt_id: string }>(
+      `SELECT attempt_id FROM llm_calls`,
+    )
+    expect(old.rows).toEqual([{ attempt_id: 'old_attempt' }])
+    expect((await upgraded.query(`SELECT 1 FROM llm_call_payloads`)).rows).toEqual([])
+  })
+
+  it('sets lock_timeout before it touches a table and resets it after', () => {
+    const statements = splitStatements(sqlFile(UPGRADE_0003))
+    expect(statements[0]).toMatch(/^SET lock_timeout = '\d+s?';$/)
+    expect(statements[statements.length - 1]).toBe('RESET lock_timeout;')
+  })
+
+  it('runs each statement on its own twice with the same result (idempotent per statement)', async () => {
+    const pg = new PGlite()
+    await pg.exec(AFTER_0002_SQL)
+    await pg.exec(OLD_ROW_SQL)
+
+    expect(await runStatementwise(pg, sqlFile(UPGRADE_0003))).toEqual([])
+    const table = await describeTable(pg, PAYLOADS)
+    const indexes = await indexDefs(pg, PAYLOADS)
+    const constraints = await constraintDefs(pg, PAYLOADS)
+    const oids = async () =>
+      (
+        await pg.query(
+          `SELECT oid FROM pg_constraint WHERE conrelid = 'llm_call_payloads'::regclass ORDER BY conname`,
+        )
+      ).rows
+
+    const before = await oids()
+    expect(await runStatementwise(pg, sqlFile(UPGRADE_0003))).toEqual([])
+    expect(await describeTable(pg, PAYLOADS)).toEqual(table)
+    expect(await indexDefs(pg, PAYLOADS)).toEqual(indexes)
+    expect(await constraintDefs(pg, PAYLOADS)).toEqual(constraints)
+    // Nothing was dropped and re-added.
+    expect(await oids()).toEqual(before)
+  })
+
+  it('keeps the rows already in the payload table on a re-run', async () => {
+    const pg = new PGlite()
+    await pg.exec(AFTER_0002_SQL)
+    await runStatementwise(pg, sqlFile(UPGRADE_0003))
+    await pg.exec(OLD_ROW_SQL)
+    await pg.exec(
+      `INSERT INTO llm_call_payloads (attempt_id, request, response) VALUES ('old_attempt', '{"messages":[]}', '{"text":"x"}')`,
+    )
+    expect(await runStatementwise(pg, sqlFile(UPGRADE_0003))).toEqual([])
+    const rows = await pg.query<{ attempt_id: string }>(
+      `SELECT attempt_id FROM llm_call_payloads`,
+    )
+    expect(rows.rows).toEqual([{ attempt_id: 'old_attempt' }])
+  })
+
+  it('works whether or not the index was created beforehand (a host may build it concurrently)', async () => {
+    const pg = new PGlite()
+    await pg.exec(AFTER_0002_SQL)
+    await pg.exec(
+      `CREATE TABLE llm_call_payloads (
+         attempt_id TEXT PRIMARY KEY, request JSONB NOT NULL, response JSONB NOT NULL,
+         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+         CONSTRAINT llm_call_payloads_attempt_id_llm_calls_attempt_id_fk
+           FOREIGN KEY (attempt_id) REFERENCES llm_calls (attempt_id) ON DELETE CASCADE)`,
+    )
+    expect(await runStatementwise(pg, sqlFile(UPGRADE_0003))).toEqual([])
+    expect(await indexNames(pg, PAYLOADS)).toEqual([
+      'llm_call_payloads_created_at_idx',
+      'llm_call_payloads_pkey',
+    ])
+  })
+
+  it('stops with an error, changing nothing, when a different table already has the name', async () => {
+    const pg = new PGlite()
+    await pg.exec(AFTER_0002_SQL)
+    await pg.exec(
+      `CREATE TABLE llm_call_payloads (id BIGSERIAL PRIMARY KEY, call_id TEXT, body TEXT)`,
+    )
+    await pg.exec(`INSERT INTO llm_call_payloads (call_id, body) VALUES ('c', 'kept')`)
+    const before = await describeTable(pg, PAYLOADS)
+
+    const errors = await runStatementwise(pg, sqlFile(UPGRADE_0003))
+    expect(errors.join('\n')).toMatch(/rename it first/)
+    expect(await describeTable(pg, PAYLOADS)).toEqual(before)
+    expect(
+      (await pg.query<{ body: string }>(`SELECT body FROM llm_call_payloads`)).rows,
+    ).toEqual([{ body: 'kept' }])
+
+    // After the documented rename the upgrade goes through.
+    await pg.exec(`ALTER TABLE llm_call_payloads RENAME TO app_llm_call_payloads`)
+    expect(await runStatementwise(pg, sqlFile(UPGRADE_0003))).toEqual([])
+    expect((await describeTable(pg, PAYLOADS)).map((c) => c.column_name).sort()).toEqual([
+      'attempt_id',
+      'created_at',
+      'request',
+      'response',
+    ])
+    expect(
+      (await pg.query<{ body: string }>(`SELECT body FROM app_llm_call_payloads`)).rows,
+    ).toEqual([{ body: 'kept' }])
+  })
+
+  it('the sink writes a payload on the upgraded table and assertLlmCallPayloadsSchema passes', async () => {
+    const pg = new PGlite()
+    await pg.exec(AFTER_0002_SQL)
+    await pg.exec(sqlFile(UPGRADE_0003))
+    const db = drizzle({ client: pg })
+    await expect(assertLlmCallPayloadsSchema(db)).resolves.toBeUndefined()
+    await drizzleUsageSink({ db }).record(makeRecord(), {
+      payload: { request: { messages: [] }, response: { text: 'hi' } },
+    })
+    const rows = await db.select().from(llmCallPayloads)
+    expect(rows).toEqual([
+      expect.objectContaining({
+        attemptId: 'new_attempt',
+        response: { text: 'hi' },
+        createdAt: new Date('2026-10-03T00:00:00.000Z'),
+      }),
+    ])
+  })
+
+  it('without the upgrade the schema check rejects and points at 0003; the ledger row still commits', async () => {
+    const pg = new PGlite()
+    await pg.exec(AFTER_0002_SQL)
+    const db = drizzle({ client: pg })
+    await expect(assertLlmCallPayloadsSchema(db)).rejects.toThrow(
+      /0003-llm-call-payloads\.sql/,
+    )
+    const errors: Array<[unknown, string]> = []
+    await drizzleUsageSink({ db }).record(makeRecord(), {
+      payload: { request: { messages: [] }, response: {} },
+      logger: {
+        debug() {},
+        info() {},
+        warn() {},
+        error: (fields, message) => void errors.push([fields, message]),
+      },
+    })
+    expect((await pg.query(`SELECT 1 FROM llm_calls`)).rows).toHaveLength(1)
+    expect(errors.map(([, message]) => message)).toEqual(['llm.call.payload.failed'])
   })
 })

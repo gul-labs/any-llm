@@ -247,6 +247,7 @@ try {
       'package/sql/install.sql',
       'package/sql/upgrades/0001-add-error-reason.sql',
       'package/sql/upgrades/0002-ledger-v2.sql',
+      'package/sql/upgrades/0003-llm-call-payloads.sql',
     ]) {
       record(
         listing.split('\n').includes(file),
@@ -329,11 +330,11 @@ import { googleProvider } from '@gullabs/google'
 import { xaiProvider } from '@gullabs/xai'
 import { claudeCliProvider } from '@gullabs/claude-cli'
 import { codexCliProvider } from '@gullabs/codex-cli'
-import { drizzleUsageSink, llmCalls } from '@gullabs/drizzle'
+import { drizzleUsageSink, llmCalls, llmCallPayloads } from '@gullabs/drizzle'
 import { providerQuotaMiddleware } from '@gullabs/quota'
 import { RecordingSink } from '@gullabs/testing'
 
-export { drizzleUsageSink, llmCalls, providerQuotaMiddleware }
+export { drizzleUsageSink, llmCalls, llmCallPayloads, providerQuotaMiddleware }
 const client = createClient({
   ...composeProviders([googleProvider(), xaiProvider(), claudeCliProvider(), codexCliProvider()]),
   sink: new RecordingSink(),
@@ -486,6 +487,7 @@ ${callSite}`,
         'install.sql',
         'upgrades/0001-add-error-reason.sql',
         'upgrades/0002-ledger-v2.sql',
+        'upgrades/0003-llm-call-payloads.sql',
       ]) {
         const viaRequire = require.resolve('@gullabs/drizzle/sql/' + f)
         const viaImport = fileURLToPath(import.meta.resolve('@gullabs/drizzle/sql/' + f))

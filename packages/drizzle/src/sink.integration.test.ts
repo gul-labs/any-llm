@@ -16,7 +16,7 @@ import { PGlite } from '@electric-sql/pglite'
 import { drizzle } from 'drizzle-orm/pglite'
 import { describe, it, expect } from 'vitest'
 import { eq } from 'drizzle-orm'
-import { drizzleUsageSink, type InsertableDb } from './sink.js'
+import { drizzleUsageSink } from './sink.js'
 import { llmCalls } from './schema.js'
 import { LlmError, buildRecord, createClient, createModelRegistry } from '@gullabs/core'
 import type { LlmCallRecord, JsonValue } from '@gullabs/core'
@@ -93,19 +93,6 @@ async function createTestDb(): Promise<PgliteDb> {
   return drizzle({ client: pglite })
 }
 
-/**
- * Cast a PgliteDatabase to InsertableDb for use with drizzleUsageSink.
- *
- * The real drizzle-orm pglite driver satisfies InsertableDb at runtime.
- * TypeScript rejects the direct assignment due to contra-variance on the
- * widened `target: unknown` parameter in InsertableDb (which was widened to
- * keep the interface easily mockable). The cast is safe: sink.ts only ever
- * passes `table.attemptId` (an IndexColumn) as the target.
- */
-function asInsertableDb(db: PgliteDb): InsertableDb {
-  return db as unknown as InsertableDb
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -114,7 +101,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
   // (a) INSERT shape: all mapped values persist and round-trip correctly.
   it('inserts a record and all column values round-trip correctly', async () => {
     const db = await createTestDb()
-    const sink = drizzleUsageSink(asInsertableDb(db))
+    const sink = drizzleUsageSink({ db })
     const record = makeRecord()
 
     await sink.record(record)
@@ -189,7 +176,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
 
   it('round-trips citations JSON through the real table', async () => {
     const db = await createTestDb()
-    const sink = drizzleUsageSink(asInsertableDb(db))
+    const sink = drizzleUsageSink({ db })
     const citations = [
       { url: 'https://example.com/a', title: 'Example A', sourceName: 'example.com' },
     ]
@@ -205,7 +192,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
 
   it('round-trips toolCalls JSON through the real table', async () => {
     const db = await createTestDb()
-    const sink = drizzleUsageSink(asInsertableDb(db))
+    const sink = drizzleUsageSink({ db })
     const toolCalls = [
       { toolCallId: 'c1', toolName: 'get_temperature', args: { location: 'SF' } },
     ]
@@ -221,7 +208,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
 
   it('round-trips requested toolNames and toolCount', async () => {
     const db = await createTestDb()
-    const sink = drizzleUsageSink(asInsertableDb(db))
+    const sink = drizzleUsageSink({ db })
     await sink.record(
       makeRecord({
         attemptId: 'attempt_tool_names',
@@ -240,7 +227,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
   // (b) attemptId idempotency: two records with the same attemptId → exactly one row.
   it('deduplicate on attemptId: recording the same attemptId twice yields exactly one row', async () => {
     const db = await createTestDb()
-    const sink = drizzleUsageSink(asInsertableDb(db))
+    const sink = drizzleUsageSink({ db })
     const record = makeRecord({ attemptId: 'idempotent_attempt' })
 
     // First insert
@@ -272,7 +259,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
       modelRegistry: createModelRegistry([
         makeTestDescriptor({ provider: 'google', model: 'm1' }),
       ]),
-      sink: drizzleUsageSink(asInsertableDb(db)),
+      sink: drizzleUsageSink({ db }),
     })
     const request = {
       provider: 'google',
@@ -298,7 +285,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
   // reason keep it NULL.
   it('persists errorReason and leaves it null when the record has none', async () => {
     const db = await createTestDb()
-    const sink = drizzleUsageSink(asInsertableDb(db))
+    const sink = drizzleUsageSink({ db })
     await sink.record(
       makeRecord({
         attemptId: 'reason_attempt',
@@ -356,7 +343,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
           },
         },
       ],
-      sink: drizzleUsageSink(asInsertableDb(db)),
+      sink: drizzleUsageSink({ db }),
     })
     const base = {
       provider: 'google',
@@ -402,7 +389,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
   // (b cont.) Second insert with different data on same attemptId must not overwrite.
   it('onConflictDoNothing preserves the first row on duplicate attemptId', async () => {
     const db = await createTestDb()
-    const sink = drizzleUsageSink(asInsertableDb(db))
+    const sink = drizzleUsageSink({ db })
 
     const first = makeRecord({
       attemptId: 'dup_attempt',
@@ -431,7 +418,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
   // (c) Timestamp + JSONB mapping: timestamps persist and round-trip correctly.
   it('persists createdAt as a proper timestamp and JSONB columns round-trip nested objects', async () => {
     const db = await createTestDb()
-    const sink = drizzleUsageSink(asInsertableDb(db))
+    const sink = drizzleUsageSink({ db })
 
     const complexJsonb: JsonValue = {
       nested: { a: 1, b: [true, null, 'str'] },
@@ -467,7 +454,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
   // (a cont.) api_error postmortem fields map correctly at the DB boundary.
   it('persists error fields for api_error status', async () => {
     const db = await createTestDb()
-    const sink = drizzleUsageSink(asInsertableDb(db))
+    const sink = drizzleUsageSink({ db })
     const record = makeRecord({
       attemptId: 'error_attempt',
       status: 'api_error',
@@ -499,7 +486,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
   // have caught the defect.
   it('inserts an api_error record with rawUsage null (EMPTY_USAGE sentinel)', async () => {
     const db = await createTestDb()
-    const sink = drizzleUsageSink(asInsertableDb(db))
+    const sink = drizzleUsageSink({ db })
     // Mirrors the shape buildErrorRecord/buildRecord actually produce for an
     // error-path record: optional fields the failed attempt never populated
     // (finishReason, outputParsed, responseId, servedServiceTier, cost,
@@ -547,7 +534,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
   // rawUsage is null exactly like the error-path record above.
   it('inserts an ADR-025 attemptNumber:0 pre-attempt refusal record with rawUsage null', async () => {
     const db = await createTestDb()
-    const sink = drizzleUsageSink(asInsertableDb(db))
+    const sink = drizzleUsageSink({ db })
     // Mirrors the D5 synthetic pre-attempt record buildErrorRecord assembles
     // in engine.ts when the middleware chain throws before runAttempt ever
     // begins (e.g. a D3/D4 input-contract refusal): EMPTY_USAGE throughout,
@@ -589,7 +576,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
   // Multiple distinct records are all persisted (no cross-contamination).
   it('persists multiple distinct records correctly', async () => {
     const db = await createTestDb()
-    const sink = drizzleUsageSink(asInsertableDb(db))
+    const sink = drizzleUsageSink({ db })
 
     await sink.record(
       makeRecord({
@@ -623,7 +610,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
   // A provider-controlled NUL or unpaired surrogate must not cost the billed row.
   it('persists a billed row whose provider text holds U+0000 and unpaired surrogates', async () => {
     const db = await createTestDb()
-    const sink = drizzleUsageSink(asInsertableDb(db))
+    const sink = drizzleUsageSink({ db })
     const nul = '\u0000'
     const record = buildRecord({
       callId: 'call_nul',

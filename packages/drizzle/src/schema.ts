@@ -146,3 +146,33 @@ export const llmCalls = pgTable(
     ),
   ],
 )
+
+/**
+ * `llm_call_payloads` — the opt-in prompt and response text of one attempt
+ * (ADR-038), written by `drizzleUsageSink` when the client sets
+ * `ClientConfig.payloads`. One row per `llm_calls` row at most, keyed by the
+ * same `attempt_id`; deleting the ledger row deletes its payload (`ON DELETE
+ * CASCADE`). Deleting a payload never touches the ledger.
+ *
+ * Payloads can contain customer data. The library never deletes them on its
+ * own: schedule `purgeLlmCallPayloads` and delete by call with
+ * `deleteLlmCallPayloads`. The `created_at` index serves the purge.
+ *
+ * - `request` — `{ system?, messages: [{ role, parts }], tools?: [{ name, schemaSha256 }] }`;
+ *   media parts hold a SHA-256, never bytes.
+ * - `response` — `{ text?, errorMessage? }`.
+ *
+ * The SQL in `sql/` is the source of truth for existing databases.
+ */
+export const llmCallPayloads = pgTable(
+  'llm_call_payloads',
+  {
+    attemptId: text('attempt_id')
+      .primaryKey()
+      .references(() => llmCalls.attemptId, { onDelete: 'cascade' }),
+    request: jsonb('request').notNull(),
+    response: jsonb('response').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('llm_call_payloads_created_at_idx').on(table.createdAt)],
+)

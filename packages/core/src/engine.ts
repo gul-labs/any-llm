@@ -24,6 +24,8 @@ import { assertMessagesShape, assertPartsShape } from './input-shapes.js'
 import { assertTimerMs } from './timer.js'
 import { estimateInputTokens } from './estimate.js'
 import { redactSecrets } from './redact.js'
+import { assertPayloadsConfig, buildPayload } from './payload.js'
+import type { LlmCallPayload, PayloadsConfig } from './payload.js'
 import { boundedModelText, unknownModelMessage } from './registry.js'
 import type { ModelDescriptor, ModelRegistry } from './registry.js'
 import type {
@@ -126,6 +128,23 @@ export interface ClientConfig {
    * @default 5000
    */
   sinkTimeoutMs?: number
+  /**
+   * Opt-in storage of each attempt's prompt and response text (ADR-038).
+   * Absent: nothing is captured. Present: every attempt that reached dispatch,
+   * success or failure, gets a payload (the request the adapter received, the
+   * raw model text or the error message) passed to the sink as
+   * `sink.record(record, { payload })`, unless `include` returns anything but
+   * `true` or the call opts out with `storePayload: false` (an option of both
+   * `generate` and `runStructured`). Requires {@link ClientConfig.sink}, else
+   * `createClient` throws `bad_request`.
+   *
+   * Payloads can contain customer data. Core's secret patterns, then
+   * `payloads.redact`, run on every string before the size caps; retention and
+   * deletion are the host's duty. A payload that cannot be built (a throwing
+   * redactor) is dropped with an `llm.call.payload.dropped` warning and never
+   * fails the call.
+   */
+  payloads?: PayloadsConfig
   /**
    * Time source.  Defaults to `{ now: () => Date.now() }`.
    * Inject {@link FakeClock} in tests for deterministic latency assertions.
@@ -268,12 +287,18 @@ export interface GenerateOptions {
   auth: AuthMaterial
   /** Caller-supplied abort signal. Classifies as `'aborted'` when fired. */
   signal?: AbortSignal
+  /**
+   * `false` opts this call out of payload storage (`ClientConfig.payloads`).
+   * `true` or absent follows the client config; `true` never turns storage on
+   * for a client that did not enable it. Any other value is `bad_request`.
+   */
+  storePayload?: boolean
 }
 
 /**
  * Options accepted by {@link Client.countTokens}.
  */
-export interface CountTokensOptions extends GenerateOptions {
+export interface CountTokensOptions extends Omit<GenerateOptions, 'storePayload'> {
   /**
    * Ceiling for the whole count, in milliseconds (a finite number greater
    * than 0 and at most 2147483647, else `bad_request`). When it passes, the call rejects with `LlmError('timeout')` even
@@ -336,6 +361,11 @@ export interface RunStructuredOptions {
    * alongside `history`; it does not make a call site a tool loop.
    */
   transientProviderState?: JsonValue
+  /**
+   * `false` opts this call out of payload storage, as
+   * {@link GenerateOptions.storePayload} does for `generate`.
+   */
+  storePayload?: boolean
 }
 
 /**
@@ -1391,6 +1421,7 @@ async function recordToSink(
   timeoutMs: number,
   interrupts: readonly (AbortSignal | undefined)[],
   scheduler: Scheduler,
+  payload?: LlmCallPayload,
 ): Promise<void> {
   if (sink === undefined) return
   const fields = {
@@ -1428,7 +1459,11 @@ async function recordToSink(
     // Started inside the try so a synchronous throw from `record` is a failure
     // like any other. `Promise.race` keeps handling the write, so a rejection
     // that arrives after the timeout is not an unhandled rejection.
-    const write = Promise.resolve(sink.record(record)).then(() => 'done' as const)
+    const write = Promise.resolve(
+      payload === undefined
+        ? sink.record(record)
+        : sink.record(record, { payload, logger }),
+    ).then(() => 'done' as const)
     const outcome = await Promise.race([write, abandoned])
     if (outcome === 'timeout') {
       // A row that may be lost. The event name and fields are stable: alert on
@@ -1507,7 +1542,7 @@ function attachCallContext(
  *
  * const client = createClient({
  *   ...composeProviders([googleProvider()]),
- *   sink: drizzleUsageSink(db, llmCallsTable),
+ *   sink: drizzleUsageSink({ db }),
  * })
  *
  * const result = await client.generate(
@@ -1605,12 +1640,36 @@ function authKeyIdOf(auth: AuthMaterial): string | undefined {
   return 'apiKey' in auth ? auth.keyId : undefined
 }
 
+/** `storePayload` is a boolean option; any other value is refused, not guessed at. */
+function resolveStorePayload(value: unknown): boolean {
+  if (value === undefined || typeof value === 'boolean') return value !== false
+  throw new LlmError('storePayload must be a boolean.', {
+    kind: 'bad_request',
+    retryable: false,
+    issues: [{ path: 'storePayload', message: 'must be a boolean.' }],
+  })
+}
+
 export function createClient(config: ClientConfig): Client {
   const { adapters } = config
   const pricingSources: Record<string, PricingSource> = config.pricingSources ?? {}
   const sink = config.sink
   const sinkTimeoutMs = config.sinkTimeoutMs ?? DEFAULT_SINK_TIMEOUT_MS
   assertTimerMs(sinkTimeoutMs, 'createClient: sinkTimeoutMs', 'sinkTimeoutMs')
+  const payloads: PayloadsConfig | undefined = config.payloads
+  if (payloads !== undefined) {
+    assertPayloadsConfig(payloads)
+    if (sink === undefined) {
+      throw new LlmError(
+        'createClient: payloads requires a sink; the payload is handed to sink.record(record, { payload }).',
+        {
+          kind: 'bad_request',
+          retryable: false,
+          issues: [{ path: 'payloads', message: 'requires ClientConfig.sink.' }],
+        },
+      )
+    }
+  }
   const clock: Clock = config.clock ?? DEFAULT_CLOCK
   const scheduler: Scheduler = config.scheduler ?? DEFAULT_SCHEDULER
   const ids: IdGenerator = config.ids ?? DEFAULT_IDS
@@ -1759,6 +1818,8 @@ export function createClient(config: ClientConfig): Client {
     // would wrongly refuse every `runStructured()` call, since D3 says
     // `runStructured` never sets `inputContract` (that's D2's job).
     enforceInputContract: boolean,
+    // `false` when the call opted out of payload storage (`storePayload: false`).
+    storePayload: boolean,
   ): Promise<LlmResult> {
     const { provider: callProvider, model: requestedModel } = identity
     if (resolvedConfig.timeoutMs !== undefined) {
@@ -1897,6 +1958,42 @@ export function createClient(config: ClientConfig): Client {
       logger: safeLogger,
       ...(deadline.signal !== undefined ? { signal: deadline.signal } : {}),
       ...(deadline.deadlineAt !== undefined ? { deadlineAt: deadline.deadlineAt } : {}),
+    }
+
+    // Payload for one dispatched attempt (ADR-038), or undefined when storage is
+    // off, the call opted out, `include` said no, or the payload could not be
+    // built. Never throws: a payload problem is a warning, not a failed call.
+    async function capturePayload(
+      sent: ResolvedRequest,
+      response: LlmCallPayload['response'],
+      attemptId: string,
+      ctx: EngineCtx,
+    ): Promise<LlmCallPayload | undefined> {
+      if (payloads === undefined || !storePayload) return undefined
+      try {
+        if (payloads.include !== undefined && payloads.include(request) !== true) {
+          return undefined
+        }
+        return await buildPayload(
+          {
+            ...(sent.system !== undefined ? { system: sent.system } : {}),
+            messages: sent.messages,
+            ...(sent.tools !== undefined ? { tools: sent.tools } : {}),
+          },
+          response,
+          payloads,
+        )
+      } catch (payloadErr) {
+        ctx.logger.warn(
+          {
+            callId: ctx.callId,
+            attemptId,
+            error: redactSecrets(String(payloadErr)).slice(0, 300),
+          },
+          'llm.call.payload.dropped',
+        )
+        return undefined
+      }
     }
 
     // ── (b) runAttempt — the innermost Handler ─────────────────────────────
@@ -2195,6 +2292,11 @@ export function createClient(config: ClientConfig): Client {
         )
 
         // Step 11: Sink — fail-open.
+        const rawText =
+          adapterResult.text ??
+          (adapterResult.rawStructured !== undefined
+            ? JSON.stringify(adapterResult.rawStructured)
+            : undefined)
         await recordToSink(
           sink,
           record,
@@ -2203,6 +2305,12 @@ export function createClient(config: ClientConfig): Client {
           sinkTimeoutMs,
           sinkInterrupts,
           scheduler,
+          await capturePayload(
+            effectiveReq,
+            rawText !== undefined ? { text: rawText } : {},
+            attemptId,
+            ctx,
+          ),
         )
         noteAttemptCost(cost)
         emitAttempt({
@@ -2339,7 +2447,8 @@ export function createClient(config: ClientConfig): Client {
           failureCost,
         )
 
-        // Sink error record — fail-open.
+        // Sink error record — fail-open. A payload is kept only for an attempt
+        // that reached the adapter: one refused before dispatch sent nothing.
         await recordToSink(
           sink,
           errorRecord,
@@ -2348,6 +2457,14 @@ export function createClient(config: ClientConfig): Client {
           sinkTimeoutMs,
           sinkInterrupts,
           scheduler,
+          dispatchStartMs !== undefined
+            ? await capturePayload(
+                effectiveReq,
+                { errorMessage: err.message },
+                attemptId,
+                ctx,
+              )
+            : undefined,
         )
         // A failure that reported no usage is known to cost nothing only when
         // nothing was dispatched, or the provider answered with an error that is
@@ -2852,6 +2969,7 @@ export function createClient(config: ClientConfig): Client {
       validateFunctionCalling(request, resolved?.capabilities?.continuation === 'state')
       const runtimeOpts = opts as GenerateOptions | undefined
       const callAuth = requireAuth(runtimeOpts?.auth)
+      const storePayload = resolveStorePayload(runtimeOpts?.storePayload)
       // Config resolution: libDefaults → request.config
       const descriptor = checkDescriptor(resolved, provider, model)
       assertProviderStateAdmitted(request.transientProviderState, descriptor, model)
@@ -2866,6 +2984,7 @@ export function createClient(config: ClientConfig): Client {
         runtimeOpts?.signal,
         callAuth,
         config.requireInputContract === true,
+        storePayload,
       )
     },
 
@@ -2915,6 +3034,7 @@ export function createClient(config: ClientConfig): Client {
 
       const runtimeOpts = resolvedOpts as RunStructuredOptions | undefined
       const callAuth = requireAuth(runtimeOpts?.auth)
+      const storePayload = resolveStorePayload(runtimeOpts?.storePayload)
 
       // Call identity captured before the first await (see `generate`).
       const provider = callSite.provider
@@ -3046,6 +3166,7 @@ export function createClient(config: ClientConfig): Client {
         // the requireInputContract precondition was already enforced above,
         // pre-callId, so runPipeline must not re-check it here.
         false,
+        storePayload,
       )
     },
 

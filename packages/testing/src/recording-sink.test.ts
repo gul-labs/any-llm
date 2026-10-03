@@ -89,6 +89,32 @@ describe('RecordingSink', () => {
     })
   })
 
+  describe('payloads', () => {
+    const payload = {
+      request: { messages: [{ role: 'user' as const, parts: [] }] },
+      response: { text: 'hi' },
+    }
+
+    it('keeps the payload that came with a record, by attemptId, and none for a record without one', async () => {
+      const sink = new RecordingSink()
+      await sink.record(makeRecord({ attemptId: 'a1' }), { payload })
+      await sink.record(makeRecord({ attemptId: 'a2' }))
+      expect(sink.payloads.get('a1')).toBe(payload)
+      expect(sink.payloads.has('a2')).toBe(false)
+    })
+
+    it('a deduplicated record and a failed write take their payload with them', async () => {
+      const deduped = new RecordingSink({ dedupeOn: 'attemptId' })
+      await deduped.record(makeRecord({ attemptId: 'a1' }))
+      await deduped.record(makeRecord({ attemptId: 'a1' }), { payload })
+      expect(deduped.payloads.size).toBe(0)
+
+      const failing = new RecordingSink({ failOnRecord: true })
+      await expect(failing.record(makeRecord(), { payload })).rejects.toThrow()
+      expect(failing.payloads.size).toBe(0)
+    })
+  })
+
   it('satisfies the UsageSink interface structurally', () => {
     const sink: import('@gullabs/core').UsageSink = new RecordingSink()
     expect(typeof sink.record).toBe('function')

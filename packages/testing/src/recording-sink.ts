@@ -4,7 +4,12 @@
  * @module
  */
 
-import type { UsageSink, LlmCallRecord } from '@gullabs/core'
+import type {
+  UsageSink,
+  UsageSinkContext,
+  LlmCallPayload,
+  LlmCallRecord,
+} from '@gullabs/core'
 
 /**
  * Options for {@link RecordingSink}.
@@ -51,6 +56,14 @@ export class RecordingSink implements UsageSink {
    */
   readonly duplicates: LlmCallRecord[] = []
 
+  /**
+   * The payload that came with each stored record, keyed by `attemptId`. An
+   * attempt that was handed no payload (storage off, `include` said no, the
+   * call opted out) has no entry. A record dropped by `dedupeOn` takes its
+   * payload with it.
+   */
+  readonly payloads = new Map<string, LlmCallPayload>()
+
   private readonly _failOnRecord: boolean | Error
   private readonly _dedupeOn: 'attemptId' | undefined
   private readonly _seen = new Set<string>()
@@ -60,7 +73,7 @@ export class RecordingSink implements UsageSink {
     this._dedupeOn = opts.dedupeOn
   }
 
-  record(r: LlmCallRecord): Promise<void> {
+  record(r: LlmCallRecord, ctx?: UsageSinkContext): Promise<void> {
     if (this._failOnRecord !== false) {
       if (this._failOnRecord instanceof Error) {
         return Promise.reject(this._failOnRecord)
@@ -75,6 +88,7 @@ export class RecordingSink implements UsageSink {
       this._seen.add(r.attemptId)
     }
     this.records.push(r)
+    if (ctx?.payload !== undefined) this.payloads.set(r.attemptId, ctx.payload)
     return Promise.resolve()
   }
 
