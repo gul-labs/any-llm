@@ -11,7 +11,8 @@
  * @module
  */
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it, expect } from 'vitest'
@@ -156,12 +157,44 @@ describe('createCodexCliRunner: kill reaches grandchildren (process group)', () 
     require('node:fs').writeFileSync(process.argv[1], String(g.pid));
     setTimeout(() => {}, 20000);
   `
-  const alive = (pid: number): boolean => {
+  // `process.kill(pid, 0)` alone is not a death test: a process that has closed
+  // its pipes but is not reaped yet (exiting, or a zombie awaiting its parent)
+  // still answers it. The runner settles when the pipes close, so a check made
+  // at that instant raced the OS reaper and failed under load. A process counts
+  // as dead once it is gone or exiting/zombie, polled until it gets there.
+  const isRunning = (pid: number): boolean => {
     try {
       process.kill(pid, 0)
-      return true
     } catch {
       return false
+    }
+    try {
+      const stat = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], {
+        encoding: 'utf8',
+      }).trim()
+      return stat !== '' && !/^[ZEX]/.test(stat)
+    } catch (e) {
+      // `ps` exits 1 when the pid no longer exists; a missing `ps` leaves only
+      // the signal probe above, which already said "present".
+      return (e as NodeJS.ErrnoException).code === 'ENOENT'
+    }
+  }
+  const waitUntilDead = async (pid: number): Promise<boolean> => {
+    const deadline = Date.now() + 5_000
+    while (isRunning(pid)) {
+      if (Date.now() > deadline) return false
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    return true
+  }
+  const readPid = async (pidFile: string): Promise<number> => {
+    const deadline = Date.now() + 15_000
+    for (;;) {
+      // The file exists before its content is written, so wait for the digits.
+      const text = existsSync(pidFile) ? readFileSync(pidFile, 'utf8') : ''
+      if (/^\d+$/.test(text)) return Number(text)
+      if (Date.now() > deadline) throw new Error('the child never started')
+      await new Promise((resolve) => setTimeout(resolve, 10))
     }
   }
 
@@ -169,15 +202,17 @@ describe('createCodexCliRunner: kill reaches grandchildren (process group)', () 
     const dir = mkdtempSync(join(tmpdir(), 'runner-grandchild-'))
     const pidFile = join(dir, 'pid')
     try {
+      // Long enough that a loaded machine has started the child (and its
+      // grandchild) before the deadline.
+      const timeoutMs = 2_000
       const started = Date.now()
       const err = await nodeRunner()
-        .run(['-e', script, pidFile], '', { cwd: process.cwd(), timeoutMs: 500 })
+        .run(['-e', script, pidFile], '', { cwd: process.cwd(), timeoutMs })
         .catch((e: unknown) => e)
       expect((err as Error).name).toBe('TimeoutError')
-      expect(Date.now() - started).toBeLessThan(4_000)
-      const grandchild = Number(readFileSync(pidFile, 'utf8'))
-      await new Promise((resolve) => setTimeout(resolve, 200))
-      expect(alive(grandchild)).toBe(false)
+      // Kill latency: how long after the deadline the call settled.
+      expect(Date.now() - started - timeoutMs).toBeLessThan(4_000)
+      expect(await waitUntilDead(await readPid(pidFile))).toBe(true)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -188,17 +223,21 @@ describe('createCodexCliRunner: kill reaches grandchildren (process group)', () 
     const pidFile = join(dir, 'pid')
     try {
       const controller = new AbortController()
-      setTimeout(() => controller.abort(), 500)
-      const started = Date.now()
-      const err = await nodeRunner()
+      const pending = nodeRunner()
         .run(['-e', script, pidFile], '', {
           cwd: process.cwd(),
           signal: controller.signal,
         })
         .catch((e: unknown) => e)
+      // Abort once the grandchild exists, not after a fixed delay: node's own
+      // startup time under load is not what this test measures.
+      const grandchild = await readPid(pidFile)
+      const aborted = Date.now()
+      controller.abort()
+      const err = await pending
       expect((err as Error).name).toBe('AbortError')
-      expect(Date.now() - started).toBeLessThan(4_000)
-      expect(alive(Number(readFileSync(pidFile, 'utf8')))).toBe(false)
+      expect(Date.now() - aborted).toBeLessThan(4_000)
+      expect(await waitUntilDead(grandchild)).toBe(true)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
