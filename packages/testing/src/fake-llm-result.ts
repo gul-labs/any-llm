@@ -4,7 +4,10 @@
  * @module
  */
 
-import type { LlmResult, Message } from '@gullabs/core'
+import type { Cost, LlmResult, Message } from '@gullabs/core'
+
+/** Results built so far in this process; numbers the default ids. */
+let resultCount = 0
 
 /** The text parts of `message`, joined, or `undefined` when it has none. */
 function textOf(message: Message): string | undefined {
@@ -17,9 +20,17 @@ function textOf(message: Message): string | undefined {
  * `partial`.
  *
  * Defaults: text `'ok'`, a `message` of one assistant text part, `continuation:
- * 'history'`, 10 input and 5 output tokens, a zero exact `cost` and the
- * `callCost` of one priced attempt, `model: 'fake-model'`, `latencyMs: 0`, no
- * warnings, `callId` `'call-1'`, `attemptId` `'attempt-1'`.
+ * 'history'`, 10 input and 5 output tokens, `model: 'fake-model'`, `latencyMs:
+ * 0`, no warnings, and a `callId` / `attemptId` numbered per process
+ * (`call-1`, `call-2`, ...: two results never share an id, so a sink that
+ * dedupes on `attemptId` keeps both). Pass `callId` / `attemptId` for exact
+ * values.
+ *
+ * The default `cost` is **unpriced** (`microUsd: null`, `confidence:
+ * 'estimated'`, an `unpricedReason`) and its `callCost` counts one unpriced
+ * attempt: a fake that does not know the price does not claim `$0`, so a host
+ * branch on an unpriced or non-exact cost runs by default, and a `usage` you
+ * override never sits next to a stale price. Pass `cost` for a priced result.
  *
  * `text` and `message` stay consistent: give only `text` and the message carries
  * it; give only `message` and `text` is its text parts joined (absent when it
@@ -38,13 +49,15 @@ export function fakeLlmResult(partial: Partial<LlmResult> = {}): LlmResult {
     partial.message ??
     ({ role: 'assistant', parts: [{ kind: 'text', text: text ?? '' }] } satisfies Message)
   const derivedText = text ?? textOf(message)
-  const cost = partial.cost ?? {
-    microUsd: 0,
-    usd: 0,
+  const cost: Cost = partial.cost ?? {
+    microUsd: null,
+    usd: null,
     pricingVersion: 'fake',
-    confidence: 'exact' as const,
+    confidence: 'estimated',
     details: { input: 0, cached: 0, output: 0, tools: 0 },
+    unpricedReason: 'fakeLlmResult: no cost was given, so none is claimed',
   }
+  resultCount += 1
   const result: LlmResult = {
     message,
     continuation: 'history',
@@ -58,8 +71,8 @@ export function fakeLlmResult(partial: Partial<LlmResult> = {}): LlmResult {
     model: 'fake-model',
     latencyMs: 0,
     warnings: [],
-    callId: 'call-1',
-    attemptId: 'attempt-1',
+    callId: `call-${resultCount}`,
+    attemptId: `attempt-${resultCount}`,
     ...partial,
   }
   if (derivedText !== undefined) {

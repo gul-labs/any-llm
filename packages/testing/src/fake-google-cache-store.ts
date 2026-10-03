@@ -2,14 +2,18 @@
 /**
  * FakeGoogleCacheStore — in-memory stand-in for `@gullabs/google` `GoogleCacheStore`.
  *
- * Structural (no import of `@gullabs/google`). Mirrors the real store's surface
- * (`create`, `getOrCreate`, `refreshIfExpiringSoon`, `delete`), its
- * process-scoped reuse, its expiry skew and its fail-open refresh and delete.
+ * Structural (no static import of `@gullabs/google`). Mirrors the real store's
+ * surface (`create`, `getOrCreate`, `refreshIfExpiringSoon`, `delete`), its
+ * process-scoped reuse, its expiry skew, its fail-open refresh and delete, its
+ * opt-in `preflight` token gate and `coalesce`, and scripted create failures
+ * (`failCreate`).
  *
  * @module
  */
 
-import { LlmError } from '@gullabs/core'
+import { classifyError, LlmError } from '@gullabs/core'
+
+import { classifyAs } from './provider-errors.js'
 
 /** Mirrors `GoogleCacheHandle`. */
 export interface FakeGoogleCacheHandle {
@@ -48,6 +52,25 @@ export interface FakeGoogleCacheStoreOptions {
   tokenCount?: number | ((input: FakeGoogleCacheCreateInput) => number)
   /** Called on a swallowed delete failure. Default: ignore. */
   onDeleteError?: (cacheName: string, err: unknown) => void
+  /** When true, concurrent `getOrCreate` calls for one key share one create, as the real store's `coalesce`. */
+  coalesce?: boolean
+  /**
+   * The real store's opt-in token gate, run before every create: a count below
+   * `minTokens` is `bad_request` (not retryable) and nothing is created. Gemini
+   * 3.x caches need at least 2048 tokens, which is what a host sets here.
+   */
+  preflight?: {
+    minTokens: number
+    countTokens: (input: FakeGoogleCacheCreateInput) => Promise<number>
+  }
+  /**
+   * Create failures, one per create in order (after the preflight): the first
+   * create throws the first error, and so on; once the list is spent creates
+   * succeed. Each is classified as the real store classifies an SDK failure
+   * (`classifyGoogleError` from `@gullabs/google`). A failed create stores
+   * nothing and does not count in `created`.
+   */
+  failCreate?: Error | readonly Error[]
 }
 
 const DEFAULT_SKEW_SECONDS = 30
@@ -78,9 +101,21 @@ export class FakeGoogleCacheStore {
   private readonly skewMs: number
   private readonly tokenCount: FakeGoogleCacheStoreOptions['tokenCount']
   private readonly onDeleteError: (cacheName: string, err: unknown) => void
+  private readonly inflight = new Map<string, Promise<FakeGoogleCacheHandle>>()
+  private readonly coalesce: boolean
+  private readonly preflight: FakeGoogleCacheStoreOptions['preflight']
+  private readonly failCreate: Error[]
   private seq = 0
 
   constructor(opts: FakeGoogleCacheStoreOptions = {}) {
+    this.coalesce = opts.coalesce === true
+    this.preflight = opts.preflight
+    this.failCreate =
+      opts.failCreate === undefined
+        ? []
+        : Array.isArray(opts.failCreate)
+          ? [...(opts.failCreate as readonly Error[])]
+          : [opts.failCreate as Error]
     this.now = opts.now ?? (() => Date.now())
     this.skewMs = (opts.expirySkewSeconds ?? DEFAULT_SKEW_SECONDS) * 1000
     this.tokenCount = opts.tokenCount
@@ -108,6 +143,19 @@ export class FakeGoogleCacheStore {
         { kind: 'bad_request', retryable: false, provider: 'google' },
       )
     }
+    if (this.preflight !== undefined) {
+      const counted = await this.preflight.countTokens(input)
+      if (counted < this.preflight.minTokens) {
+        throw new LlmError(
+          `FakeGoogleCacheStore preflight: counted ${counted} token(s), below the configured minimum of ${this.preflight.minTokens} for model "${input.model}".`,
+          { kind: 'bad_request', retryable: false },
+        )
+      }
+    }
+    const scripted = this.failCreate.shift()
+    if (scripted !== undefined) {
+      throw classifyError(await classifyAs('google', scripted))
+    }
     this.seq += 1
     this.created += 1
     const tokens =
@@ -131,10 +179,24 @@ export class FakeGoogleCacheStore {
     if (existing !== undefined && this.isLive(existing.handle)) {
       return existing.handle
     }
-    const made = await factory()
-    const handle = await this.create({ ...made, model: key.model })
-    this.entries.set(mapKey, { handle, ttlSeconds: made.ttlSeconds })
-    return handle
+    if (this.coalesce) {
+      const inFlight = this.inflight.get(mapKey)
+      if (inFlight !== undefined) return inFlight
+    }
+    const doCreate = async (): Promise<FakeGoogleCacheHandle> => {
+      const made = await factory()
+      const handle = await this.create({ ...made, model: key.model })
+      this.entries.set(mapKey, { handle, ttlSeconds: made.ttlSeconds })
+      return handle
+    }
+    if (this.coalesce) {
+      const promise = doCreate().finally(() => {
+        this.inflight.delete(mapKey)
+      })
+      this.inflight.set(mapKey, promise)
+      return promise
+    }
+    return doCreate()
   }
 
   async refreshIfExpiringSoon(

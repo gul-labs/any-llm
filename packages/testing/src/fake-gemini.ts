@@ -362,8 +362,8 @@ export interface FakeGeminiClient {
  * await client.models.generateContent({})  // → second response
  * expect(client.calls).toHaveLength(2)
  *
- * // Error injection (mimics a 429 object thrown by the real SDK)
- * const errorClient = makeFakeGemini(() => { throw { status: 429 } })
+ * // Error injection: the real SDK error class, which the real adapter classifies
+ * const errorClient = makeFakeGemini(() => { throw fakeProviderError('google', 'per-day-quota') })
  * await expect(errorClient.models.generateContent({})).rejects.toMatchObject({ status: 429 })
  * ```
  */

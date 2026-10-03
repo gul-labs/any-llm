@@ -38,6 +38,7 @@ export type {
   FakeHttpErrorOptions,
   FakeNetworkErrorOptions,
   FakeBilledFailureOptions,
+  FakeXaiProviderErrorOptions,
   GoogleErrorScenario,
   XaiErrorScenario,
 } from './errors.js'

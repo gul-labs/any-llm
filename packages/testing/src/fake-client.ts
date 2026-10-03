@@ -9,6 +9,7 @@
  */
 
 import {
+  classifyError,
   LlmError,
   type CallSite,
   type Client,
@@ -20,6 +21,8 @@ import {
   type TokenCount,
   type TokenCountRequest,
 } from '@gullabs/core'
+
+import { classifyAsAdapter } from './provider-errors.js'
 
 /** A scripted answer: a result, or an `Error` to throw. */
 export type FakeClientEntry = LlmResult | Error
@@ -99,6 +102,11 @@ function pick<T>(entries: readonly T[], index: number): T {
  * A scripted {@link Client}. `generate` and `runStructured` answer from one
  * script, in call order (the last entry repeats); every call is recorded on
  * `calls`.
+ *
+ * Like a real `Client` it rejects only with `LlmError`: an `Error` entry is
+ * classified the way the engine classifies it (`classifyError`, with the
+ * original as `cause`), and one from `fakeProviderError` goes through the real
+ * provider classifier first. An `LlmError` entry is thrown unchanged.
  *
  * ```ts
  * const client = new FakeClient([fakeLlmResult({ text: 'a' }), fakeHttpError(503)])
@@ -182,7 +190,7 @@ export class FakeClient implements Client {
       )
     }
     const entry = pick(this._countTokens, this._counted++)
-    return entry instanceof Error ? Promise.reject(entry) : Promise.resolve(entry)
+    return entry instanceof Error ? rejectClassified(entry) : Promise.resolve(entry)
   }
 
   /**
@@ -219,6 +227,11 @@ export class FakeClient implements Client {
       )
     }
     const entry = pick(this._script, this._generated++)
-    return entry instanceof Error ? Promise.reject(entry) : Promise.resolve(entry)
+    return entry instanceof Error ? rejectClassified(entry) : Promise.resolve(entry)
   }
+}
+
+/** Rejects with what a real client rejects with for `error`: an `LlmError`. */
+async function rejectClassified(error: Error): Promise<never> {
+  throw classifyError(await classifyAsAdapter(error))
 }

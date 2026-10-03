@@ -12,22 +12,26 @@ pnpm add @gullabs/google @gullabs/core @google/genai
 
 ## Key exports
 
-| Export                                                                     | What it is                                                                                           |
-| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `googleProvider(opts?)`                                                    | `ProviderPlugin` factory — bundles the adapter, model descriptors, and pricing source                |
-| `geminiAdapter(opts?)`                                                     | Creates the `ProviderAdapter` for Gemini                                                             |
-| `GeminiAdapterOptions`                                                     | `{ client?: GeminiClientLike }` — inject a pre-built or fake client                                  |
-| `GeminiClientLike`                                                         | Structural interface the adapter depends on (satisfied by real SDK and fakes)                        |
-| `buildGoogleClient(auth)`                                                  | Builds the real `@google/genai` client from `AuthMaterial`                                           |
-| `isGeminiCapacityError(err)`                                               | Detects Gemini Flex capacity errors (HTTP 503 only) for fallback                                     |
-| `geminiModelDescriptors`, `gemmaModelDescriptors`, `defaultGeminiRegistry` | Built-in model descriptors + pre-built registry                                                      |
-| `geminiPricingSource()`, `GEMINI_PRICING`, `resolveGeminiRates`            | Built-in Gemini pricing snapshot (concrete standard / flex rates, audio input rates where published) |
-| `GoogleFileStore`                                                          | Files API: upload + poll ACTIVE + delete                                                             |
-| `FileDeleteOptions`                                                        | `{ failClosed?, signal? }` — opt-in fail-closed delete (parity with `@gullabs/xai`)                  |
+| Export                                                                     | What it is                                                                                                    |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `googleProvider(opts?)`                                                    | `ProviderPlugin` factory — bundles the adapter, model descriptors, and pricing source                         |
+| `geminiAdapter(opts?)`                                                     | Creates the `ProviderAdapter` for Gemini                                                                      |
+| `GeminiAdapterOptions`                                                     | `{ client?: GeminiClientLike }` — inject a pre-built or fake client                                           |
+| `GeminiClientLike`                                                         | Structural interface the adapter depends on (satisfied by real SDK and fakes)                                 |
+| `buildGoogleClient(auth)`                                                  | Builds the real `@google/genai` client from `AuthMaterial`                                                    |
+| `isGeminiCapacityError(err)`                                               | Detects Gemini Flex capacity errors (HTTP 503 only) for fallback                                              |
+| `classifyGoogleError(err)`                                                 | The classifier every Gemini error goes through (`@gullabs/testing`'s fakes call it for you)                   |
+| `GEMINI_INPUT_MIME_TYPES`                                                  | The media types a Gemini file upload and a Gemini request admit (`text/*`, `image/*`, `application/pdf`, ...) |
+| `geminiModelDescriptors`, `gemmaModelDescriptors`, `defaultGeminiRegistry` | Built-in model descriptors + pre-built registry                                                               |
+| `geminiPricingSource()`, `GEMINI_PRICING`, `resolveGeminiRates`            | Built-in Gemini pricing snapshot (concrete standard / flex rates, audio input rates where published)          |
+| `GoogleFileStore`                                                          | Files API: upload + poll ACTIVE + delete                                                                      |
+| `FileDeleteOptions`                                                        | `{ failClosed?, signal? }` — opt-in fail-closed delete (parity with `@gullabs/xai`)                           |
 
 ## File store delete modes
 
 `GoogleFileStore.upload` takes an `AbortSignal` (an abort releases the caller at once; bytes already sent may still be stored by Google), keeps Google's own `File.error` when a file ends `FAILED` (a transient status code, `DEADLINE_EXCEEDED`, `INTERNAL` or `UNAVAILABLE`, is a retryable `server` error; any other is `bad_request`), and its polling timeout is `kind: 'server'`, **not retryable** (the upload succeeded; a retry would upload again and orphan the file). Store errors (`GoogleFileStore`, `GoogleCacheStore`) are classified exactly like `generate()` errors, with `provider: 'google'`.
+
+`GoogleFileStore` takes a `scheduler` (the timer source of the poll wait; pass the client's `FakeClock` in tests, with `now: () => clock.now()` for the poll timeout), and the Gemini flex/standard client-side ceiling runs on the engine's `scheduler` too, so a `FakeClock` fires both. `sleep` still replaces the poll wait wholesale.
 
 `GoogleFileStore.delete` defaults to **fail-open** (errors → `onDeleteError`, resolve). Pass `{ failClosed: true }` when the host gates durable state on known success; HTTP/SDK not-found remains success (idempotent). Empty `handle.name` always throws `bad_request`.
 

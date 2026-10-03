@@ -159,6 +159,12 @@ importers:
       '@gullabs/core':
         specifier: workspace:*
         version: link:../core
+      '@gullabs/google':
+        specifier: workspace:*
+        version: link:../google
+      '@gullabs/xai':
+        specifier: workspace:*
+        version: link:../xai
       openai:
         specifier: ^7.23.0
         version: 7.25.0(ws@8.21.3)(zod@4.6.5)

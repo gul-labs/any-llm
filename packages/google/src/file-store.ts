@@ -7,12 +7,13 @@
  * @module
  */
 
-import type { AuthMaterial, Logger } from '@gullabs/core'
+import type { AuthMaterial, Logger, Scheduler } from '@gullabs/core'
 import { LlmError, assertMediaTypeAdmitted, redactSecrets } from '@gullabs/core'
 
 import { requireApiKey } from './client.js'
 import { classifyGoogleError } from './errors.js'
 import { GEMINI_INPUT_MIME_TYPES } from './model-limits.js'
+import { PLATFORM_SCHEDULER } from './platform-scheduler.js'
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -84,7 +85,16 @@ export interface GoogleFileStoreOptions {
     /** Max time to wait for ACTIVE. Default: 300 000 ms (5 min). */
     timeoutMs?: number
   }
-  /** Injectable sleep for tests. Default: real setTimeout. */
+  /**
+   * Timer source for the poll wait; pass the client's `FakeClock` in tests so
+   * one `advance` fires the wait. Default: the platform's timers. (`now` is the
+   * poll timeout's clock; pass `() => clock.now()` with it.)
+   */
+  scheduler?: Scheduler
+  /**
+   * Replaces the poll wait wholesale (instant polling in tests). When given,
+   * `scheduler` is not used for the wait.
+   */
   sleep?: (ms: number) => Promise<void>
   /** Injectable clock for deterministic tests. Default: `Date.now`. */
   now?: () => number
@@ -97,8 +107,12 @@ export interface GoogleFileStoreOptions {
 const DEFAULT_INTERVAL_MS = 3_000
 const DEFAULT_TIMEOUT_MS = 300_000
 
-const realSleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms))
+const sleepOn =
+  (scheduler: Scheduler) =>
+  (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      scheduler.setTimeout(resolve, ms)
+    })
 
 async function buildFilesClient(auth: AuthMaterial): Promise<GeminiFilesClientLike> {
   const { GoogleGenAI } = await import('@google/genai')
@@ -200,7 +214,7 @@ export class GoogleFileStore {
       })
     this.intervalMs = opts.poll?.intervalMs ?? DEFAULT_INTERVAL_MS
     this.timeoutMs = opts.poll?.timeoutMs ?? DEFAULT_TIMEOUT_MS
-    this.sleep = opts.sleep ?? realSleep
+    this.sleep = opts.sleep ?? sleepOn(opts.scheduler ?? PLATFORM_SCHEDULER)
     this.now = opts.now ?? (() => Date.now())
   }
 

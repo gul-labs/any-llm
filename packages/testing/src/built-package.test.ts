@@ -1,7 +1,9 @@
 /**
  * The built package, loaded the way a host loads it. `fakeProviderError` finds
- * the SDK classes with `createRequire`, which a bundler can break differently in
- * the ESM and the CommonJS output, so both are run for real. Needs `pnpm build`
+ * the SDK classes with `createRequire`, and the fakes load the provider
+ * packages' classifiers with a dynamic `import`, which a bundler can break
+ * differently in the ESM and the CommonJS output, so both are run for real
+ * (against the built `@gullabs/core` and provider packages). Needs `pnpm build`
  * first (the quality pipeline builds before it tests).
  *
  * @module
@@ -55,3 +57,61 @@ describe.skipIf(!hasDist)('the built @gullabs/testing', () => {
     ])
   })
 })
+
+describe.skipIf(!hasDist)(
+  'the built fakes classify provider errors like the real adapters',
+  () => {
+    // A FakeAdapter, throwing a per-day Gemini quota, behind the built engine: the
+    // error must come out classified (rate_limited, daily_quota, not retryable)
+    // and be an `LlmError` of the same core copy the client was built with.
+    const body = `
+    const ok = { message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] }, usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null }, model: 'm', warnings: [] }
+    const adapter = new t.FakeAdapter('google', [t.fakeProviderError('google', 'per-day-quota'), ok])
+    const client = core.createClient({ adapters: [adapter], modelRegistry: google.defaultGeminiRegistry })
+    const request = { provider: 'google', model: 'gemini-3.6-flash', messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }] }
+    const files = new t.FakeGoogleFileStore()
+    Promise.all([
+      client.generate(request, { auth: { apiKey: 'k' } }).catch((e) => e),
+      files.upload(new Uint8Array([1]), 'application/x-foo').catch((e) => e),
+    ]).then(([e, f]) => console.log(JSON.stringify([e instanceof core.LlmError, e.kind, e.reason, e.retryable, e.provider, f.kind])))
+  `
+
+    const core = (name: string): string =>
+      fileURLToPath(new URL(`../../core/dist/${name}`, import.meta.url))
+    const google = (name: string): string =>
+      fileURLToPath(new URL(`../../google/dist/${name}`, import.meta.url))
+
+    it('CommonJS', () => {
+      const out = run([
+        '-e',
+        `const t = require(${JSON.stringify(dist('index.cjs'))}); const core = require(${JSON.stringify(core('index.cjs'))}); const google = require(${JSON.stringify(google('index.cjs'))}); ${body}`,
+      ])
+      expect(out.stderr).toBe('')
+      expect(JSON.parse(out.stdout)).toEqual([
+        true,
+        'rate_limited',
+        'daily_quota',
+        false,
+        'google',
+        'bad_request',
+      ])
+    })
+
+    it('ESM', () => {
+      const out = run([
+        '--input-type=module',
+        '-e',
+        `import * as t from ${JSON.stringify(dist('index.js'))}; import * as core from ${JSON.stringify(core('index.js'))}; import * as google from ${JSON.stringify(google('index.js'))}; ${body}`,
+      ])
+      expect(out.stderr).toBe('')
+      expect(JSON.parse(out.stdout)).toEqual([
+        true,
+        'rate_limited',
+        'daily_quota',
+        false,
+        'google',
+        'bad_request',
+      ])
+    })
+  },
+)

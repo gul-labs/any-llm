@@ -9,7 +9,12 @@
 
 import { describe, it, expect, vi } from 'vitest'
 import { LlmError, createClient } from '@gullabs/core'
-import { RecordingSink, fakeGeminiResponse, makeFakeGemini } from '@gullabs/testing'
+import {
+  FakeClock,
+  RecordingSink,
+  fakeGeminiResponse,
+  makeFakeGemini,
+} from '@gullabs/testing'
 import { geminiAdapter } from './adapter.js'
 import { geminiPricingSource } from './cost.js'
 import { defaultGeminiRegistry } from './models.js'
@@ -774,6 +779,44 @@ describe('GoogleFileStore', () => {
     expect(handle.name).toBe('files/abc123')
     expect(client.get).toHaveBeenCalledTimes(2)
   }, 10_000)
+
+  it('polls on the injected scheduler: a FakeClock fires the wait and the poll timeout', async () => {
+    const clock = new FakeClock()
+    const processing = {
+      name: 'files/abc123',
+      uri: 'https://example.com/files/abc123',
+      mimeType: 'image/png',
+      state: 'PROCESSING',
+    }
+    const client = makeClient({
+      upload: vi.fn().mockResolvedValue(processing),
+      get: vi.fn().mockResolvedValue(processing),
+    })
+    const store = new GoogleFileStore({
+      auth: fakeAuth,
+      client,
+      scheduler: clock,
+      now: () => clock.now(),
+      poll: { intervalMs: 3_000, timeoutMs: 10_000 },
+    })
+    const settled = store
+      .upload(new Uint8Array([1]), 'image/png')
+      .catch((e: unknown) => e)
+
+    await clock.advanceAsync(0)
+    expect(client.get).not.toHaveBeenCalled()
+    expect(clock.pendingTimers).toBe(1)
+    await clock.advanceAsync(3_000)
+    expect(client.get).toHaveBeenCalledTimes(1)
+    await clock.advanceAsync(3_000)
+    await clock.advanceAsync(3_000)
+    await clock.advanceAsync(3_000)
+
+    const err = await settled
+    expect(err).toBeInstanceOf(LlmError)
+    expect(err).toMatchObject({ kind: 'server', retryable: false })
+    expect(clock.pendingTimers).toBe(0)
+  })
 
   // NEW: opts.displayName is forwarded into the upload config
   it('forwards opts.displayName into the upload call config', async () => {

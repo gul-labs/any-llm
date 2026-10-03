@@ -27,7 +27,7 @@ describe('fakeLlmResult', () => {
     })
     expect(result.continuation).toBe('history')
     expect(result.text).toBe('ok')
-    expect(result.callCost).toEqual({ microUsd: 0, attempts: 1, unpricedAttempts: 0 })
+    expect(result.callCost).toEqual({ microUsd: 0, attempts: 1, unpricedAttempts: 1 })
   })
 
   it('text alone becomes the message, and message alone becomes the text', () => {

@@ -477,6 +477,67 @@ ${callSite}`,
     })
     record(loaded.status === 0, `${tag}: ESM and CJS load`, tail(loaded.out))
 
+    if (names.includes('@gullabs/testing')) {
+      // The test package must work at runtime, not just typecheck: its fakes load
+      // the provider packages' classifiers and the SDK error classes through
+      // optional peer dependencies, which resolve differently under pnpm and npm
+      // and in the ESM and CommonJS builds. One success and one classified
+      // provider failure, through the real engine, in both module systems.
+      const fakeProbe = `
+      import { createRequire } from 'node:module'
+      const require = createRequire(import.meta.url)
+      const ok = {
+        message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
+        usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
+        model: 'gemini-3.6-flash',
+        warnings: [],
+      }
+      const request = {
+        provider: 'google',
+        model: 'gemini-3.6-flash',
+        messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
+      }
+      async function exercise(label, core, google, testing) {
+        const adapter = new testing.FakeAdapter('google', [
+          ok,
+          testing.fakeProviderError('google', 'per-day-quota'),
+        ])
+        const client = core.createClient({
+          adapters: [adapter],
+          modelRegistry: google.defaultGeminiRegistry,
+        })
+        const first = await client.generate(request, { auth: { apiKey: 'unused' } })
+        if (first.model !== 'gemini-3.6-flash') throw new Error(label + ': unexpected result')
+        const err = await client
+          .generate(request, { auth: { apiKey: 'unused' } })
+          .catch((e) => e)
+        if (!(err instanceof core.LlmError) || err.reason !== 'daily_quota' || err.retryable !== false) {
+          throw new Error(label + ': provider error not classified: ' + String(err?.stack ?? err))
+        }
+      }
+      await exercise(
+        'esm',
+        await import('@gullabs/core'),
+        await import('@gullabs/google'),
+        await import('@gullabs/testing'),
+      )
+      await exercise(
+        'cjs',
+        require('@gullabs/core'),
+        require('@gullabs/google'),
+        require('@gullabs/testing'),
+      )
+    `
+      const fakeRes = await run('node', ['--input-type=module', '-e', fakeProbe], {
+        cwd: installed.dir,
+      })
+      record(
+        fakeRes.status === 0,
+        `${tag}: @gullabs/testing fakes run (a fake call and a classified provider error, ESM and CJS)`,
+        tail(fakeRes.out),
+      )
+    }
+
     if (names.includes('@gullabs/drizzle')) {
       const sqlProbe = `
       import { createRequire } from 'node:module'

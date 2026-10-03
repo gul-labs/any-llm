@@ -264,8 +264,8 @@ export interface FakeXaiClient {
  * await client.responses.create({})  // → second response
  * expect(client.calls).toHaveLength(2)
  *
- * // Error injection (mimics a 429 object thrown by the real SDK)
- * const errorClient = makeFakeXai(() => { throw { status: 429 } })
+ * // Error injection: the real SDK error class, which the real adapter classifies
+ * const errorClient = makeFakeXai(() => { throw fakeProviderError('xai', 'credits-exhausted-429') })
  * await expect(errorClient.responses.create({})).rejects.toMatchObject({ status: 429 })
  * ```
  */

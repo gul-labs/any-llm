@@ -2,15 +2,21 @@
 /**
  * FakeGoogleFileStore — in-memory stand-in for `@gullabs/google` `GoogleFileStore`.
  *
- * Structural (no import of `@gullabs/google`): hosts inject it where production
- * code takes a store-shaped object. Mirrors the real store's surface (`upload`,
- * `delete`, `deleteAll`) and its delete semantics: a missing file is success,
- * other failures follow `failClosed`.
+ * Structural (no static import of `@gullabs/google`): hosts inject it where
+ * production code takes a store-shaped object. Mirrors the real store's surface
+ * (`upload`, `delete`, `deleteAll`) and its delete semantics: a missing file is
+ * success, other failures follow `failClosed`. `upload` applies the real
+ * store's media-type admission (core's `assertMediaTypeAdmitted` over the
+ * Gemini list that `@gullabs/google` exports as `GEMINI_INPUT_MIME_TYPES`, an
+ * optional peer dependency loaded on first upload), so a type the real store
+ * refuses is refused here, and `failUpload` scripts upload failures.
  *
  * @module
  */
 
-import { LlmError } from '@gullabs/core'
+import { assertMediaTypeAdmitted, classifyError, LlmError } from '@gullabs/core'
+
+import { classifyAs, loadPeer } from './provider-errors.js'
 
 /** Mirrors `GoogleFileHandle`. */
 export interface FakeGoogleFileHandle {
@@ -42,6 +48,15 @@ export interface FakeGoogleFileStoreOptions {
   deleteMissingAsError?: boolean
   /** Called on a swallowed delete failure. Default: ignore. */
   onDeleteError?: (name: string, err: unknown) => void
+  /**
+   * Upload failures, one per upload in order: the first upload throws the first
+   * error, and so on; once the list is spent uploads succeed. Each error is
+   * classified as the real store classifies an SDK failure (`classifyGoogleError`,
+   * from `@gullabs/google`), so `fakeProviderError('google', ...)` arrives as
+   * `rate_limited` / `daily_quota`, `invalid_auth` and so on. A failed upload
+   * stores nothing.
+   */
+  failUpload?: Error | readonly Error[]
 }
 
 const DEFAULT_TTL_MS = 48 * 3_600_000
@@ -66,9 +81,16 @@ export class FakeGoogleFileStore {
   private readonly ttlMs: number
   private readonly deleteMissingAsError: boolean
   private readonly onDeleteError: (name: string, err: unknown) => void
+  private readonly failUpload: Error[]
   private seq = 0
 
   constructor(opts: FakeGoogleFileStoreOptions = {}) {
+    this.failUpload =
+      opts.failUpload === undefined
+        ? []
+        : Array.isArray(opts.failUpload)
+          ? [...(opts.failUpload as readonly Error[])]
+          : [opts.failUpload as Error]
     this.now = opts.now ?? (() => Date.now())
     this.ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS
     this.deleteMissingAsError = opts.deleteMissingAsError === true
@@ -96,15 +118,23 @@ export class FakeGoogleFileStore {
     mimeType: string,
     opts?: { displayName?: string; signal?: AbortSignal },
   ): Promise<FakeGoogleFileHandle> {
-    if (typeof mimeType !== 'string' || mimeType.trim() === '') {
-      throw new LlmError('mimeType must be a non-empty string.', {
-        kind: 'bad_request',
-        retryable: false,
-        provider: 'google',
-      })
-    }
+    const { GEMINI_INPUT_MIME_TYPES } = (await loadPeer(
+      '@gullabs/google',
+      'FakeGoogleFileStore.upload',
+    )) as { GEMINI_INPUT_MIME_TYPES: readonly string[] }
+    assertMediaTypeAdmitted(
+      mimeType,
+      GEMINI_INPUT_MIME_TYPES,
+      'mimeType',
+      'google',
+      'a Google file upload',
+    )
     if (opts?.signal?.aborted === true) {
       throw new LlmError('File upload aborted', { kind: 'aborted', retryable: false })
+    }
+    const scripted = this.failUpload.shift()
+    if (scripted !== undefined) {
+      throw classifyError(await classifyAs('google', scripted))
     }
     const bytes =
       source instanceof Uint8Array ? source : new Uint8Array(await source.arrayBuffer())

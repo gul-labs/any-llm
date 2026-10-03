@@ -2772,6 +2772,40 @@ describe('FIX A-2: client-side flex AbortSignal ceiling', () => {
     expect((err as LlmError).kind).toBe('timeout')
   })
 
+  it('arms the ceiling on the engine scheduler (ctx.scheduler) when there is one, never on real timers', async () => {
+    const clock = new FakeClock()
+    const hangingClient: GeminiClientLike = {
+      models: {
+        generateContent(params): Promise<GeminiResponseShape> {
+          return new Promise<GeminiResponseShape>((_resolve, reject) => {
+            const sig = params.config?.abortSignal
+            sig?.addEventListener('abort', () => reject(sig.reason), { once: true })
+          })
+        },
+        countTokens() {
+          return Promise.resolve({ totalTokens: 0 })
+        },
+      },
+    }
+    const adapter = geminiAdapter({ client: hangingClient })
+    const settled = adapter
+      .run(makeResolvedReq({ config: { serviceTier: 'flex' } }), {
+        ...FAKE_CTX,
+        scheduler: clock,
+      })
+      .catch((e: unknown) => e)
+    await clock.advanceAsync(0)
+    expect(clock.pendingTimers).toBe(1)
+
+    await clock.advanceAsync(FLEX_DEFAULT_TIMEOUT_MS)
+
+    const err = await settled
+    expect(err).toBeInstanceOf(LlmError)
+    expect((err as LlmError).kind).toBe('timeout')
+    // The ceiling is cleared when the call settles.
+    expect(clock.pendingTimers).toBe(0)
+  })
+
   it('does NOT arm the flex timer when timeoutMs is set (engine handles that path)', async () => {
     vi.useFakeTimers()
 

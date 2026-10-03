@@ -37,8 +37,11 @@ describe('FakeClient answers', () => {
     const client = new FakeClient([a, fakeHttpError(503), b])
 
     expect(await client.generate(request(), { auth: AUTH })).toBe(a)
+    // An Error entry arrives as an LlmError, the original as its cause.
     await expect(client.generate(request(), { auth: AUTH })).rejects.toMatchObject({
-      status: 503,
+      kind: 'server',
+      httpStatus: 503,
+      cause: { status: 503 },
     })
     expect(await client.generate(request(), { auth: AUTH })).toBe(b)
     expect(await client.generate(request(), { auth: AUTH })).toBe(b)
@@ -86,12 +89,13 @@ describe('FakeClient answers', () => {
     }
 
     expect(await client.countTokens(req, { auth: AUTH })).toBe(count)
-    await expect(client.countTokens(req, { auth: AUTH })).rejects.toMatchObject({
-      status: 500,
-    })
-    await expect(client.countTokens(req, { auth: AUTH })).rejects.toMatchObject({
-      status: 500,
-    })
+    for (let i = 0; i < 2; i++) {
+      await expect(client.countTokens(req, { auth: AUTH })).rejects.toMatchObject({
+        kind: 'server',
+        httpStatus: 500,
+        cause: { status: 500 },
+      })
+    }
     expect(client.calls.map((c) => c.method)).toEqual([
       'countTokens',
       'countTokens',

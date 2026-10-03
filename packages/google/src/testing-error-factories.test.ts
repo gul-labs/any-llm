@@ -7,8 +7,18 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { fakeNetworkError, fakeProviderError } from '@gullabs/testing'
+import { createClient, type LlmError } from '@gullabs/core'
+import {
+  FakeAdapter,
+  FakeClock,
+  fakeNetworkError,
+  fakeProviderError,
+  makeFakeGemini,
+  type GoogleErrorScenario,
+} from '@gullabs/testing'
+import { geminiAdapter } from './adapter.js'
 import { classifyGoogleError, parseGoogleErrorBody } from './errors.js'
+import { defaultGeminiRegistry } from './models.js'
 
 describe('fakeProviderError("google", ...) classifies as the adapter classifies it', () => {
   it('an invalid or expired API key is invalid_auth, despite the HTTP 400', () => {
@@ -68,4 +78,66 @@ describe('fakeProviderError("google", ...) classifies as the adapter classifies 
       retryable: true,
     })
   })
+})
+
+describe('a FakeAdapter and the real adapter end a provider scenario the same way', () => {
+  const AUTH = { apiKey: 'test-key' }
+  const request = {
+    provider: 'google',
+    model: 'gemini-3.6-flash',
+    messages: [{ role: 'user' as const, parts: [{ kind: 'text' as const, text: 'hi' }] }],
+  }
+  const FIELDS = [
+    'kind',
+    'retryable',
+    'reason',
+    'httpStatus',
+    'retryAfterMs',
+    'provider',
+    'message',
+  ] as const
+  const scenarios: GoogleErrorScenario[] = [
+    'invalid-api-key',
+    'empty-api-key',
+    'stale-cached-content',
+    'malformed-cache-name',
+    'expired-api-key',
+    'per-minute-quota',
+    'per-day-quota',
+    'capacity-503',
+    'retry-info-only',
+    'bare-429',
+  ]
+
+  async function failureOf(adapter: Parameters<typeof createClient>[0]['adapters']) {
+    const clock = new FakeClock()
+    const client = createClient({
+      adapters: adapter,
+      modelRegistry: defaultGeminiRegistry,
+      clock,
+      scheduler: clock,
+    })
+    return (await client
+      .generate(request, { auth: AUTH })
+      .catch((e: unknown) => e)) as LlmError
+  }
+
+  it.each(scenarios)(
+    '%s: through the real adapter (SDK-level fake) equals through FakeAdapter',
+    async (scenario) => {
+      const real = await failureOf([
+        geminiAdapter({
+          client: makeFakeGemini(() => {
+            throw fakeProviderError('google', scenario)
+          }),
+        }),
+      ])
+      const fake = await failureOf([
+        new FakeAdapter('google', [fakeProviderError('google', scenario)]),
+      ])
+      for (const field of FIELDS) {
+        expect(fake[field], `${scenario}.${field}`).toEqual(real[field])
+      }
+    },
+  )
 })

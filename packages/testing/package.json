@@ -28,11 +28,15 @@
   "peerDependencies": {
     "@google/genai": "^2",
     "@gullabs/core": "workspace:*",
+    "@gullabs/google": "workspace:*",
+    "@gullabs/xai": "workspace:*",
     "openai": "^7"
   },
   "devDependencies": {
     "@google/genai": "^2.24.0",
     "@gullabs/core": "workspace:*",
+    "@gullabs/google": "workspace:*",
+    "@gullabs/xai": "workspace:*",
     "openai": "^7.23.0"
   },
   "engines": {
@@ -57,6 +61,12 @@
   "bugs": "https://github.com/gul-labs/any-llm/issues",
   "peerDependenciesMeta": {
     "@google/genai": {
+      "optional": true
+    },
+    "@gullabs/google": {
+      "optional": true
+    },
+    "@gullabs/xai": {
       "optional": true
     },
     "openai": {

@@ -25,6 +25,8 @@ export type {
   GoogleProviderOptions,
 } from './types.js'
 export { geminiAdapter } from './adapter.js'
+export { classifyGoogleError } from './errors.js'
+export type { ClassifyGoogleErrorExtra } from './errors.js'
 export type { GeminiAdapterOptions } from './adapter.js'
 export { googleProvider } from './provider.js'
 export {
@@ -55,6 +57,7 @@ export {
   GOOGLE_MAX_TIMEOUT_MS,
 } from './client.js'
 export { isGeminiCapacityError } from './flex-fallback.js'
+export { GEMINI_INPUT_MIME_TYPES } from './model-limits.js'
 export type {
   GoogleFileHandle,
   GoogleFileStoreOptions,

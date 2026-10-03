@@ -19,6 +19,8 @@ import type {
   ResolvedRequest,
   AdapterCtx,
   AdapterResult,
+  Scheduler,
+  TimerHandle,
   Usage,
   Warning,
   FinishReason,
@@ -64,6 +66,7 @@ import type {
 } from './client.js'
 import { isGeminiCapacityError } from './flex-fallback.js'
 import { classifyGoogleError } from './errors.js'
+import { PLATFORM_SCHEDULER } from './platform-scheduler.js'
 import { audioTokensReported } from './cost.js'
 import {
   parseSignatureState,
@@ -1369,11 +1372,15 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       //
       // Real SDK: GenerateContentConfig.abortSignal (in config, NOT in params)
       // ------------------------------------------------------------------
-      let tierTimeoutHandle: ReturnType<typeof setTimeout> | undefined
+      // The ceiling runs on the engine's scheduler (`ctx.scheduler`, which a host
+      // test replaces with a FakeClock); the platform's timers only when the
+      // adapter is called outside the engine.
+      const timers: Scheduler = ctx.scheduler ?? PLATFORM_SCHEDULER
+      let tierTimeoutHandle: TimerHandle | undefined
 
       const clearTierTimeout = (): void => {
         if (tierTimeoutHandle !== undefined) {
-          clearTimeout(tierTimeoutHandle)
+          timers.clearTimeout(tierTimeoutHandle)
           tierTimeoutHandle = undefined
         }
       }
@@ -1399,7 +1406,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
               ' (@google/genai #1277 belt-and-suspenders)',
             'TimeoutError',
           )
-          tierTimeoutHandle = setTimeout(() => {
+          tierTimeoutHandle = timers.setTimeout(() => {
             tierController.abort(timeoutReason)
           }, defaultTimeoutMs)
           config.abortSignal =

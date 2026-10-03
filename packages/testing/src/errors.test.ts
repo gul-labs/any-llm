@@ -10,6 +10,7 @@
 
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
+import { constants as osConstants } from 'node:os'
 import { createRequire } from 'node:module'
 import type { ApiError } from '@google/genai'
 import type { APIError } from 'openai'
@@ -132,6 +133,24 @@ describe('fakeNetworkError', () => {
         retryable: true,
       })
     }
+  })
+
+  it('names the syscall and the errno of the code, not one shape for all of them', () => {
+    const refused = fakeNetworkError({ code: 'ECONNREFUSED' }).cause as {
+      syscall?: string
+      errno?: number
+      message: string
+    }
+    expect(refused.syscall).toBe('connect')
+    expect(refused.errno).toBe(-osConstants.errno.ECONNREFUSED)
+    expect(refused.message).toBe('connect ECONNREFUSED')
+    expect(fakeNetworkError({ code: 'ENOTFOUND' }).cause).toMatchObject({
+      syscall: 'getaddrinfo',
+    })
+    // An undici deadline code has no errno or syscall.
+    const undici = fakeNetworkError({ code: 'UND_ERR_BODY_TIMEOUT' }).cause as object
+    expect(undici).not.toHaveProperty('errno')
+    expect(undici).not.toHaveProperty('syscall')
   })
 
   it('other errnos are connection failures', () => {

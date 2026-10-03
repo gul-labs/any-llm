@@ -17,6 +17,7 @@ import type {
 } from '@gullabs/core'
 
 import { PLATFORM_SCHEDULER } from './platform-scheduler.js'
+import { classifyAsAdapter } from './provider-errors.js'
 
 // ---------------------------------------------------------------------------
 // FakeAdapter script entry
@@ -26,9 +27,13 @@ import { PLATFORM_SCHEDULER } from './platform-scheduler.js'
  * A scripted response entry for {@link FakeAdapter}.
  *
  * - {@link AdapterResult}: the adapter returns this as a success response.
- * - `Error`: the adapter throws it (goes through engine's `classifyError`). Use
- *   the factories in `errors.ts` (`fakeHttpError`, `fakeProviderError`, ...) for
- *   the shapes real SDKs throw.
+ * - `Error`: the adapter throws it. An error from `fakeProviderError` is first
+ *   classified by the real provider classifier, as the real adapter classifies
+ *   the SDK's error (so it arrives as an `LlmError` with the provider's `kind`,
+ *   `retryable` and `reason`); any other `Error` is thrown as given and the
+ *   engine's `classifyError` handles it, as it does for any adapter. Use the
+ *   factories in `errors.ts` (`fakeHttpError`, `fakeProviderError`, ...) for the
+ *   shapes real SDKs throw.
  *
  * Anything else (a plain object such as `{ status: 429 }`, a result that lacks
  * `model`, `usage` or `message`) is a mistake in the test and is rejected with a
@@ -159,6 +164,9 @@ export class FakeAdapter implements ProviderAdapter {
   }
 
   async run(req: ResolvedRequest, ctx: AdapterCtx): Promise<AdapterResult> {
+    // The entry is fixed by arrival order, before any delay, so concurrent
+    // delayed calls each take their own.
+    const callIndex = this.calls.length
     this.calls.push(req)
 
     if (this._delayMs > 0) {
@@ -171,7 +179,7 @@ export class FakeAdapter implements ProviderAdapter {
     }
 
     // Pick entry: sequential, clamped to last when exhausted.
-    const idx = Math.min(this.calls.length - 1, this._entries.length - 1)
+    const idx = Math.min(callIndex, this._entries.length - 1)
     const entry: QueueEntry | undefined = this._entries[idx]
 
     if (entry === undefined) {
@@ -183,6 +191,6 @@ export class FakeAdapter implements ProviderAdapter {
       return entry.result
     }
 
-    throw entry.error
+    throw await classifyAsAdapter(entry.error)
   }
 }

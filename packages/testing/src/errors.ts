@@ -12,7 +12,9 @@
  */
 
 import { createRequire } from 'node:module'
+import { constants as osConstants } from 'node:os'
 import { LlmError, type Usage, type Warning } from '@gullabs/core'
+import { markProviderError } from './provider-errors.js'
 
 // ---------------------------------------------------------------------------
 // fakeHttpError
@@ -96,11 +98,31 @@ export interface FakeNetworkErrorOptions {
  */
 export function fakeNetworkError(opts: FakeNetworkErrorOptions = {}): TypeError {
   const code = opts.code ?? 'ECONNRESET'
-  const cause = Object.assign(new Error(`read ${code}`), {
-    code,
-    ...(code.startsWith('UND_ERR') ? {} : { errno: -54, syscall: 'read' }),
-  })
+  const syscall = NETWORK_SYSCALLS[code]
+  const errno = osConstants.errno[code as keyof typeof osConstants.errno] as
+    number | undefined
+  const cause = Object.assign(
+    new Error(syscall === undefined ? code : `${syscall} ${code}`),
+    {
+      code,
+      // Node reports the errno negated, and the syscall that failed.
+      ...(errno !== undefined ? { errno: -errno } : {}),
+      ...(syscall !== undefined ? { syscall } : {}),
+    },
+  )
   return new TypeError('fetch failed', { cause })
+}
+
+/** The syscall Node names for each errno code a connection can fail with. */
+const NETWORK_SYSCALLS: Readonly<Record<string, string>> = {
+  ECONNRESET: 'read',
+  ECONNREFUSED: 'connect',
+  ETIMEDOUT: 'connect',
+  EHOSTUNREACH: 'connect',
+  ENETUNREACH: 'connect',
+  EPIPE: 'write',
+  ENOTFOUND: 'getaddrinfo',
+  EAI_AGAIN: 'getaddrinfo',
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +215,12 @@ export type XaiErrorScenario =
   | 'safety-check'
   | 'credits-exhausted-429'
   | 'credits-exhausted-403'
+
+/** Options of `fakeProviderError('xai', ...)`. */
+export interface FakeXaiProviderErrorOptions {
+  /** The response headers, for example `{ 'retry-after': '2', 'x-request-id': 'req_1' }`. */
+  headers?: Record<string, string>
+}
 
 interface GoogleBodyCase {
   status: number
@@ -398,7 +426,10 @@ function loadSdk<T>(id: string, forWhat: string): T {
  *   message and the HTTP status, as the SDK throws it.
  * - `'xai'`: the `openai` SDK's `APIError.generate(status, body, undefined,
  *   headers)` result (`RateLimitError`, `PermissionDeniedError`, ...), which is
- *   how the SDK builds a status error from a response.
+ *   how the SDK builds a status error from a response. `opts.headers` are the
+ *   response headers (`retry-after`, `x-request-id`, rate-limit headers, which
+ *   the xAI classifier reads); default none. The Gemini SDK's error carries no
+ *   headers, so `opts` is an xAI option.
  *
  * The SDK class is loaded with `require`, so it is the SDK's CommonJS build.
  * A host whose own code imports the SDK as ESM gets a different copy of the
@@ -406,11 +437,22 @@ function loadSdk<T>(id: string, forWhat: string): T {
  * hazard). The shape (class name, `status`, `headers`, `error`, message) is the
  * same, and it is what the provider classifiers and `classifyError` read.
  *
- * Throw it from a `FakeAdapter` entry, a `makeFakeGemini` / `makeFakeXai` script
- * or a fake store client; the provider's own `classify*Error` and core's
- * `classifyError` then see the real shape. Which scenarios are live captures
- * and which are doc-derived is on {@link GoogleErrorScenario} and
- * {@link XaiErrorScenario}.
+ * What it becomes depends on what throws it, because the real thing differs
+ * the same way:
+ *
+ * - From `makeFakeGemini` / `makeFakeXai` or a fake store's SDK client, it is the
+ *   raw SDK error, and the real adapter or store (which you are testing) runs
+ *   `classifyGoogleError` / `classifyXaiError` on it.
+ * - From a `FakeAdapter`, a `SignalAwareFakeAdapter` or a `FakeClient` entry, the
+ *   fake stands in for the whole adapter, so it applies that same real
+ *   classifier (from `@gullabs/google` / `@gullabs/xai`, optional peer
+ *   dependencies of this package) before throwing: a per-day quota arrives as
+ *   `rate_limited` / `daily_quota`, not retryable; exhausted xAI credits as
+ *   `credits_exhausted`; a bad Gemini key as `invalid_auth`; and the error is an
+ *   `LlmError`, as the real adapter's is.
+ *
+ * Which scenarios are live captures and which are doc-derived is on
+ * {@link GoogleErrorScenario} and {@link XaiErrorScenario}.
  *
  * @example
  * ```ts
@@ -421,12 +463,22 @@ export function fakeProviderError(
   provider: 'google',
   scenario: GoogleErrorScenario,
 ): Error
-export function fakeProviderError(provider: 'xai', scenario: XaiErrorScenario): Error
+export function fakeProviderError(
+  provider: 'xai',
+  scenario: XaiErrorScenario,
+  opts?: FakeXaiProviderErrorOptions,
+): Error
 export function fakeProviderError(
   provider: 'google' | 'xai',
   scenario: GoogleErrorScenario | XaiErrorScenario,
+  opts?: FakeXaiProviderErrorOptions,
 ): Error {
   if (provider === 'google') {
+    if (opts !== undefined) {
+      throw new TypeError(
+        "fakeProviderError('google', ...) takes no options: the Gemini SDK's error carries no headers.",
+      )
+    }
     const found = (GOOGLE_ERROR_CASES as Record<string, GoogleBodyCase | undefined>)[
       scenario
     ]
@@ -434,7 +486,10 @@ export function fakeProviderError(
     const { ApiError } = loadSdk<{
       ApiError: new (info: { message: string; status: number }) => Error
     }>('@google/genai', "fakeProviderError('google', ...)")
-    return new ApiError({ message: JSON.stringify(found.body), status: found.status })
+    return markProviderError(
+      new ApiError({ message: JSON.stringify(found.body), status: found.status }),
+      'google',
+    )
   }
   if ((provider as string) === 'xai') {
     const found = (XAI_ERROR_CASES as Record<string, XaiBodyCase | undefined>)[scenario]
@@ -449,7 +504,10 @@ export function fakeProviderError(
         ): Error
       }
     }>('openai', "fakeProviderError('xai', ...)")
-    return APIError.generate(found.status, found.body, undefined, new Headers())
+    return markProviderError(
+      APIError.generate(found.status, found.body, undefined, new Headers(opts?.headers)),
+      'xai',
+    )
   }
   throw new TypeError(
     `fakeProviderError: provider must be 'google' or 'xai', got ${String(provider)}.`,

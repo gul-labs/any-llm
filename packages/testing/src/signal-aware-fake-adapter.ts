@@ -25,6 +25,7 @@ import type {
 
 import { PLATFORM_SCHEDULER } from './platform-scheduler.js'
 import { classifyEntry } from './fake-adapter.js'
+import { classifyAsAdapter, isProviderShaped } from './provider-errors.js'
 import type { FakeAdapterEntry } from './fake-adapter.js'
 
 // ---------------------------------------------------------------------------
@@ -193,9 +194,26 @@ export class SignalAwareFakeAdapter implements ProviderAdapter {
 
         const entry = this._entry
         if (entry instanceof Error) {
-          settle(() => {
-            reject(entry)
-          })
+          if (isProviderShaped(entry)) {
+            // Classified as the real adapter classifies it; an abort that lands
+            // while the classifier loads still wins (`settle` runs once).
+            classifyAsAdapter(entry).then(
+              (classified) => {
+                settle(() => {
+                  reject(classified)
+                })
+              },
+              (failure: unknown) => {
+                settle(() => {
+                  reject(failure)
+                })
+              },
+            )
+          } else {
+            settle(() => {
+              reject(entry)
+            })
+          }
         } else {
           settle(() => {
             resolve(entry)

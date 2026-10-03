@@ -7,8 +7,18 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { fakeHttpError, fakeNetworkError, fakeProviderError } from '@gullabs/testing'
-import { classifyXaiError } from './adapter.js'
+import { createClient, type LlmError } from '@gullabs/core'
+import {
+  FakeAdapter,
+  FakeClock,
+  fakeHttpError,
+  fakeNetworkError,
+  fakeProviderError,
+  makeFakeXai,
+  type XaiErrorScenario,
+} from '@gullabs/testing'
+import { classifyXaiError, xaiAdapter } from './adapter.js'
+import { xaiRegistry } from './models.js'
 
 describe('fakeProviderError("xai", ...) classifies as the adapter classifies it', () => {
   it('a rejected API key is invalid_auth despite the HTTP 400', () => {
@@ -61,5 +71,75 @@ describe('fakeProviderError("xai", ...) classifies as the adapter classifies it'
       kind: 'server',
       retryable: true,
     })
+  })
+})
+
+describe('a FakeAdapter and the real adapter end a provider scenario the same way', () => {
+  const AUTH = { apiKey: 'test-key' }
+  const request = {
+    provider: 'xai',
+    model: 'grok-4.5',
+    messages: [{ role: 'user' as const, parts: [{ kind: 'text' as const, text: 'hi' }] }],
+  }
+  const FIELDS = [
+    'kind',
+    'retryable',
+    'reason',
+    'httpStatus',
+    'retryAfterMs',
+    'provider',
+    'message',
+  ] as const
+  const scenarios: XaiErrorScenario[] = [
+    'nonexistent-model',
+    'malformed-body',
+    'invalid-api-key',
+    'safety-check',
+    'credits-exhausted-429',
+    'credits-exhausted-403',
+  ]
+
+  async function failureOf(adapter: Parameters<typeof createClient>[0]['adapters']) {
+    const clock = new FakeClock()
+    const client = createClient({
+      adapters: adapter,
+      modelRegistry: xaiRegistry,
+      clock,
+      scheduler: clock,
+    })
+    return (await client
+      .generate(request, { auth: AUTH })
+      .catch((e: unknown) => e)) as LlmError
+  }
+
+  it.each(scenarios)(
+    '%s: through the real adapter (SDK-level fake) equals through FakeAdapter',
+    async (scenario) => {
+      const real = await failureOf([
+        xaiAdapter({
+          client: makeFakeXai(() => {
+            throw fakeProviderError('xai', scenario)
+          }),
+        }),
+      ])
+      const fake = await failureOf([
+        new FakeAdapter('xai', [fakeProviderError('xai', scenario)]),
+      ])
+      for (const field of FIELDS) {
+        expect(fake[field], `${scenario}.${field}`).toEqual(real[field])
+      }
+    },
+  )
+
+  it('response headers on the error reach the classifier (a 429 with Retry-After)', async () => {
+    const withHeaders = () =>
+      fakeProviderError('xai', 'credits-exhausted-429', {
+        headers: { 'retry-after': '7', 'x-request-id': 'req_1' },
+      })
+    expect(
+      (withHeaders() as unknown as { headers: Headers }).headers.get('retry-after'),
+    ).toBe('7')
+    const err = await failureOf([new FakeAdapter('xai', [withHeaders()])])
+    expect(err).toMatchObject({ kind: 'rate_limited' })
   })
 })

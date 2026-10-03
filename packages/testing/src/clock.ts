@@ -48,13 +48,16 @@ export class FakeClock implements Clock, Scheduler {
    * @param startMs - Initial value returned by `now()`.  Defaults to `0`.
    */
   constructor(startMs: number = 0) {
+    assertFiniteTime(startMs, 'FakeClock start time')
     this._ms = startMs
   }
 
+  // The public methods are arrow-function properties: `Clock.now` and the
+  // `Scheduler` methods are declared `this: void` (an engine or middleware may
+  // take them off the object), and a destructured `now` must keep working.
+
   /** Returns the current fake time in milliseconds. */
-  now(): number {
-    return this._ms
-  }
+  readonly now = (): number => this._ms
 
   /** Timers set and not yet fired or cleared. */
   get pendingTimers(): number {
@@ -62,14 +65,14 @@ export class FakeClock implements Clock, Scheduler {
   }
 
   /** Runs `callback` once the clock has advanced by `ms` (a negative `ms` counts as 0). */
-  setTimeout(callback: () => void, ms: number): TimerHandle {
+  readonly setTimeout = (callback: () => void, ms: number): TimerHandle => {
     const handle = this._nextHandle++
     this._timers.set(handle, { dueAt: this._ms + Math.max(ms, 0), callback })
     return handle
   }
 
   /** Cancels a pending timer; a fired, cleared or unknown handle is ignored. */
-  clearTimeout(handle: TimerHandle): void {
+  readonly clearTimeout = (handle: TimerHandle): void => {
     if (typeof handle === 'number') this._timers.delete(handle)
   }
 
@@ -77,16 +80,23 @@ export class FakeClock implements Clock, Scheduler {
    * Advance the clock by `ms` milliseconds, firing every timer that falls due,
    * in order, synchronously. Promise continuations that a timer wakes run after
    * this returns; use {@link FakeClock.advanceAsync} to let them run between
-   * timers.
+   * timers. `ms` must be a finite number >= 0 (`RangeError` otherwise): time
+   * never moves backwards and never becomes `NaN`.
+   *
+   * It is re-entrant: an `advance` from inside a timer callback moves the clock
+   * on, the outer call then fires what remains due up to its own target (time
+   * stays where the inner call left it), and the clock ends at the furthest
+   * target any call set.
    */
-  advance(ms: number): void {
+  readonly advance = (ms: number): void => {
+    assertAdvance(ms)
     const target = this._ms + ms
     for (;;) {
       const next = this._nextDue(target)
       if (next === undefined) break
       this._fire(next)
     }
-    this._ms = target
+    this._ms = Math.max(this._ms, target)
   }
 
   /**
@@ -94,7 +104,8 @@ export class FakeClock implements Clock, Scheduler {
    * each timer fires (a bounded number of promise turns, no real waiting), so a
    * timer that a continuation schedules inside the window fires too. Await it.
    */
-  async advanceAsync(ms: number): Promise<void> {
+  readonly advanceAsync = async (ms: number): Promise<void> => {
+    assertAdvance(ms)
     const target = this._ms + ms
     await settle()
     for (;;) {
@@ -103,16 +114,18 @@ export class FakeClock implements Clock, Scheduler {
       this._fire(next)
       await settle()
     }
-    this._ms = target
+    this._ms = Math.max(this._ms, target)
     await settle()
   }
 
   /**
-   * Jump the clock to an absolute millisecond value. A later time fires the
-   * timers it passes, as `advance` does; an earlier time only moves the clock
-   * back (pending timers keep their due times).
+   * Jump the clock to an absolute millisecond value (finite, else
+   * `RangeError`). A later time fires the timers it passes, as `advance` does;
+   * an earlier time only moves the clock back (pending timers keep their due
+   * times).
    */
-  set(ms: number): void {
+  readonly set = (ms: number): void => {
+    assertFiniteTime(ms, 'FakeClock.set')
     if (ms > this._ms) {
       this.advance(ms - this._ms)
     } else {
@@ -138,6 +151,22 @@ export class FakeClock implements Clock, Scheduler {
     this._timers.delete(handle)
     this._ms = Math.max(this._ms, timer.dueAt)
     timer.callback()
+  }
+}
+
+function assertFiniteTime(ms: number, what: string): void {
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) {
+    throw new RangeError(
+      `${what} must be a finite number of milliseconds, got ${String(ms)}.`,
+    )
+  }
+}
+
+function assertAdvance(ms: number): void {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) {
+    throw new RangeError(
+      `FakeClock.advance needs a finite number of milliseconds >= 0, got ${String(ms)}: time does not move backwards (use set()) and is never NaN.`,
+    )
   }
 }
 
