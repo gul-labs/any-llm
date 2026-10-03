@@ -4,12 +4,13 @@
  * All rates are in **micro-USD per million tokens** (µUSD/M).
  * To get the cost for N tokens: `cost_µUSD = N * ratePerM / 1_000_000`.
  *
- * **Service tiers.** Each model stores concrete `standard`, `flex`, and
- * `batch` rates transcribed from Google's pricing page. Flex and batch are
- * not a flat 50% of standard: on several models the cached lane stays at the
- * standard cached rate (or a published rate that is not half). A tier that
- * is not one of those three is unpriced (reject-don't-map). `priority` is
- * intentionally absent — it needs downgrade accounting and is a backlog item.
+ * **Service tiers.** Each model stores concrete `standard` and `flex` rates
+ * transcribed from Google's pricing page. Flex is not a flat 50% of standard: on
+ * several models the cached lane stays at the standard cached rate (or a
+ * published rate that is not half). A tier that is not one of those two is
+ * unpriced (reject-don't-map). `priority` is intentionally absent: it needs
+ * downgrade accounting and is a backlog item. The Batch API has no path in this
+ * library (no schema admits a batch tier), so its rates are not carried.
  *
  * **Long-context tier.** Gemini Pro models charge a premium when the GROSS
  * input token count exceeds 200,000. Selected by `inputTokens` (incl. cached),
@@ -18,21 +19,30 @@
  * **Thinking tokens.** Already inside `outputTokens` (GROSS convention) and
  * billed at the output rate — no separate thinking lane.
  *
- * **Modality caveat (v1 = text).** Gemini 2.5 Flash / Flash-Lite / 3.1
- * Flash-Lite charge a higher INPUT rate for audio tokens
- * than for text/image/video. v1 is text-only and uses the text/img/vid input
- * rate. Per-modality input pricing is a deferred seam (see DESIGN.md).
+ * **Audio input.** Gemini 2.5 Flash, 2.5 Flash-Lite and 3.1 Flash-Lite charge
+ * more for audio input than for text, image and video tokens ({@link GeminiRates.audio}).
+ * The adapter records the prompt's per-modality token counts
+ * (`usageMetadata.promptTokensDetails` and `cacheTokensDetails`) as
+ * `usage.details.input_<modality>` / `cached_<modality>`, and the pricing source
+ * bills the audio tokens at the audio rates and the rest at the text rate. Every
+ * other model is billed one input rate for all modalities on the page. Models with
+ * an audio rate have no `gt200k` band, so the long-context band never needs the
+ * audio split.
  *
  * Re-verified against https://ai.google.dev/gemini-api/docs/pricing on
  * 2026-09-25. Standard token rates for already-registered models were
- * unchanged from the 2026-08-12 snapshot; flex/batch cached rates were not.
+ * unchanged from the 2026-08-12 snapshot; flex cached rates were not. The audio
+ * input and cached-audio rates (standard and flex) were read from the same page
+ * on 2026-10-03; the page showed "Last Updated 2026-10-01 UTC".
  *
  * **Grounding with Google Search** is a tool lane, not a token rate; see
  * {@link GEMINI_GROUNDING_PRICING}. It was added from the same pricing page
- * on 2026-10-03; the token rates above were NOT re-read that day and were last
- * verified 2026-09-25. {@link pricingVersion} moved to `gemini-2026-10-03`
- * because the snapshot gained the grounding lane (a grounded call prices
- * differently under it), not because token rates were re-checked.
+ * on 2026-10-03. {@link pricingVersion} is `gemini-2026-10-03` because the
+ * snapshot gained the grounding lane and the audio lane that day (a grounded or
+ * audio call prices differently under it). The 2026-10-03 read of the page also
+ * matched the standard text and cached rates of the models it listed (and the
+ * flex text and cached rates of the three audio models); only the models the page
+ * summary did not list keep their 2026-09-25 verification.
  *
  * @module
  */
@@ -49,23 +59,36 @@ import type { ModelRates } from '@gullabs/core'
 export const pricingVersion = 'gemini-2026-10-03' as const
 
 /** Tiers this snapshot prices. Anything else is unpriced. */
-export const GEMINI_PRICED_TIERS = ['standard', 'flex', 'batch'] as const
+export const GEMINI_PRICED_TIERS = ['standard', 'flex'] as const
 
 export type GeminiPricedTier = (typeof GEMINI_PRICED_TIERS)[number]
 
-/** Concrete per-tier rates for one model. */
-export interface GeminiTierRates {
-  standard: ModelRates
-  flex: ModelRates
-  batch: ModelRates
+/** Audio input rates for a model that prices audio apart from text (µUSD per million tokens). */
+export interface GeminiAudioRates {
+  /** Non-cached audio input tokens. */
+  inputPerM: number
+  /** Cached audio input tokens. */
+  cachedPerM: number
 }
 
-function tiers(
-  standard: ModelRates,
-  flex: ModelRates,
-  batch: ModelRates,
-): GeminiTierRates {
-  return Object.freeze({ standard, flex, batch })
+/** {@link ModelRates} plus the audio input rates, for models that publish them. */
+export interface GeminiRates extends ModelRates {
+  /**
+   * Present only on a model whose pricing page lists a separate audio input
+   * price. Priced on the audio tokens `promptTokensDetails` reports; every other
+   * input token uses the text/image/video rates above.
+   */
+  audio?: GeminiAudioRates
+}
+
+/** Concrete per-tier rates for one model. */
+export interface GeminiTierRates {
+  standard: GeminiRates
+  flex: GeminiRates
+}
+
+function tiers(standard: GeminiRates, flex: GeminiRates): GeminiTierRates {
+  return Object.freeze({ standard, flex })
 }
 
 /**
@@ -74,10 +97,12 @@ function tiers(
  *
  * Keys are exact priced model identifiers. Unlisted variants are unpriced.
  *
- * Source: https://ai.google.dev/gemini-api/docs/pricing (re-verified 2026-09-25).
+ * Source: https://ai.google.dev/gemini-api/docs/pricing (re-verified 2026-09-25;
+ * the audio input and cached-audio rates read 2026-10-03, page last updated
+ * 2026-10-01).
  */
 export const GEMINI_PRICING: Readonly<Record<string, GeminiTierRates>> = Object.freeze({
-  // Gemini 2.5 Pro. Flex/batch cached equals standard on both context bands.
+  // Gemini 2.5 Pro. Flex cached equals standard on both context bands. No separate audio price.
   'gemini-2.5-pro': tiers(
     {
       inputPerM: 1_250_000,
@@ -91,73 +116,88 @@ export const GEMINI_PRICING: Readonly<Record<string, GeminiTierRates>> = Object.
       outputPerM: 5_000_000,
       gt200k: { inputPerM: 1_250_000, cachedPerM: 250_000, outputPerM: 7_500_000 },
     },
+  ),
+
+  // Gemini 2.5 Flash. Flex cached stays $0.03. Audio: $1.00 / cached $0.10 standard,
+  // $0.50 / cached $0.10 flex.
+  'gemini-2.5-flash': tiers(
     {
-      inputPerM: 625_000,
-      cachedPerM: 125_000,
-      outputPerM: 5_000_000,
-      gt200k: { inputPerM: 1_250_000, cachedPerM: 250_000, outputPerM: 7_500_000 },
+      inputPerM: 300_000,
+      cachedPerM: 30_000,
+      outputPerM: 2_500_000,
+      audio: { inputPerM: 1_000_000, cachedPerM: 100_000 },
+    },
+    {
+      inputPerM: 150_000,
+      cachedPerM: 30_000,
+      outputPerM: 1_250_000,
+      audio: { inputPerM: 500_000, cachedPerM: 100_000 },
     },
   ),
 
-  // Gemini 2.5 Flash. Flex/batch cached stays $0.03.
-  'gemini-2.5-flash': tiers(
-    { inputPerM: 300_000, cachedPerM: 30_000, outputPerM: 2_500_000 },
-    { inputPerM: 150_000, cachedPerM: 30_000, outputPerM: 1_250_000 },
-    { inputPerM: 150_000, cachedPerM: 30_000, outputPerM: 1_250_000 },
-  ),
-
-  // Gemini 2.5 Flash-Lite. Flex/batch cached stays $0.01.
+  // Gemini 2.5 Flash-Lite. Flex cached stays $0.01. Audio: $0.30 / cached $0.03
+  // standard, $0.15 / cached $0.03 flex.
   'gemini-2.5-flash-lite': tiers(
-    { inputPerM: 100_000, cachedPerM: 10_000, outputPerM: 400_000 },
-    { inputPerM: 50_000, cachedPerM: 10_000, outputPerM: 200_000 },
-    { inputPerM: 50_000, cachedPerM: 10_000, outputPerM: 200_000 },
+    {
+      inputPerM: 100_000,
+      cachedPerM: 10_000,
+      outputPerM: 400_000,
+      audio: { inputPerM: 300_000, cachedPerM: 30_000 },
+    },
+    {
+      inputPerM: 50_000,
+      cachedPerM: 10_000,
+      outputPerM: 200_000,
+      audio: { inputPerM: 150_000, cachedPerM: 30_000 },
+    },
   ),
 
-  // Gemini 3.1 Flash-Lite. Flex/batch cached is the published $0.0125.
+  // Gemini 3.1 Flash-Lite. Flex cached is the published $0.0125. Audio: $0.50 /
+  // cached $0.05 standard, $0.25 / cached $0.025 flex.
   'gemini-3.1-flash-lite': tiers(
-    { inputPerM: 250_000, cachedPerM: 25_000, outputPerM: 1_500_000 },
-    { inputPerM: 125_000, cachedPerM: 12_500, outputPerM: 750_000 },
-    { inputPerM: 125_000, cachedPerM: 12_500, outputPerM: 750_000 },
+    {
+      inputPerM: 250_000,
+      cachedPerM: 25_000,
+      outputPerM: 1_500_000,
+      audio: { inputPerM: 500_000, cachedPerM: 50_000 },
+    },
+    {
+      inputPerM: 125_000,
+      cachedPerM: 12_500,
+      outputPerM: 750_000,
+      audio: { inputPerM: 250_000, cachedPerM: 25_000 },
+    },
   ),
 
-  // Gemini 3.8 / 3.7 / 3.6 Flash intro rates (2026-09-25). Flex/batch cached
-  // is half of the intro cached rate. Re-snapshot on 2027-01-01.
+  // Gemini 3.8 / 3.7 / 3.6 Flash intro rates (2026-09-25), one rate for all
+  // modalities. Flex cached is half of the intro cached rate. Re-snapshot on 2027-01-01.
   'gemini-3.8-flash': tiers(
     { inputPerM: 750_000, cachedPerM: 75_000, outputPerM: 3_750_000 },
-    { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
     { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
   ),
   'gemini-3.7-flash': tiers(
     { inputPerM: 750_000, cachedPerM: 75_000, outputPerM: 3_750_000 },
     { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
-    { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
   ),
   'gemini-3.6-flash': tiers(
     { inputPerM: 750_000, cachedPerM: 75_000, outputPerM: 3_750_000 },
     { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
-    { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
   ),
 
-  // Gemini 3.5 Flash-Lite. Flex/batch cached is the published $0.02, not half of $0.03.
+  // Gemini 3.5 Flash-Lite, one rate for all modalities (audio included). Flex
+  // cached is the published $0.02, not half of $0.03.
   'gemini-3.5-flash-lite': tiers(
     { inputPerM: 300_000, cachedPerM: 30_000, outputPerM: 2_500_000 },
     { inputPerM: 150_000, cachedPerM: 20_000, outputPerM: 1_250_000 },
-    { inputPerM: 150_000, cachedPerM: 20_000, outputPerM: 1_250_000 },
   ),
 
-  // Gemini 3.1 Pro Preview. Flex/batch cached equals standard on both bands.
+  // Gemini 3.1 Pro Preview. Flex cached equals standard on both bands. No separate audio price.
   'gemini-3.1-pro-preview': tiers(
     {
       inputPerM: 2_000_000,
       cachedPerM: 200_000,
       outputPerM: 12_000_000,
       gt200k: { inputPerM: 4_000_000, cachedPerM: 400_000, outputPerM: 18_000_000 },
-    },
-    {
-      inputPerM: 1_000_000,
-      cachedPerM: 200_000,
-      outputPerM: 6_000_000,
-      gt200k: { inputPerM: 2_000_000, cachedPerM: 400_000, outputPerM: 9_000_000 },
     },
     {
       inputPerM: 1_000_000,
@@ -245,11 +285,11 @@ function lookupGeminiTierRates(
   return entry
 }
 
-/** Resolve the concrete {@link ModelRates} `computeCost` should apply. */
+/** Resolve the concrete {@link GeminiRates} for `(model, tier)`. */
 export function resolveGeminiRates(
   model: string,
   tier: string | undefined,
-): ModelRates | undefined {
+): GeminiRates | undefined {
   const entry = lookupGeminiTierRates(model, tier)
   if (entry === undefined) return undefined
   const key = tier ?? 'standard'

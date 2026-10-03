@@ -36,6 +36,13 @@ export interface GoogleCacheHandle {
   expiresAt: Date
   /** Caches are model-bound; never use a handle with a different model. */
   model: string
+  /**
+   * Tokens the cache holds, from `usageMetadata.totalTokenCount` of the create
+   * response. Cache storage is billed per token-hour (see Google's pricing page)
+   * and no usage record carries it, so a host that prices storage reads this.
+   * Absent when the response had no `usageMetadata`. Kept across a TTL refresh.
+   */
+  totalTokenCount?: number
 }
 
 /** Key used to look up or create an entry in the in-process cache map. */
@@ -60,7 +67,12 @@ export interface GeminiCachesClientLike {
       ttl?: string
       displayName?: string
     }
-  }): Promise<{ name?: string; model?: string; expireTime?: string }>
+  }): Promise<{
+    name?: string
+    model?: string
+    expireTime?: string
+    usageMetadata?: { totalTokenCount?: number }
+  }>
 
   update(params: {
     name: string
@@ -141,6 +153,7 @@ async function buildCachesClient(auth: AuthMaterial): Promise<GeminiCachesClient
           name?: string
           model?: string
           expireTime?: string
+          usageMetadata?: { totalTokenCount?: number }
         }>
       )(params)
       return result
@@ -303,7 +316,7 @@ export class GoogleCacheStore {
     if (input.toolConfig !== undefined) config.toolConfig = input.toolConfig
     if (input.displayName !== undefined) config.displayName = input.displayName
 
-    let resp: { name?: string; model?: string; expireTime?: string }
+    let resp: Awaited<ReturnType<GeminiCachesClientLike['create']>>
     try {
       resp = await client.create({ model: input.model, config })
     } catch (e) {
@@ -330,10 +343,14 @@ export class GoogleCacheStore {
         ? new Date(resp.expireTime)
         : fallbackExpiry
 
+    const totalTokenCount = resp.usageMetadata?.totalTokenCount
     return {
       cacheName: resp.name,
       model: resp.model ?? input.model,
       expiresAt,
+      ...(typeof totalTokenCount === 'number' && Number.isFinite(totalTokenCount)
+        ? { totalTokenCount }
+        : {}),
     }
   }
 
@@ -455,6 +472,9 @@ export class GoogleCacheStore {
         cacheName: handle.cacheName,
         model: handle.model,
         expiresAt: newExpiresAt,
+        ...(handle.totalTokenCount !== undefined
+          ? { totalTokenCount: handle.totalTokenCount }
+          : {}),
       }
 
       // Update the entries map entry if this handle is tracked.

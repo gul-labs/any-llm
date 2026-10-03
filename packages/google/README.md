@@ -12,18 +12,18 @@ pnpm add @gullabs/google @gullabs/core @google/genai
 
 ## Key exports
 
-| Export                                                                     | What it is                                                                            |
-| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `googleProvider(opts?)`                                                    | `ProviderPlugin` factory — bundles the adapter, model descriptors, and pricing source |
-| `geminiAdapter(opts?)`                                                     | Creates the `ProviderAdapter` for Gemini                                              |
-| `GeminiAdapterOptions`                                                     | `{ client?: GeminiClientLike }` — inject a pre-built or fake client                   |
-| `GeminiClientLike`                                                         | Structural interface the adapter depends on (satisfied by real SDK and fakes)         |
-| `buildGoogleClient(auth)`                                                  | Builds the real `@google/genai` client from `AuthMaterial`                            |
-| `isGeminiCapacityError(err)`                                               | Detects Gemini Flex capacity errors (HTTP 503 only) for fallback                      |
-| `geminiModelDescriptors`, `gemmaModelDescriptors`, `defaultGeminiRegistry` | Built-in model descriptors + pre-built registry                                       |
-| `geminiPricingSource()`, `GEMINI_PRICING`, `resolveGeminiRates`            | Built-in Gemini pricing snapshot (concrete standard / flex / batch rates)             |
-| `GoogleFileStore`                                                          | Files API: upload + poll ACTIVE + delete                                              |
-| `FileDeleteOptions`                                                        | `{ failClosed?, signal? }` — opt-in fail-closed delete (parity with `@gullabs/xai`)   |
+| Export                                                                     | What it is                                                                                           |
+| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `googleProvider(opts?)`                                                    | `ProviderPlugin` factory — bundles the adapter, model descriptors, and pricing source                |
+| `geminiAdapter(opts?)`                                                     | Creates the `ProviderAdapter` for Gemini                                                             |
+| `GeminiAdapterOptions`                                                     | `{ client?: GeminiClientLike }` — inject a pre-built or fake client                                  |
+| `GeminiClientLike`                                                         | Structural interface the adapter depends on (satisfied by real SDK and fakes)                        |
+| `buildGoogleClient(auth)`                                                  | Builds the real `@google/genai` client from `AuthMaterial`                                           |
+| `isGeminiCapacityError(err)`                                               | Detects Gemini Flex capacity errors (HTTP 503 only) for fallback                                     |
+| `geminiModelDescriptors`, `gemmaModelDescriptors`, `defaultGeminiRegistry` | Built-in model descriptors + pre-built registry                                                      |
+| `geminiPricingSource()`, `GEMINI_PRICING`, `resolveGeminiRates`            | Built-in Gemini pricing snapshot (concrete standard / flex rates, audio input rates where published) |
+| `GoogleFileStore`                                                          | Files API: upload + poll ACTIVE + delete                                                             |
+| `FileDeleteOptions`                                                        | `{ failClosed?, signal? }` — opt-in fail-closed delete (parity with `@gullabs/xai`)                  |
 
 ## File store delete modes
 
@@ -349,6 +349,22 @@ queries ran), from Google's pricing page read 2026-10-03. A call that ran Search
 no single call can know it was free, and every fee is charged in full. When Search was
 requested but the count is unknown, the tools lane is `0`, the cost is estimated and a warning
 says so. Google's billing of repeated queries and of tool-use tokens is not established.
+
+### Audio input and cache storage
+
+Gemini 2.5 Flash, 2.5 Flash-Lite and 3.1 Flash-Lite bill audio input at a higher rate than text, image and
+video (cached audio apart from cached text), on both the standard and the flex tier. The adapter records the
+prompt's per-modality counts from `usageMetadata.promptTokensDetails` and `cacheTokensDetails` as
+`usage.details.input_<modality>` and `cached_<modality>` (`input_audio`, `cached_audio`, ...), and the
+pricing source bills the audio tokens at the audio rates and every other token at the text rate. The other
+models list one rate for all modalities. The rates are from Google's pricing page, read 2026-10-03
+(page last updated 2026-10-01). A request that carries audio but whose response reports no `AUDIO` tokens
+carries a warning, and on a model that prices audio apart its cost is `'estimated'` (it can understate).
+There is no batch tier: `'batch'` is an unpriced tier.
+
+`GoogleCacheStore.create` and `getOrCreate` return a handle with `totalTokenCount`, the create response's
+`usageMetadata.totalTokenCount`. Cache storage is billed per token-hour and appears in no usage record;
+price it from that count and the time you keep the cache.
 
 `providerOptions.google.requireGrounding: true` fails the call unless the response proves Search
 ran (`groundingMetadata` with at least one non-empty query): a `server` error with

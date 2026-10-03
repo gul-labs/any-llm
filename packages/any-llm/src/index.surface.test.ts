@@ -38,7 +38,7 @@ describe('@gullabs/any-llm package surface', () => {
     expect(Array.isArray(geminiModelDescriptors)).toBe(true)
     expect(Array.isArray(gemmaModelDescriptors)).toBe(true)
     expect(typeof defaultGeminiRegistry.resolve).toBe('function')
-    expect(GEMINI_PRICED_TIERS).toEqual(['standard', 'flex', 'batch'])
+    expect(GEMINI_PRICED_TIERS).toEqual(['standard', 'flex'])
     expect(resolveGeminiRates('gemini-2.5-pro', 'standard')?.inputPerM).toBe(1_250_000)
   })
 

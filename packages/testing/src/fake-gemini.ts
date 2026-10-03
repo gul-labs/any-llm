@@ -65,6 +65,10 @@ export interface GeminiUsageMetadataLike {
   toolUsePromptTokenCount?: number
   totalTokenCount?: number
   serviceTier?: string
+  /** Prompt tokens per modality (`TEXT`, `AUDIO`, ...); includes the cached part. */
+  promptTokensDetails?: Array<{ modality?: string; tokenCount?: number }>
+  /** The cached part of the prompt per modality. */
+  cacheTokensDetails?: Array<{ modality?: string; tokenCount?: number }>
 }
 
 /**

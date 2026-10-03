@@ -147,6 +147,19 @@ export interface GeminiUsageMetadataShape {
   totalTokenCount?: number
   /** Provider-echoed actual tier; can differ from the requested tier. */
   serviceTier?: string
+  /**
+   * Prompt tokens per modality (`TEXT`, `IMAGE`, `VIDEO`, `AUDIO`, `DOCUMENT`);
+   * the counts sum to `promptTokenCount` and include the cached part.
+   */
+  promptTokensDetails?: GeminiModalityTokenCount[]
+  /** The cached part of the prompt per modality, when a cache was used. */
+  cacheTokensDetails?: GeminiModalityTokenCount[]
+}
+
+/** One entry of `usageMetadata.promptTokensDetails` / `cacheTokensDetails`. */
+export interface GeminiModalityTokenCount {
+  modality?: string
+  tokenCount?: number
 }
 
 /**

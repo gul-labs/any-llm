@@ -676,6 +676,36 @@ function mapUsage(meta: GeminiUsageMetadataShape | undefined): Usage {
       : {}),
   }
 
+  // Per-modality prompt tokens, under `input_<modality>` (the whole prompt, cached
+  // part included) and `cached_<modality>` (the cached part): the pricing source
+  // bills audio apart from text on the models that price it apart. A modality
+  // listed twice sums.
+  for (const [prefix, entries] of [
+    ['input', meta?.promptTokensDetails],
+    ['cached', meta?.cacheTokensDetails],
+  ] as const) {
+    if (!Array.isArray(entries)) continue
+    for (const entry of entries as readonly unknown[]) {
+      // Malformed provider output (a null entry, a missing field) is skipped.
+      if (typeof entry !== 'object' || entry === null) continue
+      const { modality, tokenCount: count } = entry as {
+        modality?: unknown
+        tokenCount?: unknown
+      }
+      if (
+        typeof modality !== 'string' ||
+        modality === '' ||
+        typeof count !== 'number' ||
+        !Number.isFinite(count) ||
+        count < 0
+      ) {
+        continue
+      }
+      const key = `${prefix}_${modality.toLowerCase()}`
+      details[key] = (details[key] ?? 0) + count
+    }
+  }
+
   // Raw: the full usageMetadata object verbatim (as JsonValue).
   const raw: JsonValue =
     meta !== undefined ? (meta as unknown as { [k: string]: JsonValue }) : null
@@ -1105,11 +1135,22 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       const googleSearchSent =
         googleProviderConfig.tools?.some((tool) => 'googleSearch' in tool) === true
       const requireGrounding = googleProviderConfig.requireGrounding === true
+      // Audio in the prompt is billed at its own rate on some models, from the
+      // per-modality counts the response reports; `audio_input_requested` lets the
+      // pricing source tell a response that omits them from a request without audio.
+      const audioRequested = req.messages.some((message) =>
+        message.parts.some(
+          (part) =>
+            (part.kind === 'inline-media' || part.kind === 'file-uri') &&
+            part.mimeType.toLowerCase().startsWith('audio/'),
+        ),
+      )
       const usageFor = (
         meta: GeminiUsageMetadataShape | undefined,
         groundingMetadata?: unknown,
       ): Usage => {
         const mapped = mapUsage(meta)
+        if (audioRequested) mapped.details['audio_input_requested'] = 1
         if (googleSearchSent) {
           mapped.details['web_search_requested'] = 1
           const calls = countWebSearchQueries(groundingMetadata)
@@ -1140,13 +1181,40 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         }
         return []
       }
+      /** Warnings about an audio request whose response does not split the prompt by modality. */
+      const modalityWarnings = (
+        meta: GeminiUsageMetadataShape | undefined,
+      ): Warning[] => {
+        if (!audioRequested || meta === undefined) return []
+        const hasAudio = (
+          meta.promptTokensDetails as readonly unknown[] | undefined
+        )?.some(
+          (entry) =>
+            typeof entry === 'object' &&
+            entry !== null &&
+            (entry as { modality?: unknown }).modality === 'AUDIO' &&
+            Number((entry as { tokenCount?: unknown }).tokenCount ?? 0) > 0,
+        )
+        return hasAudio === true
+          ? []
+          : [
+              {
+                type: 'other',
+                message:
+                  'google: the request carries audio but usageMetadata.promptTokensDetails reports no AUDIO tokens, so the audio input rate could not be applied; on a model that prices audio apart from text, cost.confidence is "estimated" and the amount can understate.',
+              },
+            ]
+      }
       /** `usage` (and the grounding note) a failed-but-billed attempt carries. */
       const billedFailure = (
         meta: GeminiUsageMetadataShape | undefined,
         groundingMetadata?: unknown,
       ): { usage?: Usage; warnings?: Warning[] } => {
         if (meta === undefined) return {}
-        const failureWarnings = groundingWarnings(groundingMetadata)
+        const failureWarnings = [
+          ...groundingWarnings(groundingMetadata),
+          ...modalityWarnings(meta),
+        ]
         return {
           usage: usageFor(meta, groundingMetadata),
           ...(failureWarnings.length > 0 ? { warnings: failureWarnings } : {}),
@@ -1718,6 +1786,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       const usage = usageFor(response.usageMetadata, groundingMetadata)
       const finishReason = mapFinishReason(candidate.finishReason)
       warnings.push(...groundingWarnings(groundingMetadata))
+      warnings.push(...modalityWarnings(response.usageMetadata))
 
       // Where each answer-text part sits in `text`, so a grounding segment
       // (UTF-8 byte offsets into one part) becomes a range of `text`. Gemini's

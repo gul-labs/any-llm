@@ -101,6 +101,52 @@ describe('GoogleCacheStore', () => {
     expect(handle.expiresAt.getTime()).toBe(BASE_NOW + ttlSeconds * 1000)
   })
 
+  it("create returns the create call's usageMetadata.totalTokenCount on the handle (R7.6)", async () => {
+    const client = makeClient({
+      create: vi.fn().mockResolvedValue({
+        name: 'cachedContents/abc123',
+        model: 'gemini-2.0-flash',
+        expireTime: new Date(BASE_NOW + 3600 * 1000).toISOString(),
+        usageMetadata: { totalTokenCount: 4321 },
+      }),
+    })
+    const store = new GoogleCacheStore({ auth: fakeAuth, client, now: () => BASE_NOW })
+    const handle = await store.create({ model: 'gemini-2.0-flash', ttlSeconds: 3600 })
+    expect(handle.totalTokenCount).toBe(4321)
+
+    // A TTL refresh keeps it: the cache holds the same tokens.
+    const refreshed = await store.refreshIfExpiringSoon(
+      { ...handle, expiresAt: new Date(BASE_NOW + 10_000) },
+      { extensionSeconds: 3600 },
+    )
+    expect(refreshed.expiresAt.getTime()).toBe(BASE_NOW + 7200 * 1000)
+    expect(refreshed.totalTokenCount).toBe(4321)
+  })
+
+  it('totalTokenCount is absent when the create response has no usageMetadata or a non-numeric count', async () => {
+    const store = new GoogleCacheStore({
+      auth: fakeAuth,
+      client: makeClient(),
+      now: () => BASE_NOW,
+    })
+    expect(
+      'totalTokenCount' in (await store.create({ model: 'm', ttlSeconds: 60 })),
+    ).toBe(false)
+    const odd = new GoogleCacheStore({
+      auth: fakeAuth,
+      client: makeClient({
+        create: vi.fn().mockResolvedValue({
+          name: 'cachedContents/x',
+          usageMetadata: { totalTokenCount: 'many' },
+        }),
+      }),
+      now: () => BASE_NOW,
+    })
+    expect('totalTokenCount' in (await odd.create({ model: 'm', ttlSeconds: 60 }))).toBe(
+      false,
+    )
+  })
+
   it('create sends tools and toolConfig to the SDK create config, and the preflight sees the tools', async () => {
     const client = makeClient()
     const countTokens = vi.fn().mockResolvedValue(5000)

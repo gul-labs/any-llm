@@ -4,8 +4,8 @@
  * Provides `geminiPricingSource` — a factory returning a `PricingSource` port
  * implementation backed by the frozen Gemini pricing snapshot ({@link
  * GEMINI_PRICING}). Uses exact priced model identifiers,
- * resolves the concrete per-tier rates, and delegates the arithmetic to
- * `@gullabs/core`'s `computeCost`. Core itself carries zero Gemini pricing
+ * resolves the concrete per-tier rates, and delegates the token arithmetic to
+ * `@gullabs/core`'s `computeCost` (audio input and grounding are priced here). Core itself carries zero Gemini pricing
  * knowledge and applies no tier multiplier.
  *
  * @module
@@ -21,10 +21,30 @@ import {
   resolveGeminiRates,
 } from './pricing.js'
 
+/** A non-negative whole token count from `usage.details`, or `undefined`. */
+function tokenDetail(usage: Usage, key: string): number | undefined {
+  const value = usage.details[key]
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : undefined
+}
+
 /**
- * Price one call: the token lanes through core, then the grounding fee on the
- * `tools` lane from the normalised search facts in `usage.details`.
+ * Price one call: the input split by modality, the token lanes through core,
+ * then the grounding fee on the `tools` lane from the normalised search facts in
+ * `usage.details`.
  *
+ * **Audio input.** A model whose rates carry `audio` bills the audio tokens of
+ * the prompt (`details.input_audio`, from `promptTokensDetails`) at the audio
+ * rates, and of those the cached ones (`details.cached_audio`, from
+ * `cacheTokensDetails`) at the cached audio rate; every other token is priced at
+ * the text/image/video rates through core. The audio amounts are added to the
+ * `input` and `cached` lanes. The cost is `'estimated'` when audio was sent
+ * (`details.audio_input_requested`) but the response reports no audio tokens, or
+ * when cached tokens exist beside audio with no cached split: the audio share is
+ * then unknown.
+ *
+ * **Grounding.**
  * - No `web_search_requested`: the call is token-priced and exact.
  * - Requested, count known to be zero: Search did not run; token-priced, exact.
  * - Requested, count unknown (`web_search_calls` absent): the fee cannot be
@@ -36,8 +56,60 @@ import {
  * `microUsd` stays the sum of the four lanes.
  */
 function priceCall(model: string, usage: Usage, tier: string | undefined): Cost {
-  const cost = computeCost(model, usage, tier, resolveGeminiRates, pricingVersion)
-  if (cost.microUsd === null || usage.details['web_search_requested'] !== 1) return cost
+  const modelRates = resolveGeminiRates(model, tier)
+  const audioRates = modelRates?.audio
+
+  // Audio tokens, clamped so the text remainder is never negative.
+  const audioInput =
+    audioRates === undefined
+      ? 0
+      : Math.min(tokenDetail(usage, 'input_audio') ?? 0, usage.inputTokens)
+  const cachedTotal = usage.cachedInputTokens ?? 0
+  const audioCached =
+    audioInput === 0
+      ? 0
+      : Math.min(tokenDetail(usage, 'cached_audio') ?? 0, audioInput, cachedTotal)
+
+  let cost: Cost
+  if (audioRates === undefined || audioInput === 0) {
+    cost = computeCost(model, usage, tier, resolveGeminiRates, pricingVersion)
+  } else {
+    const textUsage: Usage = {
+      ...usage,
+      inputTokens: usage.inputTokens - audioInput,
+      cachedInputTokens: cachedTotal - audioCached,
+    }
+    const text = computeCost(model, textUsage, tier, resolveGeminiRates, pricingVersion)
+    const audioUncachedCost = Math.round(
+      ((audioInput - audioCached) * audioRates.inputPerM) / 1_000_000,
+    )
+    const audioCachedCost = Math.round((audioCached * audioRates.cachedPerM) / 1_000_000)
+    const microUsd = (text.microUsd ?? 0) + audioUncachedCost + audioCachedCost
+    cost = {
+      ...text,
+      microUsd,
+      usd: microUsd / 1_000_000,
+      details: {
+        ...text.details,
+        input: text.details.input + audioUncachedCost,
+        cached: text.details.cached + audioCachedCost,
+      },
+    }
+  }
+
+  if (cost.microUsd === null) return cost
+
+  // The audio share of the prompt is unknown, so the amount can understate.
+  const audioSentUnreported =
+    audioRates !== undefined &&
+    usage.details['audio_input_requested'] === 1 &&
+    tokenDetail(usage, 'input_audio') === undefined
+  const cachedSplitUnknown =
+    audioInput > 0 && cachedTotal > 0 && tokenDetail(usage, 'cached_audio') === undefined
+  if (audioSentUnreported || cachedSplitUnknown)
+    cost = { ...cost, confidence: 'estimated' }
+
+  if (usage.details['web_search_requested'] !== 1) return cost
 
   const calls = usage.details['web_search_calls']
   if (calls === 0) return cost
@@ -49,7 +121,7 @@ function priceCall(model: string, usage: Usage, tier: string | undefined): Cost 
       : rate.unit === 'query'
         ? Math.round(calls * rate.microUsdPerUnit)
         : rate.microUsdPerUnit
-  const microUsd = cost.microUsd + tools
+  const microUsd = (cost.microUsd as number) + tools
   return {
     ...cost,
     microUsd,
