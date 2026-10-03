@@ -7,9 +7,11 @@ import {
   createModelRegistry,
   LlmError,
   toConfigJsonSchema,
+  toConfigKeys,
   zodToStandardSchema,
 } from './index.js'
 import type { Message, ModelDescriptor } from './index.js'
+import { configKeysOfJsonSchema } from './model-config/index.js'
 
 const removedConfigSchemaFactory = `makeGeminiConfig${'Schema'}`
 const removedConfigValidatorFactory = `makeGeminiConfig${'Validator'}`
@@ -24,6 +26,7 @@ function makeDescriptor(model: string, provider: string): ModelDescriptor {
     provider,
     limits: { contextWindow: 1_000_000, maxOutputTokens: 65_536 },
     configSchema: EmptyConfigSchema,
+    configKeys: toConfigKeys(EmptyConfigSchema),
     configJsonSchema: toConfigJsonSchema(EmptyConfigSchema),
     validateConfig: zodToStandardSchema(EmptyConfigSchema),
   }
@@ -147,6 +150,7 @@ describe('createModelRegistry', () => {
         provider: 'a',
         limits: { contextWindow: 1_000_000, maxOutputTokens: 65_536 },
         configSchema: SchemaA,
+        configKeys: toConfigKeys(SchemaA),
         configJsonSchema: toConfigJsonSchema(SchemaA),
         validateConfig: zodToStandardSchema(SchemaA),
       },
@@ -155,6 +159,7 @@ describe('createModelRegistry', () => {
         provider: 'b',
         limits: { contextWindow: 1_000_000, maxOutputTokens: 65_536 },
         configSchema: SchemaB,
+        configKeys: toConfigKeys(SchemaB),
         configJsonSchema: toConfigJsonSchema(SchemaB),
         validateConfig: zodToStandardSchema(SchemaB),
       },
@@ -364,5 +369,151 @@ describe('assertInputMimeTypesAdmitted', () => {
         'p',
       ),
     ).not.toThrow()
+  })
+})
+
+describe('registry introspection (findByModel, listDescriptors, configKeys)', () => {
+  const aliased: ModelDescriptor = {
+    ...makeDescriptor('gamma', 'p1'),
+    aliases: ['gamma-001'],
+  }
+  const sameIdOtherProvider = makeDescriptor('gamma', 'p2')
+  const other = makeDescriptor('delta', 'p1')
+  const registry = createModelRegistry([aliased, other, sameIdOtherProvider])
+
+  it('findByModel finds a canonical id without a provider', () => {
+    expect(registry.findByModel('delta')).toEqual([other])
+  })
+
+  it('findByModel finds a declared alias and returns the aliased descriptor', () => {
+    expect(registry.findByModel('gamma-001')).toEqual([aliased])
+    expect(registry.findByModel('gamma-001')[0]).toBe(aliased)
+  })
+
+  it('findByModel returns every provider that registers the id, in registration order', () => {
+    const found = registry.findByModel('gamma')
+    expect(found).toHaveLength(2)
+    expect(found[0]).toBe(aliased)
+    expect(found[1]).toBe(sameIdOtherProvider)
+    expect(found.map((d) => d.provider)).toEqual(['p1', 'p2'])
+  })
+
+  it('findByModel returns an empty list for an unknown id, a prefix or a sibling', () => {
+    expect(registry.findByModel('nope')).toEqual([])
+    expect(registry.findByModel('gam')).toEqual([])
+    expect(registry.findByModel('gamma-002')).toEqual([])
+    expect(registry.findByModel('')).toEqual([])
+  })
+
+  it('findByModel returns a defensive copy', () => {
+    const first = registry.findByModel('gamma') as ModelDescriptor[]
+    first.length = 0
+    expect(registry.findByModel('gamma')).toHaveLength(2)
+  })
+
+  it('listDescriptors lists every descriptor in registration order, as a copy', () => {
+    expect(registry.listDescriptors()).toEqual([aliased, other, sameIdOtherProvider])
+    ;(registry.listDescriptors() as ModelDescriptor[]).length = 0
+    expect(registry.listDescriptors()).toHaveLength(3)
+  })
+
+  it('an empty registry finds and lists nothing', () => {
+    const empty = createModelRegistry([])
+    expect(empty.findByModel('x')).toEqual([])
+    expect(empty.listDescriptors()).toEqual([])
+  })
+})
+
+describe('configKeys', () => {
+  const Branches = z.union([
+    z.strictObject({
+      temperature: z.number().optional(),
+      serviceTier: z.literal('flex'),
+      reasoning: z.strictObject({ effort: z.enum(['low']) }).optional(),
+    }),
+    z.strictObject({
+      temperature: z.number().optional(),
+      serviceTier: z.literal('standard').optional(),
+      maxOutputTokens: z.number().optional(),
+    }),
+  ])
+
+  it('is the sorted union of the top-level keys of every branch, once each', () => {
+    expect(toConfigKeys(Branches)).toEqual([
+      'maxOutputTokens',
+      'reasoning',
+      'serviceTier',
+      'temperature',
+    ])
+  })
+
+  it('names only top-level keys, not nested ones', () => {
+    expect(
+      toConfigKeys(z.strictObject({ reasoning: z.strictObject({ effort: z.string() }) })),
+    ).toEqual(['reasoning'])
+  })
+
+  it('an empty schema has no keys', () => {
+    expect(toConfigKeys(EmptyConfigSchema)).toEqual([])
+  })
+
+  it('a recursive schema still lists its top-level keys (a $ref below them is not followed)', () => {
+    const Recursive: z.ZodType = z.strictObject({
+      get child() {
+        return Recursive.optional()
+      },
+    })
+    expect(toConfigKeys(Recursive)).toEqual(['child'])
+  })
+
+  it('a JSON Schema whose keys sit behind a $ref is refused, not skipped', () => {
+    expect(() =>
+      configKeysOfJsonSchema({
+        $ref: '#/$defs/config',
+        $defs: { config: { properties: {} } },
+      }),
+    ).toThrow(/\$ref/)
+    expect(() =>
+      configKeysOfJsonSchema({ anyOf: [{ properties: { a: {} } }, { $ref: '#/x' }] }),
+    ).toThrow(/\$ref/)
+  })
+
+  it('matches the keys the descriptor schema accepts, per descriptor', () => {
+    const Schema = z.strictObject({ a: z.number().optional(), b: z.string().optional() })
+    const d: ModelDescriptor = {
+      ...makeDescriptor('m', 'p'),
+      configSchema: Schema,
+      configJsonSchema: toConfigJsonSchema(Schema),
+      configKeys: toConfigKeys(Schema),
+      validateConfig: zodToStandardSchema(Schema),
+    }
+    const resolved = createModelRegistry([d]).resolve('p', 'm')
+    expect(resolved?.configKeys).toEqual(['a', 'b'])
+    for (const key of resolved?.configKeys ?? []) {
+      expect(Object.keys((resolved?.configSchema as typeof Schema).shape)).toContain(key)
+    }
+  })
+
+  it('registry construction rejects missing and stale configKeys', () => {
+    const base = makeDescriptor('m', 'p')
+    expect(() =>
+      createModelRegistry([
+        { ...base, configKeys: undefined } as unknown as ModelDescriptor,
+      ]),
+    ).toThrow(/missing required configKeys/)
+    expect(() => createModelRegistry([{ ...base, configKeys: ['extra'] }])).toThrow(
+      /stale configKeys \[extra\]/,
+    )
+    const Two = z.strictObject({ a: z.number().optional(), b: z.number().optional() })
+    expect(() =>
+      createModelRegistry([
+        {
+          ...base,
+          configSchema: Two,
+          configJsonSchema: toConfigJsonSchema(Two),
+          configKeys: ['a'],
+        },
+      ]),
+    ).toThrow(/stale configKeys/)
   })
 })

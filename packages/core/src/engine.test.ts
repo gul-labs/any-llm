@@ -12,7 +12,11 @@
 import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
 import { createClient, createModelRegistry, LlmError, retryMiddleware } from './index.js'
-import { toConfigJsonSchema, zodToStandardSchema } from './model-config/index.js'
+import {
+  toConfigJsonSchema,
+  toConfigKeys,
+  zodToStandardSchema,
+} from './model-config/index.js'
 import type {
   AdapterResult,
   AdapterCtx,
@@ -124,6 +128,7 @@ const STRICT_REGISTRY = createModelRegistry([
     provider: 'google',
     limits: { contextWindow: 1_000_000, maxOutputTokens: 65_536 },
     configSchema: StrictGeminiConfigSchema,
+    configKeys: toConfigKeys(StrictGeminiConfigSchema),
     configJsonSchema: toConfigJsonSchema(StrictGeminiConfigSchema),
     validateConfig: zodToStandardSchema(StrictGeminiConfigSchema),
   },
@@ -1086,11 +1091,13 @@ describe('engine — routing', () => {
 
   it('generate: custom registry resolving to a mismatched-provider descriptor → bad_request', async () => {
     const google = new FakeAdapter('google', makeSuccessResult())
-    // Resolve-only registry (no listDescriptors) that always answers with an
+    // Registry that lists nothing and always answers with an
     // 'anthropic' descriptor, regardless of the provider requested.
     const wrongProviderRegistry: ModelRegistry = {
       resolve: () =>
         makeTestDescriptor({ model: 'claude-sonnet-5', provider: 'anthropic' }),
+      findByModel: () => [],
+      listDescriptors: () => [],
     }
 
     const client = createClient({
@@ -1115,6 +1122,8 @@ describe('engine — routing', () => {
     const wrongProviderRegistry: ModelRegistry = {
       resolve: () =>
         makeTestDescriptor({ model: 'claude-sonnet-5', provider: 'anthropic' }),
+      findByModel: () => [],
+      listDescriptors: () => [],
     }
 
     const client = createClient({
@@ -1794,28 +1803,25 @@ describe('engine — pricingFamily routing', () => {
     ).not.toThrow()
   })
 
-  it('strictPricing requires custom registries to implement listDescriptors', () => {
-    const registryWithoutEnumeration: ModelRegistry = {
-      resolve(_provider, model) {
-        if (model === 'my-priced-model') {
-          return makeTestDescriptor({
-            model: 'my-priced-model',
-            provider: 'google',
-            pricingFamily: 'gemini-2.5-pro',
-          })
-        }
-        return undefined
-      },
-    }
-
+  it('a modelRegistry that lacks a registry method is refused at construction', () => {
+    const resolveOnly = { resolve: () => undefined } as unknown as ModelRegistry
     expect(() =>
       createClient({
         adapters: [new FakeAdapter('google', makeSuccessResult())],
         pricingSources: { google: PRICING },
-        modelRegistry: registryWithoutEnumeration,
-        strictPricing: true,
+        modelRegistry: resolveOnly,
       }),
-    ).toThrow(/listDescriptors/)
+    ).toThrow(/modelRegistry must implement findByModel\(\)/)
+    expect(() =>
+      createClient({
+        adapters: [new FakeAdapter('google', makeSuccessResult())],
+        pricingSources: { google: PRICING },
+        modelRegistry: {
+          ...resolveOnly,
+          findByModel: () => [],
+        } as unknown as ModelRegistry,
+      }),
+    ).toThrow(/modelRegistry must implement listDescriptors\(\)/)
   })
 
   it('default pricing remains fail-open for unpriced models and emits a warning', async () => {

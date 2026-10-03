@@ -1520,6 +1520,16 @@ export function createClient(config: ClientConfig): Client {
   const rateLimiter: RateLimiter = config.rateLimiter ?? NOOP_RATE_LIMITER
   const libDefaults: GenConfig = config.defaults ?? {}
   const registry: ModelRegistry = config.modelRegistry
+  for (const method of ['resolve', 'findByModel', 'listDescriptors'] as const) {
+    if (
+      typeof (registry as Partial<ModelRegistry> | undefined)?.[method] !== 'function'
+    ) {
+      throw new LlmError(
+        `ClientConfig.modelRegistry must implement ${method}(); build it with createModelRegistry.`,
+        { kind: 'bad_request', retryable: false },
+      )
+    }
+  }
 
   // Build O(1) adapter map at construction time — also detects duplicate ids.
   const adapterMap = new Map<string, ProviderAdapter>()
@@ -1583,34 +1593,23 @@ export function createClient(config: ClientConfig): Client {
   // Unconditional construction-time invariant: every registry descriptor's
   // provider must match a configured adapter's id.
   {
-    const descriptors = registry.listDescriptors?.()
-    if (descriptors !== undefined) {
-      for (const d of descriptors) {
-        if (!adapterMap.has(d.provider)) {
-          throw new LlmError(
-            `Model registry descriptor for provider "${d.provider}" model "${d.model}" ` +
-              `has no matching configured adapter (configured adapter ids: ${Array.from(
-                adapterMap.keys(),
-              )
-                .map((id) => `"${id}"`)
-                .join(', ')}).`,
-            { kind: 'bad_request', retryable: false },
-          )
-        }
+    for (const d of registry.listDescriptors()) {
+      if (!adapterMap.has(d.provider)) {
+        throw new LlmError(
+          `Model registry descriptor for provider "${d.provider}" model "${d.model}" ` +
+            `has no matching configured adapter (configured adapter ids: ${Array.from(
+              adapterMap.keys(),
+            )
+              .map((id) => `"${id}"`)
+              .join(', ')}).`,
+          { kind: 'bad_request', retryable: false },
+        )
       }
     }
   }
 
   if (config.strictPricing === true) {
-    const descriptors = registry.listDescriptors?.()
-    if (descriptors === undefined) {
-      throw new LlmError(
-        'strictPricing requires a ModelRegistry that implements listDescriptors(); ' +
-          'the configured custom registry does not.',
-        { kind: 'bad_request', retryable: false },
-      )
-    }
-    for (const d of descriptors) {
+    for (const d of registry.listDescriptors()) {
       const pricingKey = d.pricingFamily ?? d.model
       const source = pricingSources[d.provider]
       if (source === undefined || !source.hasModel(pricingKey)) {

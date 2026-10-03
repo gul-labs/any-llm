@@ -135,3 +135,11 @@ describe('codex-cli limits and media (docs read 2026-10-03)', () => {
     }
   })
 })
+
+describe('codex-cli configKeys (R5)', () => {
+  it('lists reasoning and timeoutMs on every model', () => {
+    for (const d of codexCliModelDescriptors) {
+      expect(d.configKeys).toEqual(['reasoning', 'timeoutMs'])
+    }
+  })
+})

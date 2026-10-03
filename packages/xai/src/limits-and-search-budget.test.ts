@@ -300,3 +300,39 @@ describe('providerOptions.xai.searchBudget', () => {
     ).toBe(false)
   })
 })
+
+describe('xai configKeys (R5)', () => {
+  it('lists the top-level keys of each Grok schema, sorted', () => {
+    for (const d of xaiModelDescriptors) {
+      expect(d.configKeys).toEqual([
+        'maxOutputTokens',
+        'providerOptions',
+        'reasoning',
+        'serviceTier',
+        'temperature',
+        'timeoutMs',
+        'topP',
+      ])
+    }
+  })
+
+  it('every listed key is accepted by the schema', () => {
+    const probe: Record<string, unknown> = {
+      maxOutputTokens: 10,
+      providerOptions: {},
+      reasoning: { effort: 'low' },
+      serviceTier: 'priority',
+      temperature: 0.5,
+      timeoutMs: 1000,
+      topP: 0.5,
+    }
+    for (const d of xaiModelDescriptors) {
+      for (const key of d.configKeys) {
+        expect(
+          d.configSchema.safeParse({ [key]: probe[key] }).success,
+          `${d.model} ${key}`,
+        ).toBe(true)
+      }
+    }
+  })
+})

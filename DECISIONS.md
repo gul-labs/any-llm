@@ -2068,6 +2068,37 @@ WebP, Gemini rejects `maxOutputTokens` above 65,536, and neither fact was on the
 - A `maxOutputTokens` above the documented limit fails config validation instead of reaching the
   provider; for xAI that bound is the 500,000-token window.
 
+### Amendment B (2026-10-03): registry introspection
+
+**Context:**
+A host that keeps provider-neutral call-site config, or routes a model string to a provider, had no way
+to ask the registry what it knows: `resolve` needs the provider already, `listDescriptors` was optional
+(so `strictPricing` failed on a custom registry that lacked it), and a model's accepted config keys
+lived only inside its Zod schema.
+
+**Decision:**
+
+1. **`ModelRegistry.findByModel(model)`** returns every descriptor whose canonical id or declared alias
+   equals `model`, across providers, in registration order (empty when none). The same bare id can
+   exist under several providers (ADR-022), so it returns all of them and never picks one. Exact match,
+   like `resolve`; a defensive copy.
+2. **`ModelRegistry.listDescriptors()` is required** (a copy, registration order). The optional form and
+   the `strictPricing` error for registries without it are deleted; `createClient` throws `bad_request`
+   when `modelRegistry` lacks `resolve`, `findByModel` or `listDescriptors`.
+3. **`ModelDescriptor.configKeys: readonly string[]`** is a required, derived artifact beside
+   `configJsonSchema`: the sorted, de-duplicated top-level keys the schema names across all branches of
+   a union (`toConfigKeys(configSchema)`, exported). It names keys only; a key can be admitted on one
+   branch and not another, so the schema stays the authority for a given config. `createModelRegistry`
+   rejects a descriptor with missing or stale `configKeys`, and `assertRegistryInvariants` checks it
+   against `configSchema`.
+4. **No pruning helper.** A host that keeps provider-neutral config builds each target's config
+   explicitly (ADR-037: hosts route and fall back); `configKeys` is what it checks that against.
+
+**Consequences:**
+
+- Custom `ModelRegistry` implementations must add `findByModel` and `listDescriptors`; custom
+  descriptors must add `configKeys` (use `toConfigKeys(configSchema)`).
+
 ---
 
 ## ADR-034: One JSON Schema dialect, fail closed

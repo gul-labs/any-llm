@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { toConfigJsonSchema, zodToStandardSchema } from './index.js'
+import { toConfigJsonSchema, toConfigKeys, zodToStandardSchema } from './index.js'
 import type { ModelDescriptor } from './index.js'
 
 import { assertRegistryInvariants } from '@gullabs/testing'
@@ -16,12 +16,14 @@ const NoKeySchema = z.strictObject({})
 function descriptor(
   schema: z.ZodType,
   limits: ModelDescriptor['limits'],
+  configKeys?: readonly string[],
 ): ModelDescriptor {
   return {
     model: 'm',
     provider: 'p',
     limits,
     configSchema: schema,
+    configKeys: configKeys ?? toConfigKeys(schema),
     configJsonSchema: toConfigJsonSchema(schema),
     validateConfig: zodToStandardSchema(schema),
   }
@@ -54,6 +56,16 @@ describe('assertRegistryInvariants limits', () => {
     expect(() =>
       check(descriptor(CappedSchema, { contextWindow: 5000, maxOutputTokens: 2000 })),
     ).toThrow(/accept maxOutputTokens up to/)
+  })
+
+  it('rejects configKeys that differ from the schema', () => {
+    expect(() =>
+      check(
+        descriptor(CappedSchema, { contextWindow: 5000, maxOutputTokens: 1000 }, [
+          'other',
+        ]),
+      ),
+    ).toThrow(/configKeys is stale/)
   })
 
   it('rejects missing, non-integer and inconsistent limits', () => {

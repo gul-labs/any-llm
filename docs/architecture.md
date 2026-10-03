@@ -490,6 +490,8 @@ Each descriptor carries:
 - `capabilities.nativeStructuredOutput` — whether the adapter may send provider-native
   `responseMimeType` / `responseJsonSchema` for `output.jsonSchema` (standard JSON Schema,
   checked against the keywords Google enforces; ADR-034).
+- `configKeys` — the sorted top-level keys the config schema names across all union branches
+  (`toConfigKeys(configSchema)`; a stale list fails registry construction).
 - `limits` — required `{ contextWindow, maxOutputTokens }` from the provider's documentation; the
   config schema caps `maxOutputTokens` at `limits.maxOutputTokens` (ADR-033, Amendment A).
 - `capabilities.vision` / `capabilities.audioInput` — declarative multimodal support flags.

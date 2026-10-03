@@ -15,6 +15,7 @@ import type { ModelDescriptor, ModelLimits, ModelRegistry } from '@gullabs/core'
 import {
   createModelRegistry,
   toConfigJsonSchema,
+  toConfigKeys,
   zodToStandardSchema,
 } from '@gullabs/core'
 
@@ -147,6 +148,7 @@ export const claudeCliModelDescriptors: ModelDescriptor[] = CLAUDE_CLI_MODEL_IDS
         vision: false,
       },
       configSchema,
+      configKeys: toConfigKeys(configSchema),
       configJsonSchema: toConfigJsonSchema(configSchema),
       validateConfig: zodToStandardSchema(configSchema),
     }

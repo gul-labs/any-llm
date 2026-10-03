@@ -23,7 +23,11 @@
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
 import { createClient, createModelRegistry, LlmError } from './index.js'
-import { toConfigJsonSchema, zodToStandardSchema } from './model-config/index.js'
+import {
+  toConfigJsonSchema,
+  toConfigKeys,
+  zodToStandardSchema,
+} from './model-config/index.js'
 import type {
   AdapterResult,
   ProviderAdapter,
@@ -124,6 +128,7 @@ const STRICT_REGISTRY = createModelRegistry([
     provider: 'google',
     limits: { contextWindow: 1_000_000, maxOutputTokens: 65_536 },
     configSchema: StrictGoogleOptionsSchema,
+    configKeys: toConfigKeys(StrictGoogleOptionsSchema),
     configJsonSchema: toConfigJsonSchema(StrictGoogleOptionsSchema),
     validateConfig: zodToStandardSchema(StrictGoogleOptionsSchema),
   },

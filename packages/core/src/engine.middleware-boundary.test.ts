@@ -668,6 +668,8 @@ describe('the engine re-checks the registry result (ADR-033)', () => {
   const prefixRegistry: ModelRegistry = {
     resolve: (provider, model) =>
       provider === 'google' && model.startsWith('g-pro') ? G_PRO : undefined,
+    findByModel: () => [],
+    listDescriptors: () => [],
   }
 
   function prefixClient() {

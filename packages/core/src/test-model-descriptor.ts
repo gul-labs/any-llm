@@ -1,6 +1,10 @@
 import { z } from 'zod'
 
-import { toConfigJsonSchema, zodToStandardSchema } from './model-config/index.js'
+import {
+  toConfigJsonSchema,
+  toConfigKeys,
+  zodToStandardSchema,
+} from './model-config/index.js'
 import type { ModelDescriptor } from './registry.js'
 
 /** Fixture limits for engine tests that do not care about token limits. */
@@ -24,6 +28,7 @@ export function makeTestDescriptor(
     model,
     provider,
     configSchema: EmptyConfigSchema,
+    configKeys: toConfigKeys(EmptyConfigSchema),
     configJsonSchema: EmptyConfigJsonSchema,
     validateConfig: EmptyConfigValidator,
   }
@@ -58,6 +63,7 @@ export function makePermissiveTestDescriptor(
     model,
     provider,
     configSchema: PermissiveConfigSchema,
+    configKeys: toConfigKeys(PermissiveConfigSchema),
     configJsonSchema: PermissiveConfigJsonSchema,
     validateConfig: PermissiveConfigValidator,
   }

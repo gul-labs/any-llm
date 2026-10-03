@@ -142,3 +142,12 @@ describe('claude-cli limits and media (docs read 2026-10-03)', () => {
     }
   })
 })
+
+describe('claude-cli configKeys (R5)', () => {
+  it('lists only the keys each schema names: Haiku has no reasoning, none has maxOutputTokens', () => {
+    for (const d of claudeCliModelDescriptors) {
+      const haiku = d.model === 'claude-haiku-4-5-20251001'
+      expect(d.configKeys).toEqual(haiku ? ['timeoutMs'] : ['reasoning', 'timeoutMs'])
+    }
+  })
+})

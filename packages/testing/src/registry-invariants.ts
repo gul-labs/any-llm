@@ -18,7 +18,7 @@
 
 import assert from 'node:assert/strict'
 
-import { toConfigJsonSchema } from '@gullabs/core'
+import { toConfigJsonSchema, toConfigKeys } from '@gullabs/core'
 import type { ModelDescriptor, PricingSource } from '@gullabs/core'
 
 export interface AssertRegistryInvariantsOptions {
@@ -61,6 +61,7 @@ export interface AssertRegistryInvariantsOptions {
  *   (`configSchema`/`configJsonSchema`/`validateConfig`).
  * - `configJsonSchema` is not stale relative to `configSchema`
  *   (`configJsonSchema === toConfigJsonSchema(configSchema)`).
+ * - `configKeys` equals `toConfigKeys(configSchema)`.
  * - `limits` are positive integers with `maxOutputTokens <= contextWindow`, and a
  *   config schema that has a `maxOutputTokens` field accepts exactly up to
  *   `limits.maxOutputTokens` and rejects one more.
@@ -132,9 +133,9 @@ export function assertRegistryInvariants(opts: AssertRegistryInvariantsOptions):
       limits.maxOutputTokens <= limits.contextWindow,
       `${model}: limits.maxOutputTokens is above limits.contextWindow`,
     )
-    // A schema without a `maxOutputTokens` field (the CLI providers) rejects
-    // the probe value as an unknown key; the cap only applies where it exists.
-    if (descriptor.configSchema.safeParse({ maxOutputTokens: 1 }).success) {
+    // A schema without a `maxOutputTokens` field (the CLI providers) has no cap
+    // to check; `configKeys` says whether it has one.
+    if (descriptor.configKeys.includes('maxOutputTokens')) {
       assert.ok(
         descriptor.configSchema.safeParse({ maxOutputTokens: limits.maxOutputTokens })
           .success,
@@ -147,6 +148,12 @@ export function assertRegistryInvariants(opts: AssertRegistryInvariantsOptions):
         `${model}: config schema must cap maxOutputTokens at limits.maxOutputTokens`,
       )
     }
+
+    assert.deepStrictEqual(
+      [...descriptor.configKeys],
+      [...toConfigKeys(descriptor.configSchema)],
+      `${model}: configKeys is stale relative to configSchema`,
+    )
 
     if (adapterFixtureSet !== undefined) {
       assert.ok(

@@ -13,6 +13,7 @@ import type { ModelDescriptor, ModelRegistry } from '@gullabs/core'
 import {
   createModelRegistry,
   toConfigJsonSchema,
+  toConfigKeys,
   zodToStandardSchema,
 } from '@gullabs/core'
 
@@ -47,6 +48,7 @@ export const grok45ModelDescriptor: ModelDescriptor = {
     serviceTiers: ['priority'],
   },
   configSchema: Grok45ConfigSchema,
+  configKeys: toConfigKeys(Grok45ConfigSchema),
   configJsonSchema: toConfigJsonSchema(Grok45ConfigSchema),
   validateConfig: zodToStandardSchema(Grok45ConfigSchema),
 }
@@ -73,6 +75,7 @@ export const grok46ModelDescriptor: ModelDescriptor = {
     serviceTiers: ['priority'],
   },
   configSchema: Grok46ConfigSchema,
+  configKeys: toConfigKeys(Grok46ConfigSchema),
   configJsonSchema: toConfigJsonSchema(Grok46ConfigSchema),
   validateConfig: zodToStandardSchema(Grok46ConfigSchema),
 }
@@ -101,6 +104,7 @@ export const grok47ModelDescriptor: ModelDescriptor = {
     serviceTiers: ['priority'],
   },
   configSchema: Grok47ConfigSchema,
+  configKeys: toConfigKeys(Grok47ConfigSchema),
   configJsonSchema: toConfigJsonSchema(Grok47ConfigSchema),
   validateConfig: zodToStandardSchema(Grok47ConfigSchema),
 }

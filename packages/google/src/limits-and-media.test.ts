@@ -250,3 +250,60 @@ describe('thinking budget at or above maxOutputTokens (R3.2)', () => {
     ).toHaveLength(0)
   })
 })
+
+describe('google configKeys (R5)', () => {
+  it('lists the keys of every tier branch of each Gemini schema, once', () => {
+    for (const d of geminiModelDescriptors) {
+      expect(d.configKeys, d.model).toEqual(
+        expect.arrayContaining([
+          'maxOutputTokens',
+          'providerOptions',
+          'reasoning',
+          'serviceTier',
+          'stopSequences',
+          'timeoutMs',
+        ]),
+      )
+      expect(new Set(d.configKeys).size).toBe(d.configKeys.length)
+      expect([...d.configKeys]).toEqual([...d.configKeys].sort())
+    }
+  })
+
+  it('sampling keys appear only on models whose sampling is tunable', () => {
+    for (const d of [...geminiModelDescriptors, ...gemmaModelDescriptors]) {
+      const tunable = d.capabilities?.sampling === 'tunable'
+      for (const key of ['temperature', 'topP', 'topK']) {
+        expect(d.configKeys.includes(key), `${d.model} ${key}`).toBe(tunable)
+      }
+    }
+  })
+
+  it('Gemma has no serviceTier key (no tier is admitted)', () => {
+    for (const d of gemmaModelDescriptors) {
+      expect(d.configKeys).not.toContain('serviceTier')
+    }
+  })
+
+  it('every listed key is accepted by the schema in some config', () => {
+    for (const d of [...geminiModelDescriptors, ...gemmaModelDescriptors]) {
+      for (const key of d.configKeys) {
+        const probe: Record<string, unknown> = {
+          maxOutputTokens: 10,
+          stopSequences: ['x'],
+          timeoutMs: 1000,
+          temperature: 0.5,
+          topP: 0.5,
+          topK: 5,
+          reasoning: { includeThoughts: true },
+          providerOptions: {},
+          serviceTier: 'flex',
+        }
+        expect(key in probe, `${d.model}: no probe for ${key}`).toBe(true)
+        const accepted =
+          d.configSchema.safeParse({ [key]: probe[key] }).success ||
+          d.configSchema.safeParse({ serviceTier: 'flex', [key]: probe[key] }).success
+        expect(accepted, `${d.model} accepts ${key}`).toBe(true)
+      }
+    }
+  })
+})

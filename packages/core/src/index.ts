@@ -126,7 +126,11 @@ export {
   assertModelMatchesDescriptor,
   assertInputMimeTypesAdmitted,
 } from './registry.js'
-export { toConfigJsonSchema, zodToStandardSchema } from './model-config/index.js'
+export {
+  toConfigJsonSchema,
+  toConfigKeys,
+  zodToStandardSchema,
+} from './model-config/index.js'
 
 // Call site
 export type { CallSite } from './callsite.js'

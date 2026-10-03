@@ -21,7 +21,8 @@ Every other `@gullabs/*` package declares this one as an exact-version peer depe
 | ---------------------------- | -------------------------------------------------------------------------------------------------- |
 | `createClient(config)`       | Wires ports into a `{ generate, runStructured }` client                                            |
 | `composeProviders(plugins)`  | Merges one or more `ProviderPlugin`s into `ClientConfig` fields                                    |
-| `createModelRegistry(descs)` | Builds a `ModelRegistry` from an array of `ModelDescriptor`s (exact ids + declared `aliases`)      |
+| `createModelRegistry(descs)` | Builds a `ModelRegistry` (`resolve`, `findByModel`, `listDescriptors`) from `ModelDescriptor`s     |
+| `toConfigKeys(schema)`       | Derives `ModelDescriptor.configKeys` from a model's config schema                                  |
 | `defineCallSite(opts)`       | Defines a typed, reusable prompt template bound to a model                                         |
 | `computeCost(...)`           | Pure, provider-agnostic cost function (providers supply their own rates)                           |
 | `LlmError`                   | Typed error class — always thrown on call failure                                                  |
@@ -207,6 +208,15 @@ model accepts in `inline-media` and `file-uri` parts (absent or empty: no media)
 type with `bad_request` before dispatch through `assertInputMimeTypesAdmitted`; a host-authored descriptor
 for a model that takes media must list its types. Where a provider documents no separate output limit,
 `maxOutputTokens` equals `contextWindow`. See ADR-033, Amendment A.
+
+Introspection (ADR-033, Amendment B): `registry.findByModel(model)` returns every descriptor that names the
+string as its canonical id or a declared alias, across providers (an array, empty when unknown; the same bare id
+can exist under several providers), and `registry.listDescriptors()` lists them all. `descriptor.configKeys` is
+the sorted list of top-level config keys the model's schema names, flattened across the branches of a union
+(`toConfigKeys(configSchema)` derives it; `createModelRegistry` rejects a stale list). It lists names, not
+which combinations are valid: the schema decides that. There is no helper that prunes a config for a model: a
+host with provider-neutral config builds each target's config explicitly and can check it against `configKeys`.
+A custom `ModelRegistry` must implement `resolve`, `findByModel` and `listDescriptors`.
 
 Model-specific reminders:
 

@@ -15,6 +15,7 @@ import { z } from 'zod'
 import {
   createModelRegistry,
   toConfigJsonSchema,
+  toConfigKeys,
   zodToStandardSchema,
 } from '@gullabs/core'
 import type { ModelDescriptor, ModelLimits, ModelRegistry } from '@gullabs/core'
@@ -148,6 +149,7 @@ export const codexCliModelDescriptors: ModelDescriptor[] = CODEX_CLI_MODEL_IDS.m
         vision: false,
       },
       configSchema,
+      configKeys: toConfigKeys(configSchema),
       configJsonSchema: toConfigJsonSchema(configSchema),
       validateConfig: zodToStandardSchema(configSchema),
     }

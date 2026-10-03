@@ -15,6 +15,7 @@
 import type * as z from 'zod'
 
 import { LlmError } from './errors.js'
+import { configKeysOfJsonSchema } from './model-config/index.js'
 import type { StandardSchemaV1 } from './standard-schema.js'
 import type { JsonValue, Message, ReasoningEffort } from './types.js'
 
@@ -123,6 +124,16 @@ export interface ModelDescriptor {
   }
   /** Zod runtime schema for the full per-model config contract. */
   configSchema: z.ZodType
+  /**
+   * Every top-level config key the model's schema names, sorted: the keys of
+   * each object shape, across all branches of a union (Gemini's tier branches
+   * name `serviceTier` differently, so the key appears once). Derive it with
+   * {@link toConfigKeys}; `createModelRegistry` rejects a descriptor whose
+   * list differs from what its `configJsonSchema` names, so it cannot go
+   * stale. It lists names only: a key can be admitted on one branch and not
+   * another, so the schema stays the authority for what a given config may hold.
+   */
+  configKeys: readonly string[]
   /** JSON Schema derived from {@link configSchema}. */
   configJsonSchema: JsonValue
   /** Standard Schema adapter derived from {@link configSchema}. */
@@ -130,8 +141,40 @@ export interface ModelDescriptor {
 }
 
 export interface ModelRegistry {
+  /** The descriptor for `model` (canonical id or declared alias) under `provider`, exact match. */
   resolve(provider: string, model: string): ModelDescriptor | undefined
-  listDescriptors?(): readonly ModelDescriptor[]
+  /**
+   * Every descriptor that names `model` as its canonical id or a declared alias,
+   * across providers, in registration order; empty when none does. The same
+   * bare id may be registered under several providers (ADR-022), so this
+   * returns all of them instead of picking one: a caller that has no provider
+   * yet uses it to find the candidates, then calls `resolve` with the provider
+   * it chose. Exact match, like `resolve`.
+   */
+  findByModel(model: string): readonly ModelDescriptor[]
+  /** Every registered descriptor, in registration order (a copy). */
+  listDescriptors(): readonly ModelDescriptor[]
+}
+
+function assertConfigKeys(descriptor: ModelDescriptor): void {
+  const where = `Model descriptor for provider "${descriptor.provider}" model "${descriptor.model}"`
+  const declared: unknown = (descriptor as Partial<ModelDescriptor>).configKeys
+  if (!Array.isArray(declared)) {
+    throw new LlmError(`${where} is missing required configKeys.`, {
+      kind: 'bad_request',
+      retryable: false,
+    })
+  }
+  const expected = configKeysOfJsonSchema(descriptor.configJsonSchema)
+  if (
+    declared.length !== expected.length ||
+    declared.some((key, i) => key !== expected[i])
+  ) {
+    throw new LlmError(
+      `${where} has stale configKeys [${declared.map(String).join(', ')}]: its configJsonSchema names [${expected.join(', ')}]. Derive configKeys with toConfigKeys(configSchema).`,
+      { kind: 'bad_request', retryable: false },
+    )
+  }
 }
 
 function assertLimits(descriptor: Partial<ModelDescriptor>): void {
@@ -322,7 +365,7 @@ export function unknownModelMessage(
   const scored = String(model).slice(0, MAX_MODEL_TEXT)
   const base = `No registered model for provider "${boundedModelText(provider)}" model "${shown}".`
   const candidates: string[] = []
-  for (const d of registry.listDescriptors?.() ?? []) {
+  for (const d of registry.listDescriptors()) {
     if (d.provider !== provider) continue
     candidates.push(d.model, ...(d.aliases ?? []))
   }
@@ -341,6 +384,7 @@ export function createModelRegistry(descriptors: ModelDescriptor[]): ModelRegist
 
   for (const descriptor of descriptors) {
     assertDescriptorSchemaArtifacts(descriptor)
+    assertConfigKeys(descriptor)
     assertLimits(descriptor)
     assertContinuationCapabilities(descriptor)
 
@@ -378,9 +422,24 @@ export function createModelRegistry(descriptors: ModelDescriptor[]): ModelRegist
     }
   }
 
+  // Bare model string (canonical id or alias) -> descriptors, across providers.
+  const byModel = new Map<string, ModelDescriptor[]>()
+  const addByModel = (model: string, descriptor: ModelDescriptor): void => {
+    const list = byModel.get(model)
+    if (list === undefined) byModel.set(model, [descriptor])
+    else if (!list.includes(descriptor)) list.push(descriptor)
+  }
+  for (const descriptor of descriptors) {
+    addByModel(descriptor.model, descriptor)
+    for (const alias of descriptor.aliases ?? []) addByModel(alias, descriptor)
+  }
+
   return {
     resolve(provider: string, model: string): ModelDescriptor | undefined {
       return exactMap.get(descriptorKey(provider, model))
+    },
+    findByModel(model: string): readonly ModelDescriptor[] {
+      return (byModel.get(model) ?? []).slice()
     },
     listDescriptors(): readonly ModelDescriptor[] {
       return descriptors.slice()

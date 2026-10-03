@@ -324,6 +324,10 @@ Invariants of the middleware chain (ADR-037) and model resolution (ADR-033):
 
 - Model ids resolve exactly: a descriptor's canonical `model` or one of its declared `aliases`.
   There is no prefix matching.
+- `ModelRegistry` is `{ resolve(provider, model), findByModel(model), listDescriptors() }`, all required.
+  `findByModel` returns every descriptor naming the string as canonical id or alias, across providers.
+  `ModelDescriptor.configKeys` is the sorted top-level keys of `configSchema` across union branches
+  (ADR-033, Amendment B).
 - Every `ModelDescriptor` states `limits: { contextWindow, maxOutputTokens }` (required, positive
   integers, `maxOutputTokens <= contextWindow`, from the provider's documentation) and its config
   schema caps `maxOutputTokens` at `limits.maxOutputTokens`. `capabilities.inputMimeTypes` lists the
