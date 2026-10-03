@@ -59,6 +59,7 @@ export {
   LlmError,
   classifyHttpStatus,
   classifyError,
+  causeChain,
   isTransportError,
   parseRetryAfter,
 } from './errors.js'

@@ -295,14 +295,19 @@ narrow by `kind` or read `retryable` without parsing message strings.
 
 1. Already an `LlmError` — returned as-is.
 2. `Error.name === 'AbortError'` → `aborted`.
-3. Any object with a recognizable numeric HTTP `status`, `code`, or `response.status` /
-   `error.status` / `error.code` (100-599) → routed through `classifyHttpStatus`, with
-   `retryAfterMs` read by `parseRetryAfter` from the response headers.
+3. Any object, or an object on its `cause` chain, with a recognizable HTTP `status`, `statusCode`,
+   `code` (a number or a three-digit numeric string) or `response.status` / `error.status` /
+   `error.code` (100-599) → routed through `classifyHttpStatus`, with `retryAfterMs` read by
+   `parseRetryAfter` from `headers` or `response.headers`. The delay travels with every retryable
+   status (408, 429, 5xx).
 4. `Error.name === 'TimeoutError'` → `timeout`.
 5. A transport failure (`isTransportError`): `ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`,
-   `EAI_AGAIN`, `EPIPE` or `UND_ERR_*` on the error or its `cause` chain, or the messages
-   "fetch failed", "connection error", "socket hang up" → `server`, retryable. An undici
-   deadline (`UND_ERR_*_TIMEOUT`) → `timeout`.
+   `EAI_AGAIN`, `EPIPE`, `ENOTFOUND`, `ENETUNREACH`, `EHOSTUNREACH` or an undici connection code
+   (`UND_ERR_CONNECT_TIMEOUT`, `_HEADERS_TIMEOUT`, `_BODY_TIMEOUT`, `_SOCKET`,
+   `_RES_CONTENT_LENGTH_MISMATCH`) on the error or its `cause` chain, or an error whose whole
+   message is "fetch failed", "connection error" or "socket hang up" (or a Node syscall failure
+   such as `connect ECONNREFUSED 127.0.0.1:443`) → `server`, retryable. An undici deadline
+   (`UND_ERR_*_TIMEOUT`) → `timeout`. Text that only mentions one of these phrases does not match.
 6. An `Error` whose message matches `/timeout|timed? out/i` → `timeout`. This is the last and
    weakest signal; it never overrides a status or an errno.
 7. Anything else → `unknown`.
@@ -310,9 +315,13 @@ narrow by `kind` or read `retryable` without parsing message strings.
 `classifyHttpStatus` maps 404 and 413 to `bad_request` (the request names a model or resource the
 provider does not have, or is too large) and leaves 409 as `unknown`. `parseRetryAfter(headers, now)`
 reads `retry-after-ms`, `retry-after` (delta-seconds with decimals, an HTTP-date, or a duration such
-as `6m0s`) and the `x-ratelimit-reset*` family (a value above 1e9 is epoch seconds), and caps the
-result at 24 hours. Adapters use `isTransportError` and `parseRetryAfter` rather than keeping their
-own copies.
+as `6m0s`) and the rate-limit reset headers, and caps the result at 24 hours. The reset headers
+(`x-ratelimit-reset`, `-requests`, `-tokens`, `ratelimit-reset`; a value above 1e9 is epoch seconds,
+above 1e12 epoch milliseconds) say when each limit resets, not which one refused the call: the
+delay is the longest reset among windows whose `-remaining` header is 0, else the shortest reset of
+all of them, so a distant unused window never extends the wait. Adapters call `classifyError` and
+overlay what a structured body proves; none keeps its own transport matcher or cause-chain walker
+(`causeChain` is exported for the overlays that need one).
 
 `classifyHttpStatus` maps an HTTP code to a _default_ kind. HTTP status is a hint,
 not a kind: providers overload codes (xAI invalid keys arrive as 400; xAI input

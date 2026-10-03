@@ -10,6 +10,7 @@
 import {
   LlmError,
   classifyError,
+  causeChain,
   assertNever,
   assertJsonSchemaProfile,
   assertModelMatchesDescriptor,
@@ -580,22 +581,6 @@ function isOpenAiSdkConnectionError(rawErr: unknown): boolean {
 const UNDICI_HEADERS_TIMEOUT_CODE = 'UND_ERR_HEADERS_TIMEOUT'
 const UNDICI_BODY_TIMEOUT_CODE = 'UND_ERR_BODY_TIMEOUT'
 
-/** `rawErr` followed by its `.cause` chain (bounded, cycle-safe). */
-function errorCauseChain(rawErr: unknown): unknown[] {
-  const chain: unknown[] = []
-  let current: unknown = rawErr
-  while (
-    current !== null &&
-    typeof current === 'object' &&
-    !chain.includes(current) &&
-    chain.length < 8
-  ) {
-    chain.push(current)
-    current = (current as { cause?: unknown }).cause
-  }
-  return chain
-}
-
 /**
  * What the adapter knows about the SDK deadline of the call that failed: the
  * `timeout` it handed the SDK and how long the call ran. Without it an
@@ -628,7 +613,7 @@ function isSdkDeadline(rawErr: unknown, deadline: XaiSdkDeadline | undefined): b
   ) {
     return false
   }
-  const causes = errorCauseChain(rawErr).slice(1)
+  const causes = causeChain(rawErr).slice(1)
   if (!causes.every((e) => (e as { name?: unknown }).name === 'AbortError')) return false
   return deadline.elapsedMs >= deadline.timeoutMs - SDK_DEADLINE_SLACK_MS
 }
@@ -651,7 +636,7 @@ function xaiTransportTimeoutKind(
   rawErr: unknown,
   deadline: XaiSdkDeadline | undefined,
 ): 'headers' | 'body' | 'sdk' | undefined {
-  const chain = errorCauseChain(rawErr)
+  const chain = causeChain(rawErr)
   const has = (code: string, name: string): boolean =>
     chain.some((e) => {
       const o = e as { code?: unknown; name?: unknown }

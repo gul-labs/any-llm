@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest'
 import {
   classifyHttpStatus,
   classifyError,
+  causeChain,
   isTransportError,
   parseRetryAfter,
   LlmError,
@@ -43,6 +44,34 @@ describe('classifyHttpStatus', () => {
       expectedKind: 'rate_limited',
       expectedRetryable: true,
       expectedRetryAfterMs: 5000,
+    },
+    // The provider's delay travels with every retryable status
+    {
+      status: 503,
+      retryAfterMs: 20_000,
+      expectedKind: 'server',
+      expectedRetryable: true,
+      expectedRetryAfterMs: 20_000,
+    },
+    {
+      status: 408,
+      retryAfterMs: 3_000,
+      expectedKind: 'timeout',
+      expectedRetryable: true,
+      expectedRetryAfterMs: 3_000,
+    },
+    // ...and never with a status a retry cannot fix
+    {
+      status: 400,
+      retryAfterMs: 5_000,
+      expectedKind: 'bad_request',
+      expectedRetryable: false,
+    },
+    {
+      status: 401,
+      retryAfterMs: 5_000,
+      expectedKind: 'invalid_auth',
+      expectedRetryable: false,
     },
     // Bad request
     { status: 400, expectedKind: 'bad_request', expectedRetryable: false },
@@ -495,6 +524,72 @@ describe('classifyError — evidence order', () => {
   })
 })
 
+describe('classifyError — structured status shapes', () => {
+  it('reads a numeric-string status (gaxios sets code to the string status)', () => {
+    expect(classifyError({ code: '429' })).toMatchObject({
+      kind: 'rate_limited',
+      retryable: true,
+      httpStatus: 429,
+    })
+    expect(classifyError({ status: '503' })).toMatchObject({
+      kind: 'server',
+      httpStatus: 503,
+    })
+    expect(classifyError({ response: { status: '404' } }).kind).toBe('bad_request')
+  })
+
+  it.each(['abc', '42', '4290', '429.5', '', ' ', 'ECONNRESET'])(
+    'a string that is not a three-digit status (%j) is not read as one',
+    (code) => {
+      expect(classifyError({ code }).httpStatus).toBeUndefined()
+    },
+  )
+
+  it('reads statusCode (AI SDK, got, AWS shapes)', () => {
+    expect(classifyError({ statusCode: 429, retryAfter: 3 })).toMatchObject({
+      kind: 'rate_limited',
+      httpStatus: 429,
+      retryAfterMs: 3_000,
+    })
+    expect(classifyError({ response: { statusCode: 502 } }).kind).toBe('server')
+  })
+
+  it('finds a status that exists only on the cause chain', () => {
+    const e = new Error('Request failed', {
+      cause: Object.assign(new Error('inner'), { status: 429, retryAfter: 2 }),
+    })
+    const result = classifyError(e)
+    expect(result).toMatchObject({
+      kind: 'rate_limited',
+      retryable: true,
+      httpStatus: 429,
+      retryAfterMs: 2_000,
+    })
+    expect(result.message).toBe('Request failed')
+    expect(result.cause).toBe(e)
+  })
+
+  it('reads retry-after from response.headers (axios, ky)', () => {
+    expect(
+      classifyError({ response: { status: 429, headers: { 'retry-after': '8' } } })
+        .retryAfterMs,
+    ).toBe(8_000)
+    expect(
+      classifyError({
+        status: 429,
+        headers: {},
+        response: { headers: new Headers({ 'retry-after': '9' }) },
+      }).retryAfterMs,
+    ).toBe(9_000)
+  })
+
+  it('carries a provider delay on a 503, not only on a 429', () => {
+    expect(
+      classifyError({ status: 503, headers: { 'retry-after': '20' } }),
+    ).toMatchObject({ kind: 'server', retryable: true, retryAfterMs: 20_000 })
+  })
+})
+
 describe('classifyError — transport failures', () => {
   it('undici "fetch failed" with ECONNRESET on the cause is a retryable server error', () => {
     const e = new TypeError('fetch failed', {
@@ -513,8 +608,11 @@ describe('classifyError — transport failures', () => {
     'ETIMEDOUT',
     'EAI_AGAIN',
     'EPIPE',
+    'ENOTFOUND',
+    'ENETUNREACH',
+    'EHOSTUNREACH',
     'UND_ERR_SOCKET',
-    'UND_ERR_CLOSED',
+    'UND_ERR_RES_CONTENT_LENGTH_MISMATCH',
   ])(
     'a bare %s code on the error or deep in its cause chain is a retryable server error',
     (code) => {
@@ -541,6 +639,35 @@ describe('classifyError — transport failures', () => {
   it('matches the SDK messages "Connection error." and "socket hang up"', () => {
     expect(classifyError(new Error('Connection error.')).kind).toBe('server')
     expect(classifyError(new Error('socket hang up')).kind).toBe('server')
+    expect(classifyError(new Error('connect ECONNREFUSED 127.0.0.1:443')).kind).toBe(
+      'server',
+    )
+    expect(classifyError(new Error('read ECONNRESET')).kind).toBe('server')
+  })
+
+  it.each([
+    'Invalid schema: no connection error handler',
+    'Tool output: fetch failed: file not found',
+    'the socket hang up handler is missing',
+    'request failed: ECONNRESET while parsing',
+  ])('free text that merely mentions a transport phrase is not one: %s', (message) => {
+    expect(classifyError(new Error(message))).toMatchObject({
+      kind: 'unknown',
+      retryable: false,
+    })
+  })
+
+  it.each([
+    'UND_ERR_INVALID_ARG',
+    'UND_ERR_NOT_SUPPORTED',
+    'UND_ERR_CLOSED',
+    'UND_ERR_DESTROYED',
+    'UND_ERR_REQ_CONTENT_LENGTH_MISMATCH',
+  ])('the undici programming error %s is not retried', (code) => {
+    expect(classifyError(Object.assign(new Error('x'), { code }))).toMatchObject({
+      kind: 'unknown',
+      retryable: false,
+    })
   })
 
   it('does not match an unrelated errno or message', () => {
@@ -562,6 +689,29 @@ describe('classifyError — transport failures', () => {
     let e: unknown = { code: 'ECONNRESET' }
     for (let i = 0; i < 12; i++) e = { message: `level ${i}`, cause: e }
     expect(isTransportError(e)).toBe(false)
+  })
+})
+
+describe('causeChain', () => {
+  it('lists the value then its causes, outermost first', () => {
+    const inner = { message: 'inner' }
+    const middle = { message: 'middle', cause: inner }
+    const outer = new Error('outer', { cause: middle })
+    expect(causeChain(outer)).toEqual([outer, middle, inner])
+  })
+
+  it('is empty for non-objects', () => {
+    for (const v of [undefined, null, 'x', 5, true]) expect(causeChain(v)).toEqual([])
+  })
+
+  it('stops at a cycle and at 8 nodes', () => {
+    const a: { cause?: unknown } = {}
+    const b = { cause: a }
+    a.cause = b
+    expect(causeChain(a)).toEqual([a, b])
+    let e: unknown = { depth: 'end' }
+    for (let i = 0; i < 12; i++) e = { cause: e }
+    expect(causeChain(e)).toHaveLength(8)
   })
 })
 
@@ -657,7 +807,7 @@ describe('parseRetryAfter', () => {
     ).toBe(undefined)
   })
 
-  it('takes the longest of the x-ratelimit-reset family', () => {
+  it('takes the shortest reset when the exhausted limit cannot be told apart', () => {
     expect(
       parseRetryAfter(
         {
@@ -667,7 +817,84 @@ describe('parseRetryAfter', () => {
         },
         NOW,
       ),
-    ).toBe(20_000)
+    ).toBe(1_000)
+  })
+
+  it('OpenAI shape: 1 s token reset beside a 6 m request reset waits 1 s, not 6 m', () => {
+    const headers = {
+      'x-ratelimit-limit-requests': '500',
+      'x-ratelimit-remaining-requests': '499',
+      'x-ratelimit-reset-requests': '6m0s',
+      'x-ratelimit-limit-tokens': '30000',
+      'x-ratelimit-remaining-tokens': '0',
+      'x-ratelimit-reset-tokens': '1s',
+    }
+    expect(parseRetryAfter(headers, NOW)).toBe(1_000)
+    // The same two windows without remaining counts: the earliest reset.
+    const {
+      'x-ratelimit-remaining-requests': _a,
+      'x-ratelimit-remaining-tokens': _b,
+      ...bare
+    } = headers
+    expect(parseRetryAfter(bare, NOW)).toBe(1_000)
+  })
+
+  it('waits for every exhausted window: the longest of their resets', () => {
+    expect(
+      parseRetryAfter(
+        {
+          'x-ratelimit-remaining-requests': '0',
+          'x-ratelimit-reset-requests': '6m0s',
+          'x-ratelimit-remaining-tokens': '0',
+          'x-ratelimit-reset-tokens': '1s',
+        },
+        NOW,
+      ),
+    ).toBe(360_000)
+  })
+
+  it('ignores the windows that still have capacity once one is exhausted', () => {
+    expect(
+      parseRetryAfter(
+        {
+          'x-ratelimit-remaining-requests': '12',
+          'x-ratelimit-reset-requests': '6m0s',
+          'x-ratelimit-remaining-tokens': '0',
+          'x-ratelimit-reset-tokens': '45s',
+        },
+        NOW,
+      ),
+    ).toBe(45_000)
+  })
+
+  it('pairs the bare x-ratelimit-remaining with x-ratelimit-reset', () => {
+    expect(
+      parseRetryAfter(
+        {
+          'x-ratelimit-remaining': '0',
+          'x-ratelimit-reset': '30',
+          'x-ratelimit-reset-tokens': '2s',
+        },
+        NOW,
+      ),
+    ).toBe(30_000)
+  })
+
+  it('reads the IETF ratelimit-reset (delta-seconds)', () => {
+    expect(parseRetryAfter({ 'ratelimit-reset': '17' }, NOW)).toBe(17_000)
+    expect(
+      parseRetryAfter({ 'ratelimit-remaining': '0', 'ratelimit-reset': '17' }, NOW),
+    ).toBe(17_000)
+  })
+
+  it('treats a reset above 1e12 as epoch milliseconds', () => {
+    expect(parseRetryAfter({ 'x-ratelimit-reset': String(NOW + 45_000) }, NOW)).toBe(
+      45_000,
+    )
+    // In the past: ignored, not a multi-decade delay.
+    expect(parseRetryAfter({ 'x-ratelimit-reset': String(NOW - 1_000) }, NOW)).toBe(
+      undefined,
+    )
   })
 
   it('prefers retry-after over the reset family', () => {
@@ -709,7 +936,31 @@ describe('parseRetryAfter', () => {
 
   it('accepts number and array values in a plain record', () => {
     expect(parseRetryAfter({ 'retry-after': 12 }, NOW)).toBe(12_000)
-    expect(parseRetryAfter({ 'retry-after': ['4', '99'] }, NOW)).toBe(4_000)
+  })
+
+  it('reads every element of an array value and honours the longest retry-after', () => {
+    expect(parseRetryAfter({ 'retry-after': ['4', '99'] }, NOW)).toBe(99_000)
+    expect(parseRetryAfter({ 'retry-after-ms': ['40', 250, 'x'] }, NOW)).toBe(250)
+    expect(parseRetryAfter({ 'x-ratelimit-reset-tokens': ['9s', '3s'] }, NOW)).toBe(3_000)
+  })
+
+  it('reads duplicate headers merged into one comma-joined string', () => {
+    expect(parseRetryAfter({ 'retry-after': '5, 10' }, NOW)).toBe(10_000)
+    expect(parseRetryAfter({ 'retry-after-ms': '500,1500' }, NOW)).toBe(1_500)
+    // An HTTP-date keeps its own comma.
+    expect(parseRetryAfter({ 'retry-after': 'Sat, 03 Oct 2026 12:00:30 GMT' }, NOW)).toBe(
+      30_000,
+    )
+  })
+
+  it('reads a leading-dot decimal', () => {
+    expect(parseRetryAfter({ 'retry-after': '.5' }, NOW)).toBe(500)
+  })
+
+  it('a number too large for a double is the cap, not undefined', () => {
+    const day = 24 * 60 * 60 * 1000
+    expect(parseRetryAfter({ 'retry-after': '9'.repeat(400) }, NOW)).toBe(day)
+    expect(parseRetryAfter({ 'retry-after': '9'.repeat(23) }, NOW)).toBe(day)
   })
 
   it('reads a Headers object', () => {

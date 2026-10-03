@@ -244,7 +244,9 @@ export interface HttpClassification {
   retryable: boolean
   /**
    * Suggested retry delay in milliseconds.
-   * Present only for `429` responses when `retryAfterMs` was passed in.
+   * Present for every retryable status (`408`, `429`, `5xx`) when
+   * `retryAfterMs` was passed in, so a `503` with `Retry-After` is honoured
+   * like a `429`.
    */
   retryAfterMs?: number
 }
@@ -274,30 +276,28 @@ export interface HttpClassification {
  * @param status - The HTTP response status code.
  * @param retryAfterMs - When available (from a `Retry-After` header parsed by
  *   the adapter), this value is forwarded in the returned classification for
- *   `429` responses.
+ *   every retryable status (`408`, `429`, `5xx`).
  */
 export function classifyHttpStatus(
   status: number,
   retryAfterMs?: number,
 ): HttpClassification {
+  const withDelay = (
+    kind: LlmErrorKind,
+  ): { kind: LlmErrorKind; retryable: true; retryAfterMs?: number } => ({
+    kind,
+    retryable: true,
+    ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+  })
   if (status === 401 || status === 403) {
     return { kind: 'invalid_auth', retryable: false }
   }
-  if (status === 408) {
-    return { kind: 'timeout', retryable: true }
-  }
-  if (status === 429) {
-    if (retryAfterMs !== undefined) {
-      return { kind: 'rate_limited', retryable: true, retryAfterMs }
-    }
-    return { kind: 'rate_limited', retryable: true }
-  }
+  if (status === 408) return withDelay('timeout')
+  if (status === 429) return withDelay('rate_limited')
   if (status === 400 || status === 404 || status === 413 || status === 422) {
     return { kind: 'bad_request', retryable: false }
   }
-  if (status >= 500) {
-    return { kind: 'server', retryable: true }
-  }
+  if (status >= 500) return withDelay('server')
   return { kind: 'unknown', retryable: false }
 }
 
@@ -391,12 +391,12 @@ const MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1000
  * Response headers {@link parseRetryAfter} reads: a `Headers`-like object
  * (anything with `get(name)`) or a plain record, whose keys are matched
  * case-insensitively. A record value may be a string, a number or an array
- * (the first element is read).
+ * (every element is read).
  */
 export type RetryAfterHeaders =
   { get(name: string): string | null } | Readonly<Record<string, unknown>>
 
-const DECIMAL_NUMBER = /^\d+(?:\.\d+)?$/
+const DECIMAL_NUMBER = /^(?:\d+(?:\.\d+)?|\.\d+)$/
 // Go-style durations as OpenAI sends them (`6m0s`, `1h2m3.5s`, `250ms`).
 const DURATION =
   /^(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m(?!s))?(?:(\d+(?:\.\d+)?)s)?(?:(\d+(?:\.\d+)?)ms)?$/
@@ -407,22 +407,35 @@ const HTTP_DATE_CLOCK = /\d{1,2}:\d{2}:\d{2}/
 // would read it as local time.
 const HTTP_DATE_ZONE = /(?:GMT|UTC|UT|Z|[+-]\d{4})\s*$/i
 
-function readHeader(headers: RetryAfterHeaders, name: string): string | undefined {
+/**
+ * Every value of a header, in order. A `Headers` object (or any `get`) merges
+ * duplicates into one comma-joined string; a plain record may hold an array.
+ * Comma-joined values are split, except an HTTP-date, whose weekday carries a
+ * comma of its own.
+ */
+function readHeaderValues(headers: RetryAfterHeaders, name: string): string[] {
+  const raw: unknown[] = []
   const getter = (headers as { get?: unknown }).get
   if (typeof getter === 'function') {
-    const value = (getter as (this: unknown, n: string) => unknown).call(headers, name)
-    return typeof value === 'string' ? value : undefined
+    raw.push((getter as (this: unknown, n: string) => unknown).call(headers, name))
+  } else {
+    const record = headers as Readonly<Record<string, unknown>>
+    for (const key of Object.keys(record)) {
+      if (key.toLowerCase() !== name) continue
+      const value = record[key]
+      if (Array.isArray(value)) raw.push(...(value as unknown[]))
+      else raw.push(value)
+    }
   }
-  const record = headers as Readonly<Record<string, unknown>>
-  for (const key of Object.keys(record)) {
-    if (key.toLowerCase() !== name) continue
-    const raw = record[key]
-    const first = Array.isArray(raw) ? (raw as unknown[])[0] : raw
-    if (typeof first === 'string') return first
-    if (typeof first === 'number') return String(first)
-    return undefined
+  const values: string[] = []
+  for (const item of raw) {
+    const text =
+      typeof item === 'string' ? item : typeof item === 'number' ? String(item) : ''
+    if (text.length === 0) continue
+    if (HTTP_DATE_CLOCK.test(text)) values.push(text)
+    else values.push(...text.split(','))
   }
-  return undefined
+  return values
 }
 
 function parseDuration(value: string): number | undefined {
@@ -436,9 +449,12 @@ function parseDuration(value: string): number | undefined {
   return part(h) * 3_600_000 + part(m) * 60_000 + part(sec) * 1000 + part(ms)
 }
 
-/** A positive, finite delay rounded up (never undercutting the provider), capped. */
+/**
+ * A positive delay rounded up (never undercutting the provider), capped. A
+ * value too large for a number is a very long delay, so it is the cap too.
+ */
 function finishDelay(ms: number): number | undefined {
-  if (!Number.isFinite(ms) || ms <= 0) return undefined
+  if (Number.isNaN(ms) || ms <= 0) return undefined
   return Math.min(Math.ceil(ms), MAX_RETRY_AFTER_MS)
 }
 
@@ -454,41 +470,103 @@ function parseRetryAfterHeader(value: string, now: number): number | undefined {
   return undefined
 }
 
+/**
+ * A reset header: delta-seconds, a duration such as `6m0s`, a Unix timestamp
+ * in seconds (above 1e9) or in milliseconds (above 1e12).
+ */
 function parseResetHeader(value: string, now: number): number | undefined {
   const v = value.trim()
   if (DECIMAL_NUMBER.test(v)) {
     const n = Number(v)
-    // A reset above 1e9 is a Unix timestamp in seconds, not a delay.
+    if (n > 1e12) return finishDelay(n - now)
     return finishDelay(n > 1e9 ? n * 1000 - now : n * 1000)
   }
   const duration = parseDuration(v)
   return duration === undefined ? undefined : finishDelay(duration)
 }
 
-const RESET_HEADERS = [
-  'x-ratelimit-reset',
-  'x-ratelimit-reset-requests',
-  'x-ratelimit-reset-tokens',
+/**
+ * Each rate-limit window a response may describe: its reset header and the
+ * header that says how much of it is left, when the provider sends one.
+ * OpenAI-style APIs send one pair per limit (`-requests`, `-tokens`) and the
+ * limit that was hit is the one whose remaining count is 0.
+ */
+const RESET_WINDOWS = [
+  ['x-ratelimit-reset-requests', 'x-ratelimit-remaining-requests'],
+  ['x-ratelimit-reset-tokens', 'x-ratelimit-remaining-tokens'],
+  ['x-ratelimit-reset', 'x-ratelimit-remaining'],
+  ['ratelimit-reset', 'ratelimit-remaining'],
 ] as const
+
+/** The largest value of `values`, or `undefined` when it is empty. */
+function largest(values: number[]): number | undefined {
+  return values.length === 0 ? undefined : Math.max(...values)
+}
+
+/** The smallest value of `values`, or `undefined` when it is empty. */
+function smallest(values: number[]): number | undefined {
+  return values.length === 0 ? undefined : Math.min(...values)
+}
+
+/**
+ * The delay the reset headers imply. These headers say when each limit resets
+ * to full, whether or not that limit caused the refusal, so they are not one
+ * delay:
+ *
+ * - When a window reports `remaining` of 0, those are the exhausted limits and
+ *   the caller needs all of them back: the longest of their resets.
+ * - Otherwise the limit that was hit cannot be told apart, and the earliest
+ *   reset is the earliest moment any limit frees up: the shortest of all the
+ *   resets. A longer window that is not exhausted never extends the wait.
+ */
+function resetDelay(headers: RetryAfterHeaders, now: number): number | undefined {
+  const exhausted: number[] = []
+  const all: number[] = []
+  for (const [resetName, remainingName] of RESET_WINDOWS) {
+    const delays = readHeaderValues(headers, resetName).flatMap((raw) => {
+      const delay = parseResetHeader(raw, now)
+      return delay === undefined ? [] : [delay]
+    })
+    if (delays.length === 0) continue
+    all.push(...delays)
+    const remaining = readHeaderValues(headers, remainingName).map((raw) => raw.trim())
+    if (remaining.some((raw) => DECIMAL_NUMBER.test(raw) && Number(raw) <= 0)) {
+      exhausted.push(...delays)
+    }
+  }
+  return largest(exhausted) ?? smallest(all)
+}
 
 /**
  * Reads how long a provider asks the caller to wait from response headers, in
  * milliseconds, or `undefined` when no header carries a usable delay.
  *
- * Precedence: `retry-after-ms`, then `retry-after`, then the largest of the
- * `x-ratelimit-reset`, `x-ratelimit-reset-requests` and
- * `x-ratelimit-reset-tokens` family (the caller must wait for every exhausted
- * limit). Accepted forms:
+ * Precedence: `retry-after-ms`, then `retry-after`, then the rate-limit reset
+ * headers (`x-ratelimit-reset`, `x-ratelimit-reset-requests`,
+ * `x-ratelimit-reset-tokens`, `ratelimit-reset`). Accepted forms:
  *
  * - `retry-after-ms`: milliseconds, decimals allowed.
  * - `retry-after`: delta-seconds (decimals allowed), an HTTP-date, or a
  *   duration such as `6m0s`.
- * - `x-ratelimit-reset*`: delta-seconds, a duration such as `6m0s`, or a Unix
- *   timestamp in seconds when the number is above 1e9.
+ * - reset headers: delta-seconds, a duration such as `6m0s`, a Unix timestamp
+ *   in seconds (above 1e9) or in milliseconds (above 1e12).
  *
- * A value that is not a positive finite delay is ignored (zero, a date in the
- * past, text), so the caller falls back to its own back-off. Results round up
- * and are capped at 24 hours.
+ * Several values of one header (an array, or duplicates a `Headers` object
+ * joined with commas) give the longest of them for `retry-after-ms` and
+ * `retry-after`: a retry before any stated delay would be refused.
+ *
+ * The reset headers describe every limit the provider tracks, not only the one
+ * that refused the request. When a window's matching `-remaining` header is 0
+ * the delay is the longest reset among the exhausted windows. When none is
+ * identifiable it is the shortest reset of all of them, so a distant window
+ * that was never hit (OpenAI sends `x-ratelimit-reset-requests: 6m0s` beside
+ * `x-ratelimit-reset-tokens: 1s`) does not turn a short wait into a stop. The
+ * result is the earliest time a retry can succeed, never a time it is sure to.
+ *
+ * A value that is not a positive delay is ignored (zero, a date in the past,
+ * text), so the caller falls back to its own back-off. Results round up and
+ * are capped at 24 hours. HTTP-dates and epoch resets are measured against
+ * `now`, so clock skew between the host and the provider shifts them.
  *
  * @param headers - The response headers.
  * @param now     - The current time in ms since the epoch; it resolves
@@ -498,42 +576,49 @@ export function parseRetryAfter(
   headers: RetryAfterHeaders,
   now: number,
 ): number | undefined {
-  const ms = readHeader(headers, 'retry-after-ms')
-  if (ms !== undefined && DECIMAL_NUMBER.test(ms.trim())) {
-    const parsed = finishDelay(Number(ms.trim()))
-    if (parsed !== undefined) return parsed
-  }
-  const retryAfter = readHeader(headers, 'retry-after')
-  if (retryAfter !== undefined) {
-    const parsed = parseRetryAfterHeader(retryAfter, now)
-    if (parsed !== undefined) return parsed
-  }
-  let longest: number | undefined
-  for (const name of RESET_HEADERS) {
-    const raw = readHeader(headers, name)
-    if (raw === undefined) continue
-    const parsed = parseResetHeader(raw, now)
-    if (parsed !== undefined && (longest === undefined || parsed > longest)) {
-      longest = parsed
-    }
-  }
-  return longest
+  const ms = largest(
+    readHeaderValues(headers, 'retry-after-ms').flatMap((raw) => {
+      const v = raw.trim()
+      const parsed = DECIMAL_NUMBER.test(v) ? finishDelay(Number(v)) : undefined
+      return parsed === undefined ? [] : [parsed]
+    }),
+  )
+  if (ms !== undefined) return ms
+  const retryAfter = largest(
+    readHeaderValues(headers, 'retry-after').flatMap((raw) => {
+      const parsed = parseRetryAfterHeader(raw, now)
+      return parsed === undefined ? [] : [parsed]
+    }),
+  )
+  if (retryAfter !== undefined) return retryAfter
+  return resetDelay(headers, now)
 }
 
 // ---------------------------------------------------------------------------
 // Transport failures
 // ---------------------------------------------------------------------------
 
+// Connection-level failures: nothing was answered, or the connection was cut.
+// undici's programming errors (`UND_ERR_INVALID_ARG`, `UND_ERR_NOT_SUPPORTED`,
+// a closed or destroyed client) are deliberately not listed: retrying them
+// cannot succeed.
 const TRANSPORT_CODE =
-  /^(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|EPIPE|UND_ERR(?:_[A-Z0-9_]+)?)$/
+  /^(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|EPIPE|ENOTFOUND|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT|UND_ERR_SOCKET|UND_ERR_RES_CONTENT_LENGTH_MISMATCH)$/
 // undici's own deadlines (connect, headers, body). They are timeouts, not
 // severed connections, and are retryable like any other timeout.
-const UNDICI_TIMEOUT_CODE = /^UND_ERR_[A-Z0-9_]*TIMEOUT$/
+const UNDICI_TIMEOUT_CODE = /^UND_ERR_(?:CONNECT|HEADERS|BODY)_TIMEOUT$/
+// The whole message must be one of these, so free text that merely mentions
+// one of them ("no connection error handler", "fetch failed: file not found")
+// is not a transport failure. Node formats a syscall failure as
+// `<syscall> <ERRNO> <address>`.
 const TRANSPORT_MESSAGE =
-  /fetch failed|connection error|socket hang up|econnreset|econnrefused|etimedout|eai_again|epipe/i
+  /^(?:fetch failed|connection error\.?|socket hang up|(?:connect|read|write|send|getaddrinfo) (?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|EPIPE|ENOTFOUND|ENETUNREACH|EHOSTUNREACH)(?: \S.*)?)$/i
 
-/** `value` followed by its `.cause` chain (bounded, cycle-safe). */
-function causeChain(value: unknown): object[] {
+/**
+ * `value` followed by its `.cause` chain (bounded to 8 nodes, cycle-safe).
+ * Non-object values yield an empty chain.
+ */
+export function causeChain(value: unknown): object[] {
   const chain: object[] = []
   let current = value
   while (
@@ -552,8 +637,12 @@ function causeChain(value: unknown): object[] {
  * True when `e` is, or wraps through its `.cause` chain, a transport-level
  * failure: the request never produced an HTTP response, or the connection was
  * severed mid-flight. Matches an errno or undici `code` of `ECONNRESET`,
- * `ECONNREFUSED`, `ETIMEDOUT`, `EAI_AGAIN`, `EPIPE` or `UND_ERR_*`, and the
- * messages `fetch failed`, `connection error` and `socket hang up` (undici's
+ * `ECONNREFUSED`, `ETIMEDOUT`, `EAI_AGAIN`, `EPIPE`, `ENOTFOUND`,
+ * `ENETUNREACH`, `EHOSTUNREACH`, `UND_ERR_CONNECT_TIMEOUT`,
+ * `UND_ERR_HEADERS_TIMEOUT`, `UND_ERR_BODY_TIMEOUT`, `UND_ERR_SOCKET` or
+ * `UND_ERR_RES_CONTENT_LENGTH_MISMATCH`, and an error whose whole message is
+ * `fetch failed`, `connection error` or `socket hang up`, or a Node syscall
+ * failure such as `connect ECONNREFUSED 127.0.0.1:443` (undici's
  * `TypeError: fetch failed` carries the errno error as `cause`).
  *
  * Adapters call this to widen their own classification; {@link classifyError}
@@ -563,7 +652,9 @@ export function isTransportError(e: unknown): boolean {
   for (const node of causeChain(e)) {
     const { code, message } = node as { code?: unknown; message?: unknown }
     if (typeof code === 'string' && TRANSPORT_CODE.test(code)) return true
-    if (typeof message === 'string' && TRANSPORT_MESSAGE.test(message)) return true
+    if (typeof message === 'string' && TRANSPORT_MESSAGE.test(message.trim())) {
+      return true
+    }
   }
   return false
 }
@@ -572,29 +663,35 @@ export function isTransportError(e: unknown): boolean {
 // Plain-object error helpers (provider SDKs throw non-Error objects)
 // ---------------------------------------------------------------------------
 
-/**
- * Safely reads a numeric own-property from a `Record<string, unknown>` view of
- * an object.  Returns `undefined` if the property is absent or non-numeric.
- */
-function numericProp(obj: Record<string, unknown>, key: string): number | undefined {
-  const v = obj[key]
-  return typeof v === 'number' ? v : undefined
+/** True for a number that can be an HTTP status. */
+function isHttpStatus(n: number): boolean {
+  return Number.isInteger(n) && n >= 100 && n <= 599
 }
 
 /**
- * Safely reads a numeric property one level deep (e.g. `obj.response.status`).
- * Returns `undefined` if either level is absent or non-numeric.
+ * Reads an HTTP status from a value: a number, or a three-digit numeric string
+ * (gaxios sets `code` to the string status). A number outside 100-599, such as
+ * an errno or a gRPC code, is not a status.
  */
-function nestedNumericProp(
+function statusValue(v: unknown): number | undefined {
+  const n =
+    typeof v === 'number'
+      ? v
+      : typeof v === 'string' && /^\d{3}$/.test(v.trim())
+        ? Number(v)
+        : undefined
+  return n !== undefined && isHttpStatus(n) ? n : undefined
+}
+
+/** One level down: `obj[key]` when it is an object, else `undefined`. */
+function child(
   obj: Record<string, unknown>,
-  key1: string,
-  key2: string,
-): number | undefined {
-  const nested = obj[key1]
-  if (nested !== null && typeof nested === 'object') {
-    return numericProp(nested as Record<string, unknown>, key2)
-  }
-  return undefined
+  key: string,
+): Record<string, unknown> | undefined {
+  const nested = obj[key]
+  return nested !== null && typeof nested === 'object'
+    ? (nested as Record<string, unknown>)
+    : undefined
 }
 
 /**
@@ -603,17 +700,18 @@ function nestedNumericProp(
  * Probe order:
  * 1. `obj.retryAfterMs` — already in milliseconds.
  * 2. `obj.retryAfter` as a positive number — treated as **seconds** → ms.
- * 3. `obj.headers`, read by {@link parseRetryAfter}. Supports both
- *    `Headers.get()` and plain string-valued objects.
+ * 3. `obj.headers`, then `obj.response.headers` (axios, ky), read by
+ *    {@link parseRetryAfter}. Supports both `Headers.get()` and plain
+ *    objects.
  *
- * Every value is positive, finite and capped at 24 hours.
+ * Every value is positive and capped at 24 hours.
  */
 function extractRetryAfterMs(
   obj: Record<string, unknown>,
   now: number,
 ): number | undefined {
-  const directMs = numericProp(obj, 'retryAfterMs')
-  if (directMs !== undefined) {
+  const directMs = obj['retryAfterMs']
+  if (typeof directMs === 'number') {
     const delay = finishDelay(directMs)
     if (delay !== undefined) return delay
   }
@@ -624,44 +722,48 @@ function extractRetryAfterMs(
     if (delay !== undefined) return delay
   }
 
-  const headers = obj['headers']
-  if (headers !== null && typeof headers === 'object') {
-    return parseRetryAfter(headers as RetryAfterHeaders, now)
+  for (const headers of [obj['headers'], child(obj, 'response')?.['headers']]) {
+    if (headers !== null && typeof headers === 'object') {
+      const delay = parseRetryAfter(headers as RetryAfterHeaders, now)
+      if (delay !== undefined) return delay
+    }
   }
 
   return undefined
 }
 
-/** True for a number that can be an HTTP status. */
-function isHttpStatus(n: number | undefined): n is number {
-  return n !== undefined && Number.isInteger(n) && n >= 100 && n <= 599
-}
-
 /**
  * Extracts an HTTP status code from a plain-object error.
  *
- * Checked locations (first valid status wins; a number outside 100-599, such
- * as an errno or a gRPC code, is not a status):
- * - `obj.status`           (number)
- * - `obj.code`             (number — some SDKs use this)
- * - `obj.response.status`  (nested)
- * - `obj.error.status`     (nested)
- * - `obj.error.code`       (nested)
+ * Checked locations (first valid status wins):
+ * - `obj.status`, `obj.statusCode` (AI SDK, got, AWS)
+ * - `obj.code`             (number, or a numeric string such as `'429'`)
+ * - `obj.response.status`, `obj.response.statusCode` (nested)
+ * - `obj.error.status`, `obj.error.statusCode`, `obj.error.code` (nested)
  */
 function extractHttpStatus(obj: Record<string, unknown>): number | undefined {
+  const response = child(obj, 'response')
+  const error = child(obj, 'error')
   const candidates = [
-    numericProp(obj, 'status'),
-    numericProp(obj, 'code'),
-    nestedNumericProp(obj, 'response', 'status'),
-    nestedNumericProp(obj, 'error', 'status'),
-    nestedNumericProp(obj, 'error', 'code'),
+    obj['status'],
+    obj['statusCode'],
+    obj['code'],
+    response?.['status'],
+    response?.['statusCode'],
+    error?.['status'],
+    error?.['statusCode'],
+    error?.['code'],
   ]
-  return candidates.find(isHttpStatus)
+  for (const candidate of candidates) {
+    const status = statusValue(candidate)
+    if (status !== undefined) return status
+  }
+  return undefined
 }
 
 /**
- * Builds an `LlmError` from a plain-object error that carries a numeric HTTP
- * status code.  Routes the status through `classifyHttpStatus` and injects any
+ * Builds an `LlmError` from a plain-object error that carries an HTTP status
+ * code.  Routes the status through `classifyHttpStatus` and injects any
  * available retry-after delay.
  */
 function classifyObjectError(
@@ -691,10 +793,12 @@ function classifyObjectError(
  * Detection order, structured evidence first and message text last:
  * 1. Already an `LlmError` → returned as-is.
  * 2. `Error.name === 'AbortError'` → `'aborted'` (not retryable).
- * 3. Any object (including `Error` subclasses) with a recognisable numeric
- *    HTTP `status`, `code`, or nested `response.status` / `error.status` /
- *    `error.code` (100-599) → routed through {@link classifyHttpStatus}. A
- *    `retryAfterMs` / `retryAfter` / header delay is extracted when present.
+ * 3. Any object (including `Error` subclasses), or an object on its `.cause`
+ *    chain, with a recognisable HTTP `status`, `statusCode`, `code` (a number
+ *    or a three-digit numeric string), or nested `response.status` /
+ *    `error.status` / `error.code` (100-599) → routed through
+ *    {@link classifyHttpStatus}. A `retryAfterMs` / `retryAfter` / header delay
+ *    (`headers` or `response.headers`) is extracted when present.
  * 4. `Error.name === 'TimeoutError'` → `'timeout'` (retryable).
  * 5. A transport failure ({@link isTransportError}: a connection errno on the
  *    `cause` chain, `fetch failed`, `connection error`) → `'server'`
@@ -725,9 +829,11 @@ export function classifyError(e: unknown): LlmError {
   }
 
   // 3. Structured HTTP status (the primary provider SDK pattern, whether an
-  //    `Error` subclass or a plain `throw { status: 429 }`).
-  if (e !== null && typeof e === 'object') {
-    const obj = e as Record<string, unknown>
+  //    `Error` subclass or a plain `throw { status: 429 }`). The error is read
+  //    first, then each `.cause` down the chain: an SDK that wraps the HTTP
+  //    error keeps its status one level down.
+  for (const node of causeChain(e)) {
+    const obj = node as Record<string, unknown>
     const httpStatus = extractHttpStatus(obj)
     if (httpStatus !== undefined) {
       return classifyObjectError(
