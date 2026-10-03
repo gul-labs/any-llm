@@ -96,7 +96,7 @@ paths to other repos.
 
 - **Priority:** P3
 - **Status:** largely done on branch `chore/dependabot-upgrades-careful` — routine
-  devDeps + `openai@7` (peer `^6 || ^7`) + `@google/genai@2.16` (peer already `^1 || ^2`)
+  devDeps + `openai@7` (peer `^7`) + `@google/genai@2.16` (peer `^2`)
   - `actions/setup-node@v7` + pglite 0.5.4. `pnpm quality` green against new majors.
 - **Origin:** open dependabot PRs.
 - **Next step:** merge upgrade PR; close Dependabot PRs as superseded. Skipped

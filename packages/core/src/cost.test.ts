@@ -75,7 +75,7 @@ function scaleRates(rates: ModelRates, factor: ModelRates): ModelRates {
   return scaled
 }
 
-/** Exact-then-longest-prefix lookup. `undefined` and `'standard'` return the
+/** Exact lookup (no prefix matching). `undefined` and `'standard'` return the
  * table as stored; a known discount tier returns concrete scaled rates; any
  * other defined tier is unpriced. */
 const lookupTestRates: CostRatesLookup = (
@@ -86,20 +86,7 @@ const lookupTestRates: CostRatesLookup = (
   const factor = TEST_TIER_RATES[key]
   if (factor === undefined) return undefined
 
-  const exact = TEST_RATES[model]
-  const base =
-    exact ??
-    (() => {
-      let bestKey = ''
-      let bestRates: ModelRates | undefined
-      for (const rateKey of Object.keys(TEST_RATES)) {
-        if (model.startsWith(rateKey) && rateKey.length > bestKey.length) {
-          bestKey = rateKey
-          bestRates = TEST_RATES[rateKey]
-        }
-      }
-      return bestRates
-    })()
+  const base = TEST_RATES[model]
   if (base === undefined) return undefined
   return key === 'standard' ? base : scaleRates(base, factor)
 }
@@ -409,13 +396,10 @@ describe('computeCost — edge cases', () => {
     expect(batch.microUsd).toBe(flex.microUsd)
   })
 
-  it('prefix match: acme-large-001 → matched to acme-large rates', () => {
+  it('no prefix match: acme-large-001 is a different, unpriced model', () => {
     const usage = makeUsage({ inputTokens: 10_000, outputTokens: 500 })
-    const costFull = cost('acme-large', usage)
-    const costVersioned = cost('acme-large-001', usage)
 
-    expect(costVersioned.microUsd).toBe(costFull.microUsd)
-    expect(costVersioned.confidence).toBe('exact')
+    expect(cost('acme-large-001', usage).microUsd).toBeNull()
   })
 
   it('rates lookup is invoked once on the priced path', () => {

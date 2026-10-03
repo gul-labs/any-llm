@@ -8,7 +8,7 @@ Gemini provider adapter for any-llm. A thin mapping layer over `@google/genai` t
 pnpm add @gullabs/google @gullabs/core @google/genai
 ```
 
-**Peer dependency:** `@google/genai ^1 || ^2`
+**Peer dependency:** `@google/genai ^2`
 
 ## Key exports
 

@@ -49,8 +49,8 @@ import type { ModelRates } from './pricing.js'
  * never multiplies a standard snapshot by a factor, because some providers
  * publish a cached rate that is not a flat fraction of standard.
  *
- * Provider packages own the actual lookup strategy (exact match, longest-
- * prefix match, etc.) against their own rates table. Core calls this once
+ * Provider packages own the actual lookup against their own rates table: an
+ * exact match on the descriptor's pricing key, never a prefix (ADR-033). Core calls this once
  * on the priced path. On the unpriced path with a defined tier it calls
  * again with `undefined` so an unknown model is not reported as an unknown
  * tier.

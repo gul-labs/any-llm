@@ -54,7 +54,7 @@ See ADR-021 in DECISIONS.md for the reasoning behind deferring this to a host/co
 The following observability features are explicitly deferred by design — they are consumer concerns or future companion packages, not library responsibilities.
 
 - **First-party OpenTelemetry package** — the `Telemetry` port is the designed seam; ship an integration example or a thin `@gullabs/otel` wrapper, not an OTel SDK dependency in core.
-- **W3C `traceparent` propagation into provider calls** — requires per-call header injection into `httpOptions`; the host can do this today via `providerOptions.google.httpOptions.headers`.
+- **W3C `traceparent` propagation into provider calls** — needs per-call header injection, which no adapter exposes. Google's `providerOptions.google.httpOptions` admits only `timeout`, and xAI's `transport.fetch` is per client, so a host that must propagate `traceparent` today wraps `fetch` there and reads its own request context. A per-call `headers` option is the missing piece.
 - **In-library metrics runtime / `/metrics` endpoint / cache-hit & rate-limiter gauges** — consumers derive metrics from `LlmCallRecord` rows and `Telemetry` events; the library should not own a Prometheus registry or HTTP server.
 - **Error sampling / dedup** — call-level `errorKind` is in every record; sampling policy belongs in the host's error-reporting integration (e.g. Sentry's `sampleRate`).
 - **Persisted stack traces** — stack frames carry no operational value in production error records and inflate storage; `errorKind` + `errorMessage` are sufficient for postmortems.

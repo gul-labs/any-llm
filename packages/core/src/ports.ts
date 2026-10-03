@@ -442,9 +442,9 @@ export interface PricingSource {
    * @param tier - Service tier (`'flex'` | `'standard'`), if relevant to pricing.
    */
   price(model: string, usage: Usage, tier?: string): Cost
-  /** True when `model` resolves to a priced entry via the same exact/prefix rules as `price()`. */
+  /** True when `model` is a priced key of this source (an exact match, as in `price()`). */
   hasModel(model: string): boolean
-  /** All model keys this source can price (exact-match keys only, not derived prefixes). */
+  /** All model keys this source can price. */
   listModels(): readonly string[]
 }
 
