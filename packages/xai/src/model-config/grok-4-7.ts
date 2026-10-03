@@ -13,6 +13,7 @@
 
 import { z } from 'zod'
 
+import { XAI_MODEL_LIMITS } from '../model-limits.js'
 import { XAI_MAX_TIMEOUT_MS } from '../client.js'
 import { XaiProviderOptionsSchema } from './tools.js'
 
@@ -30,13 +31,14 @@ export const Grok47ConfigSchema = z
       .number()
       .int()
       .positive()
+      .max(XAI_MODEL_LIMITS['grok-4.7'].maxOutputTokens)
       .optional()
       .meta({
         title: 'Max Output Tokens',
         description:
-          'Maximum output token cap for grok-4.7. No artificial ceiling — xAI ' +
-          'accepts arbitrarily large values; truncation surfaces as ' +
-          "finishReason:'length', not an error.",
+          'Maximum output token cap for grok-4.7, including reasoning tokens. Capped at ' +
+          'the 500,000-token context window: xAI documents no separate output ' +
+          "limit. Truncation surfaces as finishReason:'length', not an error.",
       }),
     reasoning: z
       .strictObject({

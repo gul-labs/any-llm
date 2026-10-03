@@ -150,6 +150,40 @@ export const XaiProviderOptionsSchema = z
           'server-side search tools. Requires `tools`. A turn can run several ' +
           'searches. Not enforced by xAI as of 2026-10-02.',
       }),
+    searchBudget: z
+      .strictObject({
+        maxWebSearchCalls: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .meta({
+            title: 'Max Web Search Calls',
+            description:
+              "Ceiling on web_search calls. Requires a web_search tool. Compared with xAI's " +
+              'reported counter after the call.',
+          }),
+        maxXItems: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .meta({
+            title: 'Max X Items',
+            description:
+              'Ceiling on X posts plus users fetched. Requires an x_search tool. Compared ' +
+              "with xAI's reported counters after the call.",
+          }),
+      })
+      .optional()
+      .meta({
+        title: 'Search Budget',
+        description:
+          'Observed after the call, never sent to xAI (which has no per-call search ' +
+          'ceiling). Over budget: a warning and usage.details.search_budget_exceeded = 1; ' +
+          'the already-billed result is still returned. Requires tools and at least one ' +
+          'ceiling.',
+      }),
   })
   .meta({
     title: 'xAI Provider Options',

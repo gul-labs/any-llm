@@ -194,13 +194,59 @@ signature), and `-0` is treated as `0`.
 `@google/genai` history into the same overlay, returned as `transientProviderState` beside `messages`; `model` is required
 when any part carries one.
 
+## Thinking budgets and the output cap
+
+`maxOutputTokens` **includes thinking tokens**. A model that thinks for the whole cap returns no answer
+(`finishReason: 'length'`, empty text, `thinkingTokens > 0`), and the library warns about it after the fact
+("maxOutputTokens (M) was used up by reasoning (T tokens); no answer was produced"). Gemini 2.5 models
+take a thinking budget, and the adapter turns `reasoning.effort` into one:
+
+| `reasoning.effort` | `thinkingBudget` | Note                                                                        |
+| ------------------ | ---------------- | --------------------------------------------------------------------------- |
+| `none`             | 0                | Thinking off; only the models that admit `none` (2.5 Flash, 2.5 Flash-Lite) |
+| `low`              | 1,024            |                                                                             |
+| `medium`           | 8,192            |                                                                             |
+| `high`             | 24,576           | The Flash maximum, and 75% of 2.5 Pro's 32,768                              |
+
+`xhigh` and `max` are rejected: they have no Gemini budget. `reasoning.budgetTokens` sets the budget
+directly (128 to 32,768 on 2.5 Pro, per its schema) and cannot be combined with `effort`. Gemini 3.x
+and Gemma 4 use `thinkingLevel` and have no token budget.
+
+When a budget model's `thinkingBudget` (from `effort` or `budgetTokens`) is **at or above**
+`maxOutputTokens`, the result carries a warning ("thinkingBudget (B) is not below maxOutputTokens (M);
+thinking may consume the whole cap and leave no answer"). It is a warning, not a rejection: Google says actual
+thinking can under- or overflow the budget, so the combination is a risk, not an invalid request. The
+common trap is `effort: 'high'` (24,576) with a small `maxOutputTokens`.
+
+Measured thinking is prompt-driven and heavy-tailed: `docs/thinking-token-distribution.md` has p50, p95
+and max per model and effort (336 calls, 2026-10-03). At `high`, p95 was 2.5 to 6 times the p50, and the largest value was
+8,859 tokens, so size `maxOutputTokens` for the answer **plus** thinking: under 4,096 is unsafe at `high`
+and 1,024 was used up by thinking in most `high` calls.
+
+## Model limits and input media types
+
+Every descriptor states `limits: { contextWindow, maxOutputTokens }`, and every config schema caps
+`maxOutputTokens` at `limits.maxOutputTokens` (a larger value is `bad_request` before dispatch). Sources: the
+Gemini model pages (`ai.google.dev/gemini-api/docs/models/<id>`, read 2026-10-03) give 1,048,576 input
+and 65,536 output tokens for every registered Gemini model. The Gemma 4 model card gives a 256K window
+(262,144) and no output limit, so `maxOutputTokens` is the window; see `BACKLOG.md`.
+
+`capabilities.inputMimeTypes` is the exact list of media types a model takes in `inline-media` and `file-uri`
+parts; anything else is `bad_request` naming `messages[i].parts[j]` before dispatch (and in `countTokens`).
+Gemini: `image/png`, `image/jpeg`, `image/webp`, `image/heic`, `image/heif`; audio `audio/wav`, `audio/mp3`,
+`audio/aiff`, `audio/aac`, `audio/ogg`, `audio/flac`, `audio/mpeg`, `audio/m4a`, `audio/l16`, `audio/opus`,
+`audio/alaw`, `audio/mulaw`, `audio/webm`; video `video/mp4`, `video/mpeg`, `video/mov`, `video/avi`,
+`video/x-flv`, `video/mpg`, `video/webm`, `video/wmv`, `video/3gpp`; documents `application/pdf` and the
+plain-text types `text/plain`, `text/markdown`, `text/html`, `text/xml` (only PDF is understood visually; the
+others are extracted as text). Gemma 4: `image/png` and `image/jpeg` only. Matching is exact.
+
 ## What it maps
 
 - `serviceTier: 'flex'` → Gemini Flex service tier when the model descriptor supports it
 - omitted `serviceTier` → provider-default request behavior
 - `reasoning.includeThoughts` → `thinkingConfig.includeThoughts`; thought parts become `reasoningText`
 - `reasoning.effort` → `thinkingBudget` (Gemini 2.5) or `thinkingLevel` (Gemini 3 / Gemma 4)
-- `reasoning.budgetTokens` → admitted only on Gemini 2.5 budget-api models; strict descriptors reject it on level-api models
+- `reasoning.budgetTokens` → admitted only on Gemini 2.5 budget-api models; strict descriptors reject it on level-api models (see "Thinking budgets and the output cap")
 - `output.jsonSchema` → `responseMimeType: 'application/json'` + verbatim `responseJsonSchema` when native structured output is enabled, and `tools[].inputJsonSchema` → `parametersJsonSchema` (both standard JSON Schema, in your key order; see "JSON Schema" below); the engine returns parsed output and `outputParsed` without validating shape
 - `providerOptions.google.*` → typed provider-extension lane for admitted keys such as `cachedContent`, `safetySettings`, and exact tool declarations
 - Usage: `promptTokenCount`→`inputTokens`, `candidatesTokenCount`+`thoughtsTokenCount`→`outputTokens` (GROSS)

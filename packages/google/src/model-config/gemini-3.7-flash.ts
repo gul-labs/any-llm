@@ -1,15 +1,22 @@
 import { z } from 'zod'
 
 import { GOOGLE_MAX_TIMEOUT_MS } from '../client.js'
+import { GOOGLE_MODEL_LIMITS } from '../model-limits.js'
 import { GOOGLE_SAFETY_CATEGORIES, GOOGLE_SAFETY_THRESHOLDS } from '../safety-settings.js'
 
 export const Gemini37FlashConfigSchema = z
   .union([
     z.strictObject({
-      maxOutputTokens: z.number().int().positive().optional().meta({
-        title: 'Max Output Tokens',
-        description: 'Maximum output token cap for gemini-3.7-flash.',
-      }),
+      maxOutputTokens: z
+        .number()
+        .int()
+        .positive()
+        .max(GOOGLE_MODEL_LIMITS['gemini-3.7-flash'].maxOutputTokens)
+        .optional()
+        .meta({
+          title: 'Max Output Tokens',
+          description: 'Maximum output token cap for gemini-3.7-flash.',
+        }),
       stopSequences: z.array(z.string()).max(5).optional().meta({
         title: 'Stop Sequences',
         description: 'Up to five stop sequences for gemini-3.7-flash.',
@@ -129,10 +136,16 @@ export const Gemini37FlashConfigSchema = z
         }),
     }),
     z.strictObject({
-      maxOutputTokens: z.number().int().positive().optional().meta({
-        title: 'Max Output Tokens',
-        description: 'Maximum output token cap for gemini-3.7-flash.',
-      }),
+      maxOutputTokens: z
+        .number()
+        .int()
+        .positive()
+        .max(GOOGLE_MODEL_LIMITS['gemini-3.7-flash'].maxOutputTokens)
+        .optional()
+        .meta({
+          title: 'Max Output Tokens',
+          description: 'Maximum output token cap for gemini-3.7-flash.',
+        }),
       stopSequences: z.array(z.string()).max(5).optional().meta({
         title: 'Stop Sequences',
         description: 'Up to five stop sequences for gemini-3.7-flash.',

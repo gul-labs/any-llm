@@ -25,6 +25,11 @@ import {
   Gemini37FlashConfigSchema,
   Gemini38FlashConfigSchema,
 } from './model-config/index.js'
+import {
+  GEMINI_INPUT_MIME_TYPES,
+  GEMMA_INPUT_MIME_TYPES,
+  GOOGLE_MODEL_LIMITS,
+} from './model-limits.js'
 import { toConfigJsonSchema, zodToStandardSchema } from '@gullabs/core'
 
 const GEMINI_STANDARD_REASONING_EFFORTS = [
@@ -47,8 +52,10 @@ export const geminiModelDescriptors: ModelDescriptor[] = [
   {
     model: 'gemini-2.5-pro',
     provider: 'google',
+    limits: GOOGLE_MODEL_LIMITS['gemini-2.5-pro'],
     pricingFamily: 'gemini-2.5-pro',
     capabilities: {
+      inputMimeTypes: GEMINI_INPUT_MIME_TYPES,
       reasoning: true,
       structuredOutput: true,
       nativeStructuredOutput: true,
@@ -68,8 +75,10 @@ export const geminiModelDescriptors: ModelDescriptor[] = [
   {
     model: 'gemini-2.5-flash',
     provider: 'google',
+    limits: GOOGLE_MODEL_LIMITS['gemini-2.5-flash'],
     pricingFamily: 'gemini-2.5-flash',
     capabilities: {
+      inputMimeTypes: GEMINI_INPUT_MIME_TYPES,
       reasoning: true,
       structuredOutput: true,
       nativeStructuredOutput: true,
@@ -89,8 +98,10 @@ export const geminiModelDescriptors: ModelDescriptor[] = [
   {
     model: 'gemini-2.5-flash-lite',
     provider: 'google',
+    limits: GOOGLE_MODEL_LIMITS['gemini-2.5-flash-lite'],
     pricingFamily: 'gemini-2.5-flash-lite',
     capabilities: {
+      inputMimeTypes: GEMINI_INPUT_MIME_TYPES,
       reasoning: true,
       structuredOutput: true,
       nativeStructuredOutput: true,
@@ -110,8 +121,10 @@ export const geminiModelDescriptors: ModelDescriptor[] = [
   {
     model: 'gemini-3.1-flash-lite',
     provider: 'google',
+    limits: GOOGLE_MODEL_LIMITS['gemini-3.1-flash-lite'],
     pricingFamily: 'gemini-3.1-flash-lite',
     capabilities: {
+      inputMimeTypes: GEMINI_INPUT_MIME_TYPES,
       reasoning: true,
       structuredOutput: true,
       nativeStructuredOutput: true,
@@ -134,8 +147,10 @@ export const geminiModelDescriptors: ModelDescriptor[] = [
   {
     model: 'gemini-3.1-pro-preview',
     provider: 'google',
+    limits: GOOGLE_MODEL_LIMITS['gemini-3.1-pro-preview'],
     pricingFamily: 'gemini-3.1-pro-preview',
     capabilities: {
+      inputMimeTypes: GEMINI_INPUT_MIME_TYPES,
       reasoning: true,
       structuredOutput: true,
       nativeStructuredOutput: true,
@@ -158,8 +173,10 @@ export const geminiModelDescriptors: ModelDescriptor[] = [
   {
     model: 'gemini-3.8-flash',
     provider: 'google',
+    limits: GOOGLE_MODEL_LIMITS['gemini-3.8-flash'],
     pricingFamily: 'gemini-3.8-flash',
     capabilities: {
+      inputMimeTypes: GEMINI_INPUT_MIME_TYPES,
       reasoning: true,
       structuredOutput: true,
       nativeStructuredOutput: true,
@@ -182,8 +199,10 @@ export const geminiModelDescriptors: ModelDescriptor[] = [
   {
     model: 'gemini-3.7-flash',
     provider: 'google',
+    limits: GOOGLE_MODEL_LIMITS['gemini-3.7-flash'],
     pricingFamily: 'gemini-3.7-flash',
     capabilities: {
+      inputMimeTypes: GEMINI_INPUT_MIME_TYPES,
       reasoning: true,
       structuredOutput: true,
       nativeStructuredOutput: true,
@@ -206,8 +225,10 @@ export const geminiModelDescriptors: ModelDescriptor[] = [
   {
     model: 'gemini-3.6-flash',
     provider: 'google',
+    limits: GOOGLE_MODEL_LIMITS['gemini-3.6-flash'],
     pricingFamily: 'gemini-3.6-flash',
     capabilities: {
+      inputMimeTypes: GEMINI_INPUT_MIME_TYPES,
       reasoning: true,
       structuredOutput: true,
       nativeStructuredOutput: true,
@@ -230,8 +251,10 @@ export const geminiModelDescriptors: ModelDescriptor[] = [
   {
     model: 'gemini-3.5-flash-lite',
     provider: 'google',
+    limits: GOOGLE_MODEL_LIMITS['gemini-3.5-flash-lite'],
     pricingFamily: 'gemini-3.5-flash-lite',
     capabilities: {
+      inputMimeTypes: GEMINI_INPUT_MIME_TYPES,
       reasoning: true,
       structuredOutput: true,
       nativeStructuredOutput: true,
@@ -257,7 +280,9 @@ export const gemmaModelDescriptors: ModelDescriptor[] = [
   {
     model: 'gemma-4-31b-it',
     provider: 'google',
+    limits: GOOGLE_MODEL_LIMITS['gemma-4-31b-it'],
     capabilities: {
+      inputMimeTypes: GEMMA_INPUT_MIME_TYPES,
       reasoning: true,
       reasoningApi: 'level',
       admittedReasoningEfforts: GEMMA_REASONING_EFFORTS,
@@ -274,7 +299,9 @@ export const gemmaModelDescriptors: ModelDescriptor[] = [
   {
     model: 'gemma-4-26b-a4b-it',
     provider: 'google',
+    limits: GOOGLE_MODEL_LIMITS['gemma-4-26b-a4b-it'],
     capabilities: {
+      inputMimeTypes: GEMMA_INPUT_MIME_TYPES,
       reasoning: true,
       reasoningApi: 'level',
       admittedReasoningEfforts: GEMMA_REASONING_EFFORTS,

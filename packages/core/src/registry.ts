@@ -16,7 +16,27 @@ import type * as z from 'zod'
 
 import { LlmError } from './errors.js'
 import type { StandardSchemaV1 } from './standard-schema.js'
-import type { JsonValue, ReasoningEffort } from './types.js'
+import type { JsonValue, Message, ReasoningEffort } from './types.js'
+
+/**
+ * Token limits of a model, taken from the provider's own documentation (the
+ * descriptor's source comment names the page and the date it was read).
+ */
+export interface ModelLimits {
+  /**
+   * Total tokens the model can hold in one call, input and output together as
+   * the provider states it.
+   */
+  contextWindow: number
+  /**
+   * Largest `maxOutputTokens` the provider documents for the model. It counts
+   * reasoning tokens on providers that reason. A provider that documents no
+   * separate output limit gets `contextWindow` here: output is bounded by the
+   * window, and the provider rejects what it cannot serve. The model's config
+   * schema caps `maxOutputTokens` at this value.
+   */
+  maxOutputTokens: number
+}
 
 export interface ModelDescriptor {
   /**
@@ -47,6 +67,11 @@ export interface ModelDescriptor {
    * key. Lookup is exact; there is no prefix matching.
    */
   pricingFamily?: string
+  /**
+   * Token limits from the provider's documentation. Required: every descriptor
+   * states them, so hosts can size a call without a provider round trip.
+   */
+  limits: ModelLimits
   /** Capability flags for routing and adapter logic. */
   capabilities?: {
     reasoning?: boolean
@@ -54,6 +79,14 @@ export interface ModelDescriptor {
     nativeStructuredOutput?: boolean
     vision?: boolean
     audioInput?: boolean
+    /**
+     * IANA media types the model accepts in `inline-media` and `file-uri`
+     * parts, as the provider documents them. Adapters reject any other media
+     * type with `bad_request` before dispatch (see
+     * {@link assertInputMimeTypesAdmitted}). Absent or empty: the model admits
+     * no media part. Text, tool-call and tool-result parts are not media.
+     */
+    inputMimeTypes?: readonly string[]
     reasoningApi?: 'budget' | 'level'
     admittedReasoningEfforts?: ReadonlyArray<ReasoningEffort>
     sampling?: 'tunable' | 'fixed'
@@ -99,6 +132,37 @@ export interface ModelDescriptor {
 export interface ModelRegistry {
   resolve(provider: string, model: string): ModelDescriptor | undefined
   listDescriptors?(): readonly ModelDescriptor[]
+}
+
+function assertLimits(descriptor: Partial<ModelDescriptor>): void {
+  const where = `Model descriptor for provider "${descriptor.provider ?? '<unknown>'}" model "${
+    descriptor.model ?? '<unknown>'
+  }"`
+  const limits = descriptor.limits as Partial<ModelLimits> | undefined
+  if (limits === undefined || typeof limits !== 'object') {
+    throw new LlmError(`${where} is missing required limits.`, {
+      kind: 'bad_request',
+      retryable: false,
+    })
+  }
+  for (const key of ['contextWindow', 'maxOutputTokens'] as const) {
+    const value = limits[key]
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+      throw new LlmError(
+        `${where} has invalid limits.${key}: expected a positive integer.`,
+        { kind: 'bad_request', retryable: false },
+      )
+    }
+  }
+  if ((limits.maxOutputTokens as number) > (limits.contextWindow as number)) {
+    throw new LlmError(
+      `${where} declares limits.maxOutputTokens above limits.contextWindow.`,
+      {
+        kind: 'bad_request',
+        retryable: false,
+      },
+    )
+  }
 }
 
 function assertDescriptorSchemaArtifacts(descriptor: Partial<ModelDescriptor>): void {
@@ -166,6 +230,47 @@ export function assertModelMatchesDescriptor(
       { kind: 'bad_request', retryable: false },
     )
   }
+}
+
+/**
+ * Adapter-side guard: every `inline-media` and `file-uri` part in `messages`
+ * must carry a media type the descriptor admits
+ * ({@link ModelDescriptor.capabilities}`.inputMimeTypes`). The match is exact
+ * on the string the host sent; nothing is normalised or mapped. Throws
+ * `LlmError('bad_request')` naming the first offending part and the admitted
+ * types.
+ */
+export function assertInputMimeTypesAdmitted(
+  messages: readonly Message[],
+  descriptor: ModelDescriptor,
+  adapterProvider: string,
+): void {
+  const admitted = descriptor.capabilities?.inputMimeTypes ?? []
+  messages.forEach((message, mi) => {
+    message.parts.forEach((part, pi) => {
+      if (part.kind !== 'inline-media' && part.kind !== 'file-uri') return
+      if (admitted.includes(part.mimeType)) return
+      const path = `messages[${mi}].parts[${pi}]`
+      const list =
+        admitted.length === 0
+          ? 'the model admits no media input'
+          : `admitted types: ${admitted.join(', ')}`
+      throw new LlmError(
+        `${path}: ${adapterProvider} model "${descriptor.model}" does not accept media type "${boundedModelText(part.mimeType)}" (${list}).`,
+        {
+          kind: 'bad_request',
+          retryable: false,
+          provider: adapterProvider,
+          issues: [
+            {
+              path,
+              message: `media type "${boundedModelText(part.mimeType)}" is not admitted`,
+            },
+          ],
+        },
+      )
+    })
+  })
 }
 
 /** Longest model string echoed in a message or scored for suggestions. */
@@ -236,6 +341,7 @@ export function createModelRegistry(descriptors: ModelDescriptor[]): ModelRegist
 
   for (const descriptor of descriptors) {
     assertDescriptorSchemaArtifacts(descriptor)
+    assertLimits(descriptor)
     assertContinuationCapabilities(descriptor)
 
     const key = descriptorKey(descriptor.provider, descriptor.model)

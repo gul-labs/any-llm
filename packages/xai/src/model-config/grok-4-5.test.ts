@@ -57,9 +57,9 @@ describe('Grok45ConfigSchema', () => {
     expect(result.success).toBe(true)
   })
 
-  it('accepts a huge maxOutputTokens with no rejection', () => {
-    const result = Grok45ConfigSchema.safeParse({ maxOutputTokens: 100_000_000 })
-    expect(result.success).toBe(true)
+  it('caps maxOutputTokens at the context window, the only documented bound', () => {
+    expect(Grok45ConfigSchema.safeParse({ maxOutputTokens: 500_000 }).success).toBe(true)
+    expect(Grok45ConfigSchema.safeParse({ maxOutputTokens: 500_001 }).success).toBe(false)
   })
 
   it('rejects a non-positive maxOutputTokens', () => {

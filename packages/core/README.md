@@ -25,6 +25,7 @@ Every other `@gullabs/*` package declares this one as an exact-version peer depe
 | `defineCallSite(opts)`       | Defines a typed, reusable prompt template bound to a model                                         |
 | `computeCost(...)`           | Pure, provider-agnostic cost function (providers supply their own rates)                           |
 | `LlmError`                   | Typed error class — always thrown on call failure                                                  |
+| `spendPreflightMiddleware`   | Advisory per-key spend check against your own ledger (`spend_ceiling`); see "Middleware"           |
 | `canonicalJson(value)`       | RFC 8785 JSON Canonicalization Scheme (dependency-free), for hashing JSON independent of key order |
 | `assertPortableJsonSchema`   | Build-time lint: is this schema inside what both Gemini 3.x and xAI enforce? (see "JSON Schema")   |
 | `assertStandardJsonSchema`   | Rejects OpenAPI-dialect schemas (`nullable`, uppercase types, boolean subschemas)                  |
@@ -199,6 +200,14 @@ listed. An alias is for a real provider version suffix: the request string is se
 unchanged, the call is priced under the canonical descriptor, and the ledger row records the string
 the host sent. Adapters check their descriptor with `assertModelMatchesDescriptor`.
 
+Every descriptor states `limits: { contextWindow, maxOutputTokens }` (required, taken from the provider's
+documentation; `createModelRegistry` rejects missing or inconsistent limits), and its config schema caps
+`maxOutputTokens` at `limits.maxOutputTokens`. `capabilities.inputMimeTypes` lists the exact media types the
+model accepts in `inline-media` and `file-uri` parts (absent or empty: no media). Adapters reject any other
+type with `bad_request` before dispatch through `assertInputMimeTypesAdmitted`; a host-authored descriptor
+for a model that takes media must list its types. Where a provider documents no separate output limit,
+`maxOutputTokens` equals `contextWindow`. See ADR-033, Amendment A.
+
 Model-specific reminders:
 
 - `reasoning.budgetTokens` belongs to Gemini 2.5 budget-api models.
@@ -328,6 +337,10 @@ The union is closed so adapters cannot invent reasons; a new member arrives in a
 
 ### Output budget and reasoning
 
+Thinking budgets and the effort-to-budget defaults are documented per provider; see the
+[`@gullabs/google` README](../google/README.md#thinking-budgets-and-the-output-cap). The library warns when a
+budget model's thinking budget is at or above `maxOutputTokens`, and does not reject it.
+
 `GenConfig.maxOutputTokens` includes reasoning tokens on providers that reason. When a call ends with
 `finishReason: 'length'`, produced no answer text and no tool call, and spent reasoning tokens, the result
 and the record carry a warning that the cap was used up by reasoning. Raise the cap or lower the reasoning
@@ -371,6 +384,16 @@ is released when that attempt ends.
 - **Treat the request as immutable once passed to `next`.** To change data (config, messages,
   metadata), pass a new object to `next`. The engine does not copy or freeze requests, so mutating
   nested data in place after calling `next` is a host bug it cannot detect.
+- **`spendPreflightMiddleware({ limitMicroUsd, key, spentSoFar })` is an advisory spend check.** Your
+  `spentSoFar(key)` reads the total (micro-USD) from your own ledger; at or above `limitMicroUsd` the call
+  fails before dispatch with `rate_limited`, `retryable: false`, `reason: 'spend_ceiling'` (so retry does not
+  sleep on it) and a refusal row is written. `key` is a string, or a function of the request for a client
+  serving several scopes. It is **not an enforced ceiling**: the read and the dispatch are not atomic, so
+  concurrent workers can overshoot; the call that crosses the ceiling is allowed; and billed calls whose usage
+  is unknown (`microUsd: null`) are counted only if your ledger counts them. It sets no `role` and works
+  anywhere in the list: first (outside retry) it runs once per logical call and consumes no quota; inside
+  retry it re-reads `spentSoFar` before each attempt. An enforced ceiling needs atomic reservation and
+  reconciliation (`BACKLOG.md`).
 - **One deadline for the whole call.** `config.timeoutMs` starts when the call starts and is measured on
   the client `clock`. `ctx.deadlineAt` is its end and `ctx.signal` aborts when it passes, so a
   middleware that sleeps, retries or does I/O measures against those, never against the time it was

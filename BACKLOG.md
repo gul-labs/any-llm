@@ -197,6 +197,29 @@ paths to other repos.
   `providerMetadata`; `searchEntryPoint` is under `providerMetadata.google`. Decide one shape for provider
   metadata before more keys are added.
 
+## Follow-ups from output limits, thinking budgets and spend (2026-10-03)
+
+- **`GenConfig.answerTokens` is rejected by measurement.** A 336-call measurement of Gemini thinking
+  tokens (`docs/thinking-token-distribution.md`) found p95 two to six times the p50 at `high` effort,
+  driven by the prompt more than by the model or the effort. No per-model answer allowance would be
+  stable, so a cap that reserves room for the answer cannot be computed from the descriptor. The warning
+  for a budget at or above `maxOutputTokens`, and the one for reasoning that used up the cap, are the
+  final state. Re-measure only if Google changes how thinking is bounded.
+- **Enforced spend ceiling.** `spendPreflightMiddleware` is advisory: its read and the dispatch are not
+  atomic, so concurrent workers can overshoot, and billed calls with unknown usage are not counted
+  unless the host's ledger counts them. A ceiling that holds needs an atomic reservation before
+  dispatch and a reconciliation against the billed cost after it, across processes. Own design; needs a
+  shared store port (the quota package's store is the nearest precedent).
+- **xAI search ceiling in flight.** `providerOptions.xai.searchBudget` reports an exceeded budget after
+  the call is billed. Stopping a call mid-flight needs streaming (the plan's later release) and an
+  abort once the counters cross the budget. Keep `maxTurns` and re-probe whether xAI enforces it at each
+  model refresh.
+- **Output limits for providers that document none.** Gemma 4 and xAI Grok 4.x publish no maximum
+  output size, so `limits.maxOutputTokens` equals the context window. Replace it with the real figure
+  when a provider documents one (a live probe of an oversized value would also pin it).
+- **Gemma 4 input media types.** The Gemma pages list no image media types; only PNG and JPEG (the types
+  its examples use) are admitted. Probe WebP, HEIC and the other Gemini image types before admitting them.
+
 ## Optional later (not ticketed)
 
 - Tool-invocation fee Cost lane for xAI server tools (`attachment_search`, etc.) once

@@ -17,7 +17,7 @@ import {
   toConfigJsonSchema,
   zodToStandardSchema,
 } from '@gullabs/core'
-import type { ModelDescriptor, ModelRegistry } from '@gullabs/core'
+import type { ModelDescriptor, ModelLimits, ModelRegistry } from '@gullabs/core'
 
 // ---------------------------------------------------------------------------
 // Model ids
@@ -113,6 +113,19 @@ const CONFIG_SCHEMA_BY_ID: Record<CodexCliModelId, z.ZodType> = {
 // ---------------------------------------------------------------------------
 
 /**
+ * Context window and maximum output, read 2026-10-03 from the OpenAI model
+ * pages (`https://developers.openai.com/api/docs/models/<model-id>` for
+ * gpt-6-astra, gpt-6-sol and gpt-6-luna: "1,050,000 context window",
+ * "128,000 max output tokens"). `codex exec` exposes no output-size knob, so
+ * the limits are informational here: the config schemas carry no
+ * `maxOutputTokens`.
+ */
+const CODEX_CLI_LIMITS: ModelLimits = {
+  contextWindow: 1_050_000,
+  maxOutputTokens: 128_000,
+}
+
+/**
  * `ModelDescriptor[]` for every Codex CLI model.
  *
  * The descriptor and strict Zod schema expose the same admitted effort set.
@@ -123,7 +136,10 @@ export const codexCliModelDescriptors: ModelDescriptor[] = CODEX_CLI_MODEL_IDS.m
     return {
       model: id,
       provider: 'codex-cli',
+      limits: CODEX_CLI_LIMITS,
       capabilities: {
+        // `codex exec` runs text-only: the adapter rejects every non-text part.
+        inputMimeTypes: [],
         structuredOutput: true,
         nativeStructuredOutput: true,
         reasoningApi: 'level',

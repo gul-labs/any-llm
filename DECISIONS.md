@@ -1873,6 +1873,19 @@ three neighbouring problems, all confirmed live on 2026-10-02 against
 - ADR-035 adds the provider-neutral `usage.details.web_search_requested`, and a
   known zero for `web_search_calls` when xAI states that no server tool ran.
 
+### Amendment (2026-10-03): `searchBudget`, observed after the call
+
+`providerOptions.xai.searchBudget: { maxWebSearchCalls?, maxXItems? }` (integers >= 1, at least one
+ceiling; `maxWebSearchCalls` needs a `web_search` tool and `maxXItems` an `x_search` tool; all need
+`tools`) is **never sent to xAI**, which has no per-call search ceiling (`maxTurns` is not enforced,
+item 2). After the response the adapter compares xAI's counters with it: `web_search_calls` against
+`maxWebSearchCalls`, `x_posts_fetched` plus `x_users_fetched` against `maxXItems`. Over budget: a
+warning naming each exceeded line and `usage.details.search_budget_exceeded = 1`; the result is
+returned and priced as usual, because the call is already billed. A counter xAI did not report cannot be
+compared and is never counted as exceeded. It is a report, not a ceiling; the enforced in-flight ceiling
+(streaming, abort once the budget is crossed) is a later release, and `maxTurns` stays and is
+re-probed at every model refresh.
+
 ---
 
 ## ADR-031: Ledger rows are per attempt; correlation is `externalId`
@@ -2011,6 +2024,49 @@ with an alias list would have been rejected on its first call.
   add the suffix as an alias in a custom registry.
 - A new model variant is unpriced-by-mistake no more: it fails closed until it is registered.
 - The Claude and Codex CLI adapters keep their own exact-id guards; they declare no aliases.
+
+### Amendment A (2026-10-03): descriptor limits and admitted input media types
+
+**Context:**
+A host learned a model's output cap, window and image formats from a 400 after dispatch: xAI rejects
+WebP, Gemini rejects `maxOutputTokens` above 65,536, and neither fact was on the descriptor.
+
+**Decision:**
+
+1. **`ModelDescriptor.limits: { contextWindow; maxOutputTokens }` is required.** There is no optional
+   form and no default: every descriptor (built-in, CLI, host-authored, test fixture) states them.
+   `createModelRegistry` rejects a descriptor whose limits are missing, not positive integers, or
+   whose `maxOutputTokens` exceeds `contextWindow`. `maxOutputTokens` counts reasoning tokens on
+   providers that reason.
+2. **Values come from the provider's own documentation,** with the page and the read date in a source
+   comment next to the table (ADR-013): Google model pages and the Gemma 4 model card, xAI model
+   pages, Anthropic and OpenAI model pages, all read 2026-10-03. Where a provider documents no
+   separate output limit (Gemma 4, xAI Grok 4.x), `maxOutputTokens` equals `contextWindow`: output is
+   bounded by the window and the provider rejects what it cannot serve. This replaces the earlier
+   "no artificial ceiling" wording for xAI, whose schemas accepted any positive integer.
+3. **Config schemas cap `maxOutputTokens` at `limits.maxOutputTokens`,** from the same constant the
+   descriptor uses, so they cannot drift. `assertRegistryInvariants` (`@gullabs/testing`) checks every
+   descriptor: valid limits, and a schema with a `maxOutputTokens` field accepts exactly the limit and
+   rejects one more. The CLI providers expose no output-size knob, so their schemas have no such field
+   and their limits are informational.
+4. **`capabilities.inputMimeTypes?: readonly string[]` lists the IANA types a model accepts in
+   `inline-media` and `file-uri` parts.** Absent or empty means no media input. Adapters call one core
+   helper, `assertInputMimeTypesAdmitted(messages, descriptor, adapterProvider)`, before dispatch
+   (and in `countTokens`); the match is exact on the string the host sent (no case folding, no
+   parameters, no `image/jpg` for `image/jpeg`) and a miss is `bad_request` naming
+   `messages[i].parts[j]` and the admitted types. xAI admits `image/jpeg` and `image/png` (WebP is not
+   listed in xAI's image-understanding page); Gemini admits the image, audio, video, PDF and plain-text
+   document types its documentation lists; Gemma 4 admits PNG and JPEG (the types its vision examples
+   use; its pages list none); the CLI providers are text-only and list none.
+
+**Consequences:**
+
+- Every host-authored descriptor must add `limits` (and `inputMimeTypes` if it takes media).
+- A host sending a media type the provider does not document now fails before dispatch with the type
+  in the message instead of a provider 400 (or silently, where the provider ignores it). xAI no longer
+  accepts the non-standard `image/jpg`.
+- A `maxOutputTokens` above the documented limit fails config validation instead of reaching the
+  provider; for xAI that bound is the 500,000-token window.
 
 ---
 
@@ -2699,6 +2755,21 @@ stale-cache message as the one documented exception.
   `parallelToolCalls` without tools is `bad_request`.
 - `codex exec` gets the prompt on stdin; a host that inspected the argv for the prompt must read the
   runner's `input` instead.
+
+### Amendment: advisory spend preflight emits `spend_ceiling` (2026-10-03)
+
+`spendPreflightMiddleware({ limitMicroUsd, key, spentSoFar })` in `@gullabs/core` is the first emitter of
+`reason: 'spend_ceiling'`. The host supplies `spentSoFar(key)` from its own ledger; at or above
+`limitMicroUsd` the call fails before dispatch with `rate_limited`, `retryable: false`, `reason:
+'spend_ceiling'`, so the retry middleware does not sleep on it, and a refusal row is written
+(ADR-037 item 6). It is **advisory**: the read and the dispatch are not atomic, so concurrent calls can
+each pass and overshoot; the call that crosses the ceiling is allowed; and billed calls with unknown
+usage (`microUsd: null`) count only if the host's `spentSoFar` counts them. A ceiling that holds needs atomic
+reservation and reconciliation, an own design tracked in `BACKLOG.md`. It sets no `Middleware.role`:
+it is correct inside or outside retry (outside: once per logical call; inside: re-read per attempt), so
+the quota-inside-retry rule does not apply to it. `search_budget_exceeded` is still not emitted: the
+xAI `searchBudget` option (ADR-030 amendment) observes the budget after a billed call and reports it as a
+warning, never an error.
 
 ---
 

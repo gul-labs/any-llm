@@ -162,6 +162,7 @@ export interface Usage {
 // Normalised search facts in `details`, same names on every provider (ADR-035):
 //   web_search_requested  1 when the request enabled web search, else absent
 //   web_search_calls      observed number of searches; absent when the response does not say
+//   search_budget_exceeded  1 when an xAI `searchBudget` ceiling was exceeded (reported after the call), else absent
 // `normalizeUsage` also warns, and the engine reports the cost as 'estimated', when totalTokens
 // is larger than inputTokens + outputTokens (the provider counted tokens the fields omit).
 
@@ -323,6 +324,13 @@ Invariants of the middleware chain (ADR-037) and model resolution (ADR-033):
 
 - Model ids resolve exactly: a descriptor's canonical `model` or one of its declared `aliases`.
   There is no prefix matching.
+- Every `ModelDescriptor` states `limits: { contextWindow, maxOutputTokens }` (required, positive
+  integers, `maxOutputTokens <= contextWindow`, from the provider's documentation) and its config
+  schema caps `maxOutputTokens` at `limits.maxOutputTokens`. `capabilities.inputMimeTypes` lists the
+  exact media types admitted in `inline-media` and `file-uri` parts (absent or empty: none); adapters
+  reject any other with `bad_request` before dispatch (ADR-033, Amendment A).
+- `spendPreflightMiddleware` is advisory (ADR-036 amendment): at or above the host's ledger total it
+  throws `rate_limited`, `retryable: false`, `reason: 'spend_ceiling'`; it sets no `role`.
 - A call's `{ provider, requestedModel, descriptor }` is fixed at call start. A middleware whose
   `next` receives a request with a different `provider` or `model` is refused with `bad_request`
   (and a zero-usage refusal row: `attemptNumber: 0` when no attempt had run, otherwise the refused
@@ -490,13 +498,14 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
   timeout is `kind: 'timeout'`, `retryable: false`, `reason: 'transport_timeout'`.
 - `providerOptions.xai` is an allowlist; unknown keys are `bad_request`:
 
-  | key                 | wire                  | rule                                                                                                                                                                  |
-  | ------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | `promptCacheKey`    | `prompt_cache_key`    | non-empty string                                                                                                                                                      |
-  | `tools`             | `tools`               | `web_search` / `x_search`, at most one of each; needs `capabilities.grounding`                                                                                        |
-  | `parallelToolCalls` | `parallel_tool_calls` | boolean                                                                                                                                                               |
-  | `toolChoice`        | `tool_choice`         | `'auto' \| 'required' \| 'none'` for the search tools only; needs non-empty `tools`; rejected with function tools, file attachments or the request-level `toolChoice` |
-  | `maxTurns`          | `max_turns`           | integer ≥ 1; needs non-empty `tools`; caps agentic turns, not searches; xAI did not enforce it as of 2026-10-02                                                       |
+  | key                 | wire                  | rule                                                                                                                                                                     |
+  | ------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+  | `promptCacheKey`    | `prompt_cache_key`    | non-empty string                                                                                                                                                         |
+  | `tools`             | `tools`               | `web_search` / `x_search`, at most one of each; needs `capabilities.grounding`                                                                                           |
+  | `parallelToolCalls` | `parallel_tool_calls` | boolean                                                                                                                                                                  |
+  | `toolChoice`        | `tool_choice`         | `'auto' \| 'required' \| 'none'` for the search tools only; needs non-empty `tools`; rejected with function tools, file attachments or the request-level `toolChoice`    |
+  | `maxTurns`          | `max_turns`           | integer ≥ 1; needs non-empty `tools`; caps agentic turns, not searches; xAI did not enforce it as of 2026-10-02                                                          |
+  | `searchBudget`      | none (observed only)  | `{ maxWebSearchCalls?, maxXItems? }`, integers ≥ 1, at least one; needs the matching tool; over budget → warning + `details.search_budget_exceeded = 1`, result returned |
 
 - xAI structured output and tool parameters take standard JSON Schema (ADR-034). A nullable
   field lists `'null'` in `type` (`type: ['string', 'null']`). The OpenAPI `nullable` keyword,

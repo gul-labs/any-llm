@@ -11,7 +11,7 @@
  */
 
 import { z } from 'zod'
-import type { ModelDescriptor, ModelRegistry } from '@gullabs/core'
+import type { ModelDescriptor, ModelLimits, ModelRegistry } from '@gullabs/core'
 import {
   createModelRegistry,
   toConfigJsonSchema,
@@ -112,13 +112,32 @@ const CONFIG_SCHEMAS: Record<ClaudeCliModelId, z.ZodType> = {
 // Descriptors + registry
 // ---------------------------------------------------------------------------
 
+/**
+ * Context window and maximum output per model, read 2026-10-03 from the
+ * Anthropic models overview (`https://platform.claude.com/docs/en/about-claude/models/overview`:
+ * Fable 5.1 and Opus 5.5 "1M tokens" / "128K tokens", Haiku 4.5 "200K tokens" /
+ * "64K tokens") and the Sonnet 5 page
+ * (`https://platform.claude.com/docs/en/models/sonnet-5/overview`: "1M tokens"
+ * / "128K tokens"). The CLI exposes no output-size knob, so the limits are
+ * informational here: the config schemas carry no `maxOutputTokens`.
+ */
+const CLAUDE_CLI_LIMITS: Record<ClaudeCliModelId, ModelLimits> = {
+  'claude-fable-5-1': { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+  'claude-opus-5-5': { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+  'claude-sonnet-5': { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+  'claude-haiku-4-5-20251001': { contextWindow: 200_000, maxOutputTokens: 64_000 },
+}
+
 export const claudeCliModelDescriptors: ModelDescriptor[] = CLAUDE_CLI_MODEL_IDS.map(
   (id): ModelDescriptor => {
     const configSchema = CONFIG_SCHEMAS[id]
     return {
       model: id,
       provider: 'claude-cli',
+      limits: CLAUDE_CLI_LIMITS[id],
       capabilities: {
+        // The CLI runs text-only: the adapter rejects every non-text part.
+        inputMimeTypes: [],
         structuredOutput: true,
         nativeStructuredOutput: true,
         ...(id !== 'claude-haiku-4-5-20251001' ? { reasoningApi: 'level' as const } : {}),

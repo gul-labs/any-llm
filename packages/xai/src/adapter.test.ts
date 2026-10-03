@@ -2953,7 +2953,7 @@ describe('providerOptions.xai.toolChoice', () => {
     await expect(run).rejects.toMatchObject({
       kind: 'bad_request',
       message: expect.stringContaining(
-        'Allowed keys: promptCacheKey, tools, parallelToolCalls, toolChoice, maxTurns.',
+        'Allowed keys: promptCacheKey, tools, parallelToolCalls, toolChoice, maxTurns, searchBudget.',
       ),
     })
   })

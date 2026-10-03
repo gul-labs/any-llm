@@ -125,3 +125,20 @@ describe('registry', () => {
     }
   })
 })
+
+describe('claude-cli limits and media (docs read 2026-10-03)', () => {
+  it('states each model context window and maximum output, and admits no media', () => {
+    const byModel = Object.fromEntries(
+      claudeCliModelDescriptors.map((d) => [d.model, d.limits]),
+    )
+    expect(byModel).toEqual({
+      'claude-fable-5-1': { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+      'claude-opus-5-5': { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+      'claude-sonnet-5': { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+      'claude-haiku-4-5-20251001': { contextWindow: 200_000, maxOutputTokens: 64_000 },
+    })
+    for (const d of claudeCliModelDescriptors) {
+      expect(d.capabilities?.inputMimeTypes).toEqual([])
+    }
+  })
+})

@@ -13,6 +13,7 @@ import {
   causeChain,
   assertNever,
   assertJsonSchemaProfile,
+  assertInputMimeTypesAdmitted,
   assertModelMatchesDescriptor,
 } from '@gullabs/core'
 import type {
@@ -84,8 +85,6 @@ function badXaiRequest(message: string): LlmError {
 // Vision / media mapping
 // ---------------------------------------------------------------------------
 
-const ALLOWED_XAI_IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png'])
-
 /** 20 MiB, xAI's documented inline-image size ceiling. */
 const MAX_XAI_INLINE_IMAGE_BYTES = 20 * 1024 * 1024
 
@@ -95,11 +94,13 @@ const MAX_XAI_INLINE_IMAGE_BYTES = 20 * 1024 * 1024
  *
  * - `text`         → `{ type: 'input_text', text }`
  * - `inline-media` → `{ type: 'input_image', image_url: 'data:<mime>;base64,<data>' }`;
- *   rejected (`bad_request`) when `mimeType` is not jpg/jpeg/png, or when the
- *   decoded payload exceeds 20 MiB.
+ *   rejected (`bad_request`) when the decoded payload exceeds 20 MiB. The
+ *   media type itself is checked against the descriptor's
+ *   `capabilities.inputMimeTypes` (jpeg and png; WebP is not accepted) before
+ *   any part is mapped.
  * - `file-uri`     → `{ type: 'input_image', image_url: uri }` ONLY when
- *   `uri` is a public `http(s)://` URL AND `mimeType` is an allowed image
- *   type — a provider-hosted URI from another provider (e.g. Gemini's Files
+ *   `uri` is a public `http(s)://` URL (its media type is checked like an
+ *   inline part's) — a provider-hosted URI from another provider (e.g. Gemini's Files
  *   API `https://generativelanguage.googleapis.com/...` — which itself
  *   happens to be `https://`, but is not dereferenceable by xAI) is not
  *   portable and callers should not reuse `FileUriPart` cross-provider.
@@ -118,11 +119,6 @@ function mapPart(p: Part): XaiInputContentPart {
       return { type: 'input_text', text: p.text }
 
     case 'inline-media': {
-      if (!ALLOWED_XAI_IMAGE_MIME_TYPES.has(p.mimeType)) {
-        throw badXaiRequest(
-          `xAI vision only supports image/jpeg and image/png; got mimeType "${p.mimeType}".`,
-        )
-      }
       const byteLength = Buffer.from(p.data, 'base64').length
       if (byteLength > MAX_XAI_INLINE_IMAGE_BYTES) {
         throw badXaiRequest(
@@ -134,8 +130,7 @@ function mapPart(p: Part): XaiInputContentPart {
 
     case 'file-uri': {
       const isPublicHttpUrl = p.uri.startsWith('http://') || p.uri.startsWith('https://')
-      const isAllowedImageType = ALLOWED_XAI_IMAGE_MIME_TYPES.has(p.mimeType)
-      if (!isPublicHttpUrl || !isAllowedImageType) {
+      if (!isPublicHttpUrl) {
         throw badXaiRequest(
           `xAI only accepts public http(s) image URLs via FileUriPart; got scheme of "${p.uri}" / mimeType "${p.mimeType}".`,
         )
@@ -180,6 +175,7 @@ const XAI_PROVIDER_OPTION_KEYS = new Set([
   'parallelToolCalls',
   'toolChoice',
   'maxTurns',
+  'searchBudget',
 ])
 
 const XAI_SERVER_TOOL_CHOICES = new Set(['auto', 'required', 'none'])
@@ -190,6 +186,98 @@ type MappedXaiProviderOptions = {
   parallelToolCalls?: boolean
   toolChoice?: 'auto' | 'required' | 'none'
   maxTurns?: number
+  /** Observed after the call, never sent to xAI. */
+  searchBudget?: XaiSearchBudget
+}
+
+/**
+ * `providerOptions.xai.searchBudget`: ceilings the adapter compares with the
+ * search counters xAI reports after the call. xAI offers no per-call ceiling
+ * on search volume (`maxTurns` is not enforced), so this only tells the host
+ * the call exceeded what it expected to pay for.
+ */
+type XaiSearchBudget = { maxWebSearchCalls?: number; maxXItems?: number }
+
+const XAI_SEARCH_BUDGET_KEYS = ['maxWebSearchCalls', 'maxXItems'] as const
+
+function mapXaiSearchBudget(
+  value: unknown,
+  tools: Array<Record<string, unknown>> | undefined,
+  model: string,
+): XaiSearchBudget {
+  if (!isPlainRecord(value)) {
+    throw badXaiRequest(
+      `providerOptions.xai.searchBudget must be an object for model "${model}".`,
+    )
+  }
+  const unknown = Object.keys(value).filter(
+    (key) => !(XAI_SEARCH_BUDGET_KEYS as readonly string[]).includes(key),
+  )
+  if (unknown.length > 0) {
+    throw badXaiRequest(
+      `providerOptions.xai.searchBudget contains unsupported keys [${unknown.join(
+        ', ',
+      )}] for model "${model}". Allowed keys: ${XAI_SEARCH_BUDGET_KEYS.join(', ')}.`,
+    )
+  }
+  const budget: XaiSearchBudget = {}
+  for (const key of XAI_SEARCH_BUDGET_KEYS) {
+    const entry = value[key]
+    if (entry === undefined) continue
+    if (typeof entry !== 'number' || !Number.isInteger(entry) || entry < 1) {
+      throw badXaiRequest(
+        `providerOptions.xai.searchBudget.${key} must be an integer >= 1 for model "${model}".`,
+      )
+    }
+    budget[key] = entry
+  }
+  if (budget.maxWebSearchCalls === undefined && budget.maxXItems === undefined) {
+    throw badXaiRequest(
+      `providerOptions.xai.searchBudget must set maxWebSearchCalls or maxXItems for model "${model}".`,
+    )
+  }
+  const hasTool = (type: string): boolean =>
+    tools?.some((tool) => tool['type'] === type) === true
+  if (budget.maxWebSearchCalls !== undefined && !hasTool('web_search')) {
+    throw badXaiRequest(
+      `providerOptions.xai.searchBudget.maxWebSearchCalls requires a web_search tool in providerOptions.xai.tools for model "${model}".`,
+    )
+  }
+  if (budget.maxXItems !== undefined && !hasTool('x_search')) {
+    throw badXaiRequest(
+      `providerOptions.xai.searchBudget.maxXItems requires an x_search tool in providerOptions.xai.tools for model "${model}".`,
+    )
+  }
+  return budget
+}
+
+/**
+ * Names the budget lines the observed counters exceed. A counter xAI did not
+ * report cannot be compared, so it never counts as exceeded.
+ */
+function exceededSearchBudget(
+  budget: XaiSearchBudget,
+  details: Record<string, number>,
+): string[] {
+  const over: string[] = []
+  const webCalls = details[WEB_SEARCH_COUNTER]
+  if (
+    budget.maxWebSearchCalls !== undefined &&
+    webCalls !== undefined &&
+    webCalls > budget.maxWebSearchCalls
+  ) {
+    over.push(
+      `${WEB_SEARCH_COUNTER} ${webCalls} > maxWebSearchCalls ${budget.maxWebSearchCalls}`,
+    )
+  }
+  if (budget.maxXItems !== undefined) {
+    const reported = X_SEARCH_ITEM_COUNTERS.filter((key) => details[key] !== undefined)
+    const items = reported.reduce((sum, key) => sum + (details[key] as number), 0)
+    if (reported.length > 0 && items > budget.maxXItems) {
+      over.push(`X items ${items} > maxXItems ${budget.maxXItems}`)
+    }
+  }
+  return over
 }
 
 function mapXaiProviderOptions(
@@ -211,7 +299,7 @@ function mapXaiProviderOptions(
     throw badXaiRequest(
       `providerOptions.xai contains unsupported keys [${unknownKeys.join(
         ', ',
-      )}] for model "${model}". Allowed keys: promptCacheKey, tools, parallelToolCalls, toolChoice, maxTurns.`,
+      )}] for model "${model}". Allowed keys: promptCacheKey, tools, parallelToolCalls, toolChoice, maxTurns, searchBudget.`,
     )
   }
 
@@ -269,6 +357,10 @@ function mapXaiProviderOptions(
       )
     }
     mapped.maxTurns = maxTurns
+  }
+
+  if (xaiOpts['searchBudget'] !== undefined) {
+    mapped.searchBudget = mapXaiSearchBudget(xaiOpts['searchBudget'], mapped.tools, model)
   }
 
   return mapped
@@ -956,6 +1048,12 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       if (req.modelDescriptor !== undefined) {
         assertModelMatchesDescriptor(req, req.modelDescriptor, 'xai')
       }
+      // A direct adapter call without a descriptor is checked against the
+      // built-in one, so media types are never silently unchecked.
+      const mediaDescriptor = req.modelDescriptor ?? xaiRegistry.resolve('xai', model)
+      if (mediaDescriptor !== undefined) {
+        assertInputMimeTypesAdmitted(req.messages, mediaDescriptor, 'xai')
+      }
       if (
         xaiRegistry.resolve('xai', model)?.capabilities?.continuation === 'state' &&
         req.modelDescriptor?.capabilities?.continuation !== 'state'
@@ -1449,6 +1547,18 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       ) {
         usage.details['web_search_requested'] = 1
         if (noServerToolRan) usage.details[WEB_SEARCH_COUNTER] = 0
+      }
+      // The call is already billed when the counters arrive, so an exceeded
+      // budget is reported, never thrown: the result is still returned.
+      if (xaiProviderConfig.searchBudget !== undefined) {
+        const over = exceededSearchBudget(xaiProviderConfig.searchBudget, usage.details)
+        if (over.length > 0) {
+          usage.details['search_budget_exceeded'] = 1
+          warnings.push({
+            type: 'other',
+            message: `xai: search budget exceeded (${over.join('; ')}); the call is already billed and its result is returned.`,
+          })
+        }
       }
       if ((expectedToolCounters.length > 0 || hasFileRef) && !noServerToolRan) {
         usage.details['server_tools_requested'] = 1

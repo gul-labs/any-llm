@@ -61,6 +61,9 @@ export interface AssertRegistryInvariantsOptions {
  *   (`configSchema`/`configJsonSchema`/`validateConfig`).
  * - `configJsonSchema` is not stale relative to `configSchema`
  *   (`configJsonSchema === toConfigJsonSchema(configSchema)`).
+ * - `limits` are positive integers with `maxOutputTokens <= contextWindow`, and a
+ *   config schema that has a `maxOutputTokens` field accepts exactly up to
+ *   `limits.maxOutputTokens` and rejects one more.
  * - The registered model-id list matches {@link
  *   AssertRegistryInvariantsOptions.expectedModelIds} exactly, in order.
  * - When a {@link AssertRegistryInvariantsOptions.pricingSource} is given,
@@ -116,6 +119,34 @@ export function assertRegistryInvariants(opts: AssertRegistryInvariantsOptions):
       toConfigJsonSchema(descriptor.configSchema),
       `${model}: configJsonSchema is stale relative to configSchema`,
     )
+
+    const limits = descriptor.limits as ModelDescriptor['limits'] | undefined
+    assert.ok(limits !== undefined, `${model}: missing required limits`)
+    for (const key of ['contextWindow', 'maxOutputTokens'] as const) {
+      assert.ok(
+        Number.isSafeInteger(limits[key]) && limits[key] > 0,
+        `${model}: limits.${key} must be a positive integer`,
+      )
+    }
+    assert.ok(
+      limits.maxOutputTokens <= limits.contextWindow,
+      `${model}: limits.maxOutputTokens is above limits.contextWindow`,
+    )
+    // A schema without a `maxOutputTokens` field (the CLI providers) rejects
+    // the probe value as an unknown key; the cap only applies where it exists.
+    if (descriptor.configSchema.safeParse({ maxOutputTokens: 1 }).success) {
+      assert.ok(
+        descriptor.configSchema.safeParse({ maxOutputTokens: limits.maxOutputTokens })
+          .success,
+        `${model}: config schema must accept maxOutputTokens up to limits.maxOutputTokens`,
+      )
+      assert.ok(
+        !descriptor.configSchema.safeParse({
+          maxOutputTokens: limits.maxOutputTokens + 1,
+        }).success,
+        `${model}: config schema must cap maxOutputTokens at limits.maxOutputTokens`,
+      )
+    }
 
     if (adapterFixtureSet !== undefined) {
       assert.ok(

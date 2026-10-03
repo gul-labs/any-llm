@@ -2,13 +2,14 @@ import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 
 import {
+  assertInputMimeTypesAdmitted,
   assertModelMatchesDescriptor,
   createModelRegistry,
   LlmError,
   toConfigJsonSchema,
   zodToStandardSchema,
 } from './index.js'
-import type { ModelDescriptor } from './index.js'
+import type { Message, ModelDescriptor } from './index.js'
 
 const removedConfigSchemaFactory = `makeGeminiConfig${'Schema'}`
 const removedConfigValidatorFactory = `makeGeminiConfig${'Validator'}`
@@ -21,6 +22,7 @@ function makeDescriptor(model: string, provider: string): ModelDescriptor {
   return {
     model,
     provider,
+    limits: { contextWindow: 1_000_000, maxOutputTokens: 65_536 },
     configSchema: EmptyConfigSchema,
     configJsonSchema: toConfigJsonSchema(EmptyConfigSchema),
     validateConfig: zodToStandardSchema(EmptyConfigSchema),
@@ -143,6 +145,7 @@ describe('createModelRegistry', () => {
       {
         model: 'shared-model',
         provider: 'a',
+        limits: { contextWindow: 1_000_000, maxOutputTokens: 65_536 },
         configSchema: SchemaA,
         configJsonSchema: toConfigJsonSchema(SchemaA),
         validateConfig: zodToStandardSchema(SchemaA),
@@ -150,6 +153,7 @@ describe('createModelRegistry', () => {
       {
         model: 'shared-model',
         provider: 'b',
+        limits: { contextWindow: 1_000_000, maxOutputTokens: 65_536 },
         configSchema: SchemaB,
         configJsonSchema: toConfigJsonSchema(SchemaB),
         validateConfig: zodToStandardSchema(SchemaB),
@@ -235,5 +239,130 @@ describe('assertModelMatchesDescriptor', () => {
         'q',
       ),
     ).toThrow(LlmError)
+  })
+})
+
+describe('descriptor limits', () => {
+  const withLimits = (limits: unknown): ModelDescriptor =>
+    ({ ...makeDescriptor('m', 'p'), limits }) as unknown as ModelDescriptor
+
+  it('requires limits on every descriptor', () => {
+    expect(() => createModelRegistry([withLimits(undefined)])).toThrow(
+      /missing required limits/,
+    )
+  })
+
+  it('requires positive integer limits', () => {
+    for (const bad of [0, -1, 1.5, Number.NaN, '100', Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() =>
+        createModelRegistry([withLimits({ contextWindow: bad, maxOutputTokens: 1 })]),
+      ).toThrow(/limits\.contextWindow/)
+      expect(() =>
+        createModelRegistry([withLimits({ contextWindow: 10, maxOutputTokens: bad })]),
+      ).toThrow(/limits\.maxOutputTokens/)
+    }
+  })
+
+  it('rejects a maxOutputTokens above the context window', () => {
+    expect(() =>
+      createModelRegistry([withLimits({ contextWindow: 100, maxOutputTokens: 101 })]),
+    ).toThrow(/above limits\.contextWindow/)
+  })
+
+  it('accepts equal limits and exposes them on the resolved descriptor', () => {
+    const d = withLimits({ contextWindow: 100, maxOutputTokens: 100 })
+    expect(createModelRegistry([d]).resolve('p', 'm')?.limits).toEqual({
+      contextWindow: 100,
+      maxOutputTokens: 100,
+    })
+  })
+})
+
+describe('assertInputMimeTypesAdmitted', () => {
+  const descriptor = (inputMimeTypes?: readonly string[]): ModelDescriptor => ({
+    ...makeDescriptor('m', 'p'),
+    capabilities: inputMimeTypes === undefined ? {} : { inputMimeTypes },
+  })
+  const messages = (...parts: Message['parts']): Message[] => [{ role: 'user', parts }]
+  const inline = (mimeType: string): Message['parts'][number] => ({
+    kind: 'inline-media',
+    mimeType,
+    data: 'AAAA',
+  })
+  const uri = (mimeType: string): Message['parts'][number] => ({
+    kind: 'file-uri',
+    mimeType,
+    uri: 'https://example.test/f',
+  })
+
+  it('passes admitted types on inline and file-uri parts and ignores non-media parts', () => {
+    expect(() =>
+      assertInputMimeTypesAdmitted(
+        messages({ kind: 'text', text: 'hi' }, inline('image/png'), uri('image/jpeg'), {
+          kind: 'file-ref',
+          fileId: 'f1',
+        }),
+        descriptor(['image/png', 'image/jpeg']),
+        'p',
+      ),
+    ).not.toThrow()
+  })
+
+  it('rejects an unadmitted inline type with the path and the admitted list', () => {
+    try {
+      assertInputMimeTypesAdmitted(
+        messages({ kind: 'text', text: 'hi' }, inline('image/webp')),
+        descriptor(['image/png']),
+        'p',
+      )
+      expect.unreachable()
+    } catch (err) {
+      expect(err).toBeInstanceOf(LlmError)
+      const e = err as LlmError
+      expect(e.kind).toBe('bad_request')
+      expect(e.retryable).toBe(false)
+      expect(e.message).toContain('messages[0].parts[1]')
+      expect(e.message).toContain('image/webp')
+      expect(e.message).toContain('image/png')
+      expect(e.issues?.[0]?.path).toBe('messages[0].parts[1]')
+    }
+  })
+
+  it('rejects an unadmitted file-uri type', () => {
+    expect(() =>
+      assertInputMimeTypesAdmitted(
+        messages(uri('video/mp4')),
+        descriptor(['image/png']),
+        'p',
+      ),
+    ).toThrow(/video\/mp4/)
+  })
+
+  it('matches exactly: no case folding, parameters or aliases', () => {
+    for (const type of ['IMAGE/PNG', 'image/png; charset=x', 'image/jpg']) {
+      expect(() =>
+        assertInputMimeTypesAdmitted(
+          messages(inline(type)),
+          descriptor(['image/png', 'image/jpeg']),
+          'p',
+        ),
+      ).toThrow(/does not accept media type/)
+    }
+  })
+
+  it('treats an absent or empty list as no media input', () => {
+    expect(() =>
+      assertInputMimeTypesAdmitted(messages(inline('image/png')), descriptor(), 'p'),
+    ).toThrow(/admits no media input/)
+    expect(() =>
+      assertInputMimeTypesAdmitted(messages(inline('image/png')), descriptor([]), 'p'),
+    ).toThrow(/admits no media input/)
+    expect(() =>
+      assertInputMimeTypesAdmitted(
+        messages({ kind: 'text', text: 'hi' }),
+        descriptor(),
+        'p',
+      ),
+    ).not.toThrow()
   })
 })

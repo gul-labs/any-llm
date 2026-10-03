@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
 import { GOOGLE_MAX_TIMEOUT_MS } from '../client.js'
+import { GOOGLE_MODEL_LIMITS } from '../model-limits.js'
 import { GOOGLE_SAFETY_CATEGORIES, GOOGLE_SAFETY_THRESHOLDS } from '../safety-settings.js'
 
 export const Gemma431bItConfigSchema = z
@@ -23,10 +24,16 @@ export const Gemma431bItConfigSchema = z
       title: 'Top K',
       description: 'Top-k sampling limit for gemma-4-31b-it.',
     }),
-    maxOutputTokens: z.number().int().positive().optional().meta({
-      title: 'Max Output Tokens',
-      description: 'Maximum output token cap for gemma-4-31b-it.',
-    }),
+    maxOutputTokens: z
+      .number()
+      .int()
+      .positive()
+      .max(GOOGLE_MODEL_LIMITS['gemma-4-31b-it'].maxOutputTokens)
+      .optional()
+      .meta({
+        title: 'Max Output Tokens',
+        description: 'Maximum output token cap for gemma-4-31b-it.',
+      }),
     stopSequences: z.array(z.string()).max(5).optional().meta({
       title: 'Stop Sequences',
       description: 'Up to five stop sequences for gemma-4-31b-it.',

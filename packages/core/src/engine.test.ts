@@ -122,6 +122,7 @@ const STRICT_REGISTRY = createModelRegistry([
   {
     model: 'gemini-2.5-pro',
     provider: 'google',
+    limits: { contextWindow: 1_000_000, maxOutputTokens: 65_536 },
     configSchema: StrictGeminiConfigSchema,
     configJsonSchema: toConfigJsonSchema(StrictGeminiConfigSchema),
     validateConfig: zodToStandardSchema(StrictGeminiConfigSchema),

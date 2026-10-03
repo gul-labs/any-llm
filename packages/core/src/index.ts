@@ -120,8 +120,12 @@ export type { ProviderPlugin } from './plugin.js'
 export { composeProviders } from './plugin.js'
 
 // Model registry
-export type { ModelDescriptor, ModelRegistry } from './registry.js'
-export { createModelRegistry, assertModelMatchesDescriptor } from './registry.js'
+export type { ModelDescriptor, ModelLimits, ModelRegistry } from './registry.js'
+export {
+  createModelRegistry,
+  assertModelMatchesDescriptor,
+  assertInputMimeTypesAdmitted,
+} from './registry.js'
 export { toConfigJsonSchema, zodToStandardSchema } from './model-config/index.js'
 
 // Call site
@@ -135,6 +139,10 @@ export type { InMemoryRateLimiterOptions } from './rate-limiter.js'
 // Retry middleware
 export type { RetryPolicy } from './retry.js'
 export { retryMiddleware, computeBackoffMs } from './retry.js'
+
+// Advisory spend preflight
+export type { SpendPreflightOptions } from './spend-preflight.js'
+export { spendPreflightMiddleware } from './spend-preflight.js'
 
 // Utilities
 export { canonicalJson } from './canonical-json.js'

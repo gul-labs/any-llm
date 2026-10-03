@@ -3,6 +3,9 @@ import { z } from 'zod'
 import { toConfigJsonSchema, zodToStandardSchema } from './model-config/index.js'
 import type { ModelDescriptor } from './registry.js'
 
+/** Fixture limits for engine tests that do not care about token limits. */
+const TEST_LIMITS = { contextWindow: 1_000_000, maxOutputTokens: 65_536 }
+
 const EmptyConfigSchema = z
   .strictObject({})
   .meta({ title: 'EmptyConfig', description: 'Test schema.', examples: [{}] })
@@ -16,6 +19,7 @@ export function makeTestDescriptor(
   const { model, provider, ...rest } = overrides
 
   return {
+    limits: TEST_LIMITS,
     ...rest,
     model,
     provider,
@@ -49,6 +53,7 @@ export function makePermissiveTestDescriptor(
   const { model, provider, ...rest } = overrides
 
   return {
+    limits: TEST_LIMITS,
     ...rest,
     model,
     provider,

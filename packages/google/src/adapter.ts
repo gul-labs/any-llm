@@ -11,6 +11,7 @@ import {
   LlmError,
   assertNever,
   assertJsonSchemaProfile,
+  assertInputMimeTypesAdmitted,
   assertModelMatchesDescriptor,
 } from '@gullabs/core'
 import type {
@@ -862,6 +863,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       const model = req.model
       const descriptor = req.modelDescriptor
       assertModelMatchesDescriptor(req, descriptor, 'google')
+      assertInputMimeTypesAdmitted(req.messages, descriptor, 'google')
       const signsHistory = descriptor.capabilities?.providerState === true
       if (req.transientProviderState !== undefined && !signsHistory) {
         throw new LlmError(`Model "${model}" does not admit transientProviderState.`, {
@@ -989,6 +991,20 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
               : reasoning.effort !== undefined
                 ? GOOGLE_REASONING_EFFORT_BUDGET[reasoning.effort]
                 : undefined
+
+          // Google says actual thinking can under- or overflow the budget, so a
+          // budget at or above the output cap is a risk, not an invalid request.
+          if (
+            budget !== undefined &&
+            budget > 0 &&
+            genConfig.maxOutputTokens !== undefined &&
+            budget >= genConfig.maxOutputTokens
+          ) {
+            warnings.push({
+              type: 'other',
+              message: `google: thinkingBudget (${budget}) is not below maxOutputTokens (${genConfig.maxOutputTokens}); thinking may consume the whole cap and leave no answer. Raise maxOutputTokens or lower the reasoning budget.`,
+            })
+          }
 
           config.thinkingConfig = {
             ...(budget !== undefined ? { thinkingBudget: budget } : {}),
@@ -1848,6 +1864,9 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         })
       }
 
+      if (ctx.modelDescriptor !== undefined) {
+        assertInputMimeTypesAdmitted(req.messages, ctx.modelDescriptor, 'google')
+      }
       const contents = mapMessagesToGeminiContents(req.messages)
       assertInlinePayloadWithinLimits(contents, system)
       const params: GeminiCountTokensParams = {
