@@ -1669,13 +1669,12 @@ policy would be framework magic this library explicitly refuses.
    replayed `function_call` + `function_call_output` with `store: false`.
    Named `tool_choice` uses the flat Responses form
    `{ type: 'function', name }` (nested chat-completions form 422s).
-9. **`countTokens`:** neither provider counts `tools`. Google `bad_request`s both
-   `system` and `tools` before dispatch: the Gemini Developer API's `countTokens`
-   (through `@google/genai`) cannot carry a system instruction or tool declarations,
-   and a count that dropped them would be a lower bound reported as `exact`. Count
-   `messages` alone, or read `inputTokens` from a `generate()` result. xAI
-   `bad_request`s `tools` (tokenize-text cannot represent declarations). (This item
-   previously said Google forwarded `tools`; it never worked.)
+9. **`countTokens`:** Google counts `system` and `tools` through the REST `countTokens`
+   with a full `generateContentRequest`, because the SDK's Developer API method
+   cannot carry them (ADR-036 item 16). xAI `bad_request`s `tools` (tokenize-text
+   cannot represent declarations). (This item once said Google forwarded `tools` through
+   the SDK; that never worked, and a short-lived `bad_request` for both was replaced by
+   the REST form.)
 10. **`parallelToolCalls`** is xAI-only (`providerOptions.xai`).
 
 **Consequences:**
@@ -2353,9 +2352,8 @@ An adversarial audit of the grounding release found money and correctness defect
 
 ## ADR-036: Retry honours provider delays; errors carry typed reasons
 
-**Status:** Accepted (2026-10-03). Part 1 (reasons) and the core half of Part 2 (retry, deadline,
-sink, classification) are implemented. A marked line in Part 2 reserves the adapter-side items another
-change adds.
+**Status:** Accepted (2026-10-03). Part 1 (reasons), the core half of Part 2 (retry, deadline, sink,
+classification) and the adapter items (10-20) are implemented.
 
 ### Part 1 — Error reasons are a closed, typed vocabulary
 
@@ -2480,9 +2478,110 @@ ends the retry with the deferral error instead of waking early; xAI's non-retrya
 `transport_timeout` classification runs before `classifyError` and is unchanged; the
 `llm.call.sink.failed` event is unchanged and `llm.call.sink.timeout` is its sibling.
 
-<!-- R4-ADAPTER-ITEMS: the adapter-side R4 behaviours (Google and xAI structured error handling, the
-new reasons they emit, shared use of `isTransportError` and `parseRetryAfter`) are added to this ADR by
-the change that ships them. -->
+**Decision (adapters):** structured errors read from the parsed body only, never the message text
+(ADR-028).
+
+10. **Google error overlays** (`classifyGoogleError`, over core's `classifyError`):
+    - `RetryInfo.retryDelay` (a protobuf Duration, `"34s"`) becomes `retryAfterMs`, read through core's
+      `parseRetryAfter` so rounding and the 24-hour cap are shared. The SDK's `ApiError` keeps no
+      headers, so the body is the only source.
+    - A `QuotaFailure` violation whose `quotaId` contains `PerDay` is `rate_limited`,
+      `retryable: false`, `reason: 'daily_quota'`, with no `retryAfterMs` (the delay in the body is the
+      per-minute one and would mislead a scheduler).
+    - `ErrorInfo.reason` `API_KEY_INVALID` or `API_KEY_EXPIRED` is `invalid_auth`. Google sends the
+      invalid-key case as HTTP 400, which read as a caller bug.
+    - A 403 whose body message starts `CachedContent not found` is `bad_request`,
+      `reason: 'cache_not_found'`. Google gives no structured reason for it, so this is the one
+      overlay keyed on a body message; a real permission failure cannot be told apart from it
+      (the message itself says "or permission denied"), and a genuine 403 with any other message
+      stays `invalid_auth`.
+    - Evidence: the invalid key and stale-cache bodies are live captures (probe P6, 2026-10-03,
+      `__fixtures__/error-bodies-2026-10-03.json`). `API_KEY_EXPIRED` could not be produced (an expired
+      key cannot be fabricated), and no 429 could be captured without exhausting a quota, so the
+      expired-key, per-minute, per-day and capacity bodies are **doc-derived**: built from the field
+      names of `google.rpc.ErrorInfo`, `RetryInfo` and `QuotaFailure` in googleapis'
+      `error_details.proto` (read 2026-10-03), and marked as such in the fixture. The `PerDay` match
+      follows the plan and the quota-id naming Google reports; it should be re-checked against a real
+      capture.
+    - A transport failure is core's job (item 6): the local Google and xAI regex copies and the
+      Google model-not-found overlay (now core's 404 rule) are deleted. xAI keeps only the `openai` SDK
+      `APIConnectionError` class match, which a caller-chosen message can hide from core, and its
+      undici timeout rules, which run first and stay non-retryable.
+11. **An output-side filter stop is a failure.** A candidate whose `finishReason` is `SAFETY`,
+    `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_SAFETY`, `IMAGE_PROHIBITED_CONTENT`
+    or `IMAGE_RECITATION` and that has no non-thought text and no tool call throws `content_filter`,
+    `retryable: false`, with the billed usage (and `servedServiceTier`) attached; the message names the
+    raw reason and `finishMessage`. A stop that kept partial text or a call is a success with
+    `finishReason: 'content_filter'`. The check runs before `requireGrounding` is judged, so a filtered
+    empty candidate is never reported as `grounding_missing` (ADR-035); the existing rule that a
+    filtered candidate with partial text and no grounding evidence throws `content_filter` is kept.
+    `providerMetadata.google.candidate` carries the candidate's raw `finishReason`, `finishMessage`,
+    `safetyRatings`, `citationMetadata` and `urlContextMetadata` when present, so `'other'` (a malformed
+    function call, a language refusal) is distinguishable. Every successful row therefore carries at
+    least the raw finish reason.
+12. **Flex capacity is decided from the structure.** `isGeminiCapacityError(err)` is true for HTTP 503,
+    and for HTTP 429 with `error.status` `RESOURCE_EXHAUSTED` and no `QuotaFailure` detail (a
+    `QuotaFailure` names a quota a Standard retry would hit too). Google's Flex page (dated 2026-09-23)
+    lists 503 and 429 for "no capacity" without naming a status string, so the 429 rule is an inference
+    from the error model, not a capture. A 429 with no parseable body is not capacity. The old message
+    regexes are deleted.
+13. **xAI credits exhausted.** HTTP 429 or 403 whose structured body text matches
+    `Your team <id> has either used all available credits or reached its monthly spending limit` is
+    `rate_limited`, `retryable: false`, `reason: 'credits_exhausted'`. **This body is doc-derived, not a
+    capture:** probe P7 could not exhaust the account, xAI's error reference
+    (`docs.x.ai/docs/key-information/debugging`, read 2026-10-03) lists 403 and 429 with no body, and
+    the sentence comes from public bug reports of the live API (one reports a 429, one a 403). The code
+    comment, the fixture's `_note` and this item say so; replace the fixture with a capture when one
+    exists. A bare 403 stays `invalid_auth`, and the sentence in free text never matches.
+14. **A 200 that reports failure is an error.** A Responses object with `status` `failed` or
+    `cancelled`, or an `error` object, throws `server`, `retryable: true`, with the response's usage
+    attached when it reports token counts. These shapes are documented by the API but were never
+    captured (doc-derived fixture). `incomplete_details.reason: 'content_filter'` is **not** mapped to
+    `finishReason: 'content_filter'`: no fixture shows that reason, so it stays `'other'` until one does.
+15. **`parallelToolCalls` needs a tool.** `providerOptions.xai.parallelToolCalls` with neither function
+    tools nor `providerOptions.xai.tools` is `bad_request` before dispatch (same rule as `toolChoice`).
+16. **Google `countTokens` carries `system` and `tools`.** The SDK's Developer API `countTokens` throws on
+    both, so with either present `buildGoogleClient` sends the REST `countTokens` with a
+    `generateContentRequest` (`model` as `models/<id>`, `contents`, `systemInstruction`, `tools`; the
+    request form excludes top-level `contents`, per `ai.google.dev/api/tokens`, dated 2026-08-17). A
+    non-2xx response is thrown as the SDK's own `ApiError`, so it classifies exactly like a
+    `generateContent` failure. A messages-only count still goes through the SDK. The tool schemas are
+    held to the same JSON Schema profile as `generate()`. The R1.3 rule stands: function calls in the
+    history of a Gemini 3 model keep `accuracy: 'estimated'` (replayed signatures are billed and the
+    count carries none). Wire tests run the real SDK with only `fetch` stubbed. This replaces the
+    short-lived `bad_request` for these fields.
+17. **`cachedContent` excludes `system` and `tools`.** Gemini rejects a request that sets
+    `system_instruction`, `tools` or `tool_config` together with `cachedContent`, so that combination
+    (including `providerOptions.google.tools`) is `bad_request` before dispatch, with an `issues` entry
+    per field. `GoogleCacheStore.create` and `getOrCreate` accept `tools` and `toolConfig`, and the
+    pre-flight token count sees the tools, so a tool-calling call can use an explicit cache.
+18. **`safetySettings` values are enumerated.** `category` is one of the six `HarmCategory` values the API
+    reference lists as supported (`HARM_CATEGORY_HARASSMENT`, `_HATE_SPEECH`, `_SEXUALLY_EXPLICIT`,
+    `_DANGEROUS_CONTENT`, `_CIVIC_INTEGRITY`, `_JAILBREAK`) and `threshold` one of
+    `HARM_BLOCK_THRESHOLD_UNSPECIFIED`, `BLOCK_LOW_AND_ABOVE`, `BLOCK_MEDIUM_AND_ABOVE`,
+    `BLOCK_ONLY_HIGH`, `BLOCK_NONE`, `OFF`. Sources, read 2026-10-03: `ai.google.dev/api/generate-content`
+    and `ai.google.dev/gemini-api/docs/safety-settings` (dated 2026-09-17), cross-checked against the SDK
+    enums; the SDK's `HARM_CATEGORY_IMAGE_*` members are marked unsupported in the Gemini API and are not
+    admitted. The one list (`safety-settings.ts`) feeds the adapter check and every model's config
+    schema, so a typo fails before a round trip and the derived JSON Schema shows the choices.
+19. **CLI runners.** Both runners add a `stdin` `error` listener (a CLI that exits early made the write
+    raise an unhandled `EPIPE` that crashed the host), decode stdout and stderr with a `StringDecoder`
+    (a multibyte character split across chunks was corrupted), cap stdout at 32 MiB (past it the process
+    is killed and the call rejects with an `OutputLimitError`; stderr keeps its last 1 MiB), and
+    `codex exec` receives the prompt on stdin with `-` as the positional argument instead of one argv
+    entry (Linux caps one argument at 128 KiB, so a large history failed with `E2BIG`).
+20. **File upload and size limits.** `GoogleFileStore.upload` passes `signal` to the SDK and also races
+    the wait against it, because `@google/genai` 2.25.0 does not act on `abortSignal` in `files.upload`
+    (an abort releases the caller; the bytes may still be stored). A `FAILED` file keeps the provider's
+    `File.error` (message in the text, the status as `cause`). A polling timeout is `retryable: false`: the
+    upload already succeeded, a retry would upload the bytes again and orphan the first file (ADR-024).
+    The adapter rejects before dispatch an inline PDF over 50 MB or a request whose inline data and text
+    certainly exceed 100 MB (`ai.google.dev/gemini-api/docs/files` and `/file-input-methods`, both dated
+    2026-09-23; MB read as MiB, the looser reading), pointing at `GoogleFileStore`.
+
+**Reconciled with earlier work (adapters):** ADR-029 item 9 is corrected; ADR-035's `requireGrounding`
+ordering is kept (item 11); ADR-028's rule that overlays read structured bodies is followed, with the
+stale-cache message as the one documented exception.
 
 **Consequences:**
 
@@ -2496,6 +2595,17 @@ the change that ships them. -->
   honour it.
 - A host that passed `opts.timeoutMs` to nothing before can pass it to `countTokens`.
 - 404 and 413 stop being retried or treated as unknown: they are `bad_request`.
+- Google: a per-minute 429 now waits the provider's `retryDelay`; a per-day quota is `daily_quota`
+  and not retried; a bad key is `invalid_auth`; a stale `cachedContent` is `bad_request` with
+  `cache_not_found` (the host drops the handle and recreates the cache); an empty filtered candidate
+  throws `content_filter` instead of returning an empty success; `countTokens` accepts `system` and
+  `tools`; `cachedContent` with `system` or `tools` and an unlisted `safetySettings` value are
+  `bad_request`; `GoogleFileStore` polling timeouts are not retried.
+- xAI: a team out of credits is `credits_exhausted` and not retried (hosts alert instead of
+  rotating keys); a failed or cancelled 200 is a retryable `server` error with its usage;
+  `parallelToolCalls` without tools is `bad_request`.
+- `codex exec` gets the prompt on stdin; a host that inspected the argv for the prompt must read the
+  runner's `input` instead.
 
 ---
 

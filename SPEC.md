@@ -460,7 +460,11 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
   HTML in a sandboxed iframe.
 - Errors: classify 401→invalid_auth; 403→invalid_auth unless a provider overlay reclassifies;
   429→rate_limited(+retryAfter), 5xx→server, timeout→timeout, 400→bad_request;
-  safety (HTTP or 200-path)→content_filter.
+  safety (HTTP or 200-path)→content_filter. Overlays read the structured body only (ADR-036):
+  Google `RetryInfo` → `retryAfterMs`, per-day quota → `daily_quota` (not retryable), `API_KEY_*`
+  → `invalid_auth`, stale `cachedContent` → `bad_request` / `cache_not_found`, an output filter stop
+  with no text and no tool call → `content_filter`; xAI credits exhausted → `credits_exhausted`
+  (not retryable), a failed or cancelled 200 → retryable `server`.
 - **Never executes tools, never loops, never persists.** Pure request⇄response mapping.
 
 ---
