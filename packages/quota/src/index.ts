@@ -1,6 +1,27 @@
-import { LlmError, type Middleware, type RateLimiter, type Release } from '@gullabs/core'
+import {
+  estimateInputTokens,
+  LlmError,
+  type Middleware,
+  type RateLimiter,
+  type Release,
+  type Scheduler,
+  type Usage,
+} from '@gullabs/core'
+import {
+  assertDayBoundary,
+  msUntilDayEnds,
+  msUntilNextMinute,
+  planWindows,
+  tokenWindowKey,
+  windowResults,
+  type DayBoundary,
+} from './windows.js'
 
-export type QuotaDeferReason = 'rpm_exhausted' | 'rpd_exhausted'
+export { inMemoryQuotaStore } from './memory-store.js'
+export type { InMemoryQuotaStoreOptions } from './memory-store.js'
+export type { DayBoundary } from './windows.js'
+
+export type QuotaDeferReason = 'rpm_exhausted' | 'rpd_exhausted' | 'tpm_exhausted'
 export type QuotaDenyReason = 'provider_disabled'
 
 export type QuotaDecision =
@@ -54,8 +75,23 @@ export interface QuotaPolicyInput {
 
 export interface ProviderQuotaRule {
   scope?: string
+  /** Requests per minute (the UTC calendar minute). */
   rpm?: number
+  /**
+   * Requests per day. `0` disables the provider for this scope: every call is
+   * denied with `provider_disabled`, with or without a store. The day is the
+   * UTC day unless {@link ProviderQuotaRule.dayBoundary} says otherwise.
+   */
   rpd?: number
+  /**
+   * Input tokens per minute (the UTC calendar minute); a positive integer. A
+   * call reserves its estimated input tokens (`hint.estimatedInputTokens`,
+   * `estimateInputTokens` for the middleware) and the real usage corrects the
+   * reservation after the call.
+   */
+  tpm?: number
+  /** Where the `rpd` window rolls over. Default: UTC midnight. */
+  dayBoundary?: DayBoundary
 }
 
 export interface ProviderQuotaPolicy {
@@ -74,23 +110,80 @@ export interface QuotaStoreCheckInput {
   nowMs: number
   rpm?: number
   rpd?: number
+  /** Input tokens per minute. */
+  tpm?: number
+  /**
+   * Tokens this call reserves against `tpm` (a non-negative number; absent
+   * means 0). Ignored when `tpm` is absent.
+   */
+  tokens?: number
+  /** Where the `rpd` window rolls over. Absent means the UTC day. */
+  dayBoundary?: DayBoundary
   signal?: AbortSignal
 }
 
 export interface QuotaStoreCheckResult {
   rpm?: QuotaStoreWindowResult
   rpd?: QuotaStoreWindowResult
+  tpm?: QuotaStoreWindowResult
+}
+
+export interface QuotaStoreAdjustInput {
+  scope: string
+  /** The `nowMs` of the check being corrected: it names the window. */
+  nowMs: number
+  /**
+   * Added to that minute's `tpm` counter: the real input tokens minus the
+   * reservation. An integer, negative when the estimate was too high. The
+   * counter never goes below 0, and a window that has already ended is left
+   * alone.
+   */
+  tokens: number
+  signal?: AbortSignal
 }
 
 export interface QuotaStore {
   /**
-   * Check every configured window and consume one unit from each **only if all
-   * of them are under their limits**. A denied call leaves every counter
-   * unchanged. The check and the consumption must be atomic: concurrent callers
-   * at the limit admit exactly the remaining capacity.
+   * Check every configured window and consume from each **only if all of them
+   * are under their limits**: one unit from `rpm` and `rpd`, `tokens` from
+   * `tpm`. A denied call leaves every counter unchanged. The check and the
+   * consumption must be atomic: concurrent callers at the limit admit exactly
+   * the remaining capacity.
+   *
+   * A call that would cross `tpm` is denied, except into an empty window: one
+   * call larger than the whole window is let through when nothing else is
+   * counted, so it is not deferred forever.
    */
   checkAndConsume(input: QuotaStoreCheckInput): Promise<QuotaStoreCheckResult>
+  /**
+   * Corrects a `tpm` reservation with the call's real usage. Called at most
+   * once per admitted call that reserved tokens, after the call. A store that
+   * enforces no `tpm` may do nothing.
+   */
+  adjustTokens(input: QuotaStoreAdjustInput): Promise<void>
 }
+
+/**
+ * What to do when the store itself fails (a timeout, an HTTP error, a malformed
+ * reply). There is no default: the choice is a policy of the host.
+ *
+ * - `'fail-closed'`: the call fails with the store's error, so no call can
+ *   exceed a quota the store could not confirm.
+ * - `'fail-open'`: the call goes ahead unchecked, so a store outage does not
+ *   stop traffic.
+ *
+ * Either way a `backend_error` event is emitted. A caller abort or a deadline
+ * that interrupts the store call is never fail-open: that call is over.
+ */
+export type QuotaStoreErrorMode = 'fail-open' | 'fail-closed'
+
+/**
+ * Store wiring for the middleware and {@link enforceProviderQuota}. Without a
+ * `store`, rules still evaluate (`rpd: 0` denies) but window checks are skipped.
+ */
+export type QuotaStoreOptions =
+  | { store: QuotaStore; onStoreError: QuotaStoreErrorMode }
+  | { store?: undefined; onStoreError?: undefined }
 
 export interface CheckProviderQuotaOptions {
   provider: string
@@ -100,24 +193,31 @@ export interface CheckProviderQuotaOptions {
   policy: ProviderQuotaPolicy
   store: QuotaStore
   nowMs?: number
+  /** Estimated input tokens the call reserves against `tpm`. Absent means 0. */
+  estimatedInputTokens?: number
   signal?: AbortSignal
 }
 
-export interface EnforceProviderQuotaOptions extends CheckProviderQuotaOptions {
-  onEvent?: QuotaEventHandler
-  /**
-   * Longest `retryAfterMs` a deferral may carry and still be thrown as a
-   * retryable `rate_limited` error. A longer deferral is thrown as
-   * `rate_limited`, `retryable: false`, `reason: 'quota_window'`. Unset means
-   * no cap. When set it must be a finite number >= 0, else `bad_request`.
-   */
-  maxDeferMs?: number
-}
+export type EnforceProviderQuotaOptions = Omit<CheckProviderQuotaOptions, 'store'> &
+  QuotaStoreOptions & {
+    onEvent?: QuotaEventHandler
+    /**
+     * Called once for a call whose rule has windows the missing `store` could not
+     * check; the middleware turns it into its one-time warning.
+     */
+    onWindowChecksSkipped?: (scope: string) => void
+    /**
+     * Longest `retryAfterMs` a deferral may carry and still be thrown as a
+     * retryable `rate_limited` error. A longer deferral is thrown as
+     * `rate_limited`, `retryable: false`, `reason: 'quota_window'`. Unset means
+     * no cap. When set it must be a finite number >= 0, else `bad_request`.
+     */
+    maxDeferMs?: number
+  }
 
-export interface ProviderQuotaMiddlewareOptions {
+export type ProviderQuotaMiddlewareOptions = QuotaStoreOptions & {
   id?: string
   policy: ProviderQuotaPolicy
-  store: QuotaStore
   onEvent?: QuotaEventHandler
   now?: () => number
   /**
@@ -143,6 +243,8 @@ export interface ProviderQuotaMiddlewareOptions {
 export interface ProviderQuotaRateLimiterOptions {
   policy: ProviderQuotaPolicy
   store: QuotaStore
+  /** What to do when the store fails; see {@link QuotaStoreErrorMode}. No default. */
+  onStoreError: QuotaStoreErrorMode
   onEvent?: QuotaEventHandler
   now?: () => number
   /**
@@ -154,15 +256,51 @@ export interface ProviderQuotaRateLimiterOptions {
   maxDeferMs?: number
 }
 
-export interface GeminiQuotaLimits {
+/** The limits of one model (or the defaults) for {@link quotaPolicy}. */
+export interface QuotaLimits {
   rpm?: number
   rpd?: number
+  tpm?: number
 }
 
+export interface QuotaPolicyOptions {
+  /** The provider id the policy applies to; other providers are not limited. */
+  provider: string
+  /** Limits by canonical model id. A key that is a declared alias is refused. */
+  models: Record<string, QuotaLimits>
+  /** Limits for a model of `provider` that `models` does not list. Absent means unlimited. */
+  defaults?: QuotaLimits
+  /** Where the `rpd` window rolls over. Default: UTC midnight. */
+  dayBoundary?: DayBoundary
+  scope?: (input: QuotaPolicyInput) => string
+}
+
+/** Gemini limits per model: requests per minute, requests per day, input tokens per minute. */
+export type GeminiQuotaLimits = QuotaLimits
+
 export interface GeminiQuotaPolicyOptions {
+  /** Default `'google'`. */
   provider?: string
   models: Record<string, GeminiQuotaLimits>
-  defaultLimits?: GeminiQuotaLimits
+  defaults?: GeminiQuotaLimits
+  scope?: (input: QuotaPolicyInput) => string
+}
+
+/**
+ * xAI limits per model. xAI states limits as requests per second and tokens
+ * per minute, per team and per tier, and documents no daily limit, so there is
+ * no `rpd` here; the per-second figure is `rpm / 60`.
+ */
+export interface XaiQuotaLimits {
+  rpm?: number
+  tpm?: number
+}
+
+export interface XaiQuotaPolicyOptions {
+  /** Default `'xai'`. */
+  provider?: string
+  models: Record<string, XaiQuotaLimits>
+  defaults?: XaiQuotaLimits
   scope?: (input: QuotaPolicyInput) => string
 }
 
@@ -178,6 +316,19 @@ export interface UpstashQuotaStoreOptions {
   url?: string
   token?: string
   fetch?: typeof globalThis.fetch
+  /**
+   * Longest each store call (one REST round trip) may take, in milliseconds: a
+   * finite number greater than 0 and at most 2147483647, else `bad_request`.
+   * A call still pending then is aborted (its signal fires) and fails with a
+   * timeout error, so a slow store cannot hold a call past its own
+   * `config.timeoutMs`: the engine starts the attempt timer only after the
+   * middleware returns. The caller's signal also aborts the call. Applies to a
+   * custom `invoke` as well.
+   * @default 2000
+   */
+  timeoutMs?: number
+  /** Timer source for `timeoutMs`; pass the client's `FakeClock` in tests. Default: platform timers. */
+  scheduler?: Scheduler
 }
 
 interface ResolvedQuotaRule {
@@ -185,11 +336,39 @@ interface ResolvedQuotaRule {
   scope: string
   rpm?: number
   rpd?: number
+  tpm?: number
+  dayBoundary?: DayBoundary
 }
 
-const NOOP_RELEASE: Release = () => {}
+/** What an admitted call may later correct: the tokens it reserved against `tpm`. */
+export interface QuotaAdmission {
+  /**
+   * Corrects the call's `tpm` reservation with its real usage. Does nothing
+   * when the call reserved nothing or `usage` is absent. Never throws: a store
+   * failure is emitted as a `backend_error` event.
+   */
+  reconcile(usage?: Usage): Promise<void>
+}
+
+const NO_ADMISSION: QuotaAdmission = { reconcile: () => Promise.resolve() }
 
 const DEFAULT_MAX_DEFER_MS = 60_000
+
+const GEMINI_DAY_BOUNDARY: DayBoundary = { timeZone: 'America/Los_Angeles' }
+
+const DEFAULT_UPSTASH_TIMEOUT_MS = 2000
+
+/** The longest `setTimeout` delay Node honours (2^31 - 1 ms). */
+const MAX_TIMER_MS = 2_147_483_647
+
+function validateStoreErrorMode(value: unknown): void {
+  if (value !== 'fail-open' && value !== 'fail-closed') {
+    throw new LlmError(
+      `Invalid quota option "onStoreError": must be 'fail-open' or 'fail-closed' (there is no default), got ${String(value)}`,
+      { kind: 'bad_request', retryable: false },
+    )
+  }
+}
 
 function validateMaxDeferMs(value: number | undefined): number | undefined {
   if (value === undefined) return undefined
@@ -202,14 +381,30 @@ function validateMaxDeferMs(value: number | undefined): number | undefined {
   return value
 }
 
-export function quotaPolicyForGemini(
-  opts: GeminiQuotaPolicyOptions,
-): ProviderQuotaPolicy {
-  const provider = opts.provider ?? 'google'
+/**
+ * Builds a {@link ProviderQuotaPolicy} for one provider from per-model limits.
+ * Limits are looked up by the canonical model id (the middleware resolves an
+ * alias to it first); a `models` table keyed by an alias throws `bad_request`
+ * instead of silently never matching.
+ *
+ * @example
+ * ```ts
+ * const policy = quotaPolicy({
+ *   provider: 'google',
+ *   models: { 'gemini-2.5-pro': { rpm: 150, tpm: 2_000_000 } },
+ *   defaults: { rpm: 10 },
+ * })
+ * ```
+ */
+export function quotaPolicy(opts: QuotaPolicyOptions): ProviderQuotaPolicy {
+  const dayBoundary =
+    opts.dayBoundary === undefined
+      ? undefined
+      : assertDayBoundary(opts.dayBoundary, 'dayBoundary')
 
   return {
     getRule(input: QuotaPolicyInput): ProviderQuotaRule | undefined {
-      if (input.provider !== provider) return undefined
+      if (input.provider !== opts.provider) return undefined
 
       if (
         opts.models[input.model] === undefined &&
@@ -221,7 +416,7 @@ export function quotaPolicyForGemini(
         )
       }
 
-      const limits = opts.models[input.model] ?? opts.defaultLimits
+      const limits = opts.models[input.model] ?? opts.defaults
       if (limits === undefined) return undefined
 
       const rule: ProviderQuotaRule = {
@@ -234,10 +429,65 @@ export function quotaPolicyForGemini(
       if (limits.rpd !== undefined) {
         rule.rpd = limits.rpd
       }
+      if (limits.tpm !== undefined) {
+        rule.tpm = limits.tpm
+      }
+      if (dayBoundary !== undefined) {
+        rule.dayBoundary = dayBoundary
+      }
 
       return rule
     },
   }
+}
+
+/**
+ * The Gemini preset over {@link quotaPolicy}: provider `google`, and the
+ * per-day window rolls over at midnight in `America/Los_Angeles`.
+ *
+ * Source for the time zone: Google's rate-limits page,
+ * https://ai.google.dev/gemini-api/docs/rate-limits, re-read on 2026-10-03.
+ * It states that requests-per-day (RPD) quotas reset at midnight Pacific
+ * time, and that limits apply per project, not per API key (so use one scope
+ * per project). It names three dimensions: RPM, TPM (input tokens) and RPD. The
+ * page gives no per-model numbers (they depend on the project's tier and are
+ * shown in AI Studio), so the limits are the host's own. Pacific time observes
+ * daylight saving, so the day is 23, 24 or 25 hours long twice a year; the
+ * boundary follows the zone's rules.
+ */
+export function quotaPolicyForGemini(
+  opts: GeminiQuotaPolicyOptions,
+): ProviderQuotaPolicy {
+  return quotaPolicy({
+    provider: opts.provider ?? 'google',
+    models: opts.models,
+    ...(opts.defaults !== undefined ? { defaults: opts.defaults } : {}),
+    dayBoundary: GEMINI_DAY_BOUNDARY,
+    ...(opts.scope !== undefined ? { scope: opts.scope } : {}),
+  })
+}
+
+/**
+ * The xAI preset over {@link quotaPolicy}: provider `xai`, requests per minute
+ * and tokens per minute, no day window.
+ *
+ * It carries no numbers. xAI's rate-limits page,
+ * https://docs.x.ai/developers/rate-limits, re-read on 2026-10-03, publishes
+ * numeric limits per tier and model, but a team's tier follows
+ * its cumulative spend since 2026-01-01 and moves automatically, so any
+ * number baked in here would be wrong for most teams. Read your team's limits
+ * on the Models page of the xAI Console and pass them in. The page states
+ * requests per second and tokens per minute (the per-second figure is the
+ * per-minute request budget divided by 60) and no daily limit, so this preset
+ * has no `rpd` and no day boundary.
+ */
+export function quotaPolicyForXai(opts: XaiQuotaPolicyOptions): ProviderQuotaPolicy {
+  return quotaPolicy({
+    provider: opts.provider ?? 'xai',
+    models: opts.models,
+    ...(opts.defaults !== undefined ? { defaults: opts.defaults } : {}),
+    ...(opts.scope !== undefined ? { scope: opts.scope } : {}),
+  })
 }
 
 export async function checkProviderQuota(
@@ -245,18 +495,61 @@ export async function checkProviderQuota(
 ): Promise<QuotaDecision> {
   const nowMs = opts.nowMs ?? Date.now()
   const resolved = resolveQuotaRule(opts.policy, opts.provider, opts.model, opts.aliases)
-  return evaluateQuotaDecision(resolved, opts.store, nowMs, opts.signal)
+  const evaluation = await evaluateQuotaDecision(
+    resolved,
+    opts.store,
+    nowMs,
+    opts.estimatedInputTokens,
+    opts.signal,
+  )
+  return evaluation.decision
 }
 
+/**
+ * Checks (and, on allow, consumes) the call's quota; throws `rate_limited` on a
+ * deferral or a denial. Resolves to a {@link QuotaAdmission} the caller uses to
+ * correct a `tpm` reservation with the call's real usage.
+ *
+ * A store failure follows `onStoreError`: `'fail-closed'` rethrows it,
+ * `'fail-open'` lets the call through with no reservation. Both emit
+ * `backend_error`. Without a `store`, window checks are skipped (see
+ * {@link ProviderQuotaMiddlewareOptions}).
+ */
 export async function enforceProviderQuota(
   opts: EnforceProviderQuotaOptions,
-): Promise<void> {
+): Promise<QuotaAdmission> {
   const nowMs = opts.nowMs ?? Date.now()
   const maxDeferMs = validateMaxDeferMs(opts.maxDeferMs)
   const resolved = resolveQuotaRule(opts.policy, opts.provider, opts.model, opts.aliases)
+  if (opts.store !== undefined) {
+    validateStoreErrorMode(opts.onStoreError)
+  }
 
   try {
-    const decision = await evaluateQuotaDecision(resolved, opts.store, nowMs, opts.signal)
+    let evaluation: QuotaEvaluation
+    try {
+      evaluation = await evaluateQuotaDecision(
+        resolved,
+        opts.store,
+        nowMs,
+        opts.estimatedInputTokens,
+        opts.signal,
+        opts.onWindowChecksSkipped,
+      )
+    } catch (storeError) {
+      if (opts.onStoreError !== 'fail-open' || opts.signal?.aborted === true) {
+        throw storeError
+      }
+      emitEvent(opts.onEvent, {
+        type: 'backend_error',
+        provider: opts.provider,
+        model: opts.model,
+        scope: resolved.scope,
+        error: storeError,
+      })
+      return NO_ADMISSION
+    }
+    const decision = evaluation.decision
 
     switch (decision.kind) {
       case 'allow':
@@ -267,7 +560,7 @@ export async function enforceProviderQuota(
           scope: resolved.scope,
           decision,
         })
-        return
+        return admissionFor(opts, resolved, nowMs, evaluation.reservedTokens)
 
       case 'defer':
         emitEvent(opts.onEvent, {
@@ -337,10 +630,56 @@ export async function enforceProviderQuota(
   }
 }
 
+function admissionFor(
+  opts: EnforceProviderQuotaOptions,
+  resolved: ResolvedQuotaRule,
+  nowMs: number,
+  reservedTokens: number | undefined,
+): QuotaAdmission {
+  const store = opts.store
+  if (store === undefined || reservedTokens === undefined) return NO_ADMISSION
+  return {
+    async reconcile(usage?: Usage): Promise<void> {
+      if (usage === undefined) return
+      const actual = Math.max(Math.round(usage.inputTokens), 0)
+      const delta = actual - reservedTokens
+      if (delta === 0) return
+      try {
+        await store.adjustTokens({ scope: resolved.scope, nowMs, tokens: delta })
+      } catch (error) {
+        emitEvent(opts.onEvent, {
+          type: 'backend_error',
+          provider: opts.provider,
+          model: opts.model,
+          scope: resolved.scope,
+          error,
+        })
+      }
+    },
+  }
+}
+
+/**
+ * Quota as a middleware. It must sit inside `retryMiddleware` (the engine
+ * refuses the other order): every retry attempt is checked and consumes quota.
+ *
+ * Tokens: when the rule has `tpm`, each attempt reserves
+ * `estimateInputTokens(req)` and, once the attempt ends with usage (a result,
+ * or a billed failure that carries it), the real input tokens correct the
+ * reservation. An attempt that ends with no usage keeps its reservation.
+ *
+ * **Without a `store`** the rules still evaluate: `rpd: 0` denies the call with
+ * `provider_disabled` and a `deny` event. Windows (`rpm`, `rpd`, `tpm`) cannot
+ * be checked and are skipped, with one `warn` log
+ * (`llm.quota.windows_skipped`) per middleware instance.
+ */
 export function providerQuotaMiddleware(
   opts: ProviderQuotaMiddlewareOptions,
 ): Middleware {
   const maxDeferMs = validateMaxDeferMs(opts.maxDeferMs) ?? DEFAULT_MAX_DEFER_MS
+  const storeOptions: QuotaStoreOptions =
+    opts.store === undefined ? {} : { store: opts.store, onStoreError: opts.onStoreError }
+  let warnedWindowsSkipped = false
   return {
     id: opts.id ?? 'provider-quota',
     // Not configurable: `createClient` reads `role` (never `id`) to reject a
@@ -353,9 +692,18 @@ export function providerQuotaMiddleware(
         // engine pins `modelDescriptor` at every middleware boundary.
         model: req.modelDescriptor?.model ?? req.model,
         policy: opts.policy,
-        store: opts.store,
+        ...storeOptions,
         nowMs: opts.now?.() ?? ctx.clock.now(),
+        estimatedInputTokens: estimateInputTokens(req),
         maxDeferMs,
+        onWindowChecksSkipped: (scope) => {
+          if (warnedWindowsSkipped) return
+          warnedWindowsSkipped = true
+          ctx.logger.warn(
+            { callId: ctx.callId, provider: req.provider, scope },
+            'llm.quota.windows_skipped: providerQuotaMiddleware has no store, so rpm, rpd and tpm windows are not checked (rpd: 0 still denies)',
+          )
+        },
       }
       const aliases = req.modelDescriptor?.aliases
       if (aliases !== undefined) {
@@ -369,19 +717,39 @@ export function providerQuotaMiddleware(
         enforceOptions.signal = ctx.signal
       }
 
-      await enforceProviderQuota(enforceOptions)
+      const admission = await enforceProviderQuota(enforceOptions)
 
-      return next(req, ctx)
+      let result
+      try {
+        result = await next(req, ctx)
+      } catch (error) {
+        // A billed failure carries its usage; any other failure keeps the
+        // reservation (the provider may have counted the request).
+        await admission.reconcile(error instanceof LlmError ? error.usage : undefined)
+        throw error
+      }
+      await admission.reconcile(result.usage)
+      return result
     },
   }
 }
 
+/**
+ * Quota as the client's `rateLimiter`. The engine passes
+ * `hint.estimatedInputTokens` (see `estimateInputTokens`) to `acquire` and the
+ * attempt's usage to the returned `Release`, which corrects the `tpm`
+ * reservation without waiting for the store.
+ */
 export function providerQuotaRateLimiter(
   opts: ProviderQuotaRateLimiterOptions,
 ): RateLimiter {
   const maxDeferMs = validateMaxDeferMs(opts.maxDeferMs) ?? DEFAULT_MAX_DEFER_MS
   return {
-    async acquire(key: string, signal?: AbortSignal): Promise<Release> {
+    async acquire(
+      key: string,
+      signal?: AbortSignal,
+      hint?: { estimatedInputTokens?: number },
+    ): Promise<Release> {
       const { provider, model } = parseRateLimiterKey(key)
 
       const enforceOptions: EnforceProviderQuotaOptions = {
@@ -389,10 +757,14 @@ export function providerQuotaRateLimiter(
         model,
         policy: opts.policy,
         store: opts.store,
+        onStoreError: opts.onStoreError,
         nowMs: opts.now?.() ?? Date.now(),
         maxDeferMs,
       }
 
+      if (hint?.estimatedInputTokens !== undefined) {
+        enforceOptions.estimatedInputTokens = hint.estimatedInputTokens
+      }
       if (opts.onEvent !== undefined) {
         enforceOptions.onEvent = opts.onEvent
       }
@@ -400,9 +772,11 @@ export function providerQuotaRateLimiter(
         enforceOptions.signal = signal
       }
 
-      await enforceProviderQuota(enforceOptions)
+      const admission = await enforceProviderQuota(enforceOptions)
 
-      return NOOP_RELEASE
+      return (usage?: Usage): void => {
+        void admission.reconcile(usage)
+      }
     },
   }
 }
@@ -410,30 +784,36 @@ export function providerQuotaRateLimiter(
 /**
  * Atomic check-and-consume for N windows (N = #KEYS).
  *
- * KEYS[i]      window counter key
- * ARGV[2i-1]   window limit
- * ARGV[2i]     counter TTL in ms (time until the window rolls over)
+ * KEYS[i]        window counter key
+ * ARGV[3i-2]     window limit
+ * ARGV[3i-1]     counter TTL in ms (time until the window rolls over)
+ * ARGV[3i]       what this call adds (1 for a request window, the token
+ *                estimate for a token window)
  *
- * Reads every counter first. Only when ALL are under their limits does it
- * increment them all, so a denied call consumes nothing. Returns
- * `{ ok, count_1 … count_N }`: counts after the increment when `ok` is 1,
- * current counts (untouched) when `ok` is 0.
+ * Reads every counter first. A call is refused by a window when the counter is
+ * at its limit, or when adding the cost would cross it and the counter is not
+ * empty (one call larger than the whole window passes into an empty counter).
+ * Only when no window refuses does it add to all of them, so a denied call
+ * consumes nothing. Returns `{ ok, count_1 … count_N }`: counts after the
+ * increment when `ok` is 1, current counts (untouched) when `ok` is 0.
  */
 const CHECK_AND_CONSUME_LUA = `
 local n = #KEYS
 local counts = {}
 local ok = 1
 for i = 1, n do
+  local limit = tonumber(ARGV[3 * i - 2])
+  local cost = tonumber(ARGV[3 * i])
   local v = redis.call('GET', KEYS[i])
   counts[i] = v and tonumber(v) or 0
-  if counts[i] >= tonumber(ARGV[2 * i - 1]) then
+  if counts[i] >= limit or (counts[i] > 0 and counts[i] + cost > limit) then
     ok = 0
   end
 end
 if ok == 1 then
   for i = 1, n do
-    counts[i] = redis.call('INCR', KEYS[i])
-    redis.call('PEXPIRE', KEYS[i], ARGV[2 * i])
+    counts[i] = redis.call('INCRBY', KEYS[i], ARGV[3 * i])
+    redis.call('PEXPIRE', KEYS[i], ARGV[3 * i - 1])
   end
 end
 local out = { ok }
@@ -443,36 +823,37 @@ end
 return out
 `
 
+/**
+ * Corrects one token counter. KEYS[1] is the counter, ARGV[1] the signed
+ * integer to add. A counter that is gone (its window ended) is left alone, and
+ * the counter never ends below 0. The TTL set when the window was consumed is
+ * kept.
+ */
+const ADJUST_TOKENS_LUA = `
+local v = redis.call('GET', KEYS[1])
+if not v then
+  return 0
+end
+local n = redis.call('INCRBY', KEYS[1], ARGV[1])
+if n < 0 then
+  redis.call('INCRBY', KEYS[1], -n)
+  n = 0
+end
+return n
+`
+
 export function upstashQuotaStore(opts: UpstashQuotaStoreOptions): QuotaStore {
   const prefix = opts.prefix ?? 'gullabs:quota'
-  const invoke = opts.invoke ?? buildUpstashInvoker(opts)
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_UPSTASH_TIMEOUT_MS
+  assertStoreTimeout(timeoutMs)
+  const rawInvoke = opts.invoke ?? buildUpstashInvoker(opts)
+  const scheduler = opts.scheduler ?? PLATFORM_SCHEDULER
+  const invoke: UpstashPipelineInvoker = (commands, signal) =>
+    boundedInvoke(rawInvoke, commands, signal, timeoutMs, scheduler)
 
   return {
     async checkAndConsume(input: QuotaStoreCheckInput): Promise<QuotaStoreCheckResult> {
-      const windows: Array<{
-        kind: 'rpm' | 'rpd'
-        key: string
-        limit: number
-        retryAfterMs: number
-      }> = []
-
-      if (input.rpm !== undefined && input.rpm > 0) {
-        windows.push({
-          kind: 'rpm',
-          key: bucketKey(prefix, input.scope, 'rpm', input.nowMs),
-          limit: input.rpm,
-          retryAfterMs: timeUntilNextMinute(input.nowMs),
-        })
-      }
-
-      if (input.rpd !== undefined && input.rpd > 0) {
-        windows.push({
-          kind: 'rpd',
-          key: bucketKey(prefix, input.scope, 'rpd', input.nowMs),
-          limit: input.rpd,
-          retryAfterMs: timeUntilNextUtcDay(input.nowMs),
-        })
-      }
+      const windows = planWindows(prefix, input)
 
       if (windows.length === 0) {
         return {}
@@ -483,37 +864,112 @@ export function upstashQuotaStore(opts: UpstashQuotaStoreOptions): QuotaStore {
         CHECK_AND_CONSUME_LUA,
         windows.length,
         ...windows.map((w) => w.key),
-        ...windows.flatMap((w) => [w.limit, w.retryAfterMs]),
+        ...windows.flatMap((w) => [w.limit, w.ttlMs, w.cost]),
       ]
       const rawResults = await invoke([command], input.signal)
       const reply = arrayPipelineResult(rawResults[0], windows.length + 1)
-      const consumed = reply[0] === 1
-      const decision: QuotaStoreCheckResult = {}
+      return windowResults(windows, reply[0] === 1, reply.slice(1))
+    },
 
-      for (const [i, window] of windows.entries()) {
-        const count = reply[i + 1] ?? 0
-        const result: QuotaStoreWindowResult = {
-          // On a denial only the windows that are themselves at their limit are
-          // "not allowed"; the others were under their limit but not consumed.
-          allowed: consumed || count < window.limit,
-          remaining: Math.max(window.limit - count, 0),
-          used: count,
-        }
-
-        if (!result.allowed) {
-          result.retryAfterMs = window.retryAfterMs
-        }
-
-        if (window.kind === 'rpm') {
-          decision.rpm = result
-        } else {
-          decision.rpd = result
-        }
-      }
-
-      return decision
+    async adjustTokens(input: QuotaStoreAdjustInput): Promise<void> {
+      const command: UpstashPipelineCommand = [
+        'EVAL',
+        ADJUST_TOKENS_LUA,
+        1,
+        tokenWindowKey(prefix, input.scope, input.nowMs),
+        input.tokens,
+      ]
+      const rawResults = await invoke([command], input.signal)
+      arrayPipelineResult([unwrapPipelineResult(rawResults[0])], 1)
     },
   }
+}
+
+const PLATFORM_SCHEDULER: Scheduler = {
+  setTimeout: (callback, ms) => globalThis.setTimeout(callback, ms),
+  clearTimeout: (handle) => {
+    globalThis.clearTimeout(handle as ReturnType<typeof globalThis.setTimeout>)
+  },
+}
+
+function assertStoreTimeout(value: unknown): void {
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    value <= 0 ||
+    value > MAX_TIMER_MS
+  ) {
+    throw new LlmError(
+      `upstashQuotaStore: timeoutMs must be a finite number greater than 0 and at most ${MAX_TIMER_MS}, got ${String(value)}.`,
+      { kind: 'bad_request', retryable: false },
+    )
+  }
+}
+
+/**
+ * One store call, bounded: the timer and the caller's signal both abort the
+ * signal handed to `invoke`, and the race settles at the first of them even
+ * when `invoke` ignores its signal.
+ */
+function boundedInvoke(
+  invoke: UpstashPipelineInvoker,
+  commands: readonly UpstashPipelineCommand[],
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  scheduler: Scheduler,
+): Promise<readonly unknown[]> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted === true) {
+      reject(abortError(signal))
+      return
+    }
+    let settled = false
+    const controller = new AbortController()
+    const onCallerAbort = (): void => {
+      if (signal === undefined) return
+      settle(() => {
+        reject(abortError(signal))
+      })
+      controller.abort(signal.reason)
+    }
+    const timer = scheduler.setTimeout(() => {
+      const error = new Error(`Upstash quota call timed out after ${timeoutMs}ms`)
+      settle(() => {
+        reject(error)
+      })
+      controller.abort(error)
+    }, timeoutMs)
+    function settle(finish: () => void): void {
+      if (settled) return
+      settled = true
+      scheduler.clearTimeout(timer)
+      signal?.removeEventListener('abort', onCallerAbort)
+      finish()
+    }
+    signal?.addEventListener('abort', onCallerAbort, { once: true })
+    invoke(commands, controller.signal).then(
+      (value) => {
+        settle(() => {
+          resolve(value)
+        })
+      },
+      (error: unknown) => {
+        settle(() => {
+          reject(asError(error))
+        })
+      },
+    )
+  })
+}
+
+/** The caller's abort reason when it is an `Error`, else an `AbortError`. */
+function abortError(signal: AbortSignal): Error {
+  const reason: unknown = signal.reason
+  return reason instanceof Error ? reason : new DOMException('Aborted', 'AbortError')
+}
+
+function asError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value), { cause: value })
 }
 
 function resolveQuotaRule(
@@ -545,34 +1001,64 @@ function resolveQuotaRule(
       resolved.rpd = rpd
     }
   }
+  if (rule?.tpm !== undefined) {
+    if (!Number.isInteger(rule.tpm) || rule.tpm < 1) {
+      throw new LlmError(
+        `Invalid provider quota rule: "tpm" must be a positive integer, got ${String(rule.tpm)}`,
+        { kind: 'bad_request', retryable: false },
+      )
+    }
+    resolved.tpm = rule.tpm
+  }
+  if (rule?.dayBoundary !== undefined) {
+    resolved.dayBoundary = assertDayBoundary(rule.dayBoundary, 'dayBoundary')
+  }
 
   return resolved
 }
 
+interface QuotaEvaluation {
+  decision: QuotaDecision
+  /** The tokens reserved against `tpm`, when the call consumed from a `tpm` window. */
+  reservedTokens?: number
+}
+
 async function evaluateQuotaDecision(
   resolved: ResolvedQuotaRule,
-  store: QuotaStore,
+  store: QuotaStore | undefined,
   nowMs: number,
+  estimatedInputTokens: number | undefined,
   signal?: AbortSignal,
-): Promise<QuotaDecision> {
+  onWindowChecksSkipped?: (scope: string) => void,
+): Promise<QuotaEvaluation> {
   if (!resolved.configured) {
-    return { kind: 'allow' }
+    return { decision: { kind: 'allow' } }
   }
 
   if (resolved.rpd === 0) {
     return {
-      kind: 'deny',
-      scope: resolved.scope,
-      reason: 'provider_disabled',
+      decision: {
+        kind: 'deny',
+        scope: resolved.scope,
+        reason: 'provider_disabled',
+      },
     }
   }
 
   const rpm = normalizeConfiguredLimit(resolved.rpm)
   const rpd = normalizeConfiguredLimit(resolved.rpd)
-  if (rpm === undefined && rpd === undefined) {
-    return { kind: 'allow' }
+  const tpm = resolved.tpm
+  if (rpm === undefined && rpd === undefined && tpm === undefined) {
+    return { decision: { kind: 'allow' } }
   }
 
+  if (store === undefined) {
+    onWindowChecksSkipped?.(resolved.scope)
+    return { decision: { kind: 'allow' } }
+  }
+
+  const tokens =
+    tpm === undefined ? undefined : Math.max(Math.ceil(estimatedInputTokens ?? 0), 0)
   const storeInput: QuotaStoreCheckInput = {
     scope: resolved.scope,
     nowMs,
@@ -582,6 +1068,13 @@ async function evaluateQuotaDecision(
   }
   if (rpd !== undefined) {
     storeInput.rpd = rpd
+    if (resolved.dayBoundary !== undefined) {
+      storeInput.dayBoundary = resolved.dayBoundary
+    }
+  }
+  if (tpm !== undefined && tokens !== undefined) {
+    storeInput.tpm = tpm
+    storeInput.tokens = tokens
   }
   if (signal !== undefined) {
     storeInput.signal = signal
@@ -595,13 +1088,15 @@ async function evaluateQuotaDecision(
     !storeDecision.rpd.allowed
   ) {
     return {
-      kind: 'defer',
-      scope: resolved.scope,
-      reason: 'rpd_exhausted',
-      retryAfterMs: normalizeRetryAfter(
-        storeDecision.rpd.retryAfterMs,
-        timeUntilNextUtcDay(nowMs),
-      ),
+      decision: {
+        kind: 'defer',
+        scope: resolved.scope,
+        reason: 'rpd_exhausted',
+        retryAfterMs: normalizeRetryAfter(
+          storeDecision.rpd.retryAfterMs,
+          msUntilDayEnds(nowMs, resolved.dayBoundary),
+        ),
+      },
     }
   }
 
@@ -611,17 +1106,42 @@ async function evaluateQuotaDecision(
     !storeDecision.rpm.allowed
   ) {
     return {
-      kind: 'defer',
-      scope: resolved.scope,
-      reason: 'rpm_exhausted',
-      retryAfterMs: normalizeRetryAfter(
-        storeDecision.rpm.retryAfterMs,
-        timeUntilNextMinute(nowMs),
-      ),
+      decision: {
+        kind: 'defer',
+        scope: resolved.scope,
+        reason: 'rpm_exhausted',
+        retryAfterMs: normalizeRetryAfter(
+          storeDecision.rpm.retryAfterMs,
+          msUntilNextMinute(nowMs),
+        ),
+      },
     }
   }
 
-  return { kind: 'allow' }
+  if (
+    tpm !== undefined &&
+    storeDecision.tpm !== undefined &&
+    !storeDecision.tpm.allowed
+  ) {
+    return {
+      decision: {
+        kind: 'defer',
+        scope: resolved.scope,
+        reason: 'tpm_exhausted',
+        retryAfterMs: normalizeRetryAfter(
+          storeDecision.tpm.retryAfterMs,
+          msUntilNextMinute(nowMs),
+        ),
+      },
+    }
+  }
+
+  return {
+    decision: { kind: 'allow' },
+    ...(tokens !== undefined && storeDecision.tpm !== undefined
+      ? { reservedTokens: tokens }
+      : {}),
+  }
 }
 
 function messageForDefer(
@@ -634,6 +1154,8 @@ function messageForDefer(
       return `Provider quota exhausted for "${scope}": requests per minute exhausted. Retry after ${retryAfterMs}ms.`
     case 'rpd_exhausted':
       return `Provider quota exhausted for "${scope}": requests per day exhausted. Retry after ${retryAfterMs}ms.`
+    case 'tpm_exhausted':
+      return `Provider quota exhausted for "${scope}": input tokens per minute exhausted. Retry after ${retryAfterMs}ms.`
     default: {
       const exhaustive: never = reason
       return exhaustive
@@ -760,42 +1282,4 @@ function normalizeRetryAfter(
     return retryAfterMs
   }
   return fallbackMs
-}
-
-function bucketKey(
-  prefix: string,
-  scope: string,
-  window: 'rpm' | 'rpd',
-  nowMs: number,
-): string {
-  if (window === 'rpm') {
-    return `${prefix}:${window}:${scope}:${minuteBucket(nowMs)}`
-  }
-  return `${prefix}:${window}:${scope}:${utcDayBucket(nowMs)}`
-}
-
-function minuteBucket(nowMs: number): string {
-  const d = new Date(nowMs)
-  const y = d.getUTCFullYear()
-  const m = String(d.getUTCMonth() + 1).padStart(2, '0')
-  const day = String(d.getUTCDate()).padStart(2, '0')
-  const hh = String(d.getUTCHours()).padStart(2, '0')
-  const mm = String(d.getUTCMinutes()).padStart(2, '0')
-  return `${y}${m}${day}${hh}${mm}`
-}
-
-function utcDayBucket(nowMs: number): string {
-  return new Date(nowMs).toISOString().slice(0, 10)
-}
-
-function timeUntilNextMinute(nowMs: number): number {
-  const nextMinute = Math.floor(nowMs / 60_000) * 60_000 + 60_000
-  // Integer: `PEXPIRE` rejects a fractional TTL after `INCR` already ran.
-  return Math.max(Math.ceil(nextMinute - nowMs), 1)
-}
-
-function timeUntilNextUtcDay(nowMs: number): number {
-  const d = new Date(nowMs)
-  const nextDay = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1)
-  return Math.max(Math.ceil(nextDay - nowMs), 1)
 }

@@ -6,6 +6,7 @@ import {
   type Handler,
   type ResolvedRequest,
 } from '@gullabs/core'
+import { FakeClock } from '@gullabs/testing'
 import {
   checkProviderQuota,
   enforceProviderQuota,
@@ -28,6 +29,7 @@ function makeCtx(nowMs: number): EngineCtx {
   return {
     callId: 'c1',
     clock: { now: () => nowMs },
+    scheduler: new FakeClock(),
     logger: NOOP_LOGGER,
   }
 }
@@ -43,6 +45,7 @@ function makeReq(provider: string, model: string): ResolvedRequest {
 
 function makeStore(result: QuotaStoreCheckResult): QuotaStore {
   return {
+    adjustTokens: async () => {},
     checkAndConsume: vi.fn(async (_input: QuotaStoreCheckInput) => result),
   }
 }
@@ -50,6 +53,7 @@ function makeStore(result: QuotaStoreCheckResult): QuotaStore {
 describe('@gullabs/quota', () => {
   it('checkProviderQuota returns deny for rpd=0 without retryAfterMs', async () => {
     const store: QuotaStore = {
+      adjustTokens: async () => {},
       checkAndConsume: vi.fn(async () => {
         throw new Error('store should not be called for provider-disabled models')
       }),
@@ -79,6 +83,7 @@ describe('@gullabs/quota', () => {
   it('enforceProviderQuota emits a deny event and throws a non-retryable rate_limited error', async () => {
     const events: QuotaEvent[] = []
     const error = await enforceProviderQuota({
+      onStoreError: 'fail-closed',
       provider: 'google',
       model: 'gemini-2.5-pro',
       policy: quotaPolicyForGemini({
@@ -117,6 +122,7 @@ describe('@gullabs/quota', () => {
   it('rpm exhaustion defers with retryable=true and retryAfterMs', async () => {
     const events: QuotaEvent[] = []
     const error = await enforceProviderQuota({
+      onStoreError: 'fail-closed',
       provider: 'google',
       model: 'gemini-2.5-flash',
       policy: quotaPolicyForGemini({
@@ -156,6 +162,7 @@ describe('@gullabs/quota', () => {
 
   it('rpd exhaustion defers with retryable=true and retryAfterMs', async () => {
     const error = await enforceProviderQuota({
+      onStoreError: 'fail-closed',
       provider: 'google',
       model: 'gemini-2.5-flash',
       policy: quotaPolicyForGemini({
@@ -224,6 +231,7 @@ describe('@gullabs/quota', () => {
 
     await expect(
       enforceProviderQuota({
+        onStoreError: 'fail-closed',
         provider: 'google',
         model: 'gemini-2.5-flash',
         policy: quotaPolicyForGemini({
@@ -235,7 +243,7 @@ describe('@gullabs/quota', () => {
         onEvent: (event) => events.push(event),
         nowMs: Date.UTC(2026, 5, 30, 12, 0, 0),
       }),
-    ).resolves.toBeUndefined()
+    ).resolves.toBeDefined()
 
     expect(events).toEqual([
       {
@@ -277,6 +285,7 @@ describe('@gullabs/quota', () => {
     const store = makeStore({})
 
     const error = await enforceProviderQuota({
+      onStoreError: 'fail-closed',
       provider: 'google',
       model: 'gemini-2.5-flash',
       policy: quotaPolicyForGemini({
@@ -321,6 +330,7 @@ describe('@gullabs/quota', () => {
   it('propagates a backend store failure as a rejected promise and emits backend_error', async () => {
     const backendError = new Error('upstash unreachable')
     const store: QuotaStore = {
+      adjustTokens: async () => {},
       checkAndConsume: vi.fn(async () => {
         throw backendError
       }),
@@ -328,6 +338,7 @@ describe('@gullabs/quota', () => {
     const events: QuotaEvent[] = []
 
     const error = await enforceProviderQuota({
+      onStoreError: 'fail-closed',
       provider: 'google',
       model: 'gemini-2.5-flash',
       policy: quotaPolicyForGemini({
@@ -354,6 +365,7 @@ describe('@gullabs/quota', () => {
 
   it('providerQuotaMiddleware propagates a bad_request LlmError for a misconfigured rpm, unmodified, before touching the store', async () => {
     const store: QuotaStore = {
+      adjustTokens: async () => {},
       checkAndConsume: vi.fn(async () => {
         throw new Error('store should not be called for a misconfigured quota rule')
       }),
@@ -363,6 +375,7 @@ describe('@gullabs/quota', () => {
     })
 
     const middleware = providerQuotaMiddleware({
+      onStoreError: 'fail-closed',
       policy: quotaPolicyForGemini({
         models: {
           'gemini-2.5-flash': { rpm: -5 },

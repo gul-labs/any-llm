@@ -28,37 +28,9 @@ import {
   type UpstashPipelineCommand,
 } from './index.js'
 import { makePermissiveTestDescriptor } from '../../core/src/test-model-descriptor.js'
+import { makeRedisEmulator } from './redis-emulator.js'
 
 const NOW = Date.UTC(2026, 5, 30, 12, 0, 30)
-
-/** In-memory Redis counters + a faithful JS port of the EVAL script's logic. */
-function makeRedisEmulator() {
-  const counters = new Map<string, number>()
-  const commands: UpstashPipelineCommand[] = []
-
-  async function invoke(cmds: readonly UpstashPipelineCommand[]) {
-    await Promise.resolve() // yield: callers interleave, each EVAL stays atomic
-    return cmds.map((cmd) => {
-      commands.push(cmd)
-      const [name, , numKeys, ...rest] = cmd
-      if (name !== 'EVAL') throw new Error(`unexpected command ${String(name)}`)
-      const n = Number(numKeys)
-      const keys = rest.slice(0, n).map(String)
-      const argv = rest.slice(n).map(Number)
-      const counts = keys.map((k) => counters.get(k) ?? 0)
-      const ok = counts.every((c, i) => c < argv[2 * i]!)
-      if (ok) {
-        keys.forEach((k, i) => {
-          counters.set(k, counts[i]! + 1)
-          counts[i] = counts[i]! + 1
-        })
-      }
-      return { result: [ok ? 1 : 0, ...counts] }
-    })
-  }
-
-  return { counters, commands, invoke }
-}
 
 const CHECK = { scope: 'google:m', nowMs: NOW }
 
@@ -72,13 +44,13 @@ describe('upstashQuotaStore consume-on-allow', () => {
     expect(redis.commands).toHaveLength(1)
     const [name, script, numKeys, ...rest] = redis.commands[0]!
     expect(name).toBe('EVAL')
-    expect(String(script)).toContain("redis.call('INCR'")
+    expect(String(script)).toContain("redis.call('INCRBY'")
     expect(numKeys).toBe(2)
-    expect(rest).toHaveLength(2 + 4)
+    expect(rest).toHaveLength(2 + 6)
     expect(String(rest[0])).toContain(':rpm:google:m:')
     expect(String(rest[1])).toContain(':rpd:google:m:')
-    // limit, ttl for rpm (30 s left in the minute), then rpd
-    expect(rest.slice(2)).toEqual([2, 30_000, 5, 12 * 3_600_000 - 30_000])
+    // limit, ttl, cost for rpm (30 s left in the minute), then rpd
+    expect(rest.slice(2)).toEqual([2, 30_000, 1, 5, 12 * 3_600_000 - 30_000, 1])
   })
 
   it('allows under the limit and reports used and remaining', async () => {
@@ -134,8 +106,8 @@ describe('upstashQuotaStore consume-on-allow', () => {
       rpd: 5,
     })
 
-    const [, , , , , ...ttls] = redis.commands[0]!
-    expect([ttls[1], ttls[3]].every((t) => Number.isInteger(t))).toBe(true)
+    const [, , , , , ...args] = redis.commands[0]!
+    expect([args[1], args[4]].every((t) => Number.isInteger(t))).toBe(true)
     expect(result.rpm?.allowed).toBe(true)
     expect(Number.isInteger(denied.rpm?.retryAfterMs)).toBe(true)
   })
@@ -187,7 +159,14 @@ describe('upstashQuotaStore consume-on-allow', () => {
     const store = upstashQuotaStore({ invoke: redis.invoke })
     const policy = quotaPolicyForGemini({ models: { m: { rpm: 1 } } })
     const enforce = () =>
-      enforceProviderQuota({ provider: 'google', model: 'm', policy, store, nowMs: NOW })
+      enforceProviderQuota({
+        onStoreError: 'fail-closed',
+        provider: 'google',
+        model: 'm',
+        policy,
+        store,
+        nowMs: NOW,
+      })
 
     await enforce()
     await expect(enforce()).rejects.toMatchObject({ kind: 'rate_limited' })
@@ -201,6 +180,7 @@ describe('upstashQuotaStore consume-on-allow', () => {
 describe('maxDeferMs', () => {
   function deferringStore(retryAfterMs: number, window: 'rpm' | 'rpd'): QuotaStore {
     return {
+      adjustTokens: async () => {},
       checkAndConsume: async () => ({
         [window]: { allowed: false, retryAfterMs, remaining: 0, used: 1 },
       }),
@@ -210,6 +190,7 @@ describe('maxDeferMs', () => {
   const ctx = {
     callId: 'c',
     clock: { now: () => NOW },
+    scheduler: new FakeClock(),
     logger: { info() {}, warn() {}, error() {}, debug() {} },
   }
   const req = {
@@ -224,6 +205,7 @@ describe('maxDeferMs', () => {
 
   it('a deferral longer than the default 60 s cap is rate_limited, not retryable, reason quota_window', async () => {
     const mw = providerQuotaMiddleware({
+      onStoreError: 'fail-closed',
       policy,
       store: deferringStore(12 * 3_600_000, 'rpd'),
     })
@@ -240,6 +222,7 @@ describe('maxDeferMs', () => {
 
   it('a deferral within the cap stays retryable with retryAfterMs and no reason', async () => {
     const mw = providerQuotaMiddleware({
+      onStoreError: 'fail-closed',
       policy,
       store: deferringStore(60_000, 'rpm'),
     })
@@ -257,6 +240,7 @@ describe('maxDeferMs', () => {
     'a %i ms deferral (more than 30 s, within the default cap) stays retryable',
     async (retryAfterMs) => {
       const mw = providerQuotaMiddleware({
+        onStoreError: 'fail-closed',
         policy,
         store: deferringStore(retryAfterMs, 'rpm'),
       })
@@ -269,7 +253,11 @@ describe('maxDeferMs', () => {
   )
 
   it('a deferral just over 60 s fails with reason quota_window', async () => {
-    const mw = providerQuotaMiddleware({ policy, store: deferringStore(60_001, 'rpm') })
+    const mw = providerQuotaMiddleware({
+      onStoreError: 'fail-closed',
+      policy,
+      store: deferringStore(60_001, 'rpm'),
+    })
     const err = (await mw.intercept(req, ctx, next).catch((e: unknown) => e)) as LlmError
     expect(err).toMatchObject({ retryable: false, reason: 'quota_window' })
   })
@@ -280,6 +268,7 @@ describe('maxDeferMs', () => {
       const redis = makeRedisEmulator()
       const store = upstashQuotaStore({ invoke: redis.invoke })
       const mw = providerQuotaMiddleware({
+        onStoreError: 'fail-closed',
         policy: quotaPolicyForGemini({ models: { m: { rpm: 1 } } }),
         store,
         now: () => at,
@@ -329,6 +318,7 @@ describe('maxDeferMs', () => {
           },
         ),
         providerQuotaMiddleware({
+          onStoreError: 'fail-closed',
           policy: quotaPolicyForGemini({ models: { m: { rpm: 1 } } }),
           store: opts.store,
           now: () => clockNow,
@@ -412,6 +402,7 @@ describe('maxDeferMs', () => {
 
   it('the rate-limiter path honours the same cap', async () => {
     const limiter = providerQuotaRateLimiter({
+      onStoreError: 'fail-closed',
       policy,
       store: deferringStore(12 * 3_600_000, 'rpd'),
       now: () => NOW,
@@ -423,6 +414,7 @@ describe('maxDeferMs', () => {
     })
 
     const perMinute = providerQuotaRateLimiter({
+      onStoreError: 'fail-closed',
       policy,
       store: deferringStore(45_000, 'rpm'),
       now: () => NOW,
@@ -433,6 +425,7 @@ describe('maxDeferMs', () => {
     })
 
     const custom = providerQuotaRateLimiter({
+      onStoreError: 'fail-closed',
       policy,
       store: deferringStore(10_000, 'rpm'),
       now: () => NOW,
@@ -448,14 +441,25 @@ describe('maxDeferMs', () => {
     'maxDeferMs %s is rejected with bad_request',
     async (bad) => {
       const store = deferringStore(1, 'rpm')
-      expect(() => providerQuotaMiddleware({ policy, store, maxDeferMs: bad })).toThrow(
-        LlmError,
-      )
-      expect(() => providerQuotaRateLimiter({ policy, store, maxDeferMs: bad })).toThrow(
-        /maxDeferMs/,
-      )
+      expect(() =>
+        providerQuotaMiddleware({
+          onStoreError: 'fail-closed',
+          policy,
+          store,
+          maxDeferMs: bad,
+        }),
+      ).toThrow(LlmError)
+      expect(() =>
+        providerQuotaRateLimiter({
+          onStoreError: 'fail-closed',
+          policy,
+          store,
+          maxDeferMs: bad,
+        }),
+      ).toThrow(/maxDeferMs/)
       await expect(
         enforceProviderQuota({
+          onStoreError: 'fail-closed',
           provider: 'google',
           model: 'm',
           policy,
@@ -469,6 +473,7 @@ describe('maxDeferMs', () => {
 
   it('maxDeferMs 0 is valid and makes every deferral non-retryable', async () => {
     const mw = providerQuotaMiddleware({
+      onStoreError: 'fail-closed',
       policy,
       store: deferringStore(1, 'rpm'),
       maxDeferMs: 0,
@@ -479,6 +484,7 @@ describe('maxDeferMs', () => {
 
   it('honors a custom maxDeferMs', async () => {
     const mw = providerQuotaMiddleware({
+      onStoreError: 'fail-closed',
       policy,
       store: deferringStore(10_000, 'rpm'),
       maxDeferMs: 5_000,
@@ -487,6 +493,7 @@ describe('maxDeferMs', () => {
     expect(err).toMatchObject({ retryable: false, reason: 'quota_window' })
 
     const permissive = providerQuotaMiddleware({
+      onStoreError: 'fail-closed',
       policy,
       store: deferringStore(12 * 3_600_000, 'rpd'),
       maxDeferMs: Number.MAX_SAFE_INTEGER,
@@ -499,6 +506,7 @@ describe('maxDeferMs', () => {
 
   it('enforceProviderQuota without maxDeferMs applies no cap', async () => {
     const err = (await enforceProviderQuota({
+      onStoreError: 'fail-closed',
       provider: 'google',
       model: 'm',
       policy,
@@ -534,7 +542,11 @@ describe('maxDeferMs', () => {
             random: () => 0,
           },
         ),
-        providerQuotaMiddleware({ policy, store: deferringStore(12 * 3_600_000, 'rpd') }),
+        providerQuotaMiddleware({
+          onStoreError: 'fail-closed',
+          policy,
+          store: deferringStore(12 * 3_600_000, 'rpd'),
+        }),
       ],
     })
 
@@ -553,12 +565,14 @@ describe('providerQuotaMiddleware and model aliases', () => {
   it('limits a declared alias under its canonical model id', async () => {
     const seen: string[] = []
     const store: QuotaStore = {
+      adjustTokens: async () => {},
       checkAndConsume: async (input) => {
         seen.push(input.scope)
         return { rpm: { allowed: true, remaining: 1, used: 1 } }
       },
     }
     const mw = providerQuotaMiddleware({
+      onStoreError: 'fail-closed',
       policy: quotaPolicyForGemini({ models: { m: { rpm: 5 } } }),
       store,
     })
@@ -577,6 +591,7 @@ describe('providerQuotaMiddleware and model aliases', () => {
       {
         callId: 'c',
         clock: { now: () => NOW },
+        scheduler: new FakeClock(),
         logger: { info() {}, warn() {}, error() {}, debug() {} },
       },
       async () => ({}) as never,
@@ -607,8 +622,9 @@ describe('quota limits are keyed by the canonical model id', () => {
 
   it('the middleware surfaces it as bad_request on the first call', async () => {
     const mw = providerQuotaMiddleware({
+      onStoreError: 'fail-closed',
       policy: quotaPolicyForGemini({ models: { 'm-001': { rpm: 5 } } }),
-      store: { checkAndConsume: async () => ({}) },
+      store: { adjustTokens: async () => {}, checkAndConsume: async () => ({}) },
     })
     await expect(
       mw.intercept(
@@ -626,6 +642,7 @@ describe('quota limits are keyed by the canonical model id', () => {
         {
           callId: 'c',
           clock: { now: () => NOW },
+          scheduler: new FakeClock(),
           logger: { info() {}, warn() {}, error() {}, debug() {} },
         },
         async () => ({}) as never,
@@ -636,6 +653,7 @@ describe('quota limits are keyed by the canonical model id', () => {
   it('an outer middleware that swaps modelDescriptor cannot change the scope quota counts under', async () => {
     const seen: string[] = []
     const store: QuotaStore = {
+      adjustTokens: async () => {},
       checkAndConsume: async (input) => {
         seen.push(input.scope)
         return { rpm: { allowed: true, remaining: 1, used: 1 } }
@@ -666,6 +684,7 @@ describe('quota limits are keyed by the canonical model id', () => {
           },
         },
         providerQuotaMiddleware({
+          onStoreError: 'fail-closed',
           policy: quotaPolicyForGemini({
             models: { m: { rpm: 5 }, other: { rpm: 5 } },
           }),
@@ -714,8 +733,8 @@ function redis.call(cmd, key, arg)
     local v = state[key]
     if v == nil then return false end
     return tostring(v)
-  elseif cmd == 'INCR' then
-    state[key] = (state[key] or 0) + 1
+  elseif cmd == 'INCRBY' then
+    state[key] = (state[key] or 0) + tonumber(arg)
     return state[key]
   elseif cmd == 'PEXPIRE' then
     if not string.find(tostring(arg), '^%-?%d+$') then
@@ -727,6 +746,7 @@ function redis.call(cmd, key, arg)
 end
 local fn = assert(load(script))
 local out = fn()
+if type(out) ~= 'table' then out = { out } end
 local parts = {}
 for i, v in ipairs(out) do parts[i] = tostring(math.tointeger(v) or v) end
 local st = {}
@@ -772,7 +792,7 @@ describe.skipIf(!hasLua)('the shipped Lua script, on a real interpreter', () => 
     const lua = await script()
     const state: Record<string, number> = {}
     const results = Array.from({ length: 5 }, () =>
-      runLua(lua, ['rpm-key', 'rpd-key'], [3, 30_000, 100, 3_600_000], state),
+      runLua(lua, ['rpm-key', 'rpd-key'], [3, 30_000, 1, 100, 3_600_000, 1], state),
     )
     expect(results.map((r) => r[0])).toEqual([1, 1, 1, 0, 0])
     expect(state).toEqual({ 'rpm-key': 3, 'rpd-key': 3 })
@@ -782,23 +802,75 @@ describe.skipIf(!hasLua)('the shipped Lua script, on a real interpreter', () => 
   it('a denial on one window leaves the other counter untouched', async () => {
     const lua = await script()
     const state: Record<string, number> = { 'rpm-key': 0, 'rpd-key': 1 }
-    const reply = runLua(lua, ['rpm-key', 'rpd-key'], [10, 30_000, 1, 3_600_000], state)
+    const reply = runLua(
+      lua,
+      ['rpm-key', 'rpd-key'],
+      [10, 30_000, 1, 1, 3_600_000, 1],
+      state,
+    )
     expect(reply).toEqual([0, 0, 1])
     expect(state).toEqual({ 'rpm-key': 0, 'rpd-key': 1 })
   })
 
   it('refuses a fractional TTL like Redis does, which is why the store sends integers', async () => {
     const lua = await script()
-    expect(() => runLua(lua, ['k'], [3, 1234.5], {})).toThrow(/not an integer/)
+    expect(() => runLua(lua, ['k'], [3, 1234.5, 1], {})).toThrow(/not an integer/)
     const redis = makeRedisEmulator()
     await upstashQuotaStore({ invoke: redis.invoke }).checkAndConsume({
       scope: 's',
       nowMs: NOW + 0.5,
       rpm: 3,
     })
-    const [, , , key, limit, ttl] = redis.commands[0]!
+    const [, , , key, limit, ttl, cost] = redis.commands[0]!
     const state: Record<string, number> = {}
-    expect(runLua(lua, [String(key)], [Number(limit), Number(ttl)], state)[0]).toBe(1)
+    expect(
+      runLua(lua, [String(key)], [Number(limit), Number(ttl), Number(cost)], state)[0],
+    ).toBe(1)
+  })
+  it('charges the cost of a token window, refuses a call that would cross it, and lets an oversize call into an empty window', async () => {
+    const lua = await script()
+    const state: Record<string, number> = {}
+    // limit 1000, ttl, cost 600
+    expect(runLua(lua, ['tpm-key'], [1_000, 30_000, 600], state)).toEqual([1, 600])
+    // 600 + 600 > 1000 and the counter is not empty: refused, untouched
+    expect(runLua(lua, ['tpm-key'], [1_000, 30_000, 600], state)).toEqual([0, 600])
+    expect(state).toEqual({ 'tpm-key': 600 })
+    // a 400 fits exactly
+    expect(runLua(lua, ['tpm-key'], [1_000, 30_000, 400], state)).toEqual([1, 1_000])
+    // now full: even 1 is refused
+    expect(runLua(lua, ['tpm-key'], [1_000, 30_000, 1], state)[0]).toBe(0)
+    // an oversize call into an empty counter passes
+    const empty: Record<string, number> = {}
+    expect(runLua(lua, ['tpm-key'], [1_000, 30_000, 5_000], empty)).toEqual([1, 5_000])
+  })
+
+  describe('the token-reconciliation script', () => {
+    async function adjustScript(): Promise<string> {
+      const cmds: UpstashPipelineCommand[] = []
+      await upstashQuotaStore({
+        invoke: async (c) => {
+          cmds.push(...c)
+          return [{ result: 0 }]
+        },
+      }).adjustTokens({ scope: 's', nowMs: NOW, tokens: 1 })
+      return String(cmds[0]![1])
+    }
+
+    it('adds a signed delta to a live counter and never leaves it below 0', async () => {
+      const lua = await adjustScript()
+      const state: Record<string, number> = { k: 600 }
+      expect(runLua(lua, ['k'], [-450], state)).toEqual([150])
+      expect(runLua(lua, ['k'], [300], state)).toEqual([450])
+      expect(runLua(lua, ['k'], [-10_000], state)).toEqual([0])
+      expect(state).toEqual({ k: 0 })
+    })
+
+    it('leaves a counter that is gone alone', async () => {
+      const lua = await adjustScript()
+      const state: Record<string, number> = {}
+      expect(runLua(lua, ['k'], [400], state)).toEqual([0])
+      expect(state).toEqual({})
+    })
   })
 })
 
@@ -817,8 +889,17 @@ describe('providerQuotaMiddleware role and placement', () => {
 
   it('sets role "quota" and ignores a custom id for identification', () => {
     const store = upstashQuotaStore({ invoke: makeRedisEmulator().invoke })
-    expect(providerQuotaMiddleware({ policy, store }).role).toBe('quota')
-    expect(providerQuotaMiddleware({ policy, store, id: 'my-retry' }).role).toBe('quota')
+    expect(
+      providerQuotaMiddleware({ onStoreError: 'fail-closed', policy, store }).role,
+    ).toBe('quota')
+    expect(
+      providerQuotaMiddleware({
+        onStoreError: 'fail-closed',
+        policy,
+        store,
+        id: 'my-retry',
+      }).role,
+    ).toBe('quota')
   })
 
   it('createClient rejects [quota, retry] even when both carry custom ids', () => {
@@ -828,7 +909,12 @@ describe('providerQuotaMiddleware role and placement', () => {
         adapters: [new FakeAdapter('google', okResult)],
         modelRegistry: registry,
         middleware: [
-          providerQuotaMiddleware({ policy, store, id: 'billing-guard' }),
+          providerQuotaMiddleware({
+            onStoreError: 'fail-closed',
+            policy,
+            store,
+            id: 'billing-guard',
+          }),
           { ...retryMiddleware({ maxAttempts: 2 }), id: 'resilience' },
         ],
       })
@@ -854,7 +940,7 @@ describe('providerQuotaMiddleware role and placement', () => {
           { maxAttempts: 3, baseDelayMs: 0 },
           { sleep: async () => {}, random: () => 0 },
         ),
-        providerQuotaMiddleware({ policy, store }),
+        providerQuotaMiddleware({ onStoreError: 'fail-closed', policy, store }),
       ],
     })
 
