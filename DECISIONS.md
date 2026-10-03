@@ -3734,6 +3734,42 @@ supported runtimes were not written down. The README and doc examples were not c
 than Node and Deno must run its own smoke test, and must not rely on this repository for it.
 `pnpm quality` needs a Node with `node --import` (22.12 has it) and the built packages.
 
+### Amendment A (2026-10-03): the runtime claim is guarded, and the rest of the audit's hygiene findings
+
+An adversarial audit of the release checks found that "no `Buffer`, no `process`" held only as a
+snapshot, and several smaller gaps. What changed:
+
+1. **Lint guards the claim.** ESLint (`no-restricted-imports`, `no-restricted-globals`,
+   `no-restricted-properties`, `no-restricted-syntax`) rejects `node:*` and every bare Node built-in
+   (static, type and dynamic imports), `Buffer`, `process`, `__dirname`, `__filename`, `require` and
+   `globalThis.Buffer|process|require` in the non-test `src/**` of `core`, `google`, `xai`, `quota`,
+   `drizzle` and `any-llm`. Reintroducing each violation in a scratch copy fails `pnpm lint`.
+2. **The smoke executes the adapters.** After `Buffer` and `process` are removed, `pnpm test:runtime`
+   also runs a fake-backed `generate()` through the Gemini adapter (a signed thought, so the signature
+   hash runs; the payload goes through the drizzle sink to a fake database), one through the xAI adapter
+   (the inline-image size check, including the over-20 MiB rejection) and a `quota` store check. A
+   `Buffer` or `process` reference reintroduced in each of those four packages fails it.
+3. **The Deno statement is what ran.** Under Deno 2.4.1 every check passes except the first, which asserts
+   that `node:crypto` is blocked and only holds under the Node hook.
+4. **`check:docs` finds its files.** It walks the root `*.md`, `docs/` (not `docs/archive/`) and
+   `packages/<name>/**`, so the shipped `SKILL.md`, `SPEC.md` and `DESIGN.md` are checked; changelogs and
+   `DECISIONS.md` are history and are not. Fences that were broken or leaned on prose variables now compile
+   or say `ts no-check` (`SPEC.md`'s type listings redefine the library's own types and are `no-check`).
+   Plans and proposals that describe removed behaviour moved to `docs/archive/`.
+5. **Payload hashing yields every 2 MiB of base64.** The dependency-free hash is about 18 times slower
+   than `node:crypto` (20 MiB: 140 ms against 7.5 ms, Node 24), so a yield every 4 million characters left
+   stretches of about 27 ms. The cadence is now 2,097,152 units (about 10 ms), pinned by a test on a fake
+   scheduler. WebCrypto stays rejected (one-shot, asynchronous).
+6. **`./package.json` is exported** by every package (bundlers and license scanners read it).
+7. **The CJS build stays, and the hazard is documented.** `require` consumers and `.d.cts` need it. Two
+   copies of a package, one loaded through `import` and one through `require`, hold two `LlmError`
+   classes, so the README says to use one module format per process and to branch on `kind` and
+   `retryable` where that cannot be guaranteed.
+8. **A runtime without `crypto.randomUUID` fails at `createClient`** with `bad_request` (pass
+   `ClientConfig.ids`), not with a `TypeError` on the first call.
+9. xAI's inline-image size ignores base64 line breaks, and Gemini's request-size check no longer allocates
+   an encoded copy of each text part.
+
 ---
 
 ## ADR-043: Model lifecycle: `shutdownDate`
@@ -3753,16 +3789,35 @@ descriptors declared `grounding: true` with no capture behind it.
    that is not a real calendar date (`2027-02-30`, `2027-5-7`, a prose date) with `bad_request`.
 2. **A warning, never a refusal.** A successful call whose clock reads within 90 days of the date
    (`SHUTDOWN_WARNING_DAYS`), on the day or after it, carries one `warnings` entry naming the model, the
-   date and the days left or gone by. The engine uses its injected clock, so a test advances a `FakeClock`.
+   date and the days left or gone by. Amendment A below makes it typed and once per client and model. The engine uses its injected clock, so a test advances a `FakeClock`.
    The provider decides what it still serves, and a model that is gone fails with the provider's own error;
    the library does not guess. An error path carries no advisory: the call did not succeed.
 3. **`gemini-3.1-flash-lite` is the only descriptor with a date.** Gemini 2.5 access is limited to existing
    users on the same page with no date, and Gemma 4 is not listed, so none is set. Removing the model
    after the date is a dated BACKLOG item (delete it, no alias to the replacement).
 4. **Gemma `grounding: true` stays, on a capture.** Live, 2026-10-03: three Search prompts on each Gemma 4
-   model returned `groundingMetadata` on 5 of 6 calls; the one miss was `MAX_TOKENS` with an empty answer
-   (thinking used the 800-token cap). Pinned as `gemma-grounding-2026-10-03.json` with a test that ties it
-   to the descriptors (ADR-013).
+   model returned `groundingMetadata` on all 5 calls that completed; the sixth ended at `MAX_TOKENS` with an
+   empty answer (thinking used the 800-token cap) and says nothing either way (5 of 6 in all). The fixture
+   `gemma-grounding-2026-10-03.json` is a derived summary (flags, query lists, chunk counts, usage; no answer
+   text and no raw `groundingMetadata`), labelled as such, and a test checks it against itself and the
+   descriptors (ADR-013). It cannot detect a wrong capture; re-probe before relying on it for more.
 
 **Consequences:** a host that alerts on warnings sees the advisory 90 days ahead of the shutdown. Host
 descriptors may carry a date too. Nothing about a model without `shutdownDate` changes.
+
+### Amendment A (2026-10-03): a typed advisory, once per client and model
+
+1. **`Warning` gains a typed member.** `{ type: 'shutdown', message, shutdownDate }` (the closed set was
+   `type: 'other'` alone), so a host matches on the type and the date instead of a regex.
+2. **Once per client and model.** The engine attaches the advisory to the first successful call per
+   `(provider, model)` on a client and not again, so it no longer lands in every ledger row for 90 days. A
+   new client warns once for itself.
+3. **Wording follows the date.** Before: "is scheduled to shut down on D (in N days); move to a model without
+   a shutdown date before then". On the day: "today". After: "was scheduled to shut down on D (N days ago)
+   and may stop being served at any time". A clock that is not a finite number yields no warning (it read
+   "NaN days ago").
+4. **The Gemma fixture says what it is.** `gemma-grounding-2026-10-03.json` is a derived summary of six calls
+   (flags, query lists, chunk counts, usage; no answer text, no raw `groundingMetadata`), labelled so in the
+   file with the counts spelled out: metadata on 5 of 5 completed calls, the sixth a `MAX_TOKENS` truncation
+   that proves nothing (5 of 6 in all). Its test checks the fixture against itself (counts add up, token
+   arithmetic reconciles) and the descriptors; it cannot detect a wrong capture.
