@@ -43,6 +43,7 @@ export type {
   XaiUsageShape,
   XaiResponseShape,
   XaiRequestOptions,
+  XaiResponseMeta,
   XaiTransport,
 } from './client.js'
 export {

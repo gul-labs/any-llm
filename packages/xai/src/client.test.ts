@@ -342,3 +342,63 @@ describe('buildXaiClient — transport deadline (real SDK, stubbed fetch)', () =
     expect(classified.reason).toBeUndefined()
   })
 })
+
+describe('buildXaiClient — response metadata (real SDK, stubbed fetch)', () => {
+  function withHeaders(headers: Record<string, string>): XaiTransport {
+    return asTransport(() =>
+      Promise.resolve(
+        new Response(OK_BODY, {
+          status: 200,
+          headers: { 'content-type': 'application/json', ...headers },
+        }),
+      ),
+    )
+  }
+
+  it('hands the request id and the remaining-quota headers to onResponse before create resolves', async () => {
+    const client = await buildXaiClient(
+      AUTH,
+      withHeaders({
+        'x-request-id': 'req_abc123',
+        'x-ratelimit-remaining-requests': '99',
+        'X-RateLimit-Remaining-Tokens': '149000',
+        'x-ratelimit-limit-requests': '100',
+        'content-length-other': 'ignored',
+      }),
+    )
+    const seen: unknown[] = []
+    const body = await client.responses.create(PARAMS, {
+      onResponse: (meta) => seen.push(meta),
+    })
+    expect(body.id).toBe('resp_1')
+    expect(seen).toEqual([
+      {
+        requestId: 'req_abc123',
+        rateLimitRemaining: {
+          'x-ratelimit-remaining-requests': '99',
+          'x-ratelimit-remaining-tokens': '149000',
+        },
+      },
+    ])
+  })
+
+  it('reports only what the response carried', async () => {
+    const client = await buildXaiClient(AUTH, withHeaders({}))
+    const seen: unknown[] = []
+    await client.responses.create(PARAMS, { onResponse: (meta) => seen.push(meta) })
+    expect(seen).toEqual([{}])
+  })
+
+  it('does not send onResponse to the SDK as a request option', async () => {
+    const client = await buildXaiClient(AUTH, withHeaders({ 'x-request-id': 'r' }))
+    // A callback key reaching the SDK would be forwarded to fetch as init.
+    await expect(
+      client.responses.create(PARAMS, { onResponse: () => {} }),
+    ).resolves.toMatchObject({ id: 'resp_1' })
+  })
+
+  it('create still works with no options', async () => {
+    const client = await buildXaiClient(AUTH, withHeaders({}))
+    await expect(client.responses.create(PARAMS)).resolves.toMatchObject({ id: 'resp_1' })
+  })
+})

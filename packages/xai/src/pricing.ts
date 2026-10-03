@@ -75,6 +75,51 @@ export const X_SEARCH_ITEM_COUNTERS = ['x_posts_fetched', 'x_users_fetched'] as 
 const LONG_CONTEXT_THRESHOLD = 200_000
 
 /**
+ * Server-tool counters that are not an unpriced fee: `web_search_calls` is
+ * priced, and `x_search_calls` is superseded by the per-item
+ * `x_posts_fetched` / `x_users_fetched` counters.
+ */
+const PRICED_OR_SUPERSEDED_CALL_COUNTERS: ReadonlySet<string> = new Set([
+  'web_search_calls',
+  'x_search_calls',
+])
+
+/**
+ * Names of the non-zero server-tool `*_calls` counters in `usage.details` that
+ * this snapshot has no rate for (`code_interpreter_calls`, `file_search_calls`,
+ * `mcp_calls`, `document_search_calls`, `image_generation_calls`, and anything
+ * xAI adds). xAI may bill them; the snapshot cannot, so a call that reports one
+ * is priced `'estimated'` (it understates) and the adapter warns.
+ */
+export function unpricedXaiToolCounters(
+  details: Readonly<Record<string, number>>,
+): string[] {
+  return Object.entries(details)
+    .filter(
+      ([key, value]) =>
+        key.endsWith('_calls') &&
+        !PRICED_OR_SUPERSEDED_CALL_COUNTERS.has(key) &&
+        typeof value === 'number' &&
+        value > 0,
+    )
+    .map(([key]) => key)
+}
+
+/** 1 tick = 1e-10 USD, so 10,000 ticks are 1 µUSD. */
+const TICKS_PER_MICRO_USD = 10_000
+
+/**
+ * The call total xAI reported (`usage.cost_in_usd_ticks`) in whole µUSD, rounded
+ * like every lane of {@link computeXaiCost}; `undefined` when absent or not a
+ * finite non-negative number.
+ */
+function providerReportedCost(usage: Usage): Cost['providerReported'] {
+  const ticks = usage.details['cost_in_usd_ticks']
+  if (typeof ticks !== 'number' || !Number.isFinite(ticks) || ticks < 0) return undefined
+  return { microUsd: Math.round(ticks / TICKS_PER_MICRO_USD) }
+}
+
+/**
  * Per-model rate entry (all values in µUSD per million tokens).
  *
  * `gt200k` (when present) applies when GROSS input tokens >= 200,000.
@@ -95,9 +140,11 @@ export interface XaiModelRates {
   /**
    * Multiplier for Responses `service_tier: "priority"`. Absent = this
    * model does not admit priority (unpriced). Uncached standard-list 2×
-   * is confirmed by fixture `12-grok-4-6-xhigh-priority.json` ticks;
-   * cached and `gt200k` legs follow the official 2×-after-cache-discount
-   * docs rule (that fixture has cached=0 and input < 200k).
+   * is confirmed by fixture `12-grok-4-6-xhigh-priority.json` ticks; the
+   * cached leg (2× its standard rate) by fixture `35-priority-warm-cache.json`
+   * (warm-cache priority calls on all three models). The `gt200k` leg follows
+   * the official 2×-after-cache-discount docs rule: no priority capture reaches
+   * 200k input tokens.
    */
   priorityFactor?: number
 }
@@ -241,14 +288,25 @@ function scaleRates(rates: XaiModelRates, factor: number): XaiModelRates {
  *    nearest integer micro-USD.
  * 6. `microUsd` is the sum of the four components — guarantees
  *    `details.input + details.cached + details.output + details.tools === microUsd`.
- * 7. Tool lanes: `web_search_calls` per call; x_search is
+ * 7. `cost_in_usd_ticks` (1 tick = 1e-10 USD) is converted to µUSD with the same
+ *    rounding and reported as `Cost.providerReported`; `microUsd` stays this
+ *    snapshot's price. The engine warns when the two totals drift.
+ * 8. A non-zero server-tool `*_calls` counter this snapshot has no rate for
+ *    ({@link unpricedXaiToolCounters}) makes the call `'estimated'`.
+ * 9. Tool lanes: `web_search_calls` per call; x_search is
  *    `x_posts_fetched` × $5/1k + `x_users_fetched` × $10/1k. A missing
  *    item counter leaves the call unpriced; the provider's billed ticks remain
- *    in `usage.details` for reconciliation outside this rate snapshot.
+ *    in `usage.details` and, as `Cost.providerReported`, on the returned cost.
  *    File-ref still sets `attachment_search_unpinned` and the call is
  *    estimated — the counter name is not pinned (P-X2).
  */
 export function computeXaiCost(model: string, usage: Usage, tier?: string): Cost {
+  const cost = priceXaiCall(model, usage, tier)
+  const providerReported = providerReportedCost(usage)
+  return providerReported === undefined ? cost : { ...cost, providerReported }
+}
+
+function priceXaiCall(model: string, usage: Usage, tier?: string): Cost {
   const listed = lookupConcreteRates(model, tier)
   if (listed === undefined) {
     return computeCost(model, usage, tier, lookupConcreteRates, xaiPricingVersion)
@@ -271,8 +329,8 @@ export function computeXaiCost(model: string, usage: Usage, tier?: string): Cost
     xSearchRequested &&
     X_SEARCH_ITEM_COUNTERS.some((key) => typeof usage.details[key] !== 'number')
   if (missingXSearchCounter || usage.details['server_tools_missing'] === 1) {
-    // A live billed total is retained on Usage for reconciliation. It is not
-    // a cost derived from this frozen rate snapshot, so do not put it in Cost.
+    // `microUsd` stays null: the snapshot cannot price this call. The total xAI
+    // billed rides on `Cost.providerReported` (added by `computeXaiCost`).
     return {
       microUsd: null,
       usd: null,
@@ -301,12 +359,16 @@ export function computeXaiCost(model: string, usage: Usage, tier?: string): Cost
       }, 0)
 
   const microUsd = inputCost + cachedCost + outputCost + toolsCost
+  const unpricedCounters = unpricedXaiToolCounters(usage.details)
 
   return {
     microUsd,
     usd: microUsd / 1_000_000,
     pricingVersion: xaiPricingVersion,
-    confidence: missingWebCounter || attachmentUnpinned ? 'estimated' : 'exact',
+    confidence:
+      missingWebCounter || attachmentUnpinned || unpricedCounters.length > 0
+        ? 'estimated'
+        : 'exact',
     details: {
       input: inputCost,
       cached: cachedCost,

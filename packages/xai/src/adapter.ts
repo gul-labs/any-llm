@@ -40,10 +40,11 @@ import {
 } from './client.js'
 import { xaiRegistry } from './models.js'
 import { XAI_JSON_SCHEMA_PROFILE } from './json-schema.js'
-import { X_SEARCH_ITEM_COUNTERS } from './pricing.js'
+import { X_SEARCH_ITEM_COUNTERS, unpricedXaiToolCounters } from './pricing.js'
 import type {
   XaiClientLike,
   XaiRequestOptions,
+  XaiResponseMeta,
   XaiTransport,
   XaiResponseCreateParams,
   XaiInputContentPart,
@@ -1384,6 +1385,7 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       //    LlmError(provider:'xai').
       // ------------------------------------------------------------------
       let response: XaiResponseShape
+      let responseMeta: XaiResponseMeta | undefined
       let sdkCallStart: { startedAt: number; timeoutMs: number } | undefined
       try {
         const buildClient = opts?._clientFactory ?? buildXaiClient
@@ -1405,6 +1407,9 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
         const requestOptions: XaiRequestOptions = {
           ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
           timeout: sdkTimeoutMs,
+          onResponse: (meta) => {
+            responseMeta = meta
+          },
         }
         sdkCallStart = { startedAt: performance.now(), timeoutMs: sdkTimeoutMs }
         response = await client.responses.create(params, requestOptions)
@@ -1560,6 +1565,21 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
           })
         }
       }
+      // A non-zero counter for a server tool with no rate in the pricing snapshot
+      // (code interpreter, file or document search, MCP, image generation, or a
+      // tool xAI adds later) is billed by xAI and not priced here: the call is
+      // priced 'estimated' and understates.
+      const unpricedCounters = unpricedXaiToolCounters(usage.details)
+      if (unpricedCounters.length > 0) {
+        warnings.push({
+          type: 'other',
+          message: `xai: server tool counter(s) [${unpricedCounters
+            .map((key) => `${key}=${String(usage.details[key])}`)
+            .join(
+              ', ',
+            )}] are non-zero but have no rate in the pricing snapshot; the call's cost is estimated and understates.`,
+        })
+      }
       if ((expectedToolCounters.length > 0 || hasFileRef) && !noServerToolRan) {
         usage.details['server_tools_requested'] = 1
         if (
@@ -1604,6 +1624,17 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       }
       if (isPlainRecord(response.metadata)) {
         providerMeta['metadata'] = response.metadata as unknown as JsonValue
+      }
+      // The HTTP response's request id and remaining-quota headers, when the
+      // client exposes them (the real client does).
+      if (responseMeta !== undefined) {
+        const xaiMeta: { [k: string]: JsonValue } = {}
+        if (responseMeta.requestId !== undefined)
+          xaiMeta['requestId'] = responseMeta.requestId
+        if (responseMeta.rateLimitRemaining !== undefined) {
+          xaiMeta['rateLimitRemaining'] = { ...responseMeta.rateLimitRemaining }
+        }
+        if (Object.keys(xaiMeta).length > 0) providerMeta['xai'] = xaiMeta
       }
       let transientProviderState: JsonValue | undefined
       if (replayRequired) {

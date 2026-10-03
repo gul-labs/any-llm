@@ -276,6 +276,22 @@ export interface XaiClientLike {
   }
 }
 
+/**
+ * What the HTTP response of a successful `responses.create` says outside its
+ * body: xAI's request id (quote it in a support ticket) and the remaining-quota
+ * headers.
+ */
+export interface XaiResponseMeta {
+  /** The `x-request-id` response header. Absent when xAI sent none. */
+  requestId?: string
+  /**
+   * Response headers that state remaining quota (`x-ratelimit-remaining-*`,
+   * `ratelimit-remaining*`), lower-cased name to the verbatim value. Absent when
+   * the response carried none.
+   */
+  rateLimitRemaining?: Record<string, string>
+}
+
 /** Per-request options the adapter passes to `responses.create`. */
 export interface XaiRequestOptions {
   signal?: AbortSignal
@@ -284,6 +300,41 @@ export interface XaiRequestOptions {
    * Node's header and body timers; see {@link XaiTransport}.
    */
   timeout?: number
+  /**
+   * Called with the response's {@link XaiResponseMeta} once the response
+   * arrived, before `create` resolves. Only the real client calls it; a fake
+   * client may ignore it.
+   */
+  onResponse?: (meta: XaiResponseMeta) => void
+}
+
+/** The headers {@link XaiResponseMeta.rateLimitRemaining} keeps. */
+function isRemainingQuotaHeader(name: string): boolean {
+  return (
+    name.startsWith('x-ratelimit-remaining') || name.startsWith('ratelimit-remaining')
+  )
+}
+
+/**
+ * Reads {@link XaiResponseMeta} from a response's headers. `requestId` is the
+ * SDK's own reading of `x-request-id` when it has one.
+ *
+ * @internal
+ */
+export function readXaiResponseMeta(
+  headers: Headers,
+  sdkRequestId?: string | null,
+): XaiResponseMeta {
+  const requestId = sdkRequestId ?? headers.get('x-request-id') ?? undefined
+  const remaining: Record<string, string> = {}
+  headers.forEach((value, name) => {
+    const lower = name.toLowerCase()
+    if (isRemainingQuotaHeader(lower)) remaining[lower] = value
+  })
+  return {
+    ...(requestId !== undefined && requestId !== '' ? { requestId } : {}),
+    ...(Object.keys(remaining).length > 0 ? { rateLimitRemaining: remaining } : {}),
+  }
 }
 
 /**
@@ -378,15 +429,27 @@ export async function buildXaiClient(
         params: XaiResponseCreateParams,
         options?: XaiRequestOptions,
       ): Promise<XaiResponseShape> {
+        // `onResponse` is ours, not an SDK request option.
+        const { onResponse, ...sdkOptions } = options ?? {}
         // Cast needed: our structural types are subsets of the real SDK types,
         // and the real SDK's types do not exactly match xAI's actual response
-        // shape (see module doc comment).
-        return (
+        // shape (see module doc comment). `withResponse()` exposes the HTTP
+        // response (headers) beside the parsed body.
+        const pending = (
           client.responses.create as unknown as (
             p: unknown,
-            o?: XaiRequestOptions,
-          ) => Promise<XaiResponseShape>
-        )(params, options)
+            o?: Omit<XaiRequestOptions, 'onResponse'>,
+          ) => {
+            withResponse(): Promise<{
+              data: XaiResponseShape
+              response: Response
+              request_id: string | null
+            }>
+          }
+        )(params, sdkOptions)
+        const { data, response, request_id } = await pending.withResponse()
+        onResponse?.(readXaiResponseMeta(response.headers, request_id))
+        return data
       },
     },
   }

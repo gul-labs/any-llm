@@ -3339,3 +3339,101 @@ describe('reasoning used up the output cap (R1.9)', () => {
     )
   })
 })
+
+describe('response metadata and unpriced server tools (R7.5, R7.8)', () => {
+  /** A client that reports response metadata through `onResponse`, like the real one. */
+  function clientWithMeta(
+    meta: import('./client.js').XaiResponseMeta,
+    response: ReturnType<typeof fakeXaiResponse>,
+  ): XaiClientLike {
+    return {
+      responses: {
+        create(_params, options) {
+          options?.onResponse?.(meta)
+          return Promise.resolve(response as never)
+        },
+      },
+    }
+  }
+
+  it('puts requestId and the remaining-quota headers on providerMetadata.xai', async () => {
+    const result = await xaiAdapter({
+      client: clientWithMeta(
+        {
+          requestId: 'req_9',
+          rateLimitRemaining: { 'x-ratelimit-remaining-requests': '7' },
+        },
+        fakeXaiResponse({ text: 'ok', inputTokens: 1, outputTokens: 1 }),
+      ),
+    }).run(makeResolvedReq(), FAKE_CTX)
+    expect(result.providerMetadata).toEqual({
+      xai: {
+        requestId: 'req_9',
+        rateLimitRemaining: { 'x-ratelimit-remaining-requests': '7' },
+      },
+    })
+  })
+
+  it('keeps context_details and metadata beside the xai key', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 1, outputTokens: 1 })
+    ;(response.usage as Record<string, unknown>)['context_details'] = { input_tokens: 1 }
+    const result = await xaiAdapter({
+      client: clientWithMeta({ requestId: 'req_1' }, response),
+    }).run(makeResolvedReq(), FAKE_CTX)
+    expect(result.providerMetadata).toEqual({
+      context_details: { input_tokens: 1 },
+      xai: { requestId: 'req_1' },
+    })
+  })
+
+  it('adds no xai key when the client reports nothing (a fake client, or no headers)', async () => {
+    const result = await xaiAdapter({
+      client: clientWithMeta({}, fakeXaiResponse({ text: 'ok' })),
+    }).run(makeResolvedReq(), FAKE_CTX)
+    expect(result.providerMetadata).toBeUndefined()
+    const plain = await xaiAdapter({
+      client: makeFakeXai(fakeXaiResponse({ text: 'ok' })),
+    }).run(makeResolvedReq(), FAKE_CTX)
+    expect(plain.providerMetadata).toBeUndefined()
+  })
+
+  it('warns, and the cost is estimated, when an unpriced server tool counter is non-zero', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 1000, outputTokens: 10 })
+    ;(response.usage as Record<string, unknown>)['server_side_tool_usage_details'] = {
+      web_search_calls: 1,
+      code_interpreter_calls: 2,
+      mcp_calls: 0,
+    }
+    ;(response.usage as Record<string, unknown>)['num_server_side_tools_used'] = 3
+    const result = await xaiAdapter({ client: makeFakeXai(response) }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.warnings.map((w) => w.message)).toEqual([
+      expect.stringContaining('code_interpreter_calls=2'),
+    ])
+    expect(result.warnings[0]?.message).not.toContain('mcp_calls')
+    expect(computeXaiCost('grok-4.5', result.usage).confidence).toBe('estimated')
+  })
+
+  it('stays silent and exact when only priced counters ran', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 1000, outputTokens: 10 })
+    ;(response.usage as Record<string, unknown>)['server_side_tool_usage_details'] = {
+      web_search_calls: 1,
+      code_interpreter_calls: 0,
+    }
+    ;(response.usage as Record<string, unknown>)['num_server_side_tools_used'] = 1
+    const result = await xaiAdapter({ client: makeFakeXai(response) }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.warnings).toEqual([])
+    expect(computeXaiCost('grok-4.5', result.usage).confidence).toBe('exact')
+  })
+})

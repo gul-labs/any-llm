@@ -1,0 +1,154 @@
+{
+  "source": "2026-10-03 live probe P11: one ~13k-token synthetic prefix with a prompt_cache_key, per model two standard calls to warm the cache, two priority calls, one more standard call. grok-4.5, grok-4.6, grok-4.7, Responses API, store:false, reasoning.effort low.",
+  "sanitization": "Only the response `usage` object and the echoed `service_tier` were retained by the probe, so these records carry no output items. The prompt was synthetic inventory text. Nothing else was edited; `cost_in_usd_ticks` is xAI's billed total (1 tick = 1e-10 USD).",
+  "grok_4_5_priority_warm": {
+    "status": 200,
+    "requestedTier": "priority",
+    "body": {
+      "service_tier": "priority",
+      "usage": {
+        "input_tokens": 13157,
+        "input_tokens_details": {
+          "cached_tokens": 13056
+        },
+        "output_tokens": 127,
+        "output_tokens_details": {
+          "reasoning_tokens": 126
+        },
+        "total_tokens": 13284,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 97616000,
+        "context_details": {
+          "input_tokens": 13157,
+          "output_tokens": 134
+        }
+      }
+    }
+  },
+  "grok_4_5_standard_warm": {
+    "status": 200,
+    "requestedTier": null,
+    "body": {
+      "service_tier": "default",
+      "usage": {
+        "input_tokens": 13157,
+        "input_tokens_details": {
+          "cached_tokens": 13056
+        },
+        "output_tokens": 98,
+        "output_tokens_details": {
+          "reasoning_tokens": 97
+        },
+        "total_tokens": 13255,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 47068000,
+        "context_details": {
+          "input_tokens": 13157,
+          "output_tokens": 105
+        }
+      }
+    }
+  },
+  "grok_4_6_priority_warm": {
+    "status": 200,
+    "requestedTier": "priority",
+    "body": {
+      "service_tier": "priority",
+      "usage": {
+        "input_tokens": 13157,
+        "input_tokens_details": {
+          "cached_tokens": 13056
+        },
+        "output_tokens": 116,
+        "output_tokens_details": {
+          "reasoning_tokens": 115
+        },
+        "total_tokens": 13273,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 148520000,
+        "context_details": {
+          "input_tokens": 13157,
+          "output_tokens": 123
+        }
+      }
+    }
+  },
+  "grok_4_6_standard_warm": {
+    "status": 200,
+    "requestedTier": null,
+    "body": {
+      "service_tier": "default",
+      "usage": {
+        "input_tokens": 13157,
+        "input_tokens_details": {
+          "cached_tokens": 13056
+        },
+        "output_tokens": 105,
+        "output_tokens_details": {
+          "reasoning_tokens": 104
+        },
+        "total_tokens": 13262,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 73600000,
+        "context_details": {
+          "input_tokens": 13157,
+          "output_tokens": 112
+        }
+      }
+    }
+  },
+  "grok_4_7_priority_warm": {
+    "status": 200,
+    "requestedTier": "priority",
+    "body": {
+      "service_tier": "priority",
+      "usage": {
+        "input_tokens": 13157,
+        "input_tokens_details": {
+          "cached_tokens": 13056
+        },
+        "output_tokens": 92,
+        "output_tokens_details": {
+          "reasoning_tokens": 91
+        },
+        "total_tokens": 13249,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 145640000,
+        "context_details": {
+          "input_tokens": 13157,
+          "output_tokens": 101
+        }
+      }
+    }
+  },
+  "grok_4_7_standard_warm": {
+    "status": 200,
+    "requestedTier": null,
+    "body": {
+      "service_tier": "default",
+      "usage": {
+        "input_tokens": 13157,
+        "input_tokens_details": {
+          "cached_tokens": 13056
+        },
+        "output_tokens": 104,
+        "output_tokens_details": {
+          "reasoning_tokens": 103
+        },
+        "total_tokens": 13261,
+        "num_sources_used": 0,
+        "num_server_side_tools_used": 0,
+        "cost_in_usd_ticks": 73540000,
+        "context_details": {
+          "input_tokens": 13157,
+          "output_tokens": 111
+        }
+      }
+    }
+  }
+}

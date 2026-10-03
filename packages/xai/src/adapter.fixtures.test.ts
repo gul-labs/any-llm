@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
 import { assertJsonSchemaProfile, createClient } from '@gullabs/core'
-import type { AdapterCtx, JsonValue, ResolvedRequest } from '@gullabs/core'
+import type { AdapterCtx, JsonValue, ResolvedRequest, Usage } from '@gullabs/core'
 import { makeFakeXai, RecordingSink } from '@gullabs/testing'
 import { xaiAdapter, classifyXaiError } from './adapter.js'
 import type { XaiReplayState } from './client.js'
@@ -1342,6 +1342,164 @@ describe('fixture: 33-max-turns-not-enforced (live 2026-10-02)', () => {
     ]
     expect(details?.['web_search_calls']).toBeGreaterThan(maxTurns)
   })
+})
+
+describe('fixture: 33-max-turns-not-enforced prices to the billed ticks (R7.5)', () => {
+  const fixture = loadFixture<Record<string, LiveCall>>('33-max-turns-not-enforced.json')
+  const descriptors = {
+    grok_4_5: grok45ModelDescriptor,
+    grok_4_6: grok46ModelDescriptor,
+    grok_4_7: grok47ModelDescriptor,
+  } as const
+  const cases = [
+    'grok_4_5_required',
+    'grok_4_5_auto',
+    'grok_4_5_max_turns_2',
+    'grok_4_6_required',
+    'grok_4_7_required',
+  ]
+
+  // The fixture keeps the usage object and the output item types, not the
+  // output items. A one-message stub carries the captured usage through the
+  // real adapter; only the usage and the served tier are asserted.
+  it.each(cases)('%s: snapshot cost, long-context band and tools lane', async (name) => {
+    const call = fixture[name] as LiveCall
+    const descriptor = descriptors[name.slice(0, 8) as keyof typeof descriptors]
+    const body = {
+      id: `resp_${name}`,
+      model: descriptor.model,
+      status: call.body['status'],
+      service_tier: call.body['service_tier'],
+      usage: call.body['usage'],
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'stub', annotations: [] }],
+        },
+      ],
+    }
+    const result = await xaiAdapter({ client: makeFakeXai(body as never) }).run(
+      makeResolvedReq({
+        model: descriptor.model,
+        modelDescriptor: descriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    const cost = computeXaiCost(descriptor.model, result.usage, result.servedServiceTier)
+    expect(cost.confidence).toBe('exact')
+    expect(result.warnings).toEqual([])
+    expectCostMatchesTicks(cost.microUsd, billedTicks(call))
+    // The reported total is the same ticks, rounded like every priced lane.
+    expect(cost.providerReported).toEqual({
+      microUsd: Math.round(billedTicks(call) / 10_000),
+    })
+    // Every one of the five bills the web searches on the tools lane.
+    expect(cost.details.tools).toBe(result.usage.details.web_search_calls! * 5_000)
+  })
+
+  it('grok_4_7_required is billed at the >= 200k band on the SUMMED agentic input', () => {
+    const call = fixture['grok_4_7_required'] as LiveCall
+    const usage = call.body['usage'] as {
+      input_tokens: number
+      context_details: { input_tokens: number }
+    }
+    // The model's own context never reached 200k; the summed input did.
+    expect(usage.context_details.input_tokens).toBeLessThan(200_000)
+    expect(usage.input_tokens).toBeGreaterThanOrEqual(200_000)
+    const cost = computeXaiCost('grok-4.7', mapForCost(call))
+    // grok-4.7 long-context list: $4 input, $1 cached, $12 output per 1M tokens,
+    // applied to ALL tokens of the call; the base list ($2 / $0.50 / $6) would bill
+    // about half. 17 searches at $5 per 1,000.
+    expect(cost.details).toEqual({
+      input: (361_851 - 171_008) * 4,
+      cached: 171_008 * 1,
+      output: 4_034 * 12,
+      tools: 17 * 5_000,
+    })
+    expectCostMatchesTicks(cost.microUsd, billedTicks(call))
+  })
+})
+
+function mapForCost(call: LiveCall): Usage {
+  const u = call.body['usage'] as {
+    input_tokens: number
+    output_tokens: number
+    input_tokens_details: { cached_tokens: number }
+    server_side_tool_usage_details: Record<string, number>
+  }
+  return {
+    inputTokens: u.input_tokens,
+    outputTokens: u.output_tokens,
+    cachedInputTokens: u.input_tokens_details.cached_tokens,
+    details: { ...u.server_side_tool_usage_details },
+    raw: null,
+  }
+}
+
+describe('fixture: 35-priority-warm-cache (live probe 2026-10-03)', () => {
+  const fixture = loadFixture<
+    Record<string, LiveCall & { requestedTier: string | null }>
+  >('35-priority-warm-cache.json')
+  const models = [
+    ['grok_4_5', 'grok-4.5'],
+    ['grok_4_6', 'grok-4.6'],
+    ['grok_4_7', 'grok-4.7'],
+  ] as const
+
+  function usageOf(call: LiveCall): Usage {
+    const u = call.body['usage'] as {
+      input_tokens: number
+      output_tokens: number
+      input_tokens_details: { cached_tokens: number }
+      output_tokens_details: { reasoning_tokens: number }
+      cost_in_usd_ticks: number
+    }
+    return {
+      inputTokens: u.input_tokens,
+      outputTokens: u.output_tokens,
+      cachedInputTokens: u.input_tokens_details.cached_tokens,
+      thinkingTokens: u.output_tokens_details.reasoning_tokens,
+      details: { cost_in_usd_ticks: u.cost_in_usd_ticks },
+      raw: null,
+    }
+  }
+
+  it.each(models)(
+    '%s: a priority call on a warm cache prices at 2x on every lane, cached included',
+    (key, model) => {
+      const call = fixture[`${key}_priority_warm`] as LiveCall
+      expect(call.body['service_tier']).toBe('priority')
+      const usage = usageOf(call)
+      expect(usage.cachedInputTokens).toBeGreaterThan(13_000)
+      const cost = computeXaiCost(model, usage, 'priority')
+      expect(cost.confidence).toBe('exact')
+      expectCostMatchesTicks(cost.microUsd, billedTicks(call))
+
+      const standard = computeXaiCost(model, usage, undefined)
+      // Every lane doubles, the cached lane included.
+      expect(cost.details.cached).toBe(standard.details.cached! * 2)
+      expect(cost.details.input).toBe(standard.details.input * 2)
+      expect(cost.details.output).toBe(standard.details.output * 2)
+    },
+  )
+
+  it.each(models)(
+    '%s: the same warm prefix at the standard tier bills about half',
+    (key, model) => {
+      const priority = fixture[`${key}_priority_warm`] as LiveCall
+      const standard = fixture[`${key}_standard_warm`] as LiveCall
+      expect(standard.body['service_tier']).toBe('default')
+      expectCostMatchesTicks(
+        computeXaiCost(model, usageOf(standard), undefined).microUsd,
+        billedTicks(standard),
+      )
+      const ratio = billedTicks(priority) / billedTicks(standard)
+      expect(ratio).toBeGreaterThan(1.9)
+      expect(ratio).toBeLessThan(2.1)
+    },
+  )
 })
 
 function assertXaiSchema(schema: JsonValue): void {
