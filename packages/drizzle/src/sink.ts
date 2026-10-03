@@ -59,6 +59,7 @@ export function drizzleUsageSink(db: InsertableDb, table = llmCalls): UsageSink 
         generationConfig: r.generationConfig,
         reasoningText: r.reasoningText,
         errorKind: r.errorKind,
+        errorReason: r.errorReason,
         errorMessage: r.errorMessage,
         attemptNumber: r.attemptNumber,
         metadata: r.metadata,

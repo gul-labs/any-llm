@@ -2528,3 +2528,40 @@ describe('declared model aliases', () => {
     ).rejects.toMatchObject({ kind: 'bad_request' })
   })
 })
+
+describe('reasoning used up the output cap (R1.9)', () => {
+  it('a max_output_tokens response with only reasoning tokens carries the warning', async () => {
+    const client = makeFakeXai(
+      fakeXaiResponse({
+        status: 'incomplete',
+        incompleteReason: 'max_output_tokens',
+        inputTokens: 20,
+        outputTokens: 600,
+        reasoningTokens: 600,
+      }),
+    )
+    const llm = createClient({
+      adapters: [xaiAdapter({ client })],
+      pricingSources: { xai: xaiPricingSource() },
+      modelRegistry: xaiRegistry,
+      clock: new FakeClock(),
+      ids: new FakeIds(),
+    })
+
+    const result = await llm.generate(
+      {
+        provider: 'xai',
+        model: 'grok-4.5',
+        messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
+        config: { maxOutputTokens: 600 },
+      },
+      { auth: { apiKey: 'test-key' } },
+    )
+
+    expect(result.finishReason).toBe('length')
+    expect(result.text).toBeUndefined()
+    expect(result.warnings.map((w) => w.message)).toContain(
+      'maxOutputTokens (600) was used up by reasoning (600 tokens); no answer was produced. Raise maxOutputTokens or lower the reasoning effort.',
+    )
+  })
+})

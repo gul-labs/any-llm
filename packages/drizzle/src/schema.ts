@@ -79,6 +79,10 @@ export const llmCalls = pgTable(
     generationConfig: jsonb('generation_config').notNull(),
     reasoningText: text('reasoning_text'),
     errorKind: text('error_kind'),
+    // Typed `LlmError.reason`. Text with NO CHECK constraint: the vocabulary is
+    // a closed TypeScript union that grows in core releases, and a new member
+    // must never need SQL.
+    errorReason: text('error_reason'),
     errorMessage: text('error_message'),
     attemptNumber: integer('attempt_number').notNull(),
     metadata: jsonb('metadata').notNull(),

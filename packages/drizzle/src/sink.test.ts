@@ -143,6 +143,24 @@ describe('drizzleUsageSink', () => {
     })
   })
 
+  it('maps errorReason through to the insert values', async () => {
+    const calls: InsertCall[] = []
+    const sink = drizzleUsageSink(makeDb(calls))
+
+    await sink.record(
+      makeRecord({
+        status: 'api_error',
+        errorKind: 'rate_limited',
+        errorReason: 'daily_quota',
+      }),
+    )
+
+    expect(calls[0]?.values).toMatchObject({
+      errorKind: 'rate_limited',
+      errorReason: 'daily_quota',
+    })
+  })
+
   it('maps rawUsage null through to the insert values (EMPTY_USAGE sentinel, error path)', async () => {
     const calls: InsertCall[] = []
     const db = makeDb(calls)

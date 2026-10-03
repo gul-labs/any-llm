@@ -115,6 +115,7 @@ export function classifyGoogleError(
         ? 'bad_request'
         : base.kind,
     retryable: reclassifyAsTransport ? true : base.retryable,
+    ...(base.reason !== undefined ? { reason: base.reason } : {}),
     ...(base.httpStatus !== undefined ? { httpStatus: base.httpStatus } : {}),
     ...(base.retryAfterMs !== undefined ? { retryAfterMs: base.retryAfterMs } : {}),
     provider: 'google',

@@ -17,7 +17,7 @@ import type {
   Cost,
   Citation,
 } from './types.js'
-import type { LlmErrorKind, LlmError } from './errors.js'
+import type { LlmErrorKind, LlmErrorReason, LlmError } from './errors.js'
 import { assertNever } from './assert.js'
 import { redactSecrets } from './redact.js'
 
@@ -181,6 +181,12 @@ export interface LlmCallRecord {
   // --- postmortem (diagnostics on failure) ---
   /** Error kind from the classified `LlmError` (absent on success). */
   errorKind?: LlmErrorKind
+  /**
+   * Typed reason from the classified `LlmError`, from the closed
+   * {@link LlmErrorReason} set. Absent on success and whenever the error
+   * carries no reason; `errorKind` stays authoritative.
+   */
+  errorReason?: LlmErrorReason
   /** Truncated error message (absent on success). */
   errorMessage?: string
 
@@ -691,6 +697,9 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
     ...(input.error !== undefined
       ? {
           errorKind: input.error.kind,
+          ...(input.error.reason !== undefined
+            ? { errorReason: input.error.reason }
+            : {}),
           errorMessage: redactSecrets(input.error.message),
         }
       : {}),

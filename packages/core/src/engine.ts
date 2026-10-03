@@ -1577,10 +1577,30 @@ export function createClient(config: ClientConfig): Client {
           )
         }
 
-        // Collect all warnings (adapter + normalize + cost).
+        // Reasoning that eats the whole output cap leaves no answer; say so
+        // instead of returning an empty success with no explanation.
+        const reasoningCapWarnings: Warning[] = []
+        const thinkingTokens = normalizedResult.usage.thinkingTokens ?? 0
+        if (
+          adapterResult.finishReason === 'length' &&
+          (adapterResult.text === undefined || adapterResult.text.length === 0) &&
+          adapterResult.rawStructured === undefined &&
+          (adapterResult.toolCalls === undefined ||
+            adapterResult.toolCalls.length === 0) &&
+          thinkingTokens > 0
+        ) {
+          const cap = effectiveReq.config.maxOutputTokens
+          reasoningCapWarnings.push({
+            type: 'other',
+            message: `maxOutputTokens (${cap ?? 'the provider default'}) was used up by reasoning (${thinkingTokens} tokens); no answer was produced. Raise maxOutputTokens or lower the reasoning effort.`,
+          })
+        }
+
+        // Collect all warnings (adapter + normalize + reasoning cap + cost).
         const allWarnings: Warning[] = [
           ...adapterResult.warnings,
           ...normalizedResult.warnings,
+          ...reasoningCapWarnings,
           ...costWarnings,
         ]
 
@@ -1902,6 +1922,7 @@ export function createClient(config: ClientConfig): Client {
           latencyMs,
           errorKind: err.kind,
           retryable: err.retryable,
+          ...(err.reason !== undefined ? { reason: err.reason } : {}),
           ...(callSiteId !== undefined ? { callSiteId } : {}),
           ...(attemptIdForEvent !== undefined ? { attemptId: attemptIdForEvent } : {}),
         }

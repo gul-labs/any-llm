@@ -255,7 +255,12 @@ export interface GenConfig {
   topP?: number
   /** Top-k sampling. */
   topK?: number
-  /** Hard cap on generated tokens. */
+  /**
+   * Hard cap on generated tokens. It includes reasoning/thinking tokens on
+   * providers that reason, so a low cap on a reasoning model can be used up
+   * before any answer is produced; the call then ends with
+   * `finishReason: 'length'` and a warning on the result.
+   */
   maxOutputTokens?: number
   /** Stop sequences — generation halts when any string is produced. */
   stopSequences?: string[]

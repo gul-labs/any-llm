@@ -331,6 +331,21 @@ describe('buildRecord — error path', () => {
     expect(r.errorMessage).toBe('Service temporarily unavailable')
   })
 
+  it('persists errorReason only when the error carries one', () => {
+    const withReason = new LlmError('window exhausted', {
+      kind: 'rate_limited',
+      retryable: false,
+      reason: 'quota_window',
+    })
+    const r = buildRecord(makeBaseInput({ status: 'api_error', error: withReason }))
+    expect(r.errorKind).toBe('rate_limited')
+    expect(r.errorReason).toBe('quota_window')
+
+    const plain = new LlmError('boom', { kind: 'server', retryable: true })
+    const p = buildRecord(makeBaseInput({ status: 'api_error', error: plain }))
+    expect('errorReason' in p).toBe(false)
+  })
+
   it('derives status from error.kind — timeout', () => {
     const error = new LlmError('timed out', { kind: 'timeout', retryable: true })
     const r = buildRecord(makeBaseInput({ status: 'ok', error }))

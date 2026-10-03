@@ -26,7 +26,7 @@ import type {
   ToolChoice,
 } from './types.js'
 import type { LlmCallRecord } from './record.js'
-import type { LlmError, LlmErrorKind } from './errors.js'
+import type { LlmError, LlmErrorKind, LlmErrorReason } from './errors.js'
 import type { ModelDescriptor } from './registry.js'
 
 // ---------------------------------------------------------------------------
@@ -554,6 +554,8 @@ export interface CallErrorEvent {
   latencyMs: number
   /** The error kind that caused the failure. */
   errorKind: LlmErrorKind
+  /** Typed reason within `errorKind`, when the error carries one. */
+  reason?: LlmErrorReason
   /** Whether the error was considered retryable. */
   retryable: boolean
 }
