@@ -2959,10 +2959,101 @@ The owner decided hosts own routing and fallback; the library offers neither.
 
 ---
 
+## ADR-038: Opt-in payload storage
+
+**Status:** Accepted (2026-10-03). Extends ADR-002 (fail-open sinks), ADR-027 and ADR-039 (the ledger).
+
+**Context:**
+`llm_calls` stores usage, cost, configuration, metadata, citations, tool calls and reasoning text, but no
+prompt and no response text. A host that has to debug or audit a call (what exactly was sent, what exactly
+came back, why a structured output failed to parse) builds its own payload table and wires the write by hand
+at every call path, each with its own redaction, size limit and retention. The stored text can hold customer
+data, so the library must not store it by default, and a payload write must never cost a ledger row or fail a
+call.
+
+**Decision:**
+
+1. **Opt-in per client.** `ClientConfig.payloads?: { redact?, maxChars?, include? }`. Absent, nothing is
+   captured and the sink is called exactly as before. Present, every attempt that reached the adapter,
+   success or failure, gets one payload, unless `include(request)` returns anything but `true` or the call
+   opts out. `payloads` without a `sink` is `bad_request` at `createClient`, as is an unknown key, a
+   non-function `redact` / `include`, or a `maxChars` that is not a positive integer. An attempt refused
+   before dispatch (a middleware refusal, a config failure, a limiter that rejected) sent nothing and has no
+   payload.
+2. **Per-call opt-out on both entrypoints.** `generate(request, { auth, storePayload })` and
+   `runStructured(callSite, vars?, { auth, storePayload })`. `false` skips the payload for the call; `true` or
+   absent follows the client; `true` never switches storage on for a client that did not enable it. Any
+   non-boolean is `bad_request`. `runStructured` builds its request internally, so the option cannot live on
+   the request.
+3. **What is captured.** Request, as the adapter received it (after middleware): `system`, every message as
+   `{ role, parts }`, text verbatim, tool-call arguments and tool-result values as JSON, an inline media part
+   as `{ kind, mimeType, bytes, sha256 }` (decoded size and SHA-256, never the bytes), a provider-hosted file
+   reference (`file-uri`, `file-ref`) as its URI or id (a reference, not content), and tools as
+   `{ name, schemaSha256 }` (SHA-256 of the canonical JSON of `inputJsonSchema`; descriptions are not stored).
+   Response: the raw model text, or the raw JSON text of a structured output when the adapter returned only
+   the parsed value, and the attempt's error message when it failed. Reasoning text and the model's tool
+   calls are already on the `llm_calls` row and are not repeated. `transientProviderState` is never stored.
+4. **Redact, then cap, in that order.** (1) Core's `redactSecrets` on every string leaf, including strings
+   nested in tool arguments and tool results (object keys are not touched). (2) The host's `redact(payload)`,
+   synchronous, on a copy it may change, returning the payload to store. (3) The caps, last, so a redactor
+   cannot push stored text over the limit: every string over `maxChars` (default 200,000 characters) is cut
+   and ends in `[truncated]`, and the serialized payload is capped at `4 x maxChars` by replacing the largest
+   strings with `[dropped: over the payload size cap]` until it fits. Then U+0000 and unpaired surrogates are
+   cleaned, because Postgres cannot store them (as in ADR-039). A payload that still does not fit after every
+   large string was replaced is dropped. A throwing or non-payload-returning `redact`, a throwing `include`,
+   an undecodable media part and a payload that cannot be capped drop the payload, log
+   `llm.call.payload.dropped` at `warn` (the error text bounded to 300 characters), and never fail the call.
+5. **Persistence.** `UsageSink.record(record, { payload?, logger? })`. The context is passed only when there is
+   a payload, and `logger` is the client's, for a sink that recovers from a payload problem. A sink that
+   ignores the second argument is unaffected. Payload building runs before the bounded sink write, so
+   `sinkTimeoutMs` bounds the ledger row and the payload together and a slow sink is abandoned as before.
+6. **`drizzleUsageSink({ db, transaction? })`.** BREAKING: the sink took a structurally typed
+   `drizzleUsageSink(db, table?)` with only `insert`, which cannot run a savepoint; that option shape is
+   deleted (no shim, no `table` argument). `db` is a Drizzle Postgres database (`PgDatabase`) and must have
+   `transaction`; `transaction?` is a host helper `(fn) => Promise` that receives the transaction handle,
+   for databases whose standard routes every transaction through its own helper (tenant or role context,
+   timeouts). Every write goes through it (default `db.transaction`), also when there is no payload, and every
+   statement runs on the handle it passes: insert the `llm_calls` row (`ON CONFLICT (attempt_id) DO NOTHING`),
+   then, in a nested `tx.transaction` (Drizzle's Postgres drivers run it as `SAVEPOINT` / `ROLLBACK TO
+SAVEPOINT`), insert the `llm_call_payloads` row. A payload failure rolls back to the savepoint, is logged
+   as `llm.call.payload.failed` (the driver error under Drizzle's query error, bounded to 300 characters,
+   because Drizzle's own message carries the statement's parameters, which here are customer text) and the
+   transaction commits: the ledger row always survives. A ledger-row failure aborts the transaction, so
+   there is no orphan payload, and `record` rejects (`llm.call.sink.failed`).
+7. **Schema and SQL.** `llm_call_payloads(attempt_id TEXT PRIMARY KEY REFERENCES llm_calls(attempt_id) ON
+DELETE CASCADE, request JSONB NOT NULL, response JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT
+now())` with an index on `created_at`; `created_at` is the record's timestamp. `sql/install.sql` creates it;
+   `sql/upgrades/0003-llm-call-payloads.sql` adds it to a table at the previous shape. The upgrade is
+   idempotent per statement, sets `lock_timeout`, and refuses (with an error) to run over a table that already
+   has the name and is not this one, so a host's own `llm_call_payloads` is renamed first rather than
+   silently adopted. `assertLlmCallPayloadsSchema(db)` is the `assertLlmCallsSchema` counterpart.
+8. **Retention and deletion are the host's.** The library never deletes on its own.
+   `purgeLlmCallPayloads(db, { olderThan })` deletes payloads older than a cutoff (the `created_at` index
+   serves it) and returns the count; `deleteLlmCallPayloads(db, { callIds })` deletes the payloads of the given
+   calls and returns the count. There is deliberately no delete by `externalId`: it is host-supplied, not
+   unique, and can repeat across tenants, so such a helper could delete another tenant's payloads. `callId`
+   is minted by the engine and globally unique; a host resolves a tenant's calls through its own scoping (for
+   example a tenant id it puts in `metadata`) and passes the resulting ids. Neither helper touches `llm_calls`.
+9. **Testing.** `RecordingSink.payloads` is a `Map` of `attemptId` to payload.
+
+**Consequences:**
+
+- Hosts that call `drizzleUsageSink(db, table)` change to `drizzleUsageSink({ db })`; a custom table object
+  is no longer accepted. Their `db` must be a Drizzle Postgres database with `transaction`. Every record is
+  now written in a transaction.
+- Hosts that turn on `payloads` apply `sql/upgrades/0003-llm-call-payloads.sql` first. Without the table every
+  payload insert fails, is logged as `llm.call.payload.failed`, and the ledger rows still commit.
+- Stored payloads can contain customer data. Core's patterns are best-effort, not DLP: a host that stores
+  payloads supplies its own `redact`, a retention job and a tenant deletion path.
+- Anything that implements `UsageSink` may read the optional second argument; nothing else changes.
+- Node-postgres coverage runs only where a server is available (`ANY_LLM_TEST_POSTGRES_URL`); CI runs the
+  same behaviour on PGlite.
+
+---
+
 ## ADR-039: Ledger v2: cost confidence and lanes are persisted
 
-**Status:** Accepted (2026-10-03). Extends ADR-027 and ADR-035. (ADR-038 is not used in this change; the number is
-left for the decision the release plan reserved it for.)
+**Status:** Accepted (2026-10-03). Extends ADR-027 and ADR-035.
 
 **Context:**
 The engine computed `Cost.confidence`, the four-lane `Cost.details` and `Cost.unpricedReason` for every

@@ -53,12 +53,12 @@ Set `operationId` once for a workflow operation and reuse it on every correlated
 ```ts
 import { createClient, composeProviders, retryMiddleware } from '@gullabs/any-llm'
 import { googleProvider } from '@gullabs/google'
-import { drizzleUsageSink, llmCalls } from '@gullabs/drizzle'
+import { drizzleUsageSink } from '@gullabs/drizzle'
 
 function baseClientConfig(db: DbLike) {
   return {
     ...composeProviders([googleProvider()]),
-    sink: drizzleUsageSink(db, llmCalls),
+    sink: drizzleUsageSink({ db }),
   }
 }
 ```

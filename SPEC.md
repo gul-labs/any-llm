@@ -44,7 +44,8 @@ Seams are present; machinery is intentionally small.
 - **Cost is frozen at write time:** integer micro-USD + `pricingVersion` on every record.
 - **Side effects fail-open; the call fails-closed.** A broken sink/telemetry/cost never fails
   the LLM call, and a sink that hangs is abandoned after `sinkTimeoutMs` (default 5 s), or 100 ms after
-  an abort or the call deadline; a broken call
+  an abort or the call deadline; a payload that cannot be built (a throwing redactor) is dropped with a
+  warning and never fails the call (ADR-038); a broken call
   throws a typed `LlmError`. `generate`, `runStructured` and `countTokens` reject only with
   `LlmError`; whatever else is thrown on the way is classified and kept as `cause`.
 - **No real network in tests.** Provider SDKs are mocked via structural fakes
@@ -263,8 +264,18 @@ export interface AdapterResult {
 }
 
 export interface UsageSink {
-  record(r: LlmCallRecord): Promise<void>
+  // ctx is passed only when ClientConfig.payloads is on and a payload was built for the attempt (ADR-038)
+  record(
+    r: LlmCallRecord,
+    ctx?: { payload?: LlmCallPayload; logger?: Logger },
+  ): Promise<void>
 } // host writes to its own DB
+// Opt-in, off by default: ClientConfig.payloads = { redact?, maxChars?, include? } (ADR-038). One payload per
+// attempt that reached the adapter: { request: { system?, messages: { role, parts }[], tools?: { name,
+// schemaSha256 }[] }, response: { text?, errorMessage? } }. Media parts carry a SHA-256 and a size, never bytes.
+// Order is fixed: core redactSecrets on every string, then the host's redact, then the caps (maxChars per
+// string, default 200,000, and 4 x maxChars for the serialized payload). Per-call opt-out: storePayload: false
+// on generate and runStructured.
 export interface PricingSource {
   version: string
   price(model: string, usage: Usage, tier?: string): Cost
@@ -330,6 +341,8 @@ runStructured(callSite, vars?, opts?)  /  generate(request)
  10. parse structured output  (JSON.parse result → output + outputParsed; caller validates)
  11. pricing.price()  → Cost (micro-USD, frozen)   [fail-open → cost absent on pricing error]
  12. build LlmCallRecord  + sink.record()           [fail-open: swallow+log sink errors; bounded by sinkTimeoutMs]
+     (ClientConfig.payloads on: build the redacted, capped payload of an attempt that reached the adapter and pass
+      it as sink.record(r, { payload }); a payload that cannot be built is dropped with llm.call.payload.dropped)
      telemetry.onAttempt (per attempt, success or failure, fail-open)
  13. telemetry.onSuccess + log 'llm.call.success'
  14. return LlmResult
@@ -463,8 +476,12 @@ export interface LlmCallRecord {
 ```
 
 `@gullabs/drizzle` ships the matching `pgTable('llm_calls', …)` (typed columns + jsonb lanes),
-`drizzleUsageSink(db, table)`, and the SQL for it: `sql/install.sql` (fresh install) and
-`sql/upgrades/*.sql`. `status` and `error_kind` carry CHECK constraints over the closed core unions;
+`drizzleUsageSink({ db, transaction? })`, and the SQL for it: `sql/install.sql` (fresh install) and
+`sql/upgrades/*.sql`. The sink writes each record in one transaction, and, when the engine hands it a payload,
+inserts the matching `llm_call_payloads` row (keyed by `attempt_id`, FK to `llm_calls` ON DELETE CASCADE) behind
+a savepoint: a payload failure is logged as `llm.call.payload.failed` and the ledger row commits, a ledger failure
+aborts both (ADR-038). `purgeLlmCallPayloads(db, { olderThan })` and `deleteLlmCallPayloads(db, { callIds })`
+are the host's retention tools; there is no delete by `externalId`. `status` and `error_kind` carry CHECK constraints over the closed core unions;
 `error_reason` is plain text with no CHECK constraint (ADR-036). The table has indexes on `call_id`,
 `external_id`, `created_at` and `(call_site_id, created_at)`. Insert is `onConflictDoNothing` on `attemptId`, which only absorbs an
 at-least-once sink re-delivering the same record; every attempt has its own minted `attemptId`.

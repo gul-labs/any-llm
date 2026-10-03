@@ -13,31 +13,31 @@ pnpm add -D @gullabs/testing @gullabs/core @gullabs/google
 
 ## Key exports
 
-| Export                                      | What it is                                                                                           |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `FakeClock`                                 | Deterministic `Clock` **and** `Scheduler`: `advance(ms)` / `advanceAsync(ms)` fire timers; see below |
-| `FakeIds`                                   | Sequential `IdGenerator`: returns `call_1`, `attempt_1`, etc.                                        |
-| `RecordingSink`                             | In-memory `UsageSink`; `dedupeOn: 'attemptId'` mirrors the Drizzle ledger                            |
-| `RecordingTelemetry`                        | `Telemetry` that records start, attempt, success and error events                                    |
-| `RecordingLogger`                           | `Logger` that records every line (`messages('error')`, `find(event)`)                                |
-| `fakeLlmResult(partial)`                    | A complete `LlmResult` (`message`, `continuation`, `callCost` and the rest), with overrides          |
-| `FakeClient`                                | Scripted `Client` for host code that takes a `Client`: request capture and `expectRequest`           |
-| `fakeHttpError` / `fakeNetworkError`        | Status and transport failures in the shape `classifyError` reads                                     |
-| `fakeBilledFailure(usage)`                  | The `LlmError` an adapter throws for a billed HTTP 200 with no usable output                         |
-| `fakeProviderError('google' \| 'xai', s)`   | A provider error built from the real SDK class and a pinned error body                               |
-| `makeFakeGemini(script)`                    | Creates a fake `@google/genai`-compatible client from a scripted response                            |
-| `fakeGeminiResponse(opts)`                  | Builds a `GeminiResponseLike` with usage metadata, thought parts, and JSON output                    |
-| `fakeGeminiBlocked(opts)`                   | Builds a safety-blocked `GeminiResponseLike` (no candidates, `promptFeedback.blockReason` set)       |
-| `FakeAdapter`                               | Scriptable `ProviderAdapter` at the port level; rejects an entry that is not an `Error` or a result  |
-| `SignalAwareFakeAdapter`                    | Like `FakeAdapter` but observes and honours `AbortSignal` from `AdapterCtx`                          |
-| `scriptedRateLimiter(opts)`                 | RateLimiter fake with injectable wait for deterministic `queueDelayMs` assertions                    |
-| `inMemoryRateLimiter(opts?)`                | Convenience re-export of `@gullabs/core`'s in-process `RateLimiter` implementation                   |
-| `makeFakeXai` / `fakeXaiResponse`           | Fake xAI Responses client for `@gullabs/xai` adapter tests                                           |
-| `FakeXaiFileStore`                          | In-memory xAI Files store (upload/TTL/delete/`failClosed`) for host unit tests                       |
-| `FakeGoogleFileStore`                       | In-memory Gemini Files store with the real store's surface and delete semantics                      |
-| `FakeGoogleCacheStore`                      | In-memory Gemini context-cache store: process-scoped reuse, expiry skew, refresh                     |
-| `FakeCliRunner`                             | Scripted runner for `@gullabs/claude-cli` and `@gullabs/codex-cli`: no process is spawned            |
-| `runToolLoop(client, req, tools, { auth })` | Runs a function-calling loop, following `result.continuation` after every turn (see below)           |
+| Export                                      | What it is                                                                                                  |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `FakeClock`                                 | Deterministic `Clock` **and** `Scheduler`: `advance(ms)` / `advanceAsync(ms)` fire timers; see below        |
+| `FakeIds`                                   | Sequential `IdGenerator`: returns `call_1`, `attempt_1`, etc.                                               |
+| `RecordingSink`                             | In-memory `UsageSink`; `dedupeOn: 'attemptId'` mirrors the Drizzle ledger; `payloads` holds stored payloads |
+| `RecordingTelemetry`                        | `Telemetry` that records start, attempt, success and error events                                           |
+| `RecordingLogger`                           | `Logger` that records every line (`messages('error')`, `find(event)`)                                       |
+| `fakeLlmResult(partial)`                    | A complete `LlmResult` (`message`, `continuation`, `callCost` and the rest), with overrides                 |
+| `FakeClient`                                | Scripted `Client` for host code that takes a `Client`: request capture and `expectRequest`                  |
+| `fakeHttpError` / `fakeNetworkError`        | Status and transport failures in the shape `classifyError` reads                                            |
+| `fakeBilledFailure(usage)`                  | The `LlmError` an adapter throws for a billed HTTP 200 with no usable output                                |
+| `fakeProviderError('google' \| 'xai', s)`   | A provider error built from the real SDK class and a pinned error body                                      |
+| `makeFakeGemini(script)`                    | Creates a fake `@google/genai`-compatible client from a scripted response                                   |
+| `fakeGeminiResponse(opts)`                  | Builds a `GeminiResponseLike` with usage metadata, thought parts, and JSON output                           |
+| `fakeGeminiBlocked(opts)`                   | Builds a safety-blocked `GeminiResponseLike` (no candidates, `promptFeedback.blockReason` set)              |
+| `FakeAdapter`                               | Scriptable `ProviderAdapter` at the port level; rejects an entry that is not an `Error` or a result         |
+| `SignalAwareFakeAdapter`                    | Like `FakeAdapter` but observes and honours `AbortSignal` from `AdapterCtx`                                 |
+| `scriptedRateLimiter(opts)`                 | RateLimiter fake with injectable wait for deterministic `queueDelayMs` assertions                           |
+| `inMemoryRateLimiter(opts?)`                | Convenience re-export of `@gullabs/core`'s in-process `RateLimiter` implementation                          |
+| `makeFakeXai` / `fakeXaiResponse`           | Fake xAI Responses client for `@gullabs/xai` adapter tests                                                  |
+| `FakeXaiFileStore`                          | In-memory xAI Files store (upload/TTL/delete/`failClosed`) for host unit tests                              |
+| `FakeGoogleFileStore`                       | In-memory Gemini Files store with the real store's surface and delete semantics                             |
+| `FakeGoogleCacheStore`                      | In-memory Gemini context-cache store: process-scoped reuse, expiry skew, refresh                            |
+| `FakeCliRunner`                             | Scripted runner for `@gullabs/claude-cli` and `@gullabs/codex-cli`: no process is spawned                   |
+| `runToolLoop(client, req, tools, { auth })` | Runs a function-calling loop, following `result.continuation` after every turn (see below)                  |
 
 For a quota store in tests use `inMemoryQuotaStore({ clock })` from `@gullabs/quota`; it takes the same
 `FakeClock`.
@@ -149,6 +149,10 @@ expect(sink.duplicates).toEqual([]) // nothing re-delivered under the same attem
 `drizzleUsageSink` writes with `onConflictDoNothing` on `attemptId`; `dedupeOn: 'attemptId'` gives the
 recording sink the same idempotence, drops the repeat and keeps it on `duplicates`, so a test can tell
 a retry that reuses an id from one that mints a fresh one. `failOnRecord` still simulates a broken sink.
+
+With `payloads: {}` on the client (ADR-038), `sink.payloads` is a `Map` from `attemptId` to the redacted, capped
+payload the engine handed the sink; an attempt that got none (storage off, `include` said no, `storePayload: false`)
+has no entry.
 
 ## RecordingTelemetry and RecordingLogger
 
@@ -384,7 +388,7 @@ export function makeLlmClient(overrides: MakeLlmClientOverrides = {}) {
         ...(overrides.client !== undefined && { client: overrides.client }),
       }),
     ]),
-    sink: overrides.sink ?? drizzleUsageSink(db, llmCalls),
+    sink: overrides.sink ?? drizzleUsageSink({ db }),
     ...(overrides.clock !== undefined && { clock: overrides.clock }),
     ...(overrides.scheduler !== undefined && { scheduler: overrides.scheduler }),
     ...(overrides.ids !== undefined && { ids: overrides.ids }),

@@ -336,18 +336,20 @@ const client = createClient({
 
 Four levels: `debug`, `info`, `warn`, `error`. Engine events:
 
-| Event                       | Level                                                                     |
-| --------------------------- | ------------------------------------------------------------------------- |
-| `llm.call.start`            | `info`                                                                    |
-| `llm.call.attempt.start`    | `debug`                                                                   |
-| `llm.call.retry`            | `debug` — includes `attemptNumber`, `delayMs`, `errorKind`, `retryable`   |
-| `llm.call.success`          | `info`                                                                    |
-| `llm.call.error`            | `error`                                                                   |
-| `llm.call.cost.failed`      | `warn`                                                                    |
-| `llm.call.sink.success`     | `debug`                                                                   |
-| `llm.call.sink.failed`      | `error` (redacted)                                                        |
-| `llm.call.sink.timeout`     | `error` — `sinkTimeoutMs` passed; the row may be lost                     |
-| `llm.call.sink.interrupted` | `error` — 100 ms after an abort or the call deadline; the row may be lost |
+| Event                       | Level                                                                                                                                          |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llm.call.start`            | `info`                                                                                                                                         |
+| `llm.call.attempt.start`    | `debug`                                                                                                                                        |
+| `llm.call.retry`            | `debug` — includes `attemptNumber`, `delayMs`, `errorKind`, `retryable`                                                                        |
+| `llm.call.success`          | `info`                                                                                                                                         |
+| `llm.call.error`            | `error`                                                                                                                                        |
+| `llm.call.cost.failed`      | `warn`                                                                                                                                         |
+| `llm.call.sink.success`     | `debug`                                                                                                                                        |
+| `llm.call.sink.failed`      | `error` (redacted)                                                                                                                             |
+| `llm.call.sink.timeout`     | `error` — `sinkTimeoutMs` passed; the row may be lost                                                                                          |
+| `llm.call.sink.interrupted` | `error` — 100 ms after an abort or the call deadline; the row may be lost                                                                      |
+| `llm.call.payload.dropped`  | `warn` — a payload could not be built (a throwing `redact` or `include`, an undecodable media part, over the size cap); the call is unaffected |
+| `llm.call.payload.failed`   | `error` — logged by `@gullabs/drizzle`: the payload insert failed and was rolled back; the ledger row committed                                |
 
 Host logger exceptions are swallowed by `makeSafeLogger` — fail-open; a bad logger never breaks a
 call.
@@ -418,6 +420,38 @@ same `externalId`: it is persisted on every attempt row (indexed in `@gullabs/dr
 retry that reuses it shows up as extra rows under one `externalId`, each with the spend it caused.
 Correlate the final outcome of a call from `result.attemptId` or `LlmError.attemptId`. The sink's
 `attemptId` idempotency only absorbs an at-least-once sink re-delivering the same record.
+
+### Payload storage (opt-in)
+
+By default no prompt or response text is stored. `ClientConfig.payloads` turns it on for the client:
+
+```ts
+const client = createClient({
+  ...composeProviders([googleProvider()]),
+  sink: drizzleUsageSink({ db }),
+  payloads: {
+    redact: (payload) => scrubCustomerData(payload), // optional; runs after core's secret patterns
+    maxChars: 200_000, // optional; per string, and 4x for the whole payload
+    include: (request) => request.metadata?.['audit'] === true, // optional; only `true` captures
+  },
+})
+
+await client.generate(request, { auth, storePayload: false }) // this call is not stored
+await client.runStructured(callSite, vars, { auth, storePayload: false })
+```
+
+Every attempt that reached the provider adapter, success or failure, hands the sink one payload next to its
+record: `sink.record(record, { payload })`. It holds the request as sent (`system`, messages as
+`{ role, parts }`, text verbatim, tool-call arguments and tool-result values as JSON, tools as name and schema
+hash; an inline image, audio or file part is only its media type, size and SHA-256, never the bytes) and the raw
+model text, or the error message of a failed attempt. Reasoning text and tool calls stay on the record.
+Strings are redacted with core's `redactSecrets` patterns (nested ones too), then your `redact`, then capped:
+the cap is applied last, so a redactor cannot push stored text over the limit. A payload that cannot be built
+(for example a `redact` that throws) is dropped with an `llm.call.payload.dropped` warning and never fails the call.
+`payloads` needs a `sink`; a sink that ignores the second argument is unaffected.
+
+Stored payloads can contain customer data. The library never deletes them: retention and tenant deletion are
+yours (`@gullabs/drizzle` ships `purgeLlmCallPayloads` and `deleteLlmCallPayloads`; ADR-038).
 
 ## Middleware, retry and rate limiting
 

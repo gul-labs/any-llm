@@ -170,7 +170,7 @@ console.log('\n========================================\n')
 // const realClient = createClient({
 //   adapters: [geminiAdapter()],          // uses real @google/genai SDK
 //   pricingSources: { google: geminiPricingSource() },
-//   sink: drizzleUsageSink(db, llmCalls), // writes to your llm_calls table
+//   sink: drizzleUsageSink({ db }),       // writes to your llm_calls table
 // })
 //
 // const realResult = await realClient.runStructured(codeReview, { diff: '- let x = 1\n+ const x = 1' }, {

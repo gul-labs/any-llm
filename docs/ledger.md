@@ -117,7 +117,7 @@ export const llmCallContext = pgTable('llm_call_context', {
 
 Write pattern:
 
-1. call the library normally with `sink: drizzleUsageSink(db, llmCalls)`;
+1. call the library normally with `sink: drizzleUsageSink({ db })`;
 2. use `result.attemptId` or `LlmError.attemptId` as the sidecar key;
 3. persist your host row in the same request/activity flow.
 
@@ -130,8 +130,8 @@ also decide whether and how to clean dependent sidecar rows.
 
 `@gullabs/drizzle` ships plain SQL next to the Drizzle schema, in `sql/` inside the package:
 
-- `sql/install.sql` creates the current `llm_calls` table, its indexes and its CHECK constraints on a database
-  that has none.
+- `sql/install.sql` creates the current `llm_calls` table, its indexes and its CHECK constraints, and the
+  opt-in `llm_call_payloads` table, on a database that has neither.
 - `sql/upgrades/NNNN-*.sql` moves an existing table forward. Apply every file you have not yet applied, in
   order. Each is idempotent. `0001-add-error-reason.sql` takes the table published in 0.7.2 and adds
   `error_reason`. `0002-ledger-v2.sql` adds `cost_confidence`, `cost_details` and `cost_unpriced_reason`,
@@ -166,6 +166,29 @@ Two ways to find out before rows are lost:
 - Call `assertLlmCallsSchema(db)` from `@gullabs/drizzle`. It selects every column the schema names with
   `LIMIT 0`, writes nothing, and rejects with an error that points at `sql/upgrades/`. It needs no client,
   so run it from a deploy or CI step, a readiness endpoint, or at boot.
+
+## Prompt and response text (opt-in)
+
+`llm_calls` holds no prompt and no response text. A client that sets `ClientConfig.payloads` hands the sink one
+payload per attempt that reached the provider, and `drizzleUsageSink({ db })` stores it in `llm_call_payloads`,
+keyed by `attempt_id` (FK to `llm_calls`, `ON DELETE CASCADE`, index on `created_at`): `request` is
+`{ system?, messages, tools? }` with media parts as a media type, size and SHA-256 (never bytes) and tools as
+name and schema hash; `response` is `{ text?, errorMessage? }`. `sql/upgrades/0003-llm-call-payloads.sql` adds
+the table to an existing database. The payload is written in the same transaction as the ledger row, behind a
+savepoint: a payload failure never costs the ledger row. See the
+[`@gullabs/drizzle` README](../packages/drizzle/README.md#payload-storage) and ADR-038.
+
+Payloads can contain customer data. Retention and tenant deletion are the host's duty: schedule
+`purgeLlmCallPayloads(db, { olderThan })` and delete by call with `deleteLlmCallPayloads(db, { callIds })` (no
+delete by `externalId`, which can repeat across tenants). To read a call's payloads:
+
+```sql
+select c.attempt_number, c.status, p.request, p.response
+from llm_calls c
+join llm_call_payloads p using (attempt_id)
+where c.call_id = $1
+order by c.attempt_number;
+```
 
 ## Atomic sidecar writes (transaction composition)
 

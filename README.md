@@ -95,7 +95,7 @@ console.log(result.cost?.microUsd) // integer µUSD, frozen at call time
 console.log(result.reasoningText)
 ```
 
-Persist records with [`@gullabs/drizzle`](./packages/drizzle) by passing `sink: drizzleUsageSink(db, llmCalls)` to `createClient`.
+Persist records with [`@gullabs/drizzle`](./packages/drizzle) by passing `sink: drizzleUsageSink({ db })` to `createClient`. Prompt and response text is stored only if you opt in with `payloads` on the client config (see [Payload storage](./packages/drizzle/README.md#payload-storage)); it can contain customer data, and retention is yours.
 
 A network-free walkthrough lives in [`examples/basic.ts`](./examples/basic.ts). Run it with `pnpm example`.
 
