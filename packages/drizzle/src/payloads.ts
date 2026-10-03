@@ -1,26 +1,39 @@
-import { inArray, lt } from 'drizzle-orm'
+import { inArray, sql } from 'drizzle-orm'
 import { LlmError } from '@gullabs/core'
 import { llmCallPayloads, llmCalls } from './schema.js'
 import type { PostgresDb } from './sink.js'
 import type { SelectableDb } from './sink.js'
 
+/** Rows per `DELETE` statement of {@link purgeLlmCallPayloads}. */
+const DEFAULT_PURGE_BATCH = 5000
+
+/** Rows of a statement result, whichever shape the driver returns. */
+function resultRows(result: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(result)) return result as Array<Record<string, unknown>>
+  return ((result as { rows?: unknown }).rows ?? []) as Array<Record<string, unknown>>
+}
+
 /**
- * Deletes every stored payload written before `olderThan`, and returns how many
- * rows it deleted. The `llm_calls` rows are not touched.
+ * Deletes every stored payload written before `olderThan`, in bounded batches,
+ * and returns how many rows it deleted. The `llm_calls` rows are not touched.
  *
  * The library never deletes on its own: payloads can hold customer data, and how
  * long to keep them is the host's decision. Run this on a schedule (a daily job
- * with `olderThan` of now minus your retention is typical). It issues one
- * `DELETE` that the `created_at` index serves; on a table with a large backlog,
- * purge in steps with an earlier `olderThan` first.
+ * with `olderThan` of now minus your retention is typical). Each statement
+ * deletes at most `batchSize` rows (default 5,000; the `created_at` index finds
+ * them, the primary key deletes them) and returns a count, never the ids, so a
+ * large backlog neither holds a long lock nor loads rows into memory. The loop
+ * stops when a batch comes back short. Rerun after a failure; deleting is
+ * idempotent.
  *
- * @throws LlmError `bad_request` when `olderThan` is not a valid `Date`.
+ * @throws LlmError `bad_request` when `olderThan` is not a valid `Date` or
+ *   `batchSize` is not a positive integer.
  */
 export async function purgeLlmCallPayloads(
   db: PostgresDb,
-  options: { olderThan: Date },
+  options: { olderThan: Date; batchSize?: number },
 ): Promise<number> {
-  const { olderThan } = options
+  const { olderThan, batchSize = DEFAULT_PURGE_BATCH } = options
   if (!(olderThan instanceof Date) || Number.isNaN(olderThan.getTime())) {
     throw new LlmError('purgeLlmCallPayloads: olderThan must be a valid Date.', {
       kind: 'bad_request',
@@ -28,11 +41,36 @@ export async function purgeLlmCallPayloads(
       issues: [{ path: 'olderThan', message: 'must be a valid Date.' }],
     })
   }
-  const deleted = await db
-    .delete(llmCallPayloads)
-    .where(lt(llmCallPayloads.createdAt, olderThan))
-    .returning({ attemptId: llmCallPayloads.attemptId })
-  return deleted.length
+  if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 1_000_000) {
+    throw new LlmError(
+      'purgeLlmCallPayloads: batchSize must be an integer from 1 to 1,000,000.',
+      {
+        kind: 'bad_request',
+        retryable: false,
+        issues: [
+          { path: 'batchSize', message: 'must be an integer from 1 to 1,000,000.' },
+        ],
+      },
+    )
+  }
+  let deleted = 0
+  for (;;) {
+    const result = await db.execute(sql`
+      WITH batch AS (
+        SELECT ${llmCallPayloads.attemptId} AS attempt_id
+          FROM ${llmCallPayloads}
+         WHERE ${llmCallPayloads.createdAt} < ${olderThan}
+         LIMIT ${batchSize}
+      ), gone AS (
+        DELETE FROM ${llmCallPayloads}
+         WHERE ${llmCallPayloads.attemptId} IN (SELECT attempt_id FROM batch)
+        RETURNING 1
+      )
+      SELECT count(*)::int AS n FROM gone`)
+    const n = Number(resultRows(result)[0]?.['n'] ?? 0)
+    deleted += n
+    if (n < batchSize) return deleted
+  }
 }
 
 /** Call ids per statement: well under any driver's bind-parameter limit. */
@@ -59,10 +97,13 @@ export async function deleteLlmCallPayloads(
   options: { callIds: readonly string[] },
 ): Promise<number> {
   const { callIds } = options
-  if (
-    !Array.isArray(callIds) ||
-    callIds.some((id) => typeof id !== 'string' || id.length === 0)
-  ) {
+  // An index loop, not `.some`: `some` skips the holes of a sparse array.
+  let valid = Array.isArray(callIds)
+  for (let i = 0; valid && i < callIds.length; i += 1) {
+    const id: unknown = callIds[i]
+    valid = typeof id === 'string' && id.length > 0
+  }
+  if (!valid) {
     throw new LlmError(
       'deleteLlmCallPayloads: callIds must be an array of non-empty strings.',
       {
@@ -103,12 +144,9 @@ export async function deleteLlmCallPayloads(
  *
  * @throws Error when the select fails; the message points at `sql/upgrades/`.
  */
-export async function assertLlmCallPayloadsSchema(
-  db: SelectableDb,
-  table = llmCallPayloads,
-): Promise<void> {
+export async function assertLlmCallPayloadsSchema(db: SelectableDb): Promise<void> {
   try {
-    await db.select().from(table).limit(0)
+    await db.select().from(llmCallPayloads).limit(0)
   } catch (cause) {
     throw new Error(
       'llm_call_payloads could not be read with every column @gullabs/drizzle writes. ' +

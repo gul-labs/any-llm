@@ -1,10 +1,11 @@
+import { PgDialect } from 'drizzle-orm/pg-core'
 import { describe, expect, it } from 'vitest'
 import { drizzleUsageSink, llmCallPayloads, llmCalls, type PostgresDb } from './index.js'
 import type { JsonValue, LlmCallPayload, LlmCallRecord, Logger } from '@gullabs/core'
 
 type InsertCall = {
-  /** Which transaction handle ran the insert: the outer one or the savepoint. */
-  handle: 'tx' | 'savepoint'
+  /** Which handle ran the insert: the database itself or a transaction handle. */
+  handle: 'db' | 'tx'
   table: unknown
   values: Record<string, unknown>
   conflictTarget: unknown
@@ -51,18 +52,21 @@ function makeRecord(overrides: Partial<LlmCallRecord> = {}): LlmCallRecord {
 interface MockOptions {
   /** Throw from the insert into this table (by object identity). */
   failInsertInto?: unknown
-  /** Count of transactions opened (outer and nested). */
+  /** What happened, in order: begin, commit, and every statement `execute` ran. */
   log?: string[]
 }
 
+const dialect = new PgDialect()
+
 /**
- * A structural stand-in for a Drizzle Postgres database: `transaction` hands the
- * callback a transaction handle whose own `transaction` is the savepoint, and
- * every insert is recorded with the handle that ran it.
+ * A structural stand-in for a Drizzle Postgres database. `db.insert` is the
+ * direct (no transaction) path; `db.transaction` hands the callback a handle
+ * whose inserts are recorded as `tx`, and whose `execute` records the SQL text
+ * (the savepoint statements).
  */
 function makeDb(spy: InsertCall[], options: MockOptions = {}): PostgresDb {
   const log = options.log ?? []
-  const handle = (kind: 'tx' | 'savepoint') => ({
+  const handle = (kind: 'db' | 'tx') => ({
     insert(table: unknown) {
       return {
         values(values: Record<string, unknown>) {
@@ -84,12 +88,13 @@ function makeDb(spy: InsertCall[], options: MockOptions = {}): PostgresDb {
         },
       }
     },
-    async transaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> {
-      log.push('savepoint')
-      return fn(handle('savepoint'))
+    async execute(query: Parameters<PgDialect['sqlToQuery']>[0]) {
+      log.push(dialect.sqlToQuery(query).sql)
+      return undefined
     },
   })
   return {
+    ...handle('db'),
     async transaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> {
       log.push('begin')
       const result = await fn(handle('tx'))
@@ -286,16 +291,24 @@ function recordingLogger(): { logger: Logger; errors: Array<[unknown, string]> }
 }
 
 describe('drizzleUsageSink payloads (ADR-038)', () => {
-  it('writes the ledger row on the transaction, then the payload on a nested transaction (savepoint)', async () => {
+  it('writes the ledger row on the transaction, then the payload behind a uniquely named savepoint', async () => {
     const calls: InsertCall[] = []
     const log: string[] = []
     await drizzleUsageSink({ db: makeDb(calls, { log }) }).record(makeRecord(), {
       payload: PAYLOAD,
     })
-    expect(log).toEqual(['begin', 'savepoint', 'commit'])
+    expect(log).toHaveLength(4)
+    const name = /^SAVEPOINT (any_llm_payload_sp_\d+)$/.exec(log[1] ?? '')?.[1]
+    expect(name).toBeDefined()
+    expect(log).toEqual([
+      'begin',
+      `SAVEPOINT ${name}`,
+      `RELEASE SAVEPOINT ${name}`,
+      'commit',
+    ])
     expect(calls.map((c) => [c.handle, c.table])).toEqual([
       ['tx', llmCalls],
-      ['savepoint', llmCallPayloads],
+      ['tx', llmCallPayloads],
     ])
     expect(calls[1]?.conflictTarget).toBe(llmCallPayloads.attemptId)
     expect(calls[1]?.values).toEqual({
@@ -306,15 +319,26 @@ describe('drizzleUsageSink payloads (ADR-038)', () => {
     })
   })
 
-  it('a record with no payload opens no savepoint and writes no payload row', async () => {
+  it('a record with no payload is one INSERT on db: no transaction, no savepoint', async () => {
     const calls: InsertCall[] = []
     const log: string[] = []
     await drizzleUsageSink({ db: makeDb(calls, { log }) }).record(makeRecord())
-    expect(log).toEqual(['begin', 'commit'])
-    expect(calls.map((c) => c.table)).toEqual([llmCalls])
+    expect(log).toEqual([])
+    expect(calls.map((c) => [c.handle, c.table])).toEqual([['db', llmCalls]])
   })
 
-  it('the host transaction helper is used when given: db.transaction is not, and every statement runs on the helper handle', async () => {
+  it('every write gets its own savepoint name', async () => {
+    const calls: InsertCall[] = []
+    const log: string[] = []
+    const sink = drizzleUsageSink({ db: makeDb(calls, { log }) })
+    await sink.record(makeRecord(), { payload: PAYLOAD })
+    await sink.record(makeRecord({ attemptId: 'attempt_2' }), { payload: PAYLOAD })
+    const names = log.filter((l) => l.startsWith('SAVEPOINT '))
+    expect(names).toHaveLength(2)
+    expect(new Set(names).size).toBe(2)
+  })
+
+  it('the host transaction helper takes over every write, a record without a payload too', async () => {
     const dbCalls: InsertCall[] = []
     const dbLog: string[] = []
     const hostCalls: InsertCall[] = []
@@ -328,15 +352,20 @@ describe('drizzleUsageSink payloads (ADR-038)', () => {
     await sink.record(makeRecord({ attemptId: 'attempt_2' }))
     expect(dbLog).toEqual([])
     expect(dbCalls).toEqual([])
-    expect(hostLog).toEqual(['begin', 'savepoint', 'commit', 'begin', 'commit'])
+    expect(hostLog.filter((l) => !l.includes('SAVEPOINT'))).toEqual([
+      'begin',
+      'commit',
+      'begin',
+      'commit',
+    ])
     expect(hostCalls.map((c) => [c.handle, c.table])).toEqual([
       ['tx', llmCalls],
-      ['savepoint', llmCallPayloads],
+      ['tx', llmCallPayloads],
       ['tx', llmCalls],
     ])
   })
 
-  it('a failing payload insert is logged as llm.call.payload.failed with the driver error, and record() resolves', async () => {
+  it('a failing payload insert rolls back to the savepoint, is logged as llm.call.payload.failed with the driver error, and record() resolves', async () => {
     const calls: InsertCall[] = []
     const { logger, errors } = recordingLogger()
     const log: string[] = []
@@ -347,7 +376,14 @@ describe('drizzleUsageSink payloads (ADR-038)', () => {
     ).resolves.toBeUndefined()
     // The ledger row was written and the outer transaction committed.
     expect(calls.map((c) => c.table)).toEqual([llmCalls])
-    expect(log).toEqual(['begin', 'savepoint', 'commit'])
+    const name = /^SAVEPOINT (\S+)$/.exec(log[1] ?? '')?.[1]
+    expect(log).toEqual([
+      'begin',
+      `SAVEPOINT ${name}`,
+      `ROLLBACK TO SAVEPOINT ${name}`,
+      `RELEASE SAVEPOINT ${name}`,
+      'commit',
+    ])
     expect(errors).toHaveLength(1)
     expect(errors[0]?.[1]).toBe('llm.call.payload.failed')
     expect(errors[0]?.[0]).toMatchObject({
@@ -368,5 +404,37 @@ describe('drizzleUsageSink payloads (ADR-038)', () => {
     ).rejects.toThrow('insert failed')
     expect(calls).toEqual([])
     expect(log).toEqual(['begin'])
+  })
+
+  it('declares acceptsPayloads, so the engine hands it payloads', () => {
+    expect(drizzleUsageSink({ db: makeDb([]) }).acceptsPayloads).toBe(true)
+  })
+})
+
+describe('drizzleUsageSink construction (P2-7)', () => {
+  it('a db without transaction() is bad_request at construction, with the plain explanation', () => {
+    const insertOnly = { insert: () => ({}) } as unknown as PostgresDb
+    expect(() => drizzleUsageSink({ db: insertOnly })).toThrow(
+      expect.objectContaining({ kind: 'bad_request' }) as Error,
+    )
+    expect(() => drizzleUsageSink({ db: insertOnly })).toThrow(/no transaction\(\)/)
+  })
+
+  it('a db without transaction() is accepted when the host passes its own transaction helper', () => {
+    const insertOnly = { insert: () => ({}) } as unknown as PostgresDb
+    expect(() =>
+      drizzleUsageSink({ db: insertOnly, transaction: (fn) => fn(insertOnly) }),
+    ).not.toThrow()
+  })
+
+  it.each([
+    ['no options', undefined],
+    ['no db', {}],
+    ['a db that is not a database', { db: {} }],
+    ['a transaction that is not a function', { db: makeDb([]), transaction: 1 }],
+  ])('%s is bad_request', (_name, options) => {
+    expect(() =>
+      drizzleUsageSink(options as unknown as Parameters<typeof drizzleUsageSink>[0]),
+    ).toThrow(expect.objectContaining({ kind: 'bad_request' }) as Error)
   })
 })

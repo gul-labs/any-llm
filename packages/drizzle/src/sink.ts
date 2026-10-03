@@ -1,5 +1,6 @@
+import { sql } from 'drizzle-orm'
 import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core'
-import { redactSecrets } from '@gullabs/core'
+import { LlmError, redactSecrets } from '@gullabs/core'
 import type { LlmCallRecord, UsageSink, UsageSinkContext } from '@gullabs/core'
 import { llmCallPayloads, llmCalls } from './schema.js'
 
@@ -14,15 +15,26 @@ export type PostgresDb = PgDatabase<PgQueryResultHKT, any, any>
 
 /** Options for {@link drizzleUsageSink}. */
 export interface DrizzleUsageSinkOptions {
-  /** A Drizzle Postgres database. It must have `transaction`. */
+  /**
+   * A Drizzle Postgres database. It must have `transaction` (unless you pass
+   * your own `transaction` helper): a record that carries a payload is written
+   * in a transaction. A driver without transactions is refused at construction.
+   */
   db: PostgresDb
   /**
    * Runs `fn` in a transaction and passes it the transaction handle. Give your
    * own helper when your database setup requires every transaction to go
    * through it (tenant or role context, statement timeouts, an instrumented
-   * pool). Every statement the sink writes runs on the handle `fn` receives,
-   * including the nested `tx.transaction` savepoint for a payload.
-   * @default (fn) => db.transaction(fn)
+   * pool). When you pass one, every write goes through it (a record without a
+   * payload too) and every statement runs on the handle `fn` receives,
+   * including the savepoint around a payload.
+   *
+   * The helper must open a transaction of its own per call. It may hand `fn`
+   * one shared handle (an ambient transaction): the sink then serializes its
+   * writes on that handle, and a rollback of that transaction takes the ledger
+   * rows with it.
+   * @default a record without a payload is one INSERT on `db`; a record with a
+   * payload runs in `db.transaction`
    */
   transaction?: <T>(fn: (tx: PostgresDb) => Promise<T>) => Promise<T>
 }
@@ -44,30 +56,118 @@ function payloadErrorText(error: unknown): string {
 }
 
 /**
+ * Serializes work per transaction handle. Statements of two writes that share
+ * one handle (a host `transaction` helper that hands every call the same
+ * ambient transaction) would interleave on its single connection, and a
+ * `ROLLBACK TO SAVEPOINT` would undo the other write's rows. Keyed by handle, so
+ * writes on separate handles never wait for each other.
+ */
+const handleQueues = new WeakMap<object, Promise<void>>()
+
+async function serialized<T>(handle: object, work: () => Promise<T>): Promise<T> {
+  const previous = handleQueues.get(handle) ?? Promise.resolve()
+  let release: () => void = () => {}
+  const turn = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  handleQueues.set(
+    handle,
+    previous.then(() => turn),
+  )
+  await previous
+  try {
+    return await work()
+  } finally {
+    release()
+  }
+}
+
+/** Savepoint names are unique per write, so no two ever collide on one handle. */
+let savepointSequence = 0
+
+function badOptions(path: string, message: string): never {
+  throw new LlmError(`drizzleUsageSink: ${path} ${message}`, {
+    kind: 'bad_request',
+    retryable: false,
+    issues: [{ path, message }],
+  })
+}
+
+/**
  * A {@link UsageSink} that writes each record to `llm_calls` and, when the
  * engine hands it a payload (`ClientConfig.payloads`, ADR-038), to
- * `llm_call_payloads`, in one transaction:
+ * `llm_call_payloads`.
  *
- * 1. insert the `llm_calls` row (`ON CONFLICT (attempt_id) DO NOTHING`, so a
- *    retried write is idempotent);
- * 2. in a nested transaction (a `SAVEPOINT`), insert the `llm_call_payloads`
- *    row keyed by the same `attempt_id`.
+ * A record without a payload is one `INSERT ... ON CONFLICT (attempt_id) DO
+ * NOTHING` on `db` (idempotent on retry): no transaction, one round trip. A
+ * record with a payload is written in one transaction:
+ *
+ * 1. insert the `llm_calls` row (`ON CONFLICT (attempt_id) DO NOTHING`);
+ * 2. behind a uniquely named `SAVEPOINT`, insert the `llm_call_payloads` row
+ *    keyed by the same `attempt_id`.
  *
  * A payload insert that fails is rolled back to the savepoint, logged as
  * `llm.call.payload.failed` (on the client's logger), and the transaction
- * commits: the ledger row always survives a payload failure. A failing ledger
- * insert aborts the whole transaction, so no payload is left without its row,
- * and `record` rejects (the engine logs `llm.call.sink.failed`). The write is
+ * commits: the ledger row survives a payload failure. A failing ledger insert
+ * aborts the whole transaction, so no payload is left without its row, and
+ * `record` rejects (the engine logs `llm.call.sink.failed`). The write is
  * bounded by the client's `sinkTimeoutMs`.
  *
- * The write always runs through `transaction` (default `db.transaction`), also
- * when there is no payload.
+ * A host `transaction` helper takes over every write (see
+ * {@link DrizzleUsageSinkOptions.transaction}). When that helper joins an
+ * ambient transaction, a rollback of that transaction takes the ledger rows
+ * with it. A pooled connection holding an abandoned (timed-out) write stays in
+ * its transaction until it finishes: set `idle_in_transaction_session_timeout`
+ * and `statement_timeout` for the role that runs the sink.
+ *
+ * @throws LlmError `bad_request` when `db` has no `transaction` (and no
+ *   `transaction` helper is given), so a driver without transactions fails at
+ *   construction instead of on the first payload.
  */
 export function drizzleUsageSink(options: DrizzleUsageSinkOptions): UsageSink {
+  const given: unknown = options
+  if (typeof given !== 'object' || given === null) {
+    badOptions('options', 'must be an object ({ db, transaction? }).')
+  }
   const { db } = options
-  const transaction =
-    options.transaction ?? (<T>(fn: (tx: PostgresDb) => Promise<T>) => db.transaction(fn))
+  const dbValue: unknown = db
+  if (
+    typeof dbValue !== 'object' ||
+    dbValue === null ||
+    typeof (dbValue as { insert?: unknown }).insert !== 'function'
+  ) {
+    badOptions('db', 'must be a Drizzle Postgres database.')
+  }
+  if (
+    options.transaction !== undefined &&
+    typeof (options.transaction as unknown) !== 'function'
+  ) {
+    badOptions('transaction', 'must be a function.')
+  }
+  if (
+    options.transaction === undefined &&
+    typeof (db as { transaction?: unknown }).transaction !== 'function'
+  ) {
+    badOptions(
+      'db',
+      'has no transaction(). A record that carries a payload is written in a transaction, so ' +
+        'use a driver with transactions (node-postgres, postgres-js, PGlite) or pass your own ' +
+        '`transaction` helper.',
+    )
+  }
+  const hostTransaction = options.transaction
+
+  const insertLedger = async (handle: PostgresDb, row: Record<string, unknown>) => {
+    // Pin the conflict target to the attemptId unique index so that deduplication
+    // is explicit and does not rely on any driver-level heuristics.
+    await handle
+      .insert(llmCalls)
+      .values(row as typeof llmCalls.$inferInsert)
+      .onConflictDoNothing({ target: llmCalls.attemptId })
+  }
+
   return {
+    acceptsPayloads: true,
     async record(r: LlmCallRecord, ctx?: UsageSinkContext): Promise<void> {
       const row: Record<string, unknown> = {
         recordSchemaVersion: r.recordSchemaVersion,
@@ -116,17 +216,26 @@ export function drizzleUsageSink(options: DrizzleUsageSinkOptions): UsageSink {
       }
 
       const payload = ctx?.payload
-      await transaction(async (tx) => {
-        // Pin the conflict target to the attemptId unique index so that deduplication
-        // is explicit and does not rely on any driver-level heuristics.
-        await tx
-          .insert(llmCalls)
-          .values(row as typeof llmCalls.$inferInsert)
-          .onConflictDoNothing({ target: llmCalls.attemptId })
-        if (payload === undefined) return
-        try {
-          await tx.transaction(async (savepoint) => {
-            await savepoint
+
+      if (payload === undefined) {
+        // Ledger only: one INSERT, no transaction (a helper, if given, still runs it).
+        if (hostTransaction === undefined) {
+          await insertLedger(db, row)
+          return
+        }
+        await hostTransaction((tx) => serialized(tx, () => insertLedger(tx, row)))
+        return
+      }
+
+      const run =
+        hostTransaction ?? (<T>(fn: (tx: PostgresDb) => Promise<T>) => db.transaction(fn))
+      await run((tx) =>
+        serialized(tx, async () => {
+          await insertLedger(tx, row)
+          const savepoint = `any_llm_payload_sp_${(savepointSequence += 1)}`
+          await tx.execute(sql.raw(`SAVEPOINT ${savepoint}`))
+          try {
+            await tx
               .insert(llmCallPayloads)
               .values({
                 attemptId: r.attemptId,
@@ -135,20 +244,25 @@ export function drizzleUsageSink(options: DrizzleUsageSinkOptions): UsageSink {
                 createdAt: new Date(r.createdAt),
               })
               .onConflictDoNothing({ target: llmCallPayloads.attemptId })
-          })
-        } catch (payloadErr) {
-          // The nested transaction rolled back to its savepoint before throwing,
-          // so the transaction is still usable and the ledger row commits.
-          ctx?.logger?.error(
-            {
-              callId: r.callId,
-              attemptId: r.attemptId,
-              error: payloadErrorText(payloadErr),
-            },
-            'llm.call.payload.failed',
-          )
-        }
-      })
+          } catch (payloadErr) {
+            // Back to the savepoint: the transaction is usable again and the
+            // ledger row commits. A failure here means the connection is gone;
+            // it propagates and the transaction rolls back.
+            await tx.execute(sql.raw(`ROLLBACK TO SAVEPOINT ${savepoint}`))
+            await tx.execute(sql.raw(`RELEASE SAVEPOINT ${savepoint}`))
+            ctx?.logger?.error(
+              {
+                callId: r.callId,
+                attemptId: r.attemptId,
+                error: payloadErrorText(payloadErr),
+              },
+              'llm.call.payload.failed',
+            )
+            return
+          }
+          await tx.execute(sql.raw(`RELEASE SAVEPOINT ${savepoint}`))
+        }),
+      )
     },
   }
 }
@@ -181,12 +295,9 @@ export interface SelectableDb {
  * @throws Error when the select fails (a missing column, a missing table, or an
  *   unreachable database); the message points at `sql/upgrades/`.
  */
-export async function assertLlmCallsSchema(
-  db: SelectableDb,
-  table = llmCalls,
-): Promise<void> {
+export async function assertLlmCallsSchema(db: SelectableDb): Promise<void> {
   try {
-    await db.select().from(table).limit(0)
+    await db.select().from(llmCalls).limit(0)
   } catch (cause) {
     throw new Error(
       'llm_calls could not be read with every column @gullabs/drizzle writes. ' +

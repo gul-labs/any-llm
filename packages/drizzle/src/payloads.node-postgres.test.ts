@@ -207,4 +207,86 @@ describe.skipIf(URL_ENV === undefined)('payload storage on node-postgres', () =>
     expect(left.rows).toEqual([{ attempt_id: 'a3' }])
     expect((await counts()).calls).toBe(3)
   })
+
+  it('a host helper that reuses one transaction handle: three concurrent writes keep their good payloads, and a rollback takes the ledger rows too', async () => {
+    await reset()
+    await pool.query(
+      `ALTER TABLE llm_call_payloads ADD CONSTRAINT not_bad CHECK (attempt_id <> 'bad')`,
+    )
+    try {
+      const errors: string[] = []
+      const logger = {
+        debug() {},
+        info() {},
+        warn() {},
+        error: (_fields: unknown, message: string) => void errors.push(message),
+      }
+      await db.transaction(async (ambient) => {
+        const sink = drizzleUsageSink({
+          db,
+          transaction: (fn) => fn(ambient as unknown as PostgresDb),
+        })
+        await Promise.all(
+          ['a', 'bad', 'c'].map((id) =>
+            sink.record(makeRecord({ callId: `c_${id}`, attemptId: id }), {
+              payload: PAYLOAD,
+              logger,
+            }),
+          ),
+        )
+      })
+      expect(await counts()).toEqual({ calls: 3, payloads: 2 })
+      expect(errors).toEqual(['llm.call.payload.failed'])
+
+      await reset()
+      await expect(
+        db.transaction(async (ambient) => {
+          await drizzleUsageSink({
+            db,
+            transaction: (fn) => fn(ambient as unknown as PostgresDb),
+          }).record(makeRecord(), { payload: PAYLOAD })
+          throw new Error('host rolled back')
+        }),
+      ).rejects.toThrow('host rolled back')
+      expect(await counts()).toEqual({ calls: 0, payloads: 0 })
+    } finally {
+      await pool.query(`ALTER TABLE llm_call_payloads DROP CONSTRAINT not_bad`)
+    }
+  })
+
+  it('a ledger-only record is a single INSERT with no transaction', async () => {
+    await reset()
+    const queries: string[] = []
+    const logged = drizzle(pool, {
+      logger: { logQuery: (query) => void queries.push(query) },
+    }) as unknown as PostgresDb
+    await drizzleUsageSink({ db: logged }).record(makeRecord())
+    expect(queries).toHaveLength(1)
+    expect(queries[0]).toMatch(/^insert into "llm_calls"/i)
+    expect(await counts()).toEqual({ calls: 1, payloads: 0 })
+  })
+
+  it('purges a backlog in bounded batches and returns the count', async () => {
+    await reset()
+    await pool.query(`
+      INSERT INTO llm_calls (record_schema_version, call_id, attempt_id, provider, model,
+        status, token_details, generation_config, attempt_number, metadata)
+      SELECT 2, 'c' || g, 'a' || g, 'p', 'm', 'ok', '{}', '{}', 1, '{}'
+        FROM generate_series(1, 12000) g;
+      INSERT INTO llm_call_payloads (attempt_id, request, response, created_at)
+      SELECT 'a' || g, '{}', '{}', timestamptz '2026-01-01'
+        FROM generate_series(1, 12000) g;`)
+    const queries: string[] = []
+    const logged = drizzle(pool, {
+      logger: { logQuery: (query) => void queries.push(query) },
+    }) as unknown as PostgresDb
+    expect(
+      await purgeLlmCallPayloads(logged, {
+        olderThan: new Date('2026-06-01T00:00:00Z'),
+        batchSize: 5000,
+      }),
+    ).toBe(12_000)
+    expect(queries.filter((q) => /delete from/i.test(q))).toHaveLength(3)
+    expect(await counts()).toEqual({ calls: 12_000, payloads: 0 })
+  })
 })

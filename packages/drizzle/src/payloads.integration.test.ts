@@ -459,3 +459,209 @@ describe('retention and deletion', () => {
     expect((await db.select().from(llmCalls)).length).toBe(1)
   })
 })
+
+describe('a host helper that reuses one transaction handle (P2-2)', () => {
+  const GOOD = (id: string) => makeRecord({ attemptId: id, callId: `call_${id}` })
+
+  async function withAmbient(
+    db: ReturnType<typeof drizzle>,
+    work: (sink: ReturnType<typeof drizzleUsageSink>) => Promise<void>,
+    options: { rollback?: boolean } = {},
+  ): Promise<void> {
+    const outcome = db.transaction(async (ambient) => {
+      const sink = drizzleUsageSink({
+        db,
+        // what an ambient-transaction wrapper does: every call gets the same handle
+        transaction: (fn) => fn(ambient as unknown as PostgresDb),
+      })
+      await work(sink)
+      if (options.rollback === true) throw new Error('host rolled back')
+    })
+    if (options.rollback === true)
+      await expect(outcome).rejects.toThrow('host rolled back')
+    else await outcome
+  }
+
+  it('three concurrent writes on one handle all keep what is storable: two good payloads kept, the bad one rejected alone', async () => {
+    const { pg, db } = await freshDb()
+    await pg.exec(
+      `ALTER TABLE llm_call_payloads ADD CONSTRAINT not_bad CHECK (attempt_id <> 'bad')`,
+    )
+    const errors: Array<[unknown, string]> = []
+    const logger = {
+      debug() {},
+      info() {},
+      warn() {},
+      error: (fields: unknown, message: string) => void errors.push([fields, message]),
+    }
+    await withAmbient(db, async (sink) => {
+      await Promise.all([
+        sink.record(GOOD('a'), { payload: PAYLOAD, logger }),
+        sink.record(GOOD('bad'), { payload: PAYLOAD, logger }),
+        sink.record(GOOD('c'), { payload: PAYLOAD, logger }),
+      ])
+    })
+    expect(await counts(pg)).toEqual({ calls: 3, payloads: 2 })
+    const kept = await pg.query<{ attempt_id: string }>(
+      `SELECT attempt_id FROM llm_call_payloads ORDER BY attempt_id`,
+    )
+    expect(kept.rows).toEqual([{ attempt_id: 'a' }, { attempt_id: 'c' }])
+    expect(errors.map(([, m]) => m)).toEqual(['llm.call.payload.failed'])
+    expect(errors[0]?.[0]).toMatchObject({ attemptId: 'bad' })
+  })
+
+  it('ten concurrent writes, half without a payload, all land', async () => {
+    const { pg, db } = await freshDb()
+    await withAmbient(db, async (sink) => {
+      await Promise.all(
+        Array.from({ length: 10 }, (_, i) =>
+          sink.record(GOOD(`w${i}`), i % 2 === 0 ? { payload: PAYLOAD } : undefined),
+        ),
+      )
+    })
+    expect(await counts(pg)).toEqual({ calls: 10, payloads: 5 })
+  })
+
+  it('a rollback of the host transaction takes the ledger rows and payloads with it', async () => {
+    const { pg, db } = await freshDb()
+    await withAmbient(
+      db,
+      async (sink) => {
+        await sink.record(GOOD('a'), { payload: PAYLOAD })
+        await sink.record(GOOD('b'))
+      },
+      { rollback: true },
+    )
+    expect(await counts(pg)).toEqual({ calls: 0, payloads: 0 })
+  })
+})
+
+describe('a database without transaction support (P2-7)', () => {
+  function noTransactions(db: ReturnType<typeof drizzle>): PostgresDb {
+    return new Proxy(db, {
+      get(target, key) {
+        if (key === 'transaction') {
+          return () => {
+            throw new Error('No transactions support in neon-http driver')
+          }
+        }
+        return Reflect.get(target, key, target) as unknown
+      },
+    }) as unknown as PostgresDb
+  }
+
+  it('ledger-only writes work: one INSERT, no transaction', async () => {
+    const { pg, db } = await freshDb()
+    const sink = drizzleUsageSink({ db: noTransactions(db) })
+    await sink.record(makeRecord())
+    expect(await counts(pg)).toEqual({ calls: 1, payloads: 0 })
+    const { client, logger } = engine(sink, [ok()])
+    await client.generate(request, { auth: AUTH, storePayload: false })
+    expect(logger.find('llm.call.sink.failed')).toBeUndefined()
+    expect(await counts(pg)).toEqual({ calls: 2, payloads: 0 })
+  })
+
+  it('a payload cannot be written without transactions: the write fails loudly, nothing is half written', async () => {
+    const { pg, db } = await freshDb()
+    const sink = drizzleUsageSink({ db: noTransactions(db) })
+    const { client, logger } = engine(sink, [ok()])
+    await expect(client.generate(request, { auth: AUTH })).resolves.toBeDefined()
+    expect(logger.find('llm.call.sink.failed')?.fields).toMatchObject({
+      error: expect.stringContaining('No transactions support'),
+    })
+    expect(await counts(pg)).toEqual({ calls: 0, payloads: 0 })
+  })
+})
+
+describe('purgeLlmCallPayloads runs in bounded batches (P2-3)', () => {
+  async function seed(pg: PGlite, old: number, fresh: number) {
+    await pg.exec(`
+      INSERT INTO llm_calls (record_schema_version, call_id, attempt_id, provider, model,
+        status, token_details, generation_config, attempt_number, metadata)
+      SELECT 2, 'c' || g, 'a' || g, 'p', 'm', 'ok', '{}', '{}', 1, '{}'
+        FROM generate_series(1, ${old + fresh}) g;
+      INSERT INTO llm_call_payloads (attempt_id, request, response, created_at)
+      SELECT 'a' || g, '{}', '{}', CASE WHEN g <= ${old} THEN timestamptz '2026-01-01' ELSE now() END
+        FROM generate_series(1, ${old + fresh}) g;`)
+  }
+
+  it('deletes in batches of batchSize, returns the total, and keeps newer payloads and every ledger row', async () => {
+    const pg = new PGlite()
+    await pg.exec(INSTALL_SQL)
+    const statements: string[] = []
+    const db = drizzle({
+      client: pg,
+      logger: { logQuery: (query) => void statements.push(query) },
+    })
+    await seed(pg, 12_000, 3)
+    const deleted = await purgeLlmCallPayloads(db, {
+      olderThan: new Date('2026-06-01T00:00:00Z'),
+      batchSize: 5000,
+    })
+    expect(deleted).toBe(12_000)
+    expect(await counts(pg)).toEqual({ calls: 12_003, payloads: 3 })
+    // 5000 + 5000 + 2000: three statements, the last one short
+    expect(statements.filter((q) => /delete from/i.test(q))).toHaveLength(3)
+  })
+
+  it('never selects the deleted ids back: the statement returns one count', async () => {
+    const pg = new PGlite()
+    await pg.exec(INSTALL_SQL)
+    const statements: string[] = []
+    const db = drizzle({
+      client: pg,
+      logger: { logQuery: (query) => void statements.push(query) },
+    })
+    await seed(pg, 20, 0)
+    await purgeLlmCallPayloads(db, { olderThan: new Date('2027-01-01T00:00:00Z') })
+    const del = statements.find((q) => /delete from/i.test(q)) ?? ''
+    expect(del).toMatch(/returning 1/i)
+    expect(del).not.toMatch(/returning "?llm_call_payloads"?\."?attempt_id/i)
+    expect(del).toMatch(/limit/i)
+  })
+
+  it('an exact multiple of the batch size ends with one empty batch, and zero rows is zero', async () => {
+    const pg = new PGlite()
+    await pg.exec(INSTALL_SQL)
+    const db = drizzle({ client: pg })
+    await seed(pg, 10, 0)
+    expect(
+      await purgeLlmCallPayloads(db, {
+        olderThan: new Date('2027-01-01T00:00:00Z'),
+        batchSize: 5,
+      }),
+    ).toBe(10)
+    expect(
+      await purgeLlmCallPayloads(db, { olderThan: new Date('2027-01-01T00:00:00Z') }),
+    ).toBe(0)
+  })
+
+  it.each([0, -1, 1.5, Number.NaN, 1_000_001, '5'])(
+    'batchSize %s is bad_request and deletes nothing',
+    async (batchSize) => {
+      const pg = new PGlite()
+      await pg.exec(INSTALL_SQL)
+      const db = drizzle({ client: pg })
+      await seed(pg, 3, 0)
+      await expect(
+        purgeLlmCallPayloads(db, {
+          olderThan: new Date('2027-01-01T00:00:00Z'),
+          batchSize: batchSize as number,
+        }),
+      ).rejects.toMatchObject({ kind: 'bad_request' })
+      expect(await counts(pg)).toEqual({ calls: 3, payloads: 3 })
+    },
+  )
+})
+
+describe('deleteLlmCallPayloads validation (P3-11)', () => {
+  it('a sparse array is bad_request, not a raw driver error', async () => {
+    const { db } = await freshDb()
+    await expect(
+      deleteLlmCallPayloads(db, { callIds: ['a', , 'c'] as unknown as string[] }),
+    ).rejects.toMatchObject({ kind: 'bad_request' })
+    await expect(
+      deleteLlmCallPayloads(db, { callIds: new Array<string>(3) }),
+    ).rejects.toMatchObject({ kind: 'bad_request' })
+  })
+})

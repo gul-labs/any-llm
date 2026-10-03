@@ -1027,10 +1027,112 @@ describe('upgrades/0003-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
     expect((await upgraded.query(`SELECT 1 FROM llm_call_payloads`)).rows).toEqual([])
   })
 
-  it('sets lock_timeout before it touches a table and resets it after', () => {
+  it('is one transaction with a transaction-local lock_timeout set before it touches a table', () => {
     const statements = splitStatements(sqlFile(UPGRADE_0003))
-    expect(statements[0]).toMatch(/^SET lock_timeout = '\d+s?';$/)
-    expect(statements[statements.length - 1]).toBe('RESET lock_timeout;')
+    expect(statements[0]).toBe('BEGIN;')
+    expect(statements[1]).toMatch(/^SET LOCAL lock_timeout = '\d+s?';$/)
+    expect(statements[statements.length - 1]).toBe('COMMIT;')
+    expect(sqlFile(UPGRADE_0003)).not.toMatch(/^SET lock_timeout/m)
+  })
+
+  it('leaves no lock_timeout behind on the connection, after success or after the guard fails', async () => {
+    const ok = new PGlite()
+    await ok.exec(AFTER_0002_SQL)
+    await runStatementwise(ok, sqlFile(UPGRADE_0003))
+    expect(
+      (await ok.query<{ lock_timeout: string }>(`SHOW lock_timeout`)).rows[0],
+    ).toEqual({
+      lock_timeout: '0',
+    })
+
+    const bad = new PGlite()
+    await bad.exec(AFTER_0002_SQL)
+    await bad.exec(`CREATE TABLE llm_call_payloads (attempt_id uuid)`)
+    expect((await runStatementwise(bad, sqlFile(UPGRADE_0003))).join('\n')).toMatch(
+      /rename it first/,
+    )
+    expect(
+      (await bad.query<{ lock_timeout: string }>(`SHOW lock_timeout`)).rows[0],
+    ).toEqual({
+      lock_timeout: '0',
+    })
+  })
+
+  describe('the guard accepts only exactly the table this release creates', () => {
+    const FK =
+      'CONSTRAINT llm_call_payloads_attempt_id_llm_calls_attempt_id_fk FOREIGN KEY (attempt_id) REFERENCES llm_calls (attempt_id) ON DELETE CASCADE'
+    const lookalikes: Array<[string, string]> = [
+      [
+        'the four names with other types and no keys',
+        `CREATE TABLE llm_call_payloads (attempt_id uuid, request text, response text, created_at date)`,
+      ],
+      [
+        'the right types without the primary key',
+        `CREATE TABLE llm_call_payloads (attempt_id TEXT NOT NULL, request JSONB NOT NULL, response JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), ${FK})`,
+      ],
+      [
+        'the right types without the foreign key',
+        `CREATE TABLE llm_call_payloads (attempt_id TEXT PRIMARY KEY, request JSONB NOT NULL, response JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
+      ],
+      [
+        'a foreign key that does not cascade',
+        `CREATE TABLE llm_call_payloads (attempt_id TEXT PRIMARY KEY, request JSONB NOT NULL, response JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), CONSTRAINT llm_call_payloads_attempt_id_llm_calls_attempt_id_fk FOREIGN KEY (attempt_id) REFERENCES llm_calls (attempt_id))`,
+      ],
+      [
+        'nullable columns',
+        `CREATE TABLE llm_call_payloads (attempt_id TEXT PRIMARY KEY, request JSONB, response JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), ${FK})`,
+      ],
+      [
+        'created_at without time zone',
+        `CREATE TABLE llm_call_payloads (attempt_id TEXT PRIMARY KEY, request JSONB NOT NULL, response JSONB NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT now(), ${FK})`,
+      ],
+      [
+        'created_at with no default',
+        `CREATE TABLE llm_call_payloads (attempt_id TEXT PRIMARY KEY, request JSONB NOT NULL, response JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL, ${FK})`,
+      ],
+      [
+        'an extra column',
+        `CREATE TABLE llm_call_payloads (attempt_id TEXT PRIMARY KEY, request JSONB NOT NULL, response JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), extra TEXT, ${FK})`,
+      ],
+      [
+        'a foreign key under another name',
+        `CREATE TABLE llm_call_payloads (attempt_id TEXT PRIMARY KEY, request JSONB NOT NULL, response JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), CONSTRAINT other_fk FOREIGN KEY (attempt_id) REFERENCES llm_calls (attempt_id) ON DELETE CASCADE)`,
+      ],
+    ]
+
+    it.each(lookalikes)('refuses %s, and creates nothing on it', async (_name, ddl) => {
+      const pg = new PGlite()
+      await pg.exec(AFTER_0002_SQL)
+      await pg.exec(ddl)
+      const before = {
+        table: await describeTable(pg, PAYLOADS),
+        indexes: await indexNames(pg, PAYLOADS),
+        constraints: await constraintDefs(pg, PAYLOADS),
+      }
+      await expect(pg.exec(sqlFile(UPGRADE_0003))).rejects.toThrow(/rename it first/)
+      expect(await runStatementwise(pg, sqlFile(UPGRADE_0003))).not.toEqual([])
+      expect({
+        table: await describeTable(pg, PAYLOADS),
+        indexes: await indexNames(pg, PAYLOADS),
+        constraints: await constraintDefs(pg, PAYLOADS),
+      }).toEqual(before)
+    })
+
+    it('accepts the table exactly as this release creates it, and an index already present', async () => {
+      const pg = new PGlite()
+      await pg.exec(AFTER_0002_SQL)
+      await pg.exec(
+        `CREATE TABLE llm_call_payloads (attempt_id TEXT PRIMARY KEY, request JSONB NOT NULL, response JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), ${FK})`,
+      )
+      await expect(pg.exec(sqlFile(UPGRADE_0003))).resolves.toBeDefined()
+      await expect(pg.exec(sqlFile(UPGRADE_0003))).resolves.toBeDefined()
+    })
+
+    it('accepts the table a fresh install creates', async () => {
+      const pg = new PGlite()
+      await pg.exec(sqlFile('install.sql'))
+      await expect(pg.exec(sqlFile(UPGRADE_0003))).resolves.toBeDefined()
+    })
   })
 
   it('runs each statement on its own twice with the same result (idempotent per statement)', async () => {
