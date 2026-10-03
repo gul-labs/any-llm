@@ -108,6 +108,54 @@ describe('R4.11 output-side filter stop', () => {
     expect(err.message).toContain('Sensitive personal information detected')
   })
 
+  it('keeps the safety ratings: the message names the blocking category and the cause carries the raw fields', async () => {
+    const safetyRatings = [
+      { category: 'HARM_CATEGORY_HARASSMENT', probability: 'NEGLIGIBLE' },
+      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', probability: 'HIGH', blocked: true },
+    ]
+    const client = makeFakeGemini({
+      candidates: [{ content: { parts: [] }, finishReason: 'SAFETY', safetyRatings }],
+      usageMetadata: { promptTokenCount: 5 },
+    })
+    const err = await failure(geminiAdapter({ client }).run(makeReq(), FAKE_CTX))
+    expect(err.message).toContain('HARM_CATEGORY_DANGEROUS_CONTENT=HIGH (blocked)')
+    expect(err.message).toContain('HARM_CATEGORY_HARASSMENT=NEGLIGIBLE')
+    expect(err.cause).toMatchObject({ finishReason: 'SAFETY', safetyRatings })
+  })
+
+  it('bounds the finishMessage in the thrown message and the cause', async () => {
+    const client = makeFakeGemini({
+      candidates: [
+        {
+          content: { parts: [] },
+          finishReason: 'SAFETY',
+          finishMessage: 'x'.repeat(5000),
+        },
+      ],
+      usageMetadata: { promptTokenCount: 5 },
+    })
+    const err = await failure(geminiAdapter({ client }).run(makeReq(), FAKE_CTX))
+    expect(err.message.length).toBeLessThan(1000)
+    const cause = err.cause as { finishMessage: string }
+    expect(cause.finishMessage.length).toBeLessThanOrEqual(513)
+    expect(cause.finishMessage.endsWith('…')).toBe(true)
+  })
+
+  it('a blocked prompt keeps promptFeedback.safetyRatings in the message', async () => {
+    const client = makeFakeGemini({
+      promptFeedback: {
+        blockReason: 'SAFETY',
+        safetyRatings: [
+          { category: 'HARM_CATEGORY_HATE_SPEECH', probability: 'HIGH', blocked: true },
+        ],
+      },
+      usageMetadata: { promptTokenCount: 5 },
+    })
+    const err = await failure(geminiAdapter({ client }).run(makeReq(), FAKE_CTX))
+    expect(err.kind).toBe('content_filter')
+    expect(err.message).toContain('HARM_CATEGORY_HATE_SPEECH=HIGH (blocked)')
+  })
+
   it('thought-only output is no answer: it still throws', async () => {
     const client = makeFakeGemini(
       fakeGeminiResponse({
@@ -242,6 +290,62 @@ describe('R4.11 providerMetadata.google.candidate', () => {
     })
   })
 
+  it('bounds the copied metadata: a long finishMessage is truncated, long citation lists are capped, and a warning says so', async () => {
+    const citations = Array.from({ length: 200 }, (_, i) => ({
+      uri: `https://example.com/${i}`,
+    }))
+    const urlMetadata = Array.from({ length: 80 }, (_, i) => ({
+      retrievedUrl: `https://example.com/${i}`,
+    }))
+    const client = makeFakeGemini({
+      candidates: [
+        {
+          content: { parts: [{ text: 'partial' }] },
+          finishReason: 'MALFORMED_FUNCTION_CALL',
+          finishMessage: 'call get_temperature(' + 'y'.repeat(5000),
+          citationMetadata: { citations },
+          urlContextMetadata: { urlMetadata },
+        },
+      ],
+      usageMetadata: { promptTokenCount: 1 },
+    })
+    const result = await geminiAdapter({ client }).run(makeReq(), FAKE_CTX)
+    const candidate = (
+      result.providerMetadata as {
+        google: {
+          candidate: {
+            finishMessage: string
+            citationMetadata: { citations: unknown[] }
+            urlContextMetadata: { urlMetadata: unknown[] }
+          }
+        }
+      }
+    ).google.candidate
+    expect(candidate.finishMessage.length).toBeLessThanOrEqual(513)
+    expect(candidate.finishMessage.endsWith('…')).toBe(true)
+    expect(candidate.citationMetadata.citations).toHaveLength(50)
+    expect(candidate.urlContextMetadata.urlMetadata).toHaveLength(50)
+    expect(result.warnings?.some((w) => w.message.includes('truncated'))).toBe(true)
+  })
+
+  it('does not truncate or warn when the metadata is small', async () => {
+    const client = makeFakeGemini({
+      candidates: [
+        {
+          content: { parts: [{ text: 'ok' }] },
+          finishReason: 'STOP',
+          finishMessage: 'short',
+          citationMetadata: { citations: [{ uri: 'https://example.com' }] },
+        },
+      ],
+      usageMetadata: { promptTokenCount: 1 },
+    })
+    const result = await geminiAdapter({ client }).run(makeReq(), FAKE_CTX)
+    expect(result.warnings?.some((w) => w.message.includes('truncated')) ?? false).toBe(
+      false,
+    )
+  })
+
   it('merges with searchEntryPoint under one google key', async () => {
     const entry = { renderedContent: '<div>Search</div>' }
     const client = makeFakeGemini(
@@ -306,6 +410,25 @@ describe('R4.17 cachedContent with system or tools', () => {
     expect(err.issues?.map((i) => i.path)).toEqual(paths)
     expect(err.message).toContain('GoogleCacheStore.create')
     expect(client.calls).toHaveLength(0)
+  })
+
+  it('an empty system string is absent: it neither conflicts with cachedContent nor reaches the wire', async () => {
+    const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
+    await geminiAdapter({ client }).run(makeReq({ config: cached, system: '' }), FAKE_CTX)
+    expect(client.calls).toHaveLength(1)
+    expect(
+      (client.calls[0] as { config?: { systemInstruction?: unknown } }).config
+        ?.systemInstruction,
+    ).toBeUndefined()
+  })
+
+  it('an empty system string sends no systemInstruction without cachedContent either', async () => {
+    const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
+    await geminiAdapter({ client }).run(makeReq({ system: '' }), FAKE_CTX)
+    expect(
+      (client.calls[0] as { config?: { systemInstruction?: unknown } }).config
+        ?.systemInstruction,
+    ).toBeUndefined()
   })
 
   it('cachedContent with providerOptions.google.tools (googleSearch) is rejected too', async () => {
@@ -791,6 +914,55 @@ describe('R4.16 countTokens on the wire (real @google/genai, stubbed fetch)', ()
     )
     const err = await failure(adapter.countTokens!(makeCountReq({ system: 'x' }), ctx))
     expect(err).toMatchObject({ kind: 'server', retryable: true, httpStatus: 502 })
+  })
+
+  it('a huge non-JSON error body (an HTML proxy page) is bounded in the error message', async () => {
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(`<html>${'x'.repeat(200_000)}</html>`, {
+          status: 502,
+          statusText: 'Bad Gateway',
+          headers: { 'content-type': 'text/html' },
+        }),
+    )
+    const err = await failure(adapter.countTokens!(makeCountReq({ system: 'x' }), ctx))
+    expect(err).toMatchObject({ kind: 'server', retryable: true, httpStatus: 502 })
+    expect(err.message.length).toBeLessThan(4_000)
+  })
+
+  it('an error status with a JSON content type but an unparseable body is classified by status, not a SyntaxError', async () => {
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response('<html>proxy</html>', {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        }),
+    )
+    const err = await failure(adapter.countTokens!(makeCountReq({ system: 'x' }), ctx))
+    expect(err).toMatchObject({ kind: 'server', retryable: true, httpStatus: 503 })
+    expect(err.cause).not.toBeInstanceOf(SyntaxError)
+  })
+
+  it('a 200 whose body is not JSON is a retryable server error, not an unknown SyntaxError', async () => {
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response('not json', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    )
+    const err = await failure(adapter.countTokens!(makeCountReq({ system: 'x' }), ctx))
+    expect(err).toMatchObject({ kind: 'server', retryable: true, provider: 'google' })
+  })
+
+  it('an empty system string is the messages-only form, not the REST generateContentRequest', async () => {
+    responses.push({ status: 200, body: { totalTokens: 11 } })
+    await adapter.countTokens!(makeCountReq({ system: '' }), ctx)
+    expect(sent[0]!.body).not.toHaveProperty('generateContentRequest')
+    expect(sent[0]!.body).toHaveProperty('contents')
   })
 
   it('works end to end through createClient', async () => {

@@ -518,6 +518,80 @@ const CANDIDATE_METADATA_KEYS = [
   'urlContextMetadata',
 ] as const
 
+/** Longest `finishMessage` copied into a row or an error (characters). */
+const MAX_FINISH_MESSAGE_CHARS = 512
+/** Most entries kept from any array in copied candidate metadata. */
+const MAX_METADATA_ARRAY = 50
+/** Longest string kept inside copied candidate metadata (characters). */
+const MAX_METADATA_STRING = 2048
+/** Deepest nesting copied from candidate metadata. */
+const MAX_METADATA_DEPTH = 8
+/** Most safety ratings listed in an error message. */
+const MAX_RATINGS_IN_MESSAGE = 12
+
+function truncateText(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text
+}
+
+/**
+ * A bounded copy of provider metadata for a row: strings are cut at
+ * `MAX_METADATA_STRING`, arrays at `MAX_METADATA_ARRAY` entries, nesting at
+ * `MAX_METADATA_DEPTH`. `state.truncated` says whether anything was cut.
+ * `providerMetadata` is persisted on every row, and these fields can carry
+ * model text (a malformed function call's `finishMessage`) or long source lists.
+ */
+function boundMetadata(
+  value: unknown,
+  state: { truncated: boolean },
+  depth = 0,
+): JsonValue {
+  if (typeof value === 'string') {
+    if (value.length > MAX_METADATA_STRING) state.truncated = true
+    return truncateText(value, MAX_METADATA_STRING)
+  }
+  if (value === null || typeof value !== 'object') return value as JsonValue
+  if (depth >= MAX_METADATA_DEPTH) {
+    state.truncated = true
+    return null
+  }
+  if (Array.isArray(value)) {
+    if (value.length > MAX_METADATA_ARRAY) state.truncated = true
+    return value
+      .slice(0, MAX_METADATA_ARRAY)
+      .map((item) => boundMetadata(item, state, depth + 1))
+  }
+  const out: { [k: string]: JsonValue } = {}
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (item !== undefined) out[key] = boundMetadata(item, state, depth + 1)
+  }
+  return out
+}
+
+/**
+ * `category=probability` per safety rating (`(blocked)` when the rating blocked
+ * the response), bounded, for an error message: which category refused the
+ * call is the evidence a host needs from a filtered empty response.
+ */
+function describeSafetyRatings(ratings: unknown): string {
+  if (!Array.isArray(ratings) || ratings.length === 0) return ''
+  const parts = ratings.slice(0, MAX_RATINGS_IN_MESSAGE).flatMap((rating) => {
+    if (typeof rating !== 'object' || rating === null) return []
+    const { category, probability, blocked } = rating as Record<string, unknown>
+    if (typeof category !== 'string') return []
+    return [
+      `${truncateText(category, 80)}=${
+        typeof probability === 'string' ? truncateText(probability, 40) : 'unknown'
+      }${blocked === true ? ' (blocked)' : ''}`,
+    ]
+  })
+  if (parts.length === 0) return ''
+  const more =
+    ratings.length > MAX_RATINGS_IN_MESSAGE
+      ? ` and ${ratings.length - MAX_RATINGS_IN_MESSAGE} more`
+      : ''
+  return `${parts.join(', ')}${more}`
+}
+
 function mapFinishReason(raw: string | undefined): FinishReason | undefined {
   if (raw === undefined) return undefined
   switch (raw) {
@@ -821,7 +895,11 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         req.messages,
         resolved?.bySlot,
       )
-      assertInlinePayloadWithinLimits(contents, req.system)
+      // An empty system string adds no instruction, so it is absent everywhere
+      // (here, the `cachedContent` conflict check and `countTokens`).
+      const system =
+        req.system !== undefined && req.system !== '' ? req.system : undefined
+      assertInlinePayloadWithinLimits(contents, system)
 
       // ------------------------------------------------------------------
       // 2. Build GenerateContentConfig
@@ -830,8 +908,8 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       const config: GeminiDispatchConfig = {}
 
       // System instruction
-      if (req.system !== undefined) {
-        config.systemInstruction = { parts: [{ text: req.system }] }
+      if (system !== undefined) {
+        config.systemInstruction = { parts: [{ text: system }] }
       }
 
       // Basic generation parameters (only include when defined)
@@ -1114,7 +1192,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       // (`GoogleCacheStore.create` accepts them). Reject before dispatch.
       if (config.cachedContent !== undefined) {
         const conflicts = [
-          ...(req.system !== undefined ? ['system'] : []),
+          ...(system !== undefined ? ['system'] : []),
           ...(req.tools !== undefined && req.tools.length > 0 ? ['tools'] : []),
           ...(googleProviderConfig.tools !== undefined
             ? ['providerOptions.google.tools']
@@ -1358,8 +1436,13 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
                 config.maxOutputTokens ?? 'the provider default'
               }) includes reasoning tokens, so a low cap can be used up by reasoning before any answer is produced`
             : ''
+        const promptRatings = hasBlockReason
+          ? describeSafetyRatings(response.promptFeedback?.safetyRatings)
+          : ''
         throw new LlmError(
-          `Gemini response has no usable candidate: ${reason}${reasoningHint}`,
+          `Gemini response has no usable candidate: ${reason}${
+            promptRatings !== '' ? ` (safetyRatings: ${promptRatings})` : ''
+          }${reasoningHint}`,
           {
             kind: hasBlockReason ? 'content_filter' : 'server',
             retryable: !hasBlockReason,
@@ -1407,19 +1490,34 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
             part.text.length > 0) ||
           (part.functionCall !== undefined && typeof part.functionCall.name === 'string'),
       )
-      const filteredCandidateError = (note: string): LlmError =>
-        new LlmError(
+      const filteredCandidateError = (note: string): LlmError => {
+        const finishMessage =
+          candidate.finishMessage !== undefined
+            ? truncateText(candidate.finishMessage, MAX_FINISH_MESSAGE_CHARS)
+            : undefined
+        const ratings = describeSafetyRatings(candidate.safetyRatings)
+        const bounded = { truncated: false }
+        return new LlmError(
           `Gemini candidate was filtered (finishReason ${candidate.finishReason}${
-            candidate.finishMessage !== undefined ? `: ${candidate.finishMessage}` : ''
-          }); ${note}. The attempt was billed.`,
+            finishMessage !== undefined ? `: ${finishMessage}` : ''
+          }${ratings !== '' ? `; safetyRatings: ${ratings}` : ''}); ${note}. The attempt was billed.`,
           {
             kind: 'content_filter',
             retryable: false,
             provider: 'google',
+            // The raw evidence, bounded: which category blocked, and why.
+            cause: {
+              finishReason: candidate.finishReason ?? null,
+              ...(finishMessage !== undefined ? { finishMessage } : {}),
+              ...(candidate.safetyRatings !== undefined
+                ? { safetyRatings: boundMetadata(candidate.safetyRatings, bounded) }
+                : {}),
+            },
             ...billedFailure(response.usageMetadata, groundingMetadata),
             ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
           },
         )
+      }
       if (mapFinishReason(candidate.finishReason) === 'content_filter' && !hasAnswer) {
         throw filteredCandidateError('it carries no answer text and no tool call')
       }
@@ -1649,9 +1747,23 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
           // ratings, citation and URL-context metadata), so a host can tell a
           // malformed tool call from a language refusal behind `'other'`.
           const candidateFields: { [k: string]: JsonValue } = {}
+          const bounded = { truncated: false }
           for (const key of CANDIDATE_METADATA_KEYS) {
             const value = (candidate as unknown as Record<string, unknown>)[key]
-            if (value !== undefined) candidateFields[key] = value as JsonValue
+            if (value === undefined) continue
+            candidateFields[key] =
+              key === 'finishMessage' && typeof value === 'string'
+                ? (() => {
+                    if (value.length > MAX_FINISH_MESSAGE_CHARS) bounded.truncated = true
+                    return truncateText(value, MAX_FINISH_MESSAGE_CHARS)
+                  })()
+                : boundMetadata(value, bounded)
+          }
+          if (bounded.truncated) {
+            warnings.push({
+              type: 'other',
+              message: `google: providerMetadata.google.candidate was truncated (finishMessage over ${MAX_FINISH_MESSAGE_CHARS} characters, or a list over ${MAX_METADATA_ARRAY} entries).`,
+            })
           }
           const googleMeta: { [k: string]: JsonValue } = {}
           if (Object.keys(candidateFields).length > 0) {
@@ -1711,7 +1823,8 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       // form (see `buildGoogleClient`): the count then covers the same request
       // `generate()` would send. An empty system string adds no tokens and is
       // treated as absent.
-      const hasSystem = req.system !== undefined && req.system !== ''
+      const system =
+        req.system !== undefined && req.system !== '' ? req.system : undefined
       const tools =
         req.tools !== undefined && req.tools.length > 0 ? req.tools : undefined
       if (tools !== undefined) {
@@ -1736,12 +1849,12 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       }
 
       const contents = mapMessagesToGeminiContents(req.messages)
-      assertInlinePayloadWithinLimits(contents, hasSystem ? req.system : undefined)
+      assertInlinePayloadWithinLimits(contents, system)
       const params: GeminiCountTokensParams = {
         model: req.model,
         contents,
-        ...(hasSystem
-          ? { systemInstruction: { parts: [{ text: req.system as string }] } }
+        ...(system !== undefined
+          ? { systemInstruction: { parts: [{ text: system }] } }
           : {}),
         ...(tools !== undefined
           ? {

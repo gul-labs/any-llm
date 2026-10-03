@@ -442,6 +442,9 @@ export async function buildGoogleClient(auth: AuthMaterial): Promise<GeminiClien
  */
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta'
 
+/** Longest non-structured error body kept in an error message (characters). */
+const MAX_ERROR_BODY_CHARS = 500
+
 /**
  * `models.countTokens` with `systemInstruction` and `tools`.
  *
@@ -480,18 +483,40 @@ async function countTokensWithRequest(
       ? { signal: params.config.abortSignal }
       : {}),
   })
+  const raw = await response.text()
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    parsed = undefined
+  }
   if (!response.ok) {
-    const body: unknown =
-      response.headers.get('content-type')?.includes('application/json') === true
-        ? await response.json()
+    // A structured `{ error: {...} }` body is passed on as sent. Anything else
+    // (an HTML proxy page, a JSON body of another shape, an unparseable one) is
+    // wrapped with its text cut short, so a page cannot flood the message.
+    const body =
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      typeof (parsed as { error?: unknown }).error === 'object'
+        ? parsed
         : {
             error: {
-              message: await response.text(),
+              message:
+                raw.length > MAX_ERROR_BODY_CHARS
+                  ? `${raw.slice(0, MAX_ERROR_BODY_CHARS)}…`
+                  : raw,
               code: response.status,
               status: response.statusText,
             },
           }
     throw new ApiError({ message: JSON.stringify(body), status: response.status })
   }
-  return (await response.json()) as GeminiCountTokensResponseShape
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new LlmError('Gemini countTokens response is not a JSON object', {
+      kind: 'server',
+      retryable: true,
+      provider: 'google',
+    })
+  }
+  return parsed as GeminiCountTokensResponseShape
 }
