@@ -174,7 +174,7 @@ Recommended invariant test:
 ```ts
 import { defaultGeminiRegistry } from '@gullabs/google'
 
-for (const descriptor of defaultGeminiRegistry.listDescriptors?.() ?? []) {
+for (const descriptor of defaultGeminiRegistry.listDescriptors()) {
   expect(descriptor.configJsonSchema).toBeDefined()
   expect(descriptor.validateConfig).toBeDefined()
   expect(hasAdapterFixture(descriptor.id)).toBe(true)

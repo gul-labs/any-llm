@@ -348,11 +348,19 @@ prove the answer.
 **Amendment (2026-10-03): `runStructured` option parity.** `RunStructuredOptions` gains `externalId`,
 `attachments?: Part[]` (appended to the rendered user message), `history?: Message[]` (prepended) and
 `transientProviderState`, with the same meaning and validation as on `generate`, so a host that uses call
-sites no longer drops to `generate` to correlate a retry, attach a file, send history or continue a
-tool loop. A rendered user message that is empty, with no attachments, is `bad_request` before any
+sites no longer drops to `generate` to correlate a retry, attach a file, or send text or media history. A
+rendered user message that is empty or whitespace only, with no attachments, is `bad_request` before any
 request is built (row-less, like the other prologue checks); attachments alone are a valid message and
-no empty text part is sent. Output validation is unchanged: none of these options makes the library
-validate `output`, and a host that wants a validated answer still validates and retries itself.
+no empty text part is sent. Every `attachments` element must be a part object and every `history`
+element a `{ role, parts }` message of known part kinds, else `bad_request` naming the path
+(`attachments[0]`, `history[1].parts[0].kind`); `generate` applies the same shape check to `messages`.
+A call site declares no tools, so `tool-call` and `tool-result` parts in `attachments` or `history` are
+`bad_request`: a tool loop belongs to `generate`. `history` is sent as given: a history that ends in a
+user message is followed by the rendered user message as a second consecutive user turn, and turns are
+never merged. `transientProviderState` is admitted only by models that declare `providerState`, and
+lets a follow-up structured call reuse what the provider returned with the earlier result. Output
+validation is unchanged: none of these options makes the library validate `output`, and a host that
+wants a validated answer still validates and retries itself.
 
 ---
 
@@ -2036,6 +2044,9 @@ with an alias list would have been rejected on its first call.
 
 ### Amendment A (2026-10-03): descriptor limits and admitted input media types
 
+_Points 1, 2 and 4 are revised by Amendment C below: a `null` output limit, no exact-string media
+matching, no `vision` / `audioInput` flags._
+
 **Context:**
 A host learned a model's output cap, window and image formats from a 400 after dispatch: xAI rejects
 WebP, Gemini rejects `maxOutputTokens` above 65,536, and neither fact was on the descriptor.
@@ -2107,6 +2118,59 @@ lived only inside its Zod schema.
 
 - Custom `ModelRegistry` implementations must add `findByModel` and `listDescriptors`; custom
   descriptors must add `configKeys` (use `toConfigKeys(configSchema)`).
+
+### Amendment C (2026-10-03): honest limits, normalised media-type admission, snapshot registry
+
+**Context:**
+An audit of Amendments A and B found a figure no provider publishes, an admission rule stricter than
+the providers, and registry answers that could drift: `limits.maxOutputTokens` was set to the context
+window for xAI and Gemma 4 (neither documents an output limit), which also made the schema reject
+500,001 where xAI had been live-verified to accept 100,000,000; media types were matched as exact
+strings, so `IMAGE/PNG`, `text/plain; charset=utf-8` or an empty type had no accepted spelling and
+Gemini's open-ended document list (`TXT, Markdown, HTML, XML, etc.`) was cut to four types; a file
+uploaded with `GoogleFileStore` could be refused later by `generate`; `vision` and `audioInput` could
+disagree with `inputMimeTypes`; `configKeys` was checked against the declared JSON Schema, not the
+schema; shared `limits` objects were writable; `listDescriptors` was live while `resolve` was a snapshot.
+
+**Decision (supersedes Amendment A points 1, 2 and 4 where they differ):**
+
+1. **`limits.maxOutputTokens: number | null`.** A number is a figure the provider documents. `null`
+   means the provider documents no output limit for the model: no figure is invented, the config schema
+   applies no cap, and the provider decides. `null` is not "unlimited" and not the context window. It is
+   required (an omitted value is refused, not read as `null`); `contextWindow` stays a required positive
+   integer. The schema helper `maxOutputTokensSchema(limits)` caps only for a number, and
+   `assertRegistryInvariants` checks both cases. xAI Grok 4.x and Gemma 4 are `null`; the live-verified
+   acceptance of very large xAI values is restored. Every other model's figures were re-read against the
+   cited pages on 2026-10-03.
+2. **Media-type admission is one function, `assertMediaTypeAdmitted`,** used by
+   `assertInputMimeTypesAdmitted` (every adapter, `countTokens` included) and by
+   `GoogleFileStore.upload`, so a file that uploads can be used. The check reads the type
+   case-insensitively with `; parameters` stripped; the string sent to the provider is never changed
+   (admission is not a rewrite). An empty or malformed type is `bad_request` with its own message. An
+   `inputMimeTypes` entry is a lower-case `type/subtype` or a family wildcard `type/*` (registry-checked,
+   frozen). Aliases are still not mapped: `image/jpg` is not `image/jpeg`.
+3. **Per provider.** xAI admits exactly `image/jpeg` and `image/png`: its image page lists the
+   extensions "jpg/jpeg or png", not media types, and `image/jpg` is not a registered type, so it stays
+   rejected. Gemini admits `application/pdf` and the families `text/*`, `image/*`, `audio/*`, `video/*`:
+   Google lists image, audio and video types but, for documents, only "TXT, Markdown, HTML, XML, etc.";
+   a type inside a family that Google does not accept is Google's error to give. `application/json` and
+   other `application/*` types stay rejected. Gemma 4 admits `image/*` and `video/*`: its model card lists
+   image input and video as frames (no media types are named), and audio is for other Gemma sizes. That
+   the Gemini API's Gemma endpoint accepts a video part is not probed.
+4. **The `vision` and `audioInput` capability flags are deleted.** `inputMimeTypes` is the single
+   statement of multimodal support; `isMediaTypeAdmitted(type, list)` answers "does it take images".
+5. **`createModelRegistry` trusts no declared artifact.** `configKeys` and `configJsonSchema` are compared
+   with what `configSchema` yields, and `toConfigKeys` follows local `$ref`s into `$defs` (a schema with
+   `.meta({ id })`) and reports an unrepresentable schema as `LlmError('bad_request')`. The registry freezes
+   each descriptor's `limits`, `inputMimeTypes`, `aliases` and `configKeys`, and answers `resolve`,
+   `findByModel` and `listDescriptors` from one copy of the descriptor list taken at construction.
+
+**Consequences:**
+
+- A custom descriptor sets `maxOutputTokens: null` when its provider documents none, and drops
+  `vision` / `audioInput` for `inputMimeTypes`.
+- `GoogleFileStore.upload` throws `bad_request` for an empty or unadmitted type before any bytes are sent.
+- Descriptors whose `configJsonSchema` was hand-written must use `toConfigJsonSchema(configSchema)`.
 
 ---
 
@@ -2807,9 +2871,20 @@ each pass and overshoot; the call that crosses the ceiling is allowed; and bille
 usage (`microUsd: null`) count only if the host's `spentSoFar` counts them. A ceiling that holds needs atomic
 reservation and reconciliation, an own design tracked in `BACKLOG.md`. It sets no `Middleware.role`:
 it is correct inside or outside retry (outside: once per logical call; inside: re-read per attempt), so
-the quota-inside-retry rule does not apply to it. `search_budget_exceeded` is still not emitted: the
-xAI `searchBudget` option (ADR-030 amendment) observes the budget after a billed call and reports it as a
-warning, never an error.
+the quota-inside-retry rule does not apply to it. Placed inside retry, a provider failure followed by a
+ceiling hit leaves the caller with the `spend_ceiling` error; the provider's error stays in the earlier
+attempt's sink row.
+
+A ledger that cannot be read fails the call closed with `server`, `retryable: false` and the ledger's
+error as `cause` (not `rate_limited`: no ceiling was reached; not `unknown`; not retryable: the retry
+would read the same ledger, and a host that falls back to another provider on `server` should not take
+a ledger outage for a provider fault). An invalid reading is `bad_request`.
+
+**`search_budget_exceeded` is reserved and not emitted.** It stays in the `LlmErrorReason` union for the
+streaming release (R9), which can abort a call once an xAI search counter crosses the budget. Until that
+ships nothing sets it: the xAI `searchBudget` option (ADR-030 amendment) observes the budget after a
+billed call and reports it as a warning and `usage.details.search_budget_exceeded`, never an error. Hosts
+must not branch on the reason yet.
 
 ---
 

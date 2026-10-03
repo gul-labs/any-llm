@@ -203,8 +203,8 @@ paths to other repos.
   tokens (`docs/thinking-token-distribution.md`) found p95 two to six times the p50 at `high` effort,
   driven by the prompt more than by the model or the effort. No per-model answer allowance would be
   stable, so a cap that reserves room for the answer cannot be computed from the descriptor. The warning
-  for a budget at or above `maxOutputTokens`, and the one for reasoning that used up the cap, are the
-  final state. Re-measure only if Google changes how thinking is bounded.
+  for a budget at or above `maxOutputTokens` (and, on 3.x, `high` effort under 4,096), and the one for
+  reasoning that used up the cap, are the final state. Re-measure only if Google changes how thinking is bounded.
 - **Enforced spend ceiling.** `spendPreflightMiddleware` is advisory: its read and the dispatch are not
   atomic, so concurrent workers can overshoot, and billed calls with unknown usage are not counted
   unless the host's ledger counts them. A ceiling that holds needs an atomic reservation before
@@ -215,10 +215,14 @@ paths to other repos.
   abort once the counters cross the budget. Keep `maxTurns` and re-probe whether xAI enforces it at each
   model refresh.
 - **Output limits for providers that document none.** Gemma 4 and xAI Grok 4.x publish no maximum
-  output size, so `limits.maxOutputTokens` equals the context window. Replace it with the real figure
+  output size, so `limits.maxOutputTokens` is `null` and the schemas apply no cap. Set the real figure
   when a provider documents one (a live probe of an oversized value would also pin it).
-- **Gemma 4 input media types.** The Gemma pages list no image media types; only PNG and JPEG (the types
-  its examples use) are admitted. Probe WebP, HEIC and the other Gemini image types before admitting them.
+- **Gemma 4 input media types.** The Gemma pages name no media types; `image/*` and `video/*` are
+  admitted (the model card lists image input and video as frames). Probe whether the Gemini API's Gemma
+  endpoint accepts a video part, and which image types it decodes, before tightening or widening.
+- **Gemini document types.** Google's document page lists no closed set ("TXT, Markdown, HTML, XML,
+  etc."), so `text/*` is admitted as a family. Probe `text/csv`, `application/json` and
+  `text/x-python` against the Files API to see which Google actually takes.
 
 ## Optional later (not ticketed)
 

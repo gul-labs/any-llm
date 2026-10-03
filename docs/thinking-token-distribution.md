@@ -53,8 +53,14 @@ Pooled over all models and prompts:
 | `medium` | 44%             | 21%      | 0%       | -        |
 | `high`   | 63%             | 24%      | 11%      | 1%       |
 
+Gemini 3.x models alone (72 calls per effort, `level` models with no budget): at `high`, 58% of calls
+reached 1,000 thinking tokens, 18% reached 2,000, 10% (7 of 72) reached 4,000 and 1% reached 8,000.
+
 The largest value seen was 8,859 thinking tokens (`gemini-3.5-flash-lite`, `high`, the logic puzzle).
-The Gemini 2.5 budgets (1,024, 8,192, 24,576) were never approached; the maximum was 5,767.
+
+Against their budgets, the Gemini 2.5 models (24 calls per effort) used, at most: `low` 1,020 of 1,024
+(`gemini-2.5-flash`; `gemini-2.5-pro` 924, so the `low` budget is effectively reached), `medium` 3,686
+of 8,192 (45%), `high` 5,767 of 24,576 (23%). Only the `medium` and `high` budgets were never approached.
 
 ## What drives it
 
@@ -71,4 +77,12 @@ The prompt, far more than the model or the knob. At `high`, the logic puzzle has
   spent. Google says actual thinking can under- or overflow the budget, so neither is an invalid request.
 - **Guidance for hosts.** A cap of 1,024 is used up by thinking in a majority of `high` calls here, and
   a cap under 4,096 is unsafe at `high`. The `high` default budget of 24,576 on Gemini 2.5 is a ceiling
-  the calls measured here stayed far below.
+  the calls measured here stayed far below; the `low` budget of 1,024 is not (one call used 1,020).
+- **The 3.x warning rule.** The Gemini 3.x models take a level, not a budget, so there is nothing to compare
+  with `maxOutputTokens`. The library warns when `reasoning.effort` is `high` and `maxOutputTokens` is
+  below 4,096, the cap at which 10% of the 3.x `high` calls here (7 of 72) would have had thinking alone
+  fill it. There is no rule for `low` or `medium`: no 3.x call reached 4,000 tokens at either, and a
+  smaller cap would be drawn from a prompt-dependent tail that 72 calls cannot place. An omitted
+  `reasoning` is not warned about, since the default level was not measured.
+- **Reproducibility.** The 336 raw records and the probe script are kept outside this repository (the probe
+  script reads an API key and a spend ledger); this page publishes the result.

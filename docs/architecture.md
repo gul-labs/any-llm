@@ -492,11 +492,13 @@ Each descriptor carries:
   checked against the keywords Google enforces; ADR-034).
 - `configKeys` — the sorted top-level keys the config schema names across all union branches
   (`toConfigKeys(configSchema)`; a stale list fails registry construction).
-- `limits` — required `{ contextWindow, maxOutputTokens }` from the provider's documentation; the
-  config schema caps `maxOutputTokens` at `limits.maxOutputTokens` (ADR-033, Amendment A).
-- `capabilities.vision` / `capabilities.audioInput` — declarative multimodal support flags.
-- `capabilities.inputMimeTypes` — the exact media types admitted in `inline-media` and `file-uri`
-  parts; adapters reject any other with `bad_request` before dispatch.
+- `limits` — required `{ contextWindow, maxOutputTokens }` from the provider's documentation;
+  `maxOutputTokens` is `null` when the provider documents no output limit, and the config schema caps
+  `maxOutputTokens` only for a number (ADR-033, Amendments A and C).
+- `capabilities.inputMimeTypes` — the media types (or `type/*` families) admitted in `inline-media` and
+  `file-uri` parts, the single statement of multimodal support (no `vision` / `audioInput` flags); adapters
+  reject any other, and an empty type, with `bad_request` before dispatch. Matching ignores case and
+  `; parameters` and the type is sent unchanged.
 - `capabilities.serviceTiers` — provider service tiers safe to send to the SDK for this model.
 
 ### Resolution Order

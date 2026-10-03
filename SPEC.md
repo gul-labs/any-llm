@@ -207,7 +207,7 @@ export type LlmErrorReason =
   | 'credits_exhausted'
   | 'spend_ceiling'
   | 'grounding_missing'
-  | 'search_budget_exceeded'
+  | 'search_budget_exceeded' // reserved: not emitted until streaming ships (ADR-036)
   | 'cache_not_found'
 export class LlmError extends Error {
   kind: LlmErrorKind
@@ -305,7 +305,8 @@ runStructured(callSite, vars?, opts?)  /  generate(request)
   1. resolve config   (lib defaults → call-site defaults → per-call opts; deep-merge; omitted serviceTier stays omitted)
   2. render prompts   (non-recursive interpolation; var values are NOT re-interpolated — anti-injection).
                       runStructured options: externalId, attachments (appended to the user message), history
-                      (prepended), transientProviderState; an empty rendered user message with no attachments is 'bad_request'
+                      (prepended), transientProviderState; an empty or whitespace-only rendered user message with no
+                      attachments, a malformed part or message, or a tool part in attachments/history is 'bad_request'
   3. ids              callId; every attempt mints its own attemptId (ADR-031)
   4. telemetry.onStart + log 'llm.call.start'
   5. resolve adapter  (direct req.provider → adapter map; no derivation; unknown → LlmError 'bad_request')
@@ -333,13 +334,17 @@ Invariants of the middleware chain (ADR-037) and model resolution (ADR-033):
   `findByModel` returns every descriptor naming the string as canonical id or alias, across providers.
   `ModelDescriptor.configKeys` is the sorted top-level keys of `configSchema` across union branches
   (ADR-033, Amendment B).
-- Every `ModelDescriptor` states `limits: { contextWindow, maxOutputTokens }` (required, positive
-  integers, `maxOutputTokens <= contextWindow`, from the provider's documentation) and its config
-  schema caps `maxOutputTokens` at `limits.maxOutputTokens`. `capabilities.inputMimeTypes` lists the
-  exact media types admitted in `inline-media` and `file-uri` parts (absent or empty: none); adapters
-  reject any other with `bad_request` before dispatch (ADR-033, Amendment A).
+- Every `ModelDescriptor` states `limits: { contextWindow, maxOutputTokens }` (required; `contextWindow` a
+  positive integer, `maxOutputTokens` a positive integer `<= contextWindow` the provider documents, or
+  `null` when it documents none, from the provider's documentation). A numeric limit caps the config
+  schema's `maxOutputTokens`; `null` applies no cap. `capabilities.inputMimeTypes` lists the media types
+  admitted in `inline-media` and `file-uri` parts as lower-case `type/subtype` or `type/*` (absent or
+  empty: none; there are no separate `vision` / `audioInput` flags). Adapters reject any other type, and an
+  empty one, with `bad_request` before dispatch; the match ignores case and `; parameters`, and the type
+  is sent to the provider unchanged (ADR-033, Amendments A and C).
 - `spendPreflightMiddleware` is advisory (ADR-036 amendment): at or above the host's ledger total it
-  throws `rate_limited`, `retryable: false`, `reason: 'spend_ceiling'`; it sets no `role`.
+  throws `rate_limited`, `retryable: false`, `reason: 'spend_ceiling'`; it sets no `role`. A ledger read
+  that fails is `server`, `retryable: false`, with the error as `cause`.
 - A call's `{ provider, requestedModel, descriptor }` is fixed at call start. A middleware whose
   `next` receives a request with a different `provider` or `model` is refused with `bad_request`
   (and a zero-usage refusal row: `attemptNumber: 0` when no attempt had run, otherwise the refused
