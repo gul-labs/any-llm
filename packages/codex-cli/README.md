@@ -16,7 +16,7 @@ committed test suite — tests inject a fake `CodexCliRunner`.
 ## Install
 
 ```sh
-pnpm add -D @gullabs/codex-cli
+pnpm add -D @gullabs/codex-cli @gullabs/core
 ```
 
 Requires a locally-authenticated `codex` CLI on `PATH` (`codex login`) for

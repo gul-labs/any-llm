@@ -26,7 +26,10 @@
     "build": "tsup",
     "test": "vitest run --root ../../ --config vitest.config.ts packages/quota/src/index.test.ts"
   },
-  "dependencies": {
+  "peerDependencies": {
+    "@gullabs/core": "workspace:*"
+  },
+  "devDependencies": {
     "@gullabs/core": "workspace:*"
   },
   "engines": {

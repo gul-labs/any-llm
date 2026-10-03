@@ -25,7 +25,10 @@
   "scripts": {
     "build": "tsup"
   },
-  "dependencies": {
+  "peerDependencies": {
+    "@gullabs/core": "workspace:*"
+  },
+  "devDependencies": {
     "@gullabs/core": "workspace:*"
   },
   "engines": {

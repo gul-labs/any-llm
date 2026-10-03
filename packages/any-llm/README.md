@@ -2,10 +2,11 @@
 
 The default, batteries-included any-llm client package.
 
-"Batteries-included" means concretely this: `@gullabs/any-llm` bundles `@gullabs/core` (the
-engine), `@gullabs/google` (the Gemini adapter), and `@google/genai` (the Gemini SDK) as
-dependencies and re-exports their full public API, so a single `pnpm add` gets you a working
-client instead of three separate installs.
+"Batteries-included" means concretely this: `@gullabs/any-llm` depends on `@gullabs/google` (the
+Gemini adapter) and `@google/genai` (the Gemini SDK), takes `@gullabs/core` (the engine) as an
+exact-version peer dependency that your package manager installs for you, and re-exports the full
+public API of core and google, so a single `pnpm add` gets you a working client instead of three
+separate installs.
 
 ## Install
 
@@ -13,7 +14,11 @@ client instead of three separate installs.
 pnpm add @gullabs/any-llm
 ```
 
-This installs the core engine, Gemini adapter, and `@google/genai`.
+This installs the Gemini adapter and `@google/genai`, plus the `@gullabs/core` engine at the same
+version. Core is an exact-version peer dependency, which npm 7+ and pnpm install automatically.
+If you disabled automatic peer installation, add `@gullabs/core` at the same version yourself.
+All `@gullabs/*` packages must be at one version; see
+[Versioning](../../RELEASING.md#versioning-one-version-for-every-package).
 
 ## Usage
 

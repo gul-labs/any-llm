@@ -21,7 +21,8 @@
     "version-packages": "changeset version",
     "release": "pnpm -r build && changeset publish",
     "audit:gate": "node scripts/audit.mjs --audit-level=high",
-    "test:audit-gate": "node scripts/audit.test.mjs"
+    "test:audit-gate": "node scripts/audit.test.mjs",
+    "test:packed-install": "pnpm -r build && node scripts/packed-install.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "^3.0.3",

@@ -26,13 +26,14 @@
     "build": "tsup"
   },
   "dependencies": {
-    "@gullabs/core": "workspace:*",
     "zod": "^4.6.5"
   },
   "peerDependencies": {
+    "@gullabs/core": "workspace:*",
     "openai": "^7"
   },
   "devDependencies": {
+    "@gullabs/core": "workspace:*",
     "@gullabs/testing": "workspace:*",
     "openai": "^7.23.0"
   },

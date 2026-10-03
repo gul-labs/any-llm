@@ -8,6 +8,10 @@ The provider-agnostic heart of any-llm. Contains all types, port interfaces, the
 pnpm add @gullabs/core
 ```
 
+Every other `@gullabs/*` package declares this one as an exact-version peer dependency, so all
+`@gullabs/*` packages must be installed at the same version; see
+[Versioning](../../RELEASING.md#versioning-one-version-for-every-package).
+
 `@gullabs/core` has no provider adapter and no SDK dependency of its own — pair it with
 `@gullabs/google` (or another `ProviderAdapter`) to actually make calls.
 

@@ -17,7 +17,7 @@ resolves to `null` because these models are unpriced).
 ## Install
 
 ```sh
-pnpm add -D @gullabs/claude-cli
+pnpm add -D @gullabs/claude-cli @gullabs/core
 ```
 
 ## Key exports

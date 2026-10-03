@@ -71,35 +71,36 @@ importers:
       '@google/genai':
         specifier: ^2.24.0
         version: 2.25.0
-      '@gullabs/core':
-        specifier: workspace:*
-        version: link:../core
       '@gullabs/google':
         specifier: workspace:*
         version: link:../google
-
-  packages/claude-cli:
-    dependencies:
+    devDependencies:
       '@gullabs/core':
         specifier: workspace:*
         version: link:../core
+
+  packages/claude-cli:
+    dependencies:
       zod:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@gullabs/core':
+        specifier: workspace:*
+        version: link:../core
       '@gullabs/testing':
         specifier: workspace:*
         version: link:../testing
 
   packages/codex-cli:
     dependencies:
-      '@gullabs/core':
-        specifier: workspace:*
-        version: link:../core
       zod:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@gullabs/core':
+        specifier: workspace:*
+        version: link:../core
       '@gullabs/testing':
         specifier: workspace:*
         version: link:../testing
@@ -111,23 +112,19 @@ importers:
         version: 4.6.5
 
   packages/drizzle:
-    dependencies:
-      '@gullabs/core':
-        specifier: workspace:*
-        version: link:../core
     devDependencies:
       '@electric-sql/pglite':
         specifier: ^0.5.8
         version: 0.5.8
+      '@gullabs/core':
+        specifier: workspace:*
+        version: link:../core
       drizzle-orm:
         specifier: ^0.45.3
         version: 0.45.3(@electric-sql/pglite@0.5.8)
 
   packages/google:
     dependencies:
-      '@gullabs/core':
-        specifier: workspace:*
-        version: link:../core
       zod:
         specifier: ^4.6.5
         version: 4.6.5
@@ -135,31 +132,34 @@ importers:
       '@google/genai':
         specifier: ^2.24.0
         version: 2.25.0
+      '@gullabs/core':
+        specifier: workspace:*
+        version: link:../core
       '@gullabs/testing':
         specifier: workspace:*
         version: link:../testing
 
   packages/quota:
-    dependencies:
+    devDependencies:
       '@gullabs/core':
         specifier: workspace:*
         version: link:../core
 
   packages/testing:
-    dependencies:
+    devDependencies:
       '@gullabs/core':
         specifier: workspace:*
         version: link:../core
 
   packages/xai:
     dependencies:
-      '@gullabs/core':
-        specifier: workspace:*
-        version: link:../core
       zod:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@gullabs/core':
+        specifier: workspace:*
+        version: link:../core
       '@gullabs/testing':
         specifier: workspace:*
         version: link:../testing

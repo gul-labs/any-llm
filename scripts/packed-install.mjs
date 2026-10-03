@@ -1,0 +1,510 @@
+#!/usr/bin/env node
+/**
+ * Packed-install checks for the lockstep release contract (see RELEASING.md,
+ * "Versioning: one version for every package").
+ *
+ * Packs every public workspace package exactly as `changeset publish` would, serves
+ * the tarballs from a throwaway registry on 127.0.0.1 (the `@gullabs` scope only;
+ * every third-party dependency still comes from the real registry), installs them
+ * into projects under the OS temp directory with pnpm and npm, and proves:
+ *
+ *   (a) a direct provider set (core plus every provider and companion package)
+ *   (b) the facade on its own
+ *   (c) the facade plus a direct provider
+ *
+ * each resolve exactly one copy of `@gullabs/core`, load under both ESM and CJS,
+ * and typecheck an example. The negative cases then install mixed versions (core at
+ * a different patch; a package built for a different core minor) and require pnpm's
+ * strict peer check to reject them. Nothing is published anywhere. Packages must
+ * already be built (`pnpm -r build`).
+ *
+ *   node scripts/packed-install.mjs [--pm pnpm,npm] [--keep]
+ *
+ * @module
+ */
+
+import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { createServer } from 'node:http'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const args = process.argv.slice(2)
+const keep = args.includes('--keep')
+const pmFlag = args.indexOf('--pm')
+const managers = (pmFlag >= 0 ? (args[pmFlag + 1] ?? '') : 'pnpm,npm')
+  .split(',')
+  .filter(Boolean)
+for (const pm of managers) {
+  if (pm !== 'pnpm' && pm !== 'npm') throw new Error(`unknown package manager: ${pm}`)
+}
+
+const CORE = '@gullabs/core'
+const FACADE = '@gullabs/any-llm'
+
+const failures = []
+const record = (ok, label, detail = '') => {
+  console.log(
+    `${ok ? 'PASS' : 'FAIL'}  ${label}${ok || !detail ? '' : `\n      ${detail}`}`,
+  )
+  if (!ok) failures.push(label)
+}
+const tail = (text, n = 12) => text.trim().split('\n').slice(-n).join('\n      ')
+
+function run(cmd, cmdArgs, opts = {}) {
+  return new Promise((done) => {
+    const child = spawn(cmd, cmdArgs, {
+      ...opts,
+      env: {
+        ...process.env,
+        COPYFILE_DISABLE: '1',
+        npm_config_userconfig: '/dev/null',
+        npm_config_update_notifier: 'false',
+        ...opts.env,
+      },
+    })
+    let out = ''
+    child.stdout.on('data', (d) => (out += d))
+    child.stderr.on('data', (d) => (out += d))
+    const timer = setTimeout(() => child.kill('SIGKILL'), 5 * 60_000)
+    child.on('close', (status) => {
+      clearTimeout(timer)
+      done({ status: status ?? 1, out })
+    })
+  })
+}
+
+async function must(cmd, cmdArgs, opts) {
+  const res = await run(cmd, cmdArgs, opts)
+  if (res.status !== 0) throw new Error(`${cmd} ${cmdArgs.join(' ')} failed:\n${res.out}`)
+  return res.out
+}
+
+// --- workspace manifests ----------------------------------------------------
+
+const workspace = readdirSync(join(root, 'packages'), { withFileTypes: true })
+  .filter(
+    (e) => e.isDirectory() && existsSync(join(root, 'packages', e.name, 'package.json')),
+  )
+  .map((e) => {
+    const dir = join(root, 'packages', e.name)
+    return { dir, manifest: JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) }
+  })
+  .filter(({ manifest }) => manifest.private !== true)
+  .sort((a, b) => a.manifest.name.localeCompare(b.manifest.name))
+for (const { dir, manifest } of workspace) {
+  if (!existsSync(join(dir, 'dist', 'index.js'))) {
+    throw new Error(`${manifest.name} is not built; run \`pnpm -r build\` first`)
+  }
+}
+const byName = Object.fromEntries(workspace.map((w) => [w.manifest.name, w.manifest]))
+const coreVersion = byName[CORE].version
+const [maj, min, pat] = coreVersion.split('.').map(Number)
+const otherPatch = `${maj}.${min}.${pat + 1}`
+const otherMinor = `${maj}.${min + 1}.0`
+
+// --- scratch space and packing ----------------------------------------------
+
+const scratch = mkdtempSync(join(tmpdir(), 'anyllm-packed-'))
+const tarballDir = join(scratch, 'tarballs')
+mkdirSync(tarballDir)
+console.log(`scratch: ${scratch}`)
+
+const tarballName = (name, version) =>
+  `${name.replace('@', '').replace('/', '-')}-${version}.tgz`
+
+/** Everything the local registry serves: `{ name, version, file }`. */
+const published = []
+for (const { dir, manifest } of workspace) {
+  await must('pnpm', ['pack', '--pack-destination', tarballDir], { cwd: dir })
+  const file = join(tarballDir, tarballName(manifest.name, manifest.version))
+  if (!existsSync(file)) throw new Error(`missing tarball for ${manifest.name}`)
+  published.push({ name: manifest.name, version: manifest.version, file })
+}
+const tgz = Object.fromEntries(published.map((p) => [p.name, p.file]))
+
+/** Read the manifest that was actually packed (what a consumer's package manager sees). */
+const packedManifest = async (file) =>
+  JSON.parse(await must('tar', ['-xOzf', file, 'package/package.json']))
+
+/** Register a copy of a package with an edited manifest, as a different version. */
+async function registerVariant(name, version, edit) {
+  const dir = mkdtempSync(join(scratch, 'repack-'))
+  await must('tar', ['-xzf', tgz[name], '-C', dir])
+  const manifestPath = join(dir, 'package', 'package.json')
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+  manifest.version = version
+  edit(manifest)
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
+  const file = join(tarballDir, tarballName(name, version))
+  await must('tar', ['-czf', file, '-C', dir, 'package'])
+  published.push({ name, version, file })
+}
+
+// Mixed-version fixtures. Same minor, different patch: a core that is not the one
+// every package pins. Different minor: a quota built for another core minor.
+await registerVariant(CORE, otherPatch, () => {})
+await registerVariant('@gullabs/quota', otherMinor, (m) => {
+  m.peerDependencies[CORE] = otherMinor
+})
+
+// --- manifest contract on the packed tarballs -------------------------------
+
+for (const { name, file } of published.filter(
+  (p) => byName[p.name]?.version === p.version,
+)) {
+  if (name === CORE) continue
+  const m = await packedManifest(file)
+  const peer = m.peerDependencies?.[CORE]
+  record(
+    peer === coreVersion,
+    `${name}: packed peerDependency on ${CORE} is exactly ${coreVersion}`,
+    `got ${JSON.stringify(peer)}`,
+  )
+  record(
+    m.dependencies?.[CORE] === undefined,
+    `${name}: ${CORE} is not a regular dependency`,
+    JSON.stringify(m.dependencies),
+  )
+  record(
+    !JSON.stringify(m).includes('workspace:'),
+    `${name}: no workspace: specifier survives packing`,
+  )
+}
+{
+  // Once `changeset version` has run (no pending changesets) every public package
+  // carries the same version. While changesets are pending the versions differ.
+  const pending = readdirSync(join(root, '.changeset')).filter(
+    (f) => f.endsWith('.md') && f !== 'README.md',
+  )
+  if (pending.length === 0) {
+    const versions = [...new Set(workspace.map((w) => w.manifest.version))]
+    record(
+      versions.length === 1,
+      'no pending changesets: every public package has the same version',
+      versions.join(', '),
+    )
+  } else {
+    console.log(
+      `SKIP  lockstep version equality (${pending.length} pending changeset(s))`,
+    )
+  }
+}
+
+// --- local registry for the @gullabs scope ------------------------------------
+
+const sha = (file, alg, enc) => createHash(alg).update(readFileSync(file)).digest(enc)
+
+async function startRegistry() {
+  const server = createServer()
+  await new Promise((ok) => server.listen(0, '127.0.0.1', ok))
+  const base = `http://127.0.0.1:${server.address().port}`
+  const aged = '2020-01-01T00:00:00.000Z'
+  server.on('request', async (req, res) => {
+    const path = decodeURIComponent(new URL(req.url ?? '/', base).pathname)
+    if (path.startsWith('/-/tarballs/')) {
+      const entry = published.find((p) =>
+        p.file.endsWith(path.slice('/-/tarballs/'.length)),
+      )
+      if (entry === undefined) return void res.writeHead(404).end()
+      return void res
+        .writeHead(200, { 'content-type': 'application/octet-stream' })
+        .end(readFileSync(entry.file))
+    }
+    const name = path.slice(1)
+    const entries = published.filter((p) => p.name === name)
+    if (entries.length === 0) return void res.writeHead(404).end('{}')
+    const versions = {}
+    for (const e of entries) {
+      const manifest = await packedManifest(e.file)
+      versions[e.version] = {
+        ...manifest,
+        _id: `${name}@${e.version}`,
+        dist: {
+          tarball: `${base}/-/tarballs/${tarballName(name, e.version)}`,
+          shasum: sha(e.file, 'sha1', 'hex'),
+          integrity: `sha512-${sha(e.file, 'sha512', 'base64')}`,
+        },
+      }
+    }
+    const latest = byName[name].version
+    res.writeHead(200, { 'content-type': 'application/json' }).end(
+      JSON.stringify({
+        name,
+        'dist-tags': { latest },
+        versions,
+        time: {
+          created: aged,
+          modified: aged,
+          ...Object.fromEntries(entries.map((e) => [e.version, aged])),
+        },
+      }),
+    )
+  })
+  return { base, close: () => server.close() }
+}
+
+const registry = await startRegistry()
+
+// --- fixture projects --------------------------------------------------------
+
+const callSite = `export const site = defineCallSite({
+  id: 'packed-install',
+  provider: 'google',
+  model: 'gemini-2.5-flash',
+  jsonSchema: { type: 'object', properties: { word: { type: 'string' } }, required: ['word'] },
+  userTemplate: 'Say {{word}}',
+})
+export const run = () => client.runStructured(site, { word: 'hi' }, { auth: { apiKey: 'unused' } })
+`
+
+// Type-level examples: they are compiled against the installed .d.ts files, never run.
+const examples = {
+  direct: `import { createClient, composeProviders, defineCallSite } from '@gullabs/core'
+import { googleProvider } from '@gullabs/google'
+import { xaiProvider } from '@gullabs/xai'
+import { claudeCliProvider } from '@gullabs/claude-cli'
+import { codexCliProvider } from '@gullabs/codex-cli'
+import { drizzleUsageSink, llmCalls } from '@gullabs/drizzle'
+import { providerQuotaMiddleware } from '@gullabs/quota'
+import { RecordingSink } from '@gullabs/testing'
+
+export { drizzleUsageSink, llmCalls, providerQuotaMiddleware }
+const client = createClient({
+  ...composeProviders([googleProvider(), xaiProvider(), claudeCliProvider(), codexCliProvider()]),
+  sink: new RecordingSink(),
+})
+${callSite}`,
+  facade: `import { createClient, composeProviders, defineCallSite, googleProvider } from '@gullabs/any-llm'
+
+const client = createClient({ ...composeProviders([googleProvider()]) })
+${callSite}`,
+  both: `import { createClient, composeProviders, defineCallSite, googleProvider } from '@gullabs/any-llm'
+import { xaiProvider } from '@gullabs/xai'
+
+const client = createClient({ ...composeProviders([googleProvider(), xaiProvider()]) })
+${callSite}`,
+}
+
+const tsconfig = {
+  compilerOptions: {
+    target: 'ES2022',
+    module: 'ESNext',
+    moduleResolution: 'Bundler',
+    lib: ['ES2022', 'DOM'],
+    types: [],
+    strict: true,
+    exactOptionalPropertyTypes: true,
+    verbatimModuleSyntax: true,
+    esModuleInterop: true,
+    skipLibCheck: true,
+    noEmit: true,
+  },
+  include: ['example.ts'],
+}
+
+/** Write a throwaway project and install into it. `deps` are the direct dependencies. */
+async function install(pm, label, { deps, autoInstallPeers }) {
+  const dir = join(scratch, `${pm}-${label}`)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify(
+      { name: `fixture-${label}`, private: true, type: 'module', dependencies: deps },
+      null,
+      2,
+    ),
+  )
+  writeFileSync(join(dir, '.npmrc'), `@gullabs:registry=${registry.base}/\n`)
+  if (pm === 'pnpm') {
+    const yaml = [
+      'strictPeerDependencies: true',
+      ...(autoInstallPeers === undefined
+        ? []
+        : [`autoInstallPeers: ${autoInstallPeers}`]),
+      '',
+    ].join('\n')
+    writeFileSync(join(dir, 'pnpm-workspace.yaml'), yaml)
+  }
+  const res =
+    pm === 'pnpm'
+      ? await run('pnpm', ['install', '--ignore-scripts', '--no-frozen-lockfile'], {
+          cwd: dir,
+        })
+      : await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund'], {
+          cwd: dir,
+        })
+  return { dir, ...res }
+}
+
+/** Real directories of `@gullabs/core` anywhere under node_modules (symlinks are not followed). */
+function coreCopies(dir) {
+  const found = new Set()
+  const walk = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      if (!e.isDirectory()) continue
+      const p = join(d, e.name)
+      if (e.name === '@gullabs' && d.endsWith('node_modules')) {
+        const c = join(p, 'core')
+        if (existsSync(join(c, 'package.json'))) found.add(realpathSync(c))
+      }
+      walk(p)
+    }
+  }
+  walk(join(dir, 'node_modules'))
+  return [...found]
+}
+
+/** Resolve `@gullabs/core` from the real install location of each root dependency. */
+async function resolvedCoreFrom(dir, names) {
+  const script = `
+    import { createRequire } from 'node:module'
+    import { realpathSync } from 'node:fs'
+    import { join } from 'node:path'
+    const out = {}
+    for (const n of ${JSON.stringify(names)}) {
+      const real = realpathSync(join(process.cwd(), 'node_modules', n))
+      out[n] = realpathSync(createRequire(join(real, 'x.js')).resolve('@gullabs/core'))
+    }
+    console.log(JSON.stringify(out))
+  `
+  const res = await run('node', ['--input-type=module', '-e', script], { cwd: dir })
+  if (res.status !== 0) throw new Error(res.out)
+  return JSON.parse(res.out.trim().split('\n').pop())
+}
+
+async function check(pm, label, names, example, settings) {
+  const tag = `${pm} ${label}`
+  const installed = await install(pm, label, settings)
+  if (installed.status !== 0) return record(false, `${tag}: install`, tail(installed.out))
+  record(
+    true,
+    `${tag}: install succeeds (${pm === 'pnpm' ? 'strict peers' : 'npm peer rules'})`,
+  )
+
+  const copies = coreCopies(installed.dir)
+  record(
+    copies.length === 1,
+    `${tag}: exactly one ${CORE} copy on disk`,
+    copies.join(', '),
+  )
+
+  const resolved = await resolvedCoreFrom(installed.dir, names)
+  record(
+    new Set(Object.values(resolved)).size === 1 &&
+      Object.values(resolved)[0] === copies[0] + '/dist/index.cjs',
+    `${tag}: every package resolves ${CORE} to that one copy`,
+    JSON.stringify(resolved, null, 2),
+  )
+
+  const smoke = `
+    import { createRequire } from 'node:module'
+    const require = createRequire(import.meta.url)
+    for (const n of ${JSON.stringify(names)}) {
+      const esm = await import(n)
+      const cjs = require(n)
+      if (Object.keys(esm).length === 0 || Object.keys(cjs).length === 0) throw new Error(n + ' has no exports')
+    }
+  `
+  const loaded = await run('node', ['--input-type=module', '-e', smoke], {
+    cwd: installed.dir,
+  })
+  record(loaded.status === 0, `${tag}: ESM and CJS load`, tail(loaded.out))
+
+  writeFileSync(join(installed.dir, 'example.ts'), example)
+  writeFileSync(join(installed.dir, 'tsconfig.json'), JSON.stringify(tsconfig, null, 2))
+  const tsc = await run(
+    'node',
+    [join(root, 'node_modules', 'typescript', 'bin', 'tsc'), '-p', '.'],
+    {
+      cwd: installed.dir,
+    },
+  )
+  record(tsc.status === 0, `${tag}: example typechecks`, tail(tsc.out))
+}
+
+// --- positive cases ------------------------------------------------------------
+
+const exact = (name) => byName[name].version
+const providerSet = workspace.map((w) => w.manifest.name).filter((n) => n !== FACADE)
+const thirdParty = {
+  '@google/genai': byName['@gullabs/google'].peerDependencies['@google/genai'],
+  openai: byName['@gullabs/xai'].peerDependencies.openai,
+  'drizzle-orm': byName['@gullabs/drizzle'].devDependencies['drizzle-orm'],
+}
+
+for (const pm of managers) {
+  // (a) direct provider set: core is named explicitly, nothing is auto-installed.
+  await check(pm, 'a-direct', providerSet, examples.direct, {
+    deps: {
+      ...Object.fromEntries(providerSet.map((n) => [n, exact(n)])),
+      ...thirdParty,
+    },
+    autoInstallPeers: false,
+  })
+  // (b) the facade alone: the package manager installs its core peer.
+  await check(pm, 'b-facade', [FACADE], examples.facade, {
+    deps: { [FACADE]: exact(FACADE) },
+  })
+  // (c) the facade plus a direct provider.
+  await check(pm, 'c-facade-plus-xai', [FACADE, '@gullabs/xai'], examples.both, {
+    deps: {
+      [FACADE]: exact(FACADE),
+      '@gullabs/xai': exact('@gullabs/xai'),
+      openai: thirdParty.openai,
+    },
+  })
+}
+
+// --- negative cases: mixed versions are rejected ---------------------------------
+
+const mixed = {
+  'same minor, different patch': {
+    [CORE]: otherPatch,
+    '@gullabs/quota': exact('@gullabs/quota'),
+  },
+  'different minor': {
+    [CORE]: coreVersion,
+    '@gullabs/quota': otherMinor,
+  },
+}
+for (const [label, deps] of Object.entries(mixed)) {
+  const slug = label.replace(/\W+/g, '-')
+  if (managers.includes('pnpm')) {
+    const res = await install('pnpm', `neg-${slug}`, { deps })
+    record(
+      res.status !== 0 && res.out.includes('ERR_PNPM_PEER_DEP_ISSUES'),
+      `pnpm strict peers reject mixed versions (${label})`,
+      res.status === 0 ? 'install unexpectedly succeeded' : tail(res.out),
+    )
+  }
+  if (managers.includes('npm')) {
+    // Informational: the contract is pnpm strict mode, but record what npm does.
+    const res = await install('npm', `neg-${slug}`, { deps })
+    console.log(
+      `INFO  npm on mixed versions (${label}): ${res.status === 0 ? 'installed' : 'rejected'}`,
+    )
+  }
+}
+
+registry.close()
+if (keep) console.log(`kept: ${scratch}`)
+else rmSync(scratch, { recursive: true, force: true })
+
+if (failures.length > 0) {
+  console.error(`\n${failures.length} check(s) failed:\n- ${failures.join('\n- ')}`)
+  process.exit(1)
+}
+console.log('\nall packed-install checks passed')

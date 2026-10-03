@@ -32,7 +32,8 @@ A thin adapter over raw provider SDKs. No agent loop, no framework, no magic. Ev
 pnpm add @gullabs/any-llm
 ```
 
-That one package is the Gemini facade: `@gullabs/core` + `@gullabs/google` + `@google/genai`.
+That one package is the Gemini facade: `@gullabs/google` + `@google/genai` as dependencies, and
+`@gullabs/core` as its exact-version peer, which npm 7+ and pnpm install for you.
 
 Add other providers yourself. Auth stays host-injected on every call.
 
@@ -40,6 +41,12 @@ Add other providers yourself. Auth stays host-injected on every call.
 pnpm add @gullabs/core @gullabs/google @gullabs/xai @google/genai openai
 # peers: @google/genai for Gemini; openai ^6 || ^7 for xAI Responses (baseURL api.x.ai)
 ```
+
+**One version for every package.** All `@gullabs/*` packages are released together under one
+version number, and `@gullabs/core` is an exact-version peer of every other package. Install
+them all at the same version and upgrade them together. A mix, even of patch releases, is
+unsupported and fails peer-dependency checks (pnpm `strictPeerDependencies`, npm 7+). See
+[RELEASING.md](./RELEASING.md#versioning-one-version-for-every-package).
 
 ## Quickstart
 
