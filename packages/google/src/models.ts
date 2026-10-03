@@ -281,9 +281,10 @@ export const geminiModelDescriptors: ModelDescriptor[] = [
 ]
 
 // `grounding: true` on both Gemma descriptors rests on a live capture (ADR-013):
-// `__fixtures__/gemma-grounding-2026-10-03.json`, three Search prompts per model.
-// `groundingMetadata` came back on 5 of 6 calls; the one miss was `MAX_TOKENS` with
-// an empty answer (thinking used the 800-token cap), not an absent feature.
+// `__fixtures__/gemma-grounding-2026-10-03.json` (a derived summary of six calls, not the
+// raw responses), three Search prompts per model. `groundingMetadata` came back on all 5
+// completed calls; the sixth ended at `MAX_TOKENS` with an empty answer (thinking used the
+// 800-token cap), which neither shows nor rules out grounding.
 export const gemmaModelDescriptors: ModelDescriptor[] = [
   {
     model: 'gemma-4-31b-it',

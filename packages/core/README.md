@@ -248,7 +248,7 @@ with `bad_request` before dispatch through `assertInputMimeTypesAdmitted`. The m
 `; parameters` (`IMAGE/PNG`, `text/plain; charset=utf-8`) and the string you sent goes to the provider
 unchanged; nothing is mapped, so `image/jpg` is not `image/jpeg`. `isMediaTypeAdmitted(type, list)` and
 `assertMediaTypeAdmitted` expose the same rule. There are no `vision` / `audioInput` flags: read
-`inputMimeTypes`. A host-authored descriptor for a model that takes media must list its types. A descriptor may carry `shutdownDate` (`YYYY-MM-DD`, UTC), the provider's announced end of service for the model: a successful call within `SHUTDOWN_WARNING_DAYS` (90) days of it, or past it, has a `warnings` entry naming the date and the days left. The call is never refused for it (ADR-043). The registry
+`inputMimeTypes`. A host-authored descriptor for a model that takes media must list its types. A descriptor may carry `shutdownDate` (`YYYY-MM-DD`, UTC), the provider's announced end of service for the model: the first successful call per client and model within `SHUTDOWN_WARNING_DAYS` (90) days of it, or past it, has a `{ type: 'shutdown', shutdownDate, message }` warning naming the date and the days left (or gone by); later calls on that client do not repeat it. The call is never refused for it (ADR-043). The registry
 freezes each descriptor's `limits`, `inputMimeTypes`, `aliases` and `configKeys`. See ADR-033, Amendments A
 and C.
 

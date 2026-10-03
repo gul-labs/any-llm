@@ -454,11 +454,23 @@ export interface Citation {
  * from succeeding. Warnings are never silently dropped — they appear on the
  * result and record.
  */
-export type Warning = {
-  type: 'other'
-  /** Free-form message for any other advisory. */
-  message: string
-}
+export type Warning =
+  | {
+      type: 'other'
+      /** Free-form message for any other advisory. */
+      message: string
+    }
+  | {
+      /**
+       * The model is announced to shut down ({@link ModelDescriptor.shutdownDate}),
+       * within 90 days or past the date. Emitted once per client and model, on the
+       * first successful call.
+       */
+      type: 'shutdown'
+      message: string
+      /** The announced shutdown date, `YYYY-MM-DD` (UTC). */
+      shutdownDate: string
+    }
 
 /**
  * Per-call token usage.

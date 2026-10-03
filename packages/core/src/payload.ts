@@ -169,8 +169,13 @@ const PRECAP_SLACK = 256
 /** Base64 characters hashed per step (a multiple of 4). */
 const MEDIA_CHUNK_CHARS = 1_048_576
 
-/** Work units (characters scanned or bytes hashed) between two yields to the event loop. */
-const YIELD_EVERY = 4_000_000
+/**
+ * Work units (characters scanned or base64 characters hashed) between two yields to the event
+ * loop. The hash in `sha256.ts` runs at about 7 ms per MiB of decoded bytes (about 18 times
+ * slower than `node:crypto`, measured on Node 24), so 2 MiB of base64 (1.5 MiB decoded) is a
+ * stretch of about 10 ms without a yield.
+ */
+const YIELD_EVERY = 2_097_152
 
 const MAX_DEPTH = 1000
 
@@ -424,8 +429,9 @@ function decodeBase64(chunk: string): Uint8Array {
 }
 
 /**
- * Hashes inline media in {@link MEDIA_CHUNK_CHARS} steps with a yield between
- * steps, so a large part never holds the event loop. Memory: the base64 string
+ * Hashes inline media in {@link MEDIA_CHUNK_CHARS} steps and yields to the event loop
+ * every {@link YIELD_EVERY} characters (about 10 ms of work), so a large part holds it
+ * for short stretches, not for the whole hash. Memory: the base64 string
  * is the request's own; each step adds one decoded chunk of about 768 KiB, so a
  * part costs about 1 MiB extra at any moment, not a full decoded copy.
  */

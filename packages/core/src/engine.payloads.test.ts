@@ -1133,6 +1133,34 @@ describe('P2-4: inline media is hashed in chunks, with limits', () => {
     expect(counts.yields).toBeGreaterThan(0)
   })
 
+  it('yields to the event loop at least every 2 MiB of base64, so no stretch stalls it long', async () => {
+    // 8 MiB decoded is 11,184,812 base64 characters: five full 2 MiB stretches (and a
+    // 0.7 MiB remainder), so at least five yields. The hash runs at about 7 ms per MiB
+    // of decoded bytes (measured, Node 24), so a 2 MiB-of-base64 stretch is about 10 ms.
+    const bytes = Buffer.alloc(8 * 1024 * 1024, 3)
+    const data = bytes.toString('base64')
+    expect(data.length).toBe(11_184_812)
+    const { scheduler, counts } = spyScheduler()
+    const { sink, client } = setup({}, [ok()], { scheduler })
+    await client.generate(
+      request({
+        messages: [
+          {
+            role: 'user',
+            parts: [{ kind: 'inline-media', mimeType: 'video/mp4', data }],
+          },
+        ],
+      }),
+      { auth: AUTH },
+    )
+    expect(onlyPayload(sink).request.messages[0]?.parts[0]).toMatchObject({
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    })
+    expect(counts.yields).toBeGreaterThanOrEqual(Math.floor(data.length / 2_097_152))
+    // ... and not a yield per chunk: the cadence is the constant, not "as often as possible".
+    expect(counts.yields).toBeLessThanOrEqual(Math.ceil(data.length / 2_097_152))
+  })
+
   it('unpadded base64 and every padding length are hashed correctly', async () => {
     for (const length of [0, 1, 2, 3, 4, 5, 1000, 1001]) {
       const bytes = Buffer.alloc(length, 9)

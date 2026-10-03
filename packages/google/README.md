@@ -47,7 +47,7 @@ await store.delete(handle, { failClosed: true }) // throw on non-not-found failu
 
 ## Model lifecycle
 
-`gemini-3.1-flash-lite` carries `shutdownDate: '2027-05-07'` (replacement: `gemini-3.5-flash-lite`), read on Google's [deprecations page](https://ai.google.dev/gemini-api/docs/deprecations) (last updated 2026-10-01) on 2026-10-03. From 2027-02-06 on, a successful call to it has a `warnings` entry saying so. Google also limits Gemini 2.5 access to users who have used those models; no shutdown date is announced for them, so none is set. Gemma 4 is not on the page.
+`gemini-3.1-flash-lite` carries `shutdownDate: '2027-05-07'` (replacement: `gemini-3.5-flash-lite`), read on Google's [deprecations page](https://ai.google.dev/gemini-api/docs/deprecations) (last updated 2026-10-01) on 2026-10-03. From 2027-02-06 on, the first successful call to it on a client has a `{ type: 'shutdown' }` warning saying so (once per client, not on every call). Google also limits Gemini 2.5 access to users who have used those models; no shutdown date is announced for them, so none is set. Gemma 4 is not on the page.
 
 ## Quick example
 

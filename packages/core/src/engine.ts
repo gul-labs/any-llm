@@ -185,7 +185,9 @@ export interface ClientConfig {
    */
   scheduler?: Scheduler
   /**
-   * Unique ID generator.  Defaults to `globalThis.crypto.randomUUID()` (Node, Deno, Bun, browsers and edge runtimes all have it).
+   * Unique ID generator. Defaults to `globalThis.crypto.randomUUID()` (Node and Deno have it; Bun,
+   * edge runtimes and browsers are untested, and a browser page served over plain http has none).
+   * `createClient` throws `bad_request` when the default is needed and the runtime lacks it.
    * Inject {@link FakeIds} in tests for deterministic record assertions.
    */
   ids?: IdGenerator
@@ -1726,7 +1728,28 @@ export function createClient(config: ClientConfig): Client {
     payloads !== undefined && sink !== undefined && sink.acceptsPayloads === true
   const clock: Clock = config.clock ?? DEFAULT_CLOCK
   const scheduler: Scheduler = config.scheduler ?? DEFAULT_SCHEDULER
+  if (
+    config.ids === undefined &&
+    typeof (globalThis as { crypto?: { randomUUID?: unknown } }).crypto?.randomUUID !==
+      'function'
+  ) {
+    throw new LlmError(
+      'createClient: this runtime has no globalThis.crypto.randomUUID() (a browser page served over plain http has none); pass ClientConfig.ids.',
+      {
+        kind: 'bad_request',
+        retryable: false,
+        issues: [
+          {
+            path: 'ids',
+            message: 'required when globalThis.crypto.randomUUID is unavailable.',
+          },
+        ],
+      },
+    )
+  }
   const ids: IdGenerator = config.ids ?? DEFAULT_IDS
+  /** `provider NUL model` pairs this client has already attached a shutdown advisory for. */
+  const shutdownAdvised = new Set<string>()
   const logger: Logger = config.logger ?? NOOP_LOGGER
   const safeLogger: Logger = makeSafeLogger(logger)
   if (payloads !== undefined && !capturePayloads) {
@@ -2353,7 +2376,13 @@ export function createClient(config: ClientConfig): Client {
         }
 
         // Collect all warnings (adapter + normalize + reasoning cap + cost + shutdown).
-        const shutdownAdvisory = shutdownWarning(callDescriptor, ctx.clock.now())
+        // Once per client and model: the first successful call carries it, not all of them.
+        let shutdownAdvisory = shutdownWarning(callDescriptor, ctx.clock.now())
+        if (shutdownAdvisory !== undefined) {
+          const advisedKey = `${provider}\u0000${effectiveReq.model}`
+          if (shutdownAdvised.has(advisedKey)) shutdownAdvisory = undefined
+          else shutdownAdvised.add(advisedKey)
+        }
         const allWarnings: Warning[] = [
           ...adapterResult.warnings,
           ...normalizedResult.warnings,

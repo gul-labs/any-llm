@@ -13,6 +13,7 @@ import {
 } from './index.js'
 import type { Message, ModelDescriptor } from './index.js'
 import { configKeysOfJsonSchema } from './model-config/index.js'
+import { shutdownWarning } from './registry.js'
 
 const removedConfigSchemaFactory = `makeGeminiConfig${'Schema'}`
 const removedConfigValidatorFactory = `makeGeminiConfig${'Validator'}`
@@ -734,5 +735,29 @@ describe('configKeys', () => {
         },
       ]),
     ).toThrow(/stale configKeys \[b\]/)
+  })
+})
+
+describe('shutdownWarning', () => {
+  const DAY = 86_400_000
+  const shutdown = Date.UTC(2027, 4, 7)
+  const descriptor = { model: 'm', shutdownDate: '2027-05-07' }
+
+  it('is a typed warning that carries the date', () => {
+    expect(shutdownWarning(descriptor, shutdown - 5 * DAY)).toEqual({
+      type: 'shutdown',
+      shutdownDate: '2027-05-07',
+      message:
+        'Model "m" is scheduled to shut down on 2027-05-07 (in 5 days); move to a model without a shutdown date before then.',
+    })
+  })
+
+  it('does not invent a warning from a clock that is not a number', () => {
+    expect(shutdownWarning(descriptor, Number.NaN)).toBeUndefined()
+    expect(shutdownWarning(descriptor, Number.POSITIVE_INFINITY)).toBeUndefined()
+  })
+
+  it('has nothing to say about a model with no date', () => {
+    expect(shutdownWarning({ model: 'm' }, shutdown)).toBeUndefined()
   })
 })

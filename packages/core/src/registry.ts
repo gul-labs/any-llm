@@ -283,26 +283,26 @@ function assertShutdownDate(descriptor: Partial<ModelDescriptor>): void {
 /**
  * The advisory for a model announced to shut down: `undefined` until `nowMs` is
  * within {@link SHUTDOWN_WARNING_DAYS} days of the descriptor's `shutdownDate`,
- * then a warning naming the date and the days left (or gone by).
+ * then a `shutdown` warning naming the date and the days left (or gone by). The
+ * engine attaches it once per client and model; this function is the pure rule.
  */
 export function shutdownWarning(
   descriptor: Pick<ModelDescriptor, 'model' | 'shutdownDate'>,
   nowMs: number,
 ): Warning | undefined {
   const shutdownMs = parseShutdownDate(descriptor.shutdownDate)
-  if (shutdownMs === undefined) return undefined
+  if (shutdownMs === undefined || descriptor.shutdownDate === undefined) return undefined
+  if (!Number.isFinite(nowMs)) return undefined
   const days = Math.ceil((shutdownMs - nowMs) / 86_400_000)
   if (days > SHUTDOWN_WARNING_DAYS) return undefined
-  const when =
+  const { model, shutdownDate } = descriptor
+  const message =
     days > 0
-      ? `in ${days} day${days === 1 ? '' : 's'}`
+      ? `Model "${model}" is scheduled to shut down on ${shutdownDate} (in ${days} day${days === 1 ? '' : 's'}); move to a model without a shutdown date before then.`
       : days === 0
-        ? 'today'
-        : `${-days} day${days === -1 ? '' : 's'} ago`
-  return {
-    type: 'other',
-    message: `Model "${descriptor.model}" is scheduled to shut down on ${descriptor.shutdownDate} (${when}); move to a model without a shutdown date before then.`,
-  }
+        ? `Model "${model}" is scheduled to shut down today (${shutdownDate}); move to a model without a shutdown date.`
+        : `Model "${model}" was scheduled to shut down on ${shutdownDate} (${-days} day${days === -1 ? '' : 's'} ago) and may stop being served at any time; move to a model without a shutdown date.`
+  return { type: 'shutdown', message, shutdownDate }
 }
 
 function assertDescriptorSchemaArtifacts(descriptor: Partial<ModelDescriptor>): void {
