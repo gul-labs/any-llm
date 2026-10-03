@@ -6,6 +6,8 @@ import { describe, it, expect } from 'vitest'
 import {
   classifyHttpStatus,
   classifyError,
+  isTransportError,
+  parseRetryAfter,
   LlmError,
   normalizeSchemaIssues,
   toErrorIssues,
@@ -53,7 +55,9 @@ describe('classifyHttpStatus', () => {
     // Unknown / redirect / info
     { status: 200, expectedKind: 'unknown', expectedRetryable: false },
     { status: 301, expectedKind: 'unknown', expectedRetryable: false },
-    { status: 404, expectedKind: 'unknown', expectedRetryable: false },
+    { status: 404, expectedKind: 'bad_request', expectedRetryable: false },
+    { status: 413, expectedKind: 'bad_request', expectedRetryable: false },
+    { status: 409, expectedKind: 'unknown', expectedRetryable: false },
   ]
 
   for (const row of table) {
@@ -155,8 +159,17 @@ describe('classifyError', () => {
     expect(result.message).toBe('plain string error')
   })
 
-  it('classifies a thrown plain object as unknown', () => {
+  it('classifies a thrown plain object with a transport errno code as a retryable server error', () => {
     const obj = { code: 'ECONNREFUSED' }
+    const result = classifyError(obj)
+
+    expect(result.kind).toBe('server')
+    expect(result.retryable).toBe(true)
+    expect(result.cause).toBe(obj)
+  })
+
+  it('classifies a thrown plain object with no recognisable field as unknown', () => {
+    const obj = { code: 'SOMETHING_ELSE' }
     const result = classifyError(obj)
 
     expect(result.kind).toBe('unknown')
@@ -399,5 +412,346 @@ describe('normalizeSchemaIssues', () => {
       { path: 'items.0.name', message: 'expected string' },
       { path: '', message: 'root is invalid' },
     ])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// classifyError — structured evidence first, message heuristic last (R4.5)
+// ---------------------------------------------------------------------------
+
+describe('classifyError — evidence order', () => {
+  it('a structured 400 wins over a "timeout" in the message', () => {
+    const e = Object.assign(new Error('Invalid value at generation_config.timeout'), {
+      status: 400,
+    })
+    const result = classifyError(e)
+    expect(result.kind).toBe('bad_request')
+    expect(result.retryable).toBe(false)
+    expect(result.httpStatus).toBe(400)
+    expect(result.message).toBe('Invalid value at generation_config.timeout')
+    expect(result.cause).toBe(e)
+  })
+
+  it('a structured 429 wins over a "timed out" message and keeps retryAfterMs', () => {
+    const e = Object.assign(new Error('quota check timed out, slow down'), {
+      status: 429,
+      retryAfter: 4,
+    })
+    const result = classifyError(e)
+    expect(result.kind).toBe('rate_limited')
+    expect(result.retryAfterMs).toBe(4_000)
+  })
+
+  it('a structured status wins over a connection errno on the cause', () => {
+    const e = Object.assign(
+      new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } }),
+      {
+        status: 503,
+      },
+    )
+    expect(classifyError(e).kind).toBe('server')
+    expect(classifyError(e).httpStatus).toBe(503)
+  })
+
+  it('a number that is not an HTTP status is not read as one', () => {
+    for (const code of [0, 14, -104, 99, 600, 429.5]) {
+      const result = classifyError(Object.assign(new Error('request timeout'), { code }))
+      expect(result.kind).toBe('timeout')
+      expect(result.httpStatus).toBeUndefined()
+    }
+  })
+
+  it('AbortError still wins over everything else', () => {
+    const e = Object.assign(new Error('fetch failed: timeout'), {
+      name: 'AbortError',
+      status: 500,
+    })
+    expect(classifyError(e).kind).toBe('aborted')
+  })
+
+  it('TimeoutError by name beats a transport match', () => {
+    const e = Object.assign(new Error('fetch failed'), { name: 'TimeoutError' })
+    expect(classifyError(e).kind).toBe('timeout')
+  })
+
+  it('maps 404 and 413 to bad_request and 409 to unknown from a structured status', () => {
+    expect(classifyError({ status: 404 })).toMatchObject({
+      kind: 'bad_request',
+      retryable: false,
+    })
+    expect(classifyError({ status: 413 })).toMatchObject({
+      kind: 'bad_request',
+      retryable: false,
+    })
+    expect(classifyError({ status: 409 })).toMatchObject({
+      kind: 'unknown',
+      retryable: false,
+    })
+  })
+
+  it('reads a nested response.status and error.code', () => {
+    expect(classifyError({ response: { status: 404 } }).kind).toBe('bad_request')
+    expect(classifyError({ error: { code: 413 } }).kind).toBe('bad_request')
+  })
+})
+
+describe('classifyError — transport failures', () => {
+  it('undici "fetch failed" with ECONNRESET on the cause is a retryable server error', () => {
+    const e = new TypeError('fetch failed', {
+      cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+    })
+    const result = classifyError(e)
+    expect(result.kind).toBe('server')
+    expect(result.retryable).toBe(true)
+    expect(result.cause).toBe(e)
+    expect(result.message).toBe('fetch failed')
+  })
+
+  it.each([
+    'ECONNRESET',
+    'ECONNREFUSED',
+    'ETIMEDOUT',
+    'EAI_AGAIN',
+    'EPIPE',
+    'UND_ERR_SOCKET',
+    'UND_ERR_CLOSED',
+  ])(
+    'a bare %s code on the error or deep in its cause chain is a retryable server error',
+    (code) => {
+      const direct = classifyError(Object.assign(new Error('x'), { code }))
+      expect(direct).toMatchObject({ kind: 'server', retryable: true })
+
+      const deep = classifyError(
+        new Error('outer', { cause: new Error('middle', { cause: { code } }) }),
+      )
+      expect(deep).toMatchObject({ kind: 'server', retryable: true })
+    },
+  )
+
+  it.each(['UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'])(
+    'undici deadline %s stays a retryable timeout',
+    (code) => {
+      const e = new TypeError('fetch failed', {
+        cause: Object.assign(new Error('Timeout Error'), { code }),
+      })
+      expect(classifyError(e)).toMatchObject({ kind: 'timeout', retryable: true })
+    },
+  )
+
+  it('matches the SDK messages "Connection error." and "socket hang up"', () => {
+    expect(classifyError(new Error('Connection error.')).kind).toBe('server')
+    expect(classifyError(new Error('socket hang up')).kind).toBe('server')
+  })
+
+  it('does not match an unrelated errno or message', () => {
+    expect(classifyError(Object.assign(new Error('x'), { code: 'ENOENT' })).kind).toBe(
+      'unknown',
+    )
+    expect(classifyError(new Error('something went wrong')).kind).toBe('unknown')
+  })
+
+  it('terminates on a cyclic cause chain', () => {
+    const a: { cause?: unknown; message: string } = { message: 'a' }
+    const b: { cause?: unknown; message: string } = { message: 'b', cause: a }
+    a.cause = b
+    expect(isTransportError(a)).toBe(false)
+    expect(classifyError(a).kind).toBe('unknown')
+  })
+
+  it('only looks a bounded depth down the cause chain', () => {
+    let e: unknown = { code: 'ECONNRESET' }
+    for (let i = 0; i < 12; i++) e = { message: `level ${i}`, cause: e }
+    expect(isTransportError(e)).toBe(false)
+  })
+})
+
+describe('isTransportError', () => {
+  it('is false for non-objects and for LlmErrors without a transport cause', () => {
+    for (const v of [undefined, null, 'ECONNRESET', 5, true]) {
+      expect(isTransportError(v)).toBe(false)
+    }
+    expect(isTransportError(new LlmError('x', { kind: 'server', retryable: true }))).toBe(
+      false,
+    )
+  })
+
+  it('finds a transport failure under an LlmError cause', () => {
+    const inner = Object.assign(new Error('x'), { code: 'EPIPE' })
+    expect(
+      isTransportError(
+        new LlmError('wrapped', { kind: 'unknown', retryable: false, cause: inner }),
+      ),
+    ).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// parseRetryAfter (R4.6)
+// ---------------------------------------------------------------------------
+
+describe('parseRetryAfter', () => {
+  const NOW = Date.UTC(2026, 9, 3, 12, 0, 0)
+
+  it('reads retry-after-ms, decimals allowed, rounding up', () => {
+    expect(parseRetryAfter({ 'retry-after-ms': '1500' }, NOW)).toBe(1500)
+    expect(parseRetryAfter({ 'retry-after-ms': '1500.2' }, NOW)).toBe(1501)
+  })
+
+  it('retry-after-ms wins over retry-after', () => {
+    expect(parseRetryAfter({ 'retry-after-ms': '250', 'retry-after': '60' }, NOW)).toBe(
+      250,
+    )
+  })
+
+  it('reads retry-after as delta-seconds, decimals allowed', () => {
+    expect(parseRetryAfter({ 'retry-after': '60' }, NOW)).toBe(60_000)
+    expect(parseRetryAfter({ 'retry-after': '1.5' }, NOW)).toBe(1_500)
+    expect(parseRetryAfter({ 'retry-after': ' 7 ' }, NOW)).toBe(7_000)
+  })
+
+  it('reads retry-after as an HTTP-date relative to now', () => {
+    expect(parseRetryAfter({ 'retry-after': 'Sat, 03 Oct 2026 12:00:30 GMT' }, NOW)).toBe(
+      30_000,
+    )
+    expect(
+      parseRetryAfter({ 'retry-after': 'Saturday, 03-Oct-26 12:01:00 GMT' }, NOW),
+    ).toBe(60_000)
+    expect(parseRetryAfter({ 'retry-after': 'Sat Oct  3 12:02:00 2026' }, NOW)).toBe(
+      120_000,
+    )
+  })
+
+  it('ignores an HTTP-date in the past', () => {
+    expect(
+      parseRetryAfter({ 'retry-after': 'Sat, 03 Oct 2026 11:59:00 GMT' }, NOW),
+    ).toBeUndefined()
+  })
+
+  it('reads Go-style durations such as 6m0s', () => {
+    expect(parseRetryAfter({ 'retry-after': '6m0s' }, NOW)).toBe(360_000)
+    expect(parseRetryAfter({ 'x-ratelimit-reset-requests': '6m0s' }, NOW)).toBe(360_000)
+    expect(parseRetryAfter({ 'x-ratelimit-reset-tokens': '1h2m3.5s' }, NOW)).toBe(
+      3_723_500,
+    )
+    expect(parseRetryAfter({ 'x-ratelimit-reset-requests': '250ms' }, NOW)).toBe(250)
+    expect(parseRetryAfter({ 'x-ratelimit-reset-requests': '1m30s500ms' }, NOW)).toBe(
+      90_500,
+    )
+  })
+
+  it('treats x-ratelimit-reset above 1e9 as epoch seconds', () => {
+    const epochSeconds = String(NOW / 1000 + 45)
+    expect(parseRetryAfter({ 'x-ratelimit-reset': epochSeconds }, NOW)).toBe(45_000)
+  })
+
+  it('treats a small x-ratelimit-reset as seconds from now', () => {
+    expect(parseRetryAfter({ 'x-ratelimit-reset': '12' }, NOW)).toBe(12_000)
+    expect(parseRetryAfter({ 'x-ratelimit-reset': '999999999' }, NOW)).toBe(
+      24 * 60 * 60 * 1000,
+    )
+  })
+
+  it('an epoch reset in the past is ignored, not a 56-year delay', () => {
+    expect(
+      parseRetryAfter({ 'x-ratelimit-reset': '1790000000' }, 1_800_000_000_000),
+    ).toBe(undefined)
+  })
+
+  it('takes the longest of the x-ratelimit-reset family', () => {
+    expect(
+      parseRetryAfter(
+        {
+          'x-ratelimit-reset': '5',
+          'x-ratelimit-reset-requests': '1s',
+          'x-ratelimit-reset-tokens': '20s',
+        },
+        NOW,
+      ),
+    ).toBe(20_000)
+  })
+
+  it('prefers retry-after over the reset family', () => {
+    expect(parseRetryAfter({ 'retry-after': '3', 'x-ratelimit-reset': '90' }, NOW)).toBe(
+      3_000,
+    )
+  })
+
+  it('falls through to the next header when one is unusable', () => {
+    expect(parseRetryAfter({ 'retry-after-ms': 'soon', 'retry-after': '5' }, NOW)).toBe(
+      5_000,
+    )
+    expect(
+      parseRetryAfter({ 'retry-after': 'tomorrow', 'x-ratelimit-reset': '8' }, NOW),
+    ).toBe(8_000)
+  })
+
+  it('caps at 24 hours', () => {
+    const day = 24 * 60 * 60 * 1000
+    expect(parseRetryAfter({ 'retry-after': '99999999' }, NOW)).toBe(day)
+    expect(parseRetryAfter({ 'retry-after-ms': '999999999999' }, NOW)).toBe(day)
+    expect(parseRetryAfter({ 'retry-after': 'Wed, 21 Oct 2037 07:28:00 GMT' }, NOW)).toBe(
+      day,
+    )
+  })
+
+  it.each(['', '  ', '0', '0.0', '-5', 'NaN', 'Infinity', '1e3', 'retry 5', '5 seconds'])(
+    'ignores the unusable value %j',
+    (value) => {
+      expect(parseRetryAfter({ 'retry-after': value }, NOW)).toBeUndefined()
+      expect(parseRetryAfter({ 'x-ratelimit-reset': value }, NOW)).toBeUndefined()
+    },
+  )
+
+  it('matches header names case-insensitively in a plain record', () => {
+    expect(parseRetryAfter({ 'Retry-After': '9' }, NOW)).toBe(9_000)
+    expect(parseRetryAfter({ 'RETRY-AFTER-MS': '40' }, NOW)).toBe(40)
+  })
+
+  it('accepts number and array values in a plain record', () => {
+    expect(parseRetryAfter({ 'retry-after': 12 }, NOW)).toBe(12_000)
+    expect(parseRetryAfter({ 'retry-after': ['4', '99'] }, NOW)).toBe(4_000)
+  })
+
+  it('reads a Headers object', () => {
+    const headers = new Headers({
+      'Retry-After': '2.5',
+      'x-ratelimit-reset-tokens': '1m',
+    })
+    expect(parseRetryAfter(headers, NOW)).toBe(2_500)
+    expect(parseRetryAfter(new Headers({ 'x-ratelimit-reset-tokens': '1m' }), NOW)).toBe(
+      60_000,
+    )
+  })
+
+  it('returns undefined when no header is present', () => {
+    expect(parseRetryAfter({}, NOW)).toBeUndefined()
+    expect(parseRetryAfter(new Headers(), NOW)).toBeUndefined()
+  })
+
+  it('classifyError carries the parsed delay on the LlmError', () => {
+    const date = new Date(Date.now() + 45_000).toUTCString()
+    const viaDate = classifyError({ status: 429, headers: { 'retry-after': date } })
+    expect(viaDate.retryAfterMs).toBeGreaterThan(40_000)
+    expect(viaDate.retryAfterMs).toBeLessThanOrEqual(45_000)
+
+    const viaEpoch = classifyError({
+      status: 429,
+      headers: { 'x-ratelimit-reset': '1790000000' },
+    })
+    expect(
+      viaEpoch.retryAfterMs === undefined || viaEpoch.retryAfterMs <= 86_400_000,
+    ).toBe(true)
+
+    expect(
+      classifyError({ status: 429, headers: { 'retry-after-ms': '750' } }).retryAfterMs,
+    ).toBe(750)
+    expect(
+      classifyError({ status: 429, headers: { 'x-ratelimit-reset-requests': '6m0s' } })
+        .retryAfterMs,
+    ).toBe(360_000)
+    expect(classifyError({ status: 429, retryAfterMs: 9e12 }).retryAfterMs).toBe(
+      86_400_000,
+    )
+    expect(classifyError({ status: 429, retryAfterMs: 0 }).retryAfterMs).toBeUndefined()
   })
 })

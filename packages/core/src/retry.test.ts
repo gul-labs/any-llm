@@ -59,12 +59,12 @@ function makeCtx(signal?: AbortSignal): EngineCtx {
   }
 }
 
-function makeReq(): ResolvedRequest {
+function makeReq(timeoutMs?: number): ResolvedRequest {
   return {
     provider: 'google',
     model: 'gemini-2.5-pro',
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
-    config: {},
+    config: timeoutMs !== undefined ? { timeoutMs } : {},
   }
 }
 
@@ -122,9 +122,9 @@ describe('computeBackoffMs', () => {
     expect(d).toBe(2_000) // retryAfterMs wins over exponential
   })
 
-  it('retryAfterMs is capped at maxDelayMs', () => {
+  it('retryAfterMs is never clamped: the caller decides whether to wait that long', () => {
     const d = computeBackoffMs(1, policy, 99_999, () => 0.5)
-    expect(d).toBe(30_000)
+    expect(d).toBe(99_999)
   })
 
   it('rand is NOT applied when retryAfterMs is present', () => {
@@ -240,26 +240,131 @@ describe('retryMiddleware', () => {
     expect(sleepCalls[0]).toBe(5_000) // retryAfterMs honored, rand not applied
   })
 
-  it('retryAfterMs is capped at maxDelayMs', async () => {
+  it('a provider delay longer than maxDelayMs stops the retry and rethrows the error with retryAfterMs intact', async () => {
     const sleepCalls: number[] = []
     const customSleep = async (ms: number): Promise<void> => {
       sleepCalls.push(ms)
     }
 
     let calls = 0
+    const original = rateLimited(99_999)
     const handler: Handler = async () => {
       calls++
-      if (calls === 1) throw rateLimited(99_999) // huge retryAfterMs
-      return DUMMY_RESULT
+      throw original
     }
 
     const mw = retryMiddleware(
-      { maxAttempts: 2, maxDelayMs: 10_000 },
+      { maxAttempts: 4, maxDelayMs: 10_000 },
       { sleep: customSleep, random: () => 0 },
     )
+    const err = await mw.intercept(makeReq(), makeCtx(), handler).catch((e: unknown) => e)
+
+    expect(err).toBe(original)
+    expect((err as LlmError).retryAfterMs).toBe(99_999)
+    expect(calls).toBe(1)
+    expect(sleepCalls).toEqual([])
+  })
+
+  it('a provider delay equal to maxDelayMs is waited out in full', async () => {
+    const sleepCalls: number[] = []
+    let calls = 0
+    const handler: Handler = async () => {
+      calls++
+      if (calls === 1) throw rateLimited(10_000)
+      return DUMMY_RESULT
+    }
+    const mw = retryMiddleware(
+      { maxAttempts: 2, maxDelayMs: 10_000 },
+      {
+        sleep: async (ms) => {
+          sleepCalls.push(ms)
+        },
+      },
+    )
+
     await mw.intercept(makeReq(), makeCtx(), handler)
 
-    expect(sleepCalls[0]).toBe(10_000) // capped at maxDelayMs
+    expect(sleepCalls).toEqual([10_000])
+  })
+
+  it('a provider delay longer than the remaining deadline rethrows the error with retryAfterMs intact', async () => {
+    let virtualTime = 0
+    const sleepCalls: number[] = []
+    const original = rateLimited(8_000)
+    const handler: Handler = async () => {
+      virtualTime += 100
+      throw original
+    }
+    const mw = retryMiddleware(
+      { maxAttempts: 3, maxDelayMs: 30_000 },
+      {
+        sleep: async (ms) => {
+          sleepCalls.push(ms)
+          virtualTime += ms
+        },
+        now: () => virtualTime,
+      },
+    )
+
+    const err = await mw
+      .intercept(makeReq(5_000), makeCtx(), handler)
+      .catch((e: unknown) => e)
+
+    expect(err).toBe(original)
+    expect((err as LlmError).retryAfterMs).toBe(8_000)
+    expect(sleepCalls).toEqual([])
+  })
+
+  it('no policy ever retries before the provider delay', async () => {
+    // Deterministic sweep over delay, cap, deadline, jitter and custom
+    // `shouldRetry`: every sleep is at least the delay the failed attempt
+    // asked for, and a delay that cannot be honoured ends the call instead.
+    const delays = [1, 250, 1_000, 5_000, 9_999, 10_000, 10_001, 60_000]
+    const caps = [500, 10_000, 30_000]
+    const deadlines = [undefined, 2_000, 12_000, 120_000]
+    const rands = [0, 0.5, 1]
+    for (const retryAfterMs of delays) {
+      for (const maxDelayMs of caps) {
+        for (const timeoutMs of deadlines) {
+          for (const r of rands) {
+            for (const shouldRetry of [undefined, () => true]) {
+              let virtualTime = 0
+              const sleeps: number[] = []
+              const handler: Handler = async () => {
+                virtualTime += 10
+                throw rateLimited(retryAfterMs)
+              }
+              const mw = retryMiddleware(
+                {
+                  maxAttempts: 4,
+                  baseDelayMs: 100,
+                  maxDelayMs,
+                  ...(shouldRetry !== undefined ? { shouldRetry } : {}),
+                },
+                {
+                  sleep: async (ms) => {
+                    sleeps.push(ms)
+                    virtualTime += ms
+                  },
+                  random: () => r,
+                  now: () => virtualTime,
+                },
+              )
+              const err = await mw
+                .intercept(makeReq(timeoutMs), makeCtx(), handler)
+                .catch((e: unknown) => e as LlmError)
+
+              for (const slept of sleeps) {
+                expect(slept).toBeGreaterThanOrEqual(retryAfterMs)
+              }
+              expect(err).toBeInstanceOf(LlmError)
+              // However the call ended, the host still sees the provider's delay.
+              expect((err as LlmError).retryAfterMs).toBe(retryAfterMs)
+            }
+          }
+        }
+      }
+    }
   })
 
   it('custom shouldRetry: stops retrying when predicate returns false', async () => {

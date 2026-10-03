@@ -53,8 +53,15 @@ export type {
   LlmErrorOptions,
   LlmErrorIssue,
   HttpClassification,
+  RetryAfterHeaders,
 } from './errors.js'
-export { LlmError, classifyHttpStatus, classifyError } from './errors.js'
+export {
+  LlmError,
+  classifyHttpStatus,
+  classifyError,
+  isTransportError,
+  parseRetryAfter,
+} from './errors.js'
 
 // Ports
 export type {
@@ -101,6 +108,7 @@ export type { CostRatesLookup } from './cost.js'
 export type {
   ClientConfig,
   GenerateOptions,
+  CountTokensOptions,
   RunStructuredOptions,
   Client,
 } from './engine.js'

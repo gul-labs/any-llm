@@ -308,6 +308,11 @@ export type Release = () => void
  * engine guarantees this.  A broken (throwing) Release is swallowed by the
  * engine so it does not mask the real result or error.
  *
+ * ## Honour the signal
+ * `acquire` receives the call's combined abort signal and must reject when it
+ * fires. The engine also releases a late-resolved `acquire` whose call already
+ * ended, but it cannot stop the limiter from doing work for a dead call.
+ *
  * ## Not fail-open
  * Unlike sinks and telemetry, a rejection from `acquire` **propagates** — the
  * whole point of this port is to be able to refuse or delay calls.  Do not
@@ -339,7 +344,11 @@ export interface RateLimiter {
    *
    * @param key    - Per-provider+model key: `"${provider}:${model}"`.
    * @param signal - Combined abort signal from the engine (caller + timeout).
-   *                 If it fires while waiting, reject immediately.
+   *                 `acquire` MUST honour it: if it fires while waiting,
+   *                 reject immediately. When a timeout or abort wins while
+   *                 `acquire` is still pending, the engine calls the `Release`
+   *                 it resolves with later, so a slot is not leaked; a limiter
+   *                 that ignores the signal still holds its slot until then.
    * @returns A {@link Release} that MUST be called exactly once after the
    *          acquire resolves, on every exit path.
    */
@@ -624,9 +633,11 @@ export interface Telemetry {
  * Engine execution context passed through the middleware chain.
  *
  * Contains only the stable, call-level fields every middleware needs.
- * The `signal` here is the raw caller abort signal — NOT the per-attempt
- * combined (caller + timeout) signal.  The engine adds the timeout signal
- * inside `runAttempt` for each attempt independently.
+ * The `signal` here is the caller's abort signal merged with the logical-call
+ * deadline (`config.timeoutMs`, which starts when the call starts), so
+ * middleware that waits or does I/O should honour it. It is NOT the
+ * per-attempt signal: the engine adds each attempt's own timeout inside
+ * `runAttempt`. The deadline aborts it only while no attempt is in flight.
  */
 export interface EngineCtx {
   /** Unique ID for this logical call (stable across retries). */
@@ -635,7 +646,10 @@ export interface EngineCtx {
   clock: Clock
   /** Structured logger injected from the client config. */
   logger: Logger
-  /** Caller-supplied abort signal (does NOT include per-attempt timeouts). */
+  /**
+   * Caller-supplied abort signal merged with the logical-call deadline (does
+   * NOT include per-attempt timeouts).
+   */
   signal?: AbortSignal
 }
 

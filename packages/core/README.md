@@ -302,6 +302,7 @@ Four levels: `debug`, `info`, `warn`, `error`. Engine events:
 | `llm.call.cost.failed`   | `warn`                                                                  |
 | `llm.call.sink.success`  | `debug`                                                                 |
 | `llm.call.sink.failed`   | `error` (redacted)                                                      |
+| `llm.call.sink.timeout`  | `error` — `sinkTimeoutMs` passed; the row may be lost                   |
 
 Host logger exceptions are swallowed by `makeSafeLogger` — fail-open; a bad logger never breaks a
 call.

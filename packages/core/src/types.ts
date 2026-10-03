@@ -277,15 +277,19 @@ export interface GenConfig {
   /**
    * Overall wall-clock ceiling for the logical call.
    *
-   * Honored as a **true ceiling across retry attempts** when the retry
-   * middleware is installed: the sum of all attempt windows plus back-off
-   * sleep never exceeds this value.  The middleware enforces this by:
+   * The clock starts when the call starts, so middleware time (a quota
+   * deferral, a store round-trip) counts against it. It is a **true ceiling
+   * across retry attempts** when the retry middleware is installed: the sum of
+   * all attempt windows plus back-off sleep never exceeds this value.  The
+   * middleware enforces this by:
    * - Refusing to start a new attempt once the budget is exhausted.
    * - Passing the shrinking remaining budget as the per-attempt timeout.
-   * - Clamping back-off sleep to the remaining budget.
+   * - Rethrowing the failed attempt's own error, without sleeping, when the
+   *   back-off is not shorter than the remaining budget.
    *
    * With no retry middleware it is simply the single-attempt timeout —
-   * the engine arms an `AbortSignal` at exactly this value for the adapter.
+   * the engine arms an `AbortSignal` at exactly the time that remains for the
+   * adapter.
    */
   timeoutMs?: number
   /** Schema-admitted provider extension lanes. Not a raw SDK passthrough. */

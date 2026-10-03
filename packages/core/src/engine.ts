@@ -95,6 +95,19 @@ export interface ClientConfig {
    */
   sink?: UsageSink
   /**
+   * Longest the engine waits for one `sink.record` call, in milliseconds.
+   * Must be a finite number greater than 0.
+   *
+   * A sink that has not settled by then is abandoned: the engine logs
+   * `llm.call.sink.timeout` at `error` (with `callId`, `attemptId`,
+   * `attemptNumber`, `provider`, `model`, `timeoutMs`) and goes on. The call's
+   * result or error is returned or thrown unchanged, and the row may or may
+   * not be written later. A stalled database must not stall an LLM call that
+   * has already been billed.
+   * @default 5000
+   */
+  sinkTimeoutMs?: number
+  /**
    * Time source.  Defaults to `{ now: () => Date.now() }`.
    * Inject {@link FakeClock} in tests for deterministic latency assertions.
    */
@@ -119,6 +132,12 @@ export interface ClientConfig {
    *
    * Called with key `"${provider}:${model}"` before the adapter is invoked.
    * A rejection from `acquire` propagates (NOT fail-open) — the call fails.
+   *
+   * `acquire` must honour the `signal` it is given and reject when it fires.
+   * If a timeout or an abort wins while `acquire` is still pending, the engine
+   * calls the `Release` that `acquire` resolves with later, so a slot is not
+   * leaked, but a limiter that ignores the signal still holds its slot until
+   * then.
    *
    * Defaults to a no-op limiter ({@link NOOP_RATE_LIMITER}) that resolves
    * immediately with a no-op Release.
@@ -213,6 +232,19 @@ export interface GenerateOptions {
 }
 
 /**
+ * Options accepted by {@link Client.countTokens}.
+ */
+export interface CountTokensOptions extends GenerateOptions {
+  /**
+   * Ceiling for the whole count, in milliseconds (a finite number greater
+   * than 0). When it passes, the call rejects with `LlmError('timeout')` even
+   * if the adapter ignores the abort signal. There is no default: without it
+   * the count runs until the adapter settles or the caller aborts.
+   */
+  timeoutMs?: number
+}
+
+/**
  * Options accepted by {@link Client.runStructured}.
  */
 export interface RunStructuredOptions {
@@ -240,7 +272,9 @@ export interface Client {
    * `opts.auth` is required on every call — the library never reads credentials
    * from the environment.
    *
-   * @returns An {@link LlmResult} on success; throws {@link LlmError} on failure.
+   * @returns An {@link LlmResult} on success. Rejects only with {@link LlmError}:
+   * anything else thrown on the way (a host registry, a middleware, a bug) is
+   * classified, with the original kept as `cause`.
    */
   generate(request: LlmRequest, opts: GenerateOptions): Promise<LlmResult>
 
@@ -281,16 +315,21 @@ export interface Client {
 
   /**
    * Count tokens for a prospective request without generating.
-   * Same auth/signal semantics as {@link generate}. Throws `LlmError('bad_request')`
-   * when the (provider, model) pair is not registered, or when the resolved
-   * adapter does not implement `countTokens`.
+   * Same auth/signal semantics as {@link generate}, plus an optional
+   * `timeoutMs`. Caller abort and the timeout end the call even when the
+   * adapter ignores its signal. Throws `LlmError('bad_request')` when the
+   * (provider, model) pair is not registered, or when the resolved adapter
+   * does not implement `countTokens`.
    */
-  countTokens(request: TokenCountRequest, opts: GenerateOptions): Promise<TokenCount>
+  countTokens(request: TokenCountRequest, opts: CountTokensOptions): Promise<TokenCount>
 }
 
 // ---------------------------------------------------------------------------
 // Internal constants / defaults
 // ---------------------------------------------------------------------------
+
+/** Longest the engine waits for one `sink.record`, unless `sinkTimeoutMs` says otherwise. */
+const DEFAULT_SINK_TIMEOUT_MS = 5000
 
 const NOOP_LOGGER: Logger = {
   info() {},
@@ -717,6 +756,90 @@ function buildCancellationRace(
 }
 
 // ---------------------------------------------------------------------------
+// Pipeline helper: logical-call deadline
+// ---------------------------------------------------------------------------
+
+/**
+ * Arms `timeoutMs` for the whole logical call, not only for each attempt, so
+ * time spent in middleware (a quota deferral, a store round-trip) counts
+ * against it.
+ *
+ * Returns:
+ *  - `deadlineAt`  — wall-clock ms (`Date.now()` scale) the call must end by.
+ *  - `signal`      — the caller signal merged with the deadline; handed to
+ *                    middleware as `EngineCtx.signal`.
+ *  - `gate`        — rejects with `LlmError('timeout')` at the deadline.
+ *  - `expired()`   — true once the deadline has passed.
+ *  - `cleanup()`   — idempotent; clears the timer and listeners.
+ *
+ * While an attempt is in flight the deadline is that attempt's to enforce:
+ * `runAttempt` arms its own timer for exactly the time that remains, records
+ * the failure as its own ledger row, and lets that error travel up the chain.
+ * Firing the gate then would replace the attempt's error with a second,
+ * attempt-less one. So the gate and the signal fire only when no attempt is in
+ * flight, which is when middleware (or a hung chain) is what is taking the
+ * time. The gate rejects before the signal aborts, as in
+ * {@link buildCancellationRace}, so `timeout` wins over any abort error a
+ * cooperative middleware throws in reaction.
+ */
+function buildCallDeadline(
+  callerSignal: AbortSignal | undefined,
+  timeoutMs: number | undefined,
+  attemptInFlight: () => boolean,
+): {
+  deadlineAt: number | undefined
+  signal: AbortSignal | undefined
+  gate: Promise<never> | undefined
+  expired(this: void): boolean
+  cleanup(this: void): void
+} {
+  if (timeoutMs === undefined) {
+    return {
+      deadlineAt: undefined,
+      signal: callerSignal,
+      gate: undefined,
+      expired: () => false,
+      cleanup() {},
+    }
+  }
+  const deadlineAt = Date.now() + timeoutMs
+  const controller = new AbortController()
+  let rejectGate!: (err: LlmError) => void
+  const gate = new Promise<never>((_, reject) => {
+    rejectGate = reject
+  })
+  // The gate can fire before `runPipeline` starts racing it; this keeps that
+  // from being an unhandled rejection. The race still receives the error.
+  gate.catch(() => {})
+  let fired = false
+  const timer = setTimeout(() => {
+    if (attemptInFlight()) return
+    fired = true
+    const err = new LlmError(`Request timed out after ${timeoutMs}ms`, {
+      kind: 'timeout',
+      retryable: true,
+    })
+    // REJECT FIRST, abort second (see buildCancellationRace, Invariant A).
+    rejectGate(err)
+    controller.abort(err)
+  }, timeoutMs)
+  const merged =
+    callerSignal === undefined
+      ? undefined
+      : mergeSignals([callerSignal, controller.signal])
+  return {
+    deadlineAt,
+    signal: merged?.signal ?? controller.signal,
+    gate,
+    expired: () => fired || Date.now() >= deadlineAt,
+    cleanup() {
+      clearTimeout(timer)
+      merged?.cleanup()
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Pipeline helper: record builders
 // ---------------------------------------------------------------------------
 
@@ -995,35 +1118,56 @@ function buildErrorRecord(
 // ---------------------------------------------------------------------------
 
 /**
- * Writes `record` to `sink` if a sink is configured.
+ * Writes `record` to `sink` if a sink is configured, waiting at most
+ * `timeoutMs`.
  * Failures are logged at `error` as `llm.call.sink.failed` and swallowed
- * (fail-open) — a broken sink must never fail the LLM call.
+ * (fail-open) — a broken sink must never fail the LLM call. A sink still
+ * pending at `timeoutMs` is abandoned and logged at `error` as
+ * `llm.call.sink.timeout`; its late result, success or failure, is ignored.
  */
 async function recordToSink(
   sink: UsageSink | undefined,
   record: ReturnType<typeof buildRecord>,
   logger: Logger,
   callId: string,
+  timeoutMs: number,
 ): Promise<void> {
-  if (sink !== undefined) {
-    try {
-      await sink.record(record)
+  if (sink === undefined) return
+  const fields = {
+    callId,
+    attemptId: record.attemptId,
+    attemptNumber: record.attemptNumber,
+    provider: record.provider,
+    model: record.model,
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => {
+        resolve('timeout')
+      }, timeoutMs)
+    })
+    // Started inside the try so a synchronous throw from `record` is a failure
+    // like any other. `Promise.race` keeps handling the write, so a rejection
+    // that arrives after the timeout is not an unhandled rejection.
+    const write = Promise.resolve(sink.record(record)).then(() => 'done' as const)
+    const outcome = await Promise.race([write, timedOut])
+    if (outcome === 'timeout') {
+      // A row that may be lost. The event name and fields are stable: alert on
+      // `llm.call.sink.timeout`, and use `attemptId` to find the row.
+      logger.error({ ...fields, timeoutMs }, 'llm.call.sink.timeout')
+    } else {
       logger.debug({ callId }, 'llm.call.sink.success')
-    } catch (sinkErr) {
-      // A dropped ledger row. The event name and fields are stable: alert on
-      // `llm.call.sink.failed`, and use `attemptId` to find the lost row.
-      logger.error(
-        {
-          callId,
-          attemptId: record.attemptId,
-          attemptNumber: record.attemptNumber,
-          provider: record.provider,
-          model: record.model,
-          error: redactSecrets(String(sinkErr)),
-        },
-        'llm.call.sink.failed',
-      )
     }
+  } catch (sinkErr) {
+    // A dropped ledger row. The event name and fields are stable: alert on
+    // `llm.call.sink.failed`, and use `attemptId` to find the lost row.
+    logger.error(
+      { ...fields, error: redactSecrets(String(sinkErr)) },
+      'llm.call.sink.failed',
+    )
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
   }
 }
 
@@ -1179,6 +1323,19 @@ export function createClient(config: ClientConfig): Client {
   const { adapters } = config
   const pricingSources: Record<string, PricingSource> = config.pricingSources ?? {}
   const sink = config.sink
+  const sinkTimeoutMs = config.sinkTimeoutMs ?? DEFAULT_SINK_TIMEOUT_MS
+  if (!Number.isFinite(sinkTimeoutMs) || sinkTimeoutMs <= 0) {
+    throw new LlmError(
+      `createClient: sinkTimeoutMs must be a finite number greater than 0, got ${String(config.sinkTimeoutMs)}.`,
+      {
+        kind: 'bad_request',
+        retryable: false,
+        issues: [
+          { path: 'sinkTimeoutMs', message: 'must be a finite number greater than 0.' },
+        ],
+      },
+    )
+  }
   const clock: Clock = config.clock ?? DEFAULT_CLOCK
   const ids: IdGenerator = config.ids ?? DEFAULT_IDS
   const logger: Logger = config.logger ?? NOOP_LOGGER
@@ -1398,13 +1555,23 @@ export function createClient(config: ClientConfig): Client {
       ...(request.toolChoice !== undefined ? { toolChoice: request.toolChoice } : {}),
     }
 
-    // EngineCtx carries stable call-level state.  ctx.signal is the raw
-    // caller signal (no timeout component) — the timeout is added per-attempt.
+    // The logical-call deadline (`timeoutMs`) starts here, so middleware time
+    // counts against it (R4.1). It is merged into the signal middleware see.
+    let attemptsInFlight = 0
+    const deadline = buildCallDeadline(
+      callerSignal,
+      resolvedConfig.timeoutMs,
+      () => attemptsInFlight > 0,
+    )
+
+    // EngineCtx carries stable call-level state.  ctx.signal is the caller
+    // signal merged with the logical-call deadline; each attempt adds its own
+    // timeout on top of it inside runAttempt.
     const engineCtx: EngineCtx = {
       callId,
       clock,
       logger: safeLogger,
-      ...(callerSignal !== undefined ? { signal: callerSignal } : {}),
+      ...(deadline.signal !== undefined ? { signal: deadline.signal } : {}),
     }
 
     // ── (b) runAttempt — the innermost Handler ─────────────────────────────
@@ -1418,7 +1585,7 @@ export function createClient(config: ClientConfig): Client {
     // Errors: classify → build error record → sink (fail-open) → rethrow.
     // The call-level telemetry.onError and logger.error are fired by the
     // epilogue after the chain settles, NOT here.
-    async function runAttempt(
+    async function runAttemptBody(
       incoming: ResolvedRequest,
       ctx: EngineCtx,
     ): Promise<LlmResult> {
@@ -1496,10 +1663,19 @@ export function createClient(config: ClientConfig): Client {
         // Invariant A (timeout-beats-abort microtask ordering): the timeout
         // promise rejects BEFORE its AbortController is fired — guaranteed by
         // buildCancellationRace.  Do not reorder.
-        const cancellation = buildCancellationRace(
-          ctx.signal,
-          effectiveReq.attemptTimeoutMs ?? effectiveReq.config.timeoutMs,
-        )
+        //
+        // The attempt's window is what the logical deadline has left, never
+        // more, so an attempt that starts late (after a quota deferral) cannot
+        // run past `timeoutMs`.
+        const deadlineRemainingMs =
+          deadline.deadlineAt === undefined ? undefined : deadline.deadlineAt - Date.now()
+        const requestedAttemptMs =
+          effectiveReq.attemptTimeoutMs ?? effectiveReq.config.timeoutMs
+        const attemptBudgetMs =
+          deadlineRemainingMs === undefined
+            ? requestedAttemptMs
+            : Math.min(requestedAttemptMs ?? deadlineRemainingMs, deadlineRemainingMs)
+        const cancellation = buildCancellationRace(ctx.signal, attemptBudgetMs)
         cleanup = cancellation.cleanup
         const { raceParts, combinedSignal } = cancellation
 
@@ -1519,6 +1695,20 @@ export function createClient(config: ClientConfig): Client {
               : await acquirePromise
         } catch (acquireErr) {
           queueDelayMs = ctx.clock.now() - acquireStartMs
+          // A timeout or abort can win while `acquire` is still pending. If it
+          // then resolves, nobody holds the Release; call it so the slot is
+          // not leaked. A rejection (the usual way a signal-aware limiter ends
+          // the wait) is already handled.
+          void Promise.resolve(acquirePromise).then(
+            (lateRelease) => {
+              try {
+                lateRelease()
+              } catch {
+                /* intentionally swallowed */
+              }
+            },
+            () => {},
+          )
           throw acquireErr
         }
         queueDelayMs = ctx.clock.now() - acquireStartMs
@@ -1530,10 +1720,13 @@ export function createClient(config: ClientConfig): Client {
 
         // Step 6c: Build adapter-specific request (with the combined signal)
         // and the AdapterCtx.
-        const adapterReq: ResolvedRequest =
-          combinedSignal !== undefined
-            ? { ...effectiveReq, signal: combinedSignal }
-            : effectiveReq
+        const adapterReq: ResolvedRequest = {
+          ...effectiveReq,
+          ...(combinedSignal !== undefined ? { signal: combinedSignal } : {}),
+          ...(deadlineRemainingMs !== undefined && attemptBudgetMs !== undefined
+            ? { attemptTimeoutMs: attemptBudgetMs }
+            : {}),
+        }
 
         const adapterCtx: AdapterCtx = {
           auth: callAuth,
@@ -1669,7 +1862,7 @@ export function createClient(config: ClientConfig): Client {
         )
 
         // Step 11: Sink — fail-open.
-        await recordToSink(sink, record, ctx.logger, ctx.callId)
+        await recordToSink(sink, record, ctx.logger, ctx.callId, sinkTimeoutMs)
 
         // Step 12: Return LlmResult.
         const result: LlmResult = {
@@ -1727,8 +1920,20 @@ export function createClient(config: ClientConfig): Client {
         }
         release = undefined
 
-        // Classify error (LlmError passes through unchanged).
-        const err = classifyError(rawErr)
+        // Classify error (LlmError passes through unchanged). A cooperative
+        // adapter that throws the signal's own abort reason (a DOMException, a
+        // host cancellation error) is an abort, with that reason kept as cause.
+        const err =
+          !(rawErr instanceof LlmError) &&
+          rawErr !== undefined &&
+          ctx.signal?.aborted === true &&
+          rawErr === ctx.signal.reason
+            ? new LlmError('Request aborted by caller', {
+                kind: 'aborted',
+                retryable: false,
+                cause: rawErr,
+              })
+            : classifyError(rawErr)
 
         // Some providers return a billed HTTP 200 with no usable output. Keep
         // that attempt's usage and snapshot cost even though it is retryable.
@@ -1789,7 +1994,7 @@ export function createClient(config: ClientConfig): Client {
         )
 
         // Sink error record — fail-open.
-        await recordToSink(sink, errorRecord, ctx.logger, ctx.callId)
+        await recordToSink(sink, errorRecord, ctx.logger, ctx.callId, sinkTimeoutMs)
 
         // Enrich the error with call context (idempotent — does not overwrite
         // if already set, e.g. by an outer middleware).
@@ -1798,6 +2003,32 @@ export function createClient(config: ClientConfig): Client {
         // Rethrow: the call-level epilogue (or retry middleware) handles
         // the final fate of this error.
         throw err
+      }
+    }
+
+    // The handler at the bottom of the chain. It refuses to start once the
+    // logical deadline has passed (a middleware sat on the time, or the call
+    // already timed out and this is an orphaned continuation), and counts the
+    // attempt as in flight for the whole of `runAttemptBody`, sink write
+    // included, because that is when the attempt owns the deadline.
+    async function runAttempt(
+      incoming: ResolvedRequest,
+      ctx: EngineCtx,
+    ): Promise<LlmResult> {
+      if (deadline.expired()) {
+        throw new LlmError(
+          `Request timed out after ${String(resolvedConfig.timeoutMs)}ms`,
+          {
+            kind: 'timeout',
+            retryable: true,
+          },
+        )
+      }
+      attemptsInFlight++
+      try {
+        return await runAttemptBody(incoming, ctx)
+      } finally {
+        attemptsInFlight--
       }
     }
 
@@ -1898,7 +2129,13 @@ export function createClient(config: ClientConfig): Client {
         await validateInputContract(request.inputContract)
       }
 
-      const result = await chain(preResolvedReq, engineCtx)
+      const chainResult = chain(preResolvedReq, engineCtx)
+      // The deadline gate ends a call whose middleware (not an attempt) is
+      // taking the time; the chain's own late result or error is then dropped.
+      const result =
+        deadline.gate === undefined
+          ? await chainResult
+          : await Promise.race([chainResult, deadline.gate])
       const latencyMs = clock.now() - callStartMs
       try {
         const successEvent: CallSuccessEvent = {
@@ -1979,7 +2216,7 @@ export function createClient(config: ClientConfig): Client {
           authKeyIdOf(callAuth),
           request.tools?.map((t) => t.name),
         )
-        await recordToSink(sink, syntheticRecord, safeLogger, callId)
+        await recordToSink(sink, syntheticRecord, safeLogger, callId, sinkTimeoutMs)
       }
 
       try {
@@ -2018,6 +2255,8 @@ export function createClient(config: ClientConfig): Client {
         'llm.call.error',
       )
       throw err
+    } finally {
+      deadline.cleanup()
     }
   }
 
@@ -2169,7 +2408,7 @@ export function createClient(config: ClientConfig): Client {
   // Public methods
   // -------------------------------------------------------------------------
 
-  return {
+  const impl = {
     async generate(request: LlmRequest, opts: GenerateOptions): Promise<LlmResult> {
       if (typeof request.provider !== 'string' || request.provider.length === 0) {
         throw new LlmError(
@@ -2328,7 +2567,7 @@ export function createClient(config: ClientConfig): Client {
 
     async countTokens(
       request: TokenCountRequest,
-      opts: GenerateOptions,
+      opts: CountTokensOptions,
     ): Promise<TokenCount> {
       if (typeof request.provider !== 'string' || request.provider.length === 0) {
         throw new LlmError(
@@ -2336,8 +2575,26 @@ export function createClient(config: ClientConfig): Client {
           { kind: 'bad_request', retryable: false },
         )
       }
-      const runtimeOpts = opts as GenerateOptions | undefined
+      const runtimeOpts = opts as CountTokensOptions | undefined
       const callAuth = requireAuth(runtimeOpts?.auth)
+      const countTimeoutMs = runtimeOpts?.timeoutMs
+      if (
+        countTimeoutMs !== undefined &&
+        (typeof countTimeoutMs !== 'number' ||
+          !Number.isFinite(countTimeoutMs) ||
+          countTimeoutMs <= 0)
+      ) {
+        throw new LlmError(
+          `countTokens: timeoutMs must be a finite number greater than 0, got ${String(countTimeoutMs)}.`,
+          {
+            kind: 'bad_request',
+            retryable: false,
+            issues: [
+              { path: 'timeoutMs', message: 'must be a finite number greater than 0.' },
+            ],
+          },
+        )
+      }
 
       const descriptor = checkDescriptor(
         registry.resolve(request.provider, request.model),
@@ -2361,6 +2618,7 @@ export function createClient(config: ClientConfig): Client {
         )
       }
 
+      const countAdapterTokens = adapter.countTokens.bind(adapter)
       const callId = ids.callId()
       const startMs = clock.now()
       safeLogger.info(
@@ -2368,13 +2626,26 @@ export function createClient(config: ClientConfig): Client {
         'llm.count_tokens.start',
       )
 
+      // Same cancellation race as a generation attempt: caller abort and
+      // `timeoutMs` end the call even when the adapter ignores its signal.
+      const cancellation = buildCancellationRace(runtimeOpts?.signal, countTimeoutMs)
       try {
-        const result = await adapter.countTokens(request, {
-          auth: callAuth,
-          logger: safeLogger,
-          modelDescriptor: descriptor,
-          ...(runtimeOpts?.signal !== undefined ? { signal: runtimeOpts.signal } : {}),
-        })
+        // An async wrapper turns a synchronous throw into a rejection the
+        // race handles, instead of leaving a cancellation promise unhandled.
+        const counting = (async () =>
+          countAdapterTokens(request, {
+            auth: callAuth,
+            logger: safeLogger,
+            modelDescriptor: descriptor,
+            ...(cancellation.combinedSignal !== undefined
+              ? { signal: cancellation.combinedSignal }
+              : {}),
+          }))()
+        const result =
+          cancellation.raceParts.length > 0
+            ? await Promise.race([counting, ...cancellation.raceParts])
+            : await counting
+        cancellation.cleanup()
         const latencyMs = clock.now() - startMs
         safeLogger.info(
           {
@@ -2388,6 +2659,7 @@ export function createClient(config: ClientConfig): Client {
         )
         return result
       } catch (rawErr) {
+        cancellation.cleanup()
         const err = classifyError(rawErr)
         attachCallContext(err, { callId })
         const latencyMs = clock.now() - startMs
@@ -2404,5 +2676,33 @@ export function createClient(config: ClientConfig): Client {
         throw err
       }
     },
+  }
+
+  // `generate`, `runStructured` and `countTokens` reject only with `LlmError`:
+  // whatever else is thrown on the way (a host registry, a middleware, a bug)
+  // is classified, with the original kept as `cause`.
+  async function onlyLlmError<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run()
+    } catch (e) {
+      throw classifyError(e)
+    }
+  }
+
+  return {
+    generate: (request: LlmRequest, opts: GenerateOptions): Promise<LlmResult> =>
+      onlyLlmError(() => impl.generate(request, opts)),
+
+    runStructured: (
+      callSite: CallSite,
+      varsOrOpts: Record<string, string> | RunStructuredOptions,
+      opts?: RunStructuredOptions,
+    ): Promise<LlmResult> =>
+      onlyLlmError(() => impl.runStructured(callSite, varsOrOpts, opts)),
+
+    countTokens: (
+      request: TokenCountRequest,
+      opts: CountTokensOptions,
+    ): Promise<TokenCount> => onlyLlmError(() => impl.countTokens(request, opts)),
   }
 }

@@ -76,7 +76,7 @@ describe('@gullabs/core package surface', () => {
     expectTypeOf<Client['countTokens']>().toEqualTypeOf<
       (
         request: TokenCountRequest,
-        opts: import('./engine.js').GenerateOptions,
+        opts: import('./engine.js').CountTokensOptions,
       ) => Promise<TokenCount>
     >()
   })

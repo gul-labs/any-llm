@@ -214,10 +214,11 @@ describe('retryMiddleware — overall timeout (FIX 1)', () => {
   // (c) Back-off is clamped to the remaining budget
   // ---------------------------------------------------------------------------
 
-  it('(c) back-off sleep is clamped to remaining budget', async () => {
+  it('(c) a back-off that does not fit the remaining budget rethrows the attempt error at once', async () => {
     // Budget: 350 ms. Attempt 1 takes 100 ms → remainingAfter = 250 ms.
-    // Unclamped backoff with rand=1, baseDelayMs=500 → 500 ms.
-    // Clamped: min(500, 250) = 250.
+    // Backoff with rand=1, baseDelayMs=500 → 500 ms, longer than 250 ms.
+    // Sleeping 250 ms and then throwing a synthetic timeout would hide the
+    // real failure, so the attempt's own error is rethrown without sleeping.
     let virtualTime = 0
     const now = () => virtualTime
 
@@ -227,9 +228,10 @@ describe('retryMiddleware — overall timeout (FIX 1)', () => {
       virtualTime += ms
     }
 
+    const original = rateLimited()
     const handler: Handler = async () => {
       virtualTime += 100
-      throw rateLimited()
+      throw original
     }
 
     const mw = retryMiddleware(
@@ -237,18 +239,18 @@ describe('retryMiddleware — overall timeout (FIX 1)', () => {
       { sleep, random: () => 1, now },
     )
 
-    await mw.intercept(makeReq(350), makeCtx(), handler).catch(() => {})
+    const err = await mw
+      .intercept(makeReq(350), makeCtx(), handler)
+      .catch((e: unknown) => e)
 
-    // The first sleep should be clamped to at most 250 ms (remaining after attempt 1).
-    expect(sleepCalls.length).toBeGreaterThan(0)
-    expect(sleepCalls[0]).toBeLessThanOrEqual(250)
-    // And it must be 250 specifically (min(500, 250) with rand=1)
-    expect(sleepCalls[0]).toBe(250)
+    expect(err).toBe(original)
+    expect(sleepCalls).toEqual([])
+    expect(virtualTime).toBe(100)
   })
 
-  it('(c) back-off clamp uses remaining after the attempt, not before', async () => {
+  it('(c) a back-off that fits the remaining budget sleeps its full length', async () => {
     // Budget: 1000 ms. Attempt takes 800 ms → remainingAfter = 200 ms.
-    // Unclamped backoff = 500 ms. Clamped = min(500, 200) = 200.
+    // Backoff with rand=0.2, baseDelayMs=500 → 100 ms, which fits.
     let virtualTime = 0
     const now = () => virtualTime
 
@@ -265,13 +267,64 @@ describe('retryMiddleware — overall timeout (FIX 1)', () => {
 
     const mw = retryMiddleware(
       { maxAttempts: 5, baseDelayMs: 500 },
-      { sleep, random: () => 1, now },
+      { sleep, random: () => 0.2, now },
     )
 
     await mw.intercept(makeReq(1000), makeCtx(), handler).catch(() => {})
 
-    expect(sleepCalls.length).toBeGreaterThan(0)
-    expect(sleepCalls[0]).toBe(200)
+    expect(sleepCalls[0]).toBe(100)
+  })
+
+  it('(c) a back-off exactly equal to the remaining budget is not slept', async () => {
+    let virtualTime = 0
+    const sleepCalls: number[] = []
+    const handler: Handler = async () => {
+      virtualTime += 500
+      throw rateLimited()
+    }
+    const mw = retryMiddleware(
+      { maxAttempts: 5, baseDelayMs: 500 },
+      {
+        sleep: async (ms) => {
+          sleepCalls.push(ms)
+        },
+        random: () => 1,
+        now: () => virtualTime,
+      },
+    )
+
+    await mw.intercept(makeReq(1000), makeCtx(), handler).catch(() => {})
+
+    expect(sleepCalls).toEqual([])
+  })
+
+  it('(c) a synthetic budget-exhausted timeout carries the last error as cause and is retryable', async () => {
+    // The clock jumps past the budget while the middleware sleeps, so the
+    // pre-attempt check is the one that fires.
+    let virtualTime = 0
+    const original = rateLimited()
+    const handler: Handler = async () => {
+      virtualTime += 10
+      throw original
+    }
+    const mw = retryMiddleware(
+      { maxAttempts: 5, baseDelayMs: 100 },
+      {
+        sleep: async () => {
+          virtualTime += 5_000
+        },
+        random: () => 0.5,
+        now: () => virtualTime,
+      },
+    )
+
+    const err = (await mw
+      .intercept(makeReq(1000), makeCtx(), handler)
+      .catch((e: unknown) => e)) as LlmError
+
+    expect(err.kind).toBe('timeout')
+    expect(err.retryable).toBe(true)
+    expect(err.cause).toBe(original)
   })
 
   // ---------------------------------------------------------------------------
