@@ -25,7 +25,16 @@
  *     replaced, headers are an allow-list, and a capture that still contains the key
  *     aborts the run.
  *   - A run writes only to `.recapture/` (gitignored) unless `--write` is given, which
- *     overwrites the fixture so `git diff` shows the drift.
+ *     overwrites the fixtures that drifted so `git diff` shows the drift.
+ *   - A response that is not what the probe expects is a FAILURE, never a capture: a
+ *     rate limit (429, 408), a server error (5xx), a rejected key where the probe sends
+ *     the real one, an error body where a success is expected, a thrown `fetch` or a
+ *     request that exceeds the timeout. The run stops at the first failure, writes no
+ *     fixture, and exits 1. With `--write`, every probe is staged first and the fixtures
+ *     are written only when all probes succeeded.
+ *
+ * Exit codes: 0 no drift (or the drift was written), 1 a probe failed, 2 refused or bad
+ * arguments, 3 drift found and `--write` not given.
  *
  * Which fixtures: only those whose request is fully known from the fixture and the
  * repository (listed in `PROBES`). Most older fixtures do not record their request and
@@ -34,15 +43,17 @@
  * @module
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const fixtureDir = join(root, 'packages', 'xai', 'src', '__fixtures__')
-const outDir = join(root, '.recapture')
+const FIXTURE_DIR = join(root, 'packages', 'xai', 'src', '__fixtures__')
+const OUT_DIR = join(root, '.recapture')
 const BASE_URL = 'https://api.x.ai/v1'
 const KEY_ENV = 'XAI_API_KEY'
+/** One request, including reading its body, may take this long. */
+const REQUEST_TIMEOUT_MS = 60_000
 
 /** Response headers worth keeping; everything else is dropped. */
 const HEADER_ALLOW = /^(content-type|retry-after|x-ratelimit-.+|x-request-id)$/i
@@ -59,8 +70,12 @@ const VOLATILE_PATH =
 // ---------------------------------------------------------------------------
 
 /**
- * Each probe repeats one recorded request. `run` gets `{ call, key }` and returns the
- * fixture value (already in the fixture's own shape).
+ * Each probe repeats one recorded request. `run` gets `{ call, recorded }` (the recorded
+ * fixture) and returns the fixture value (already in the fixture's own shape). Every
+ * `call` states what response it expects (`expect`): `'ok'` (the default) a 2xx with no
+ * error body, `'client-error'` a 4xx refusal of the request itself, `'key-rejected'` the
+ * rejection of the deliberately invalid key. Anything else makes `call` throw a
+ * {@link CaptureFailure}.
  */
 const PROBES = [
   {
@@ -83,15 +98,22 @@ const PROBES = [
       const only = ({ status, body }) => ({ status, body })
       return {
         nonexistent_model: only(
-          await call('POST', '/responses', { model: 'grok-99', input: 'Say hi' }),
+          await call(
+            'POST',
+            '/responses',
+            { model: 'grok-99', input: 'Say hi' },
+            { expect: 'client-error' },
+          ),
         ),
-        malformed_body: only(await call('POST', '/responses', { model: 12 })),
+        malformed_body: only(
+          await call('POST', '/responses', { model: 12 }, { expect: 'client-error' }),
+        ),
         invalid_api_key: only(
           await call(
             'POST',
             '/responses',
             { model: 'grok-4.5', input: 'Say hi' },
-            { key: 'xai-this-key-is-deliberately-invalid' },
+            { key: 'xai-this-key-is-deliberately-invalid', expect: 'key-rejected' },
           ),
         ),
       }
@@ -102,12 +124,17 @@ const PROBES = [
     fixture: '13-grok-4-6-effort-none.json',
     describes: 'grok-4.6 refuses reasoning.effort "none" (status, body)',
     async run({ call }) {
-      const { status, body } = await call('POST', '/responses', {
-        model: 'grok-4.6',
-        input: 'Say hi',
-        max_output_tokens: 16,
-        reasoning: { effort: 'none' },
-      })
+      const { status, body } = await call(
+        'POST',
+        '/responses',
+        {
+          model: 'grok-4.6',
+          input: 'Say hi',
+          max_output_tokens: 16,
+          reasoning: { effort: 'none' },
+        },
+        { expect: 'client-error' },
+      )
       return { status, body }
     },
   },
@@ -115,10 +142,12 @@ const PROBES = [
     id: '14',
     fixture: '14-v1-models-pricing.json',
     describes:
-      'GET /v1/models, the registered grok ids with their published prices (free)',
-    async run({ call }) {
+      'GET /v1/models, the grok ids the fixture records, with their published prices (free)',
+    async run({ call, recorded }) {
       const { body } = await call('GET', '/models')
-      const wanted = ['grok-4.5', 'grok-4.6', 'grok-4.7']
+      // The ids the fixture holds: a model that disappears shows as a removed path, and one
+      // the fixture never had is not a permanent "new path" on every run.
+      const wanted = Object.keys(recorded.models ?? {})
       const models = {}
       for (const model of body.data ?? body.models ?? []) {
         if (wanted.includes(model.id)) models[model.id] = model
@@ -216,6 +245,55 @@ export function diffCapture(recorded, fresh) {
 // Main
 // ---------------------------------------------------------------------------
 
+/** A probe got a response that must not become a fixture. */
+export class CaptureFailure extends Error {}
+
+const errorShaped = (body) =>
+  body !== null &&
+  typeof body === 'object' &&
+  (('error' in body && body.error !== null && body.error !== undefined) ||
+    body.status === 'failed')
+
+/**
+ * Why a response must not become a fixture, or `undefined` when it is what the probe
+ * expected. A rate limit, a timeout status and any 5xx are never a capture, whatever the
+ * probe expects.
+ *
+ * @param {{ status: number, body: unknown }} response
+ * @param {'ok' | 'client-error' | 'key-rejected'} expect
+ * @param {{ realKey: boolean }} [opts] `realKey`: the request carried the real key
+ * @returns {string | undefined}
+ */
+export function judgeResponse({ status, body }, expect, { realKey = true } = {}) {
+  if (status === 429 || status === 408)
+    return `HTTP ${status}: rate limited or timed out; try again later`
+  if (status >= 500) return `HTTP ${status}: a server error`
+  if (expect === 'ok') {
+    if (status < 200 || status > 299) return `HTTP ${status}, expected a 2xx`
+    if (errorShaped(body)) return 'a 2xx response with an error body'
+    return undefined
+  }
+  if (expect === 'key-rejected') {
+    return [400, 401, 403].includes(status)
+      ? undefined
+      : `HTTP ${status}, expected the invalid key to be rejected`
+  }
+  // 'client-error'
+  if (status < 400) return `HTTP ${status}, expected the request to be refused`
+  const message = JSON.stringify(body ?? '')
+  if (
+    realKey &&
+    (status === 401 ||
+      status === 403 ||
+      /incorrect api key|invalid api key|api key (is )?(invalid|expired|revoked)/i.test(
+        message,
+      ))
+  ) {
+    return `HTTP ${status}: the key was rejected (expired, revoked or out of credit?)`
+  }
+  return undefined
+}
+
 function parseArgs(argv) {
   const args = { list: false, dryRun: false, write: false, only: undefined }
   for (let i = 0; i < argv.length; i += 1) {
@@ -223,101 +301,169 @@ function parseArgs(argv) {
     if (a === '--list') args.list = true
     else if (a === '--dry-run') args.dryRun = true
     else if (a === '--write') args.write = true
-    else if (a === '--only') args.only = (argv[(i += 1)] ?? '').split(',').filter(Boolean)
-    else throw new Error(`unknown argument: ${a}`)
+    else if (a === '--only') {
+      args.only = (argv[(i += 1)] ?? '').split(',').filter(Boolean)
+      if (args.only.length === 0)
+        throw new Error('--only needs a comma-separated list of probe ids (see --list)')
+    } else throw new Error(`unknown argument: ${a}`)
   }
   return args
 }
 
-function fail(message) {
-  console.error(`recapture-fixtures: ${message}`)
-  process.exit(2)
-}
-
-async function main() {
+/**
+ * Run the tool. Everything it touches is a parameter so a test can run it against a
+ * stubbed `fetch` and temporary directories; the command line passes the defaults.
+ *
+ * @returns {Promise<number>} the exit code
+ */
+export async function recapture({
+  argv,
+  env,
+  fetch: fetchImpl = globalThis.fetch,
+  fixtureDir = FIXTURE_DIR,
+  outDir = OUT_DIR,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+  log = console.log,
+  logError = console.error,
+}) {
+  const refuse = (message) => {
+    logError(`recapture-fixtures: ${message}`)
+    return 2
+  }
   let args
   try {
-    args = parseArgs(process.argv.slice(2))
+    args = parseArgs(argv)
   } catch (error) {
-    return fail(error.message)
+    return refuse(error.message)
   }
   const selected =
     args.only === undefined ? PROBES : PROBES.filter((p) => args.only.includes(p.id))
   const unknown = (args.only ?? []).filter((id) => !PROBES.some((p) => p.id === id))
   if (unknown.length > 0)
-    return fail(`no probe with id ${unknown.join(', ')} (see --list)`)
+    return refuse(`no probe with id ${unknown.join(', ')} (see --list)`)
 
   if (args.list || args.dryRun) {
     for (const p of selected) {
-      console.log(`${p.id}  ${p.fixture}\n    ${p.describes}`)
+      log(`${p.id}  ${p.fixture}\n    ${p.describes}`)
     }
-    if (args.dryRun)
-      console.log(`\n${selected.length} probe(s) would run against ${BASE_URL}`)
-    return
+    if (args.dryRun) log(`\n${selected.length} probe(s) would run against ${BASE_URL}`)
+    return 0
   }
 
-  if (process.env['CI'] || process.env['GITHUB_ACTIONS']) {
-    return fail('this script makes billed live calls and never runs in CI')
+  if (env['CI'] || env['GITHUB_ACTIONS']) {
+    return refuse('this script makes billed live calls and never runs in CI')
   }
-  const key = process.env[KEY_ENV]
+  const key = env[KEY_ENV]
   if (key === undefined || key === '') {
-    return fail(`${KEY_ENV} is not set (use --list or --dry-run to see what would run)`)
+    return refuse(`${KEY_ENV} is not set (use --list or --dry-run to see what would run)`)
   }
 
   const { redactSecrets } = await import('@gullabs/core')
   const call = async (method, path, body, opts = {}) => {
-    const res = await fetch(`${BASE_URL}${path}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${opts.key ?? key}`,
-        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
-      },
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    })
-    const text = await res.text()
+    let res
+    let text
+    try {
+      res = await fetchImpl(`${BASE_URL}${path}`, {
+        method,
+        headers: {
+          authorization: `Bearer ${opts.key ?? key}`,
+          ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+        },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+      text = await res.text()
+    } catch (error) {
+      const timedOut = error?.name === 'TimeoutError' || error?.name === 'AbortError'
+      throw new CaptureFailure(
+        `${method} ${path}: ${timedOut ? `no response within ${timeoutMs} ms` : `the request failed (${error?.cause?.code ?? error?.message ?? error})`}`,
+      )
+    }
     let parsed
     try {
       parsed = JSON.parse(text)
     } catch {
       parsed = { text }
     }
-    return {
+    const response = {
       status: res.status,
       headers: Object.fromEntries(res.headers.entries()),
       body: parsed,
     }
+    const problem = judgeResponse(response, opts.expect ?? 'ok', {
+      realKey: opts.key === undefined,
+    })
+    if (problem !== undefined) throw new CaptureFailure(`${method} ${path}: ${problem}`)
+    return response
   }
 
-  mkdirSync(outDir, { recursive: true })
-  let drifted = 0
+  // Stage every probe first: nothing is written to a fixture until all of them succeeded.
+  const staged = []
+  let failure
   for (const p of selected) {
-    console.log(`\n${p.id}  ${p.fixture}`)
-    const capture = redactCapture(await p.run({ call }), { key, redactSecrets })
-    const text = `${JSON.stringify(capture, null, 2)}\n`
-    writeFileSync(join(outDir, p.fixture), text)
-    const recorded = JSON.parse(readFileSync(join(fixtureDir, p.fixture), 'utf8'))
-    const drift = diffCapture(recorded, capture)
-    if (drift.length === 0) console.log('  no drift')
-    else {
-      drifted += 1
-      for (const line of drift) console.log(`  ${line}`)
-    }
-    if (args.write) {
-      writeFileSync(join(fixtureDir, p.fixture), text)
-      console.log('  written to the fixture')
+    log(`\n${p.id}  ${p.fixture}`)
+    try {
+      const recorded = JSON.parse(readFileSync(join(fixtureDir, p.fixture), 'utf8'))
+      const capture = redactCapture(await p.run({ call, recorded }), {
+        key,
+        redactSecrets,
+      })
+      const drift = diffCapture(recorded, capture)
+      staged.push({ probe: p, text: `${JSON.stringify(capture, null, 2)}\n`, drift })
+      if (drift.length === 0) log('  no drift')
+      else for (const line of drift) log(`  ${line}`)
+    } catch (error) {
+      failure = { probe: p, message: error.message }
+      break
     }
   }
-  console.log(
-    `\n${drifted} of ${selected.length} fixture(s) drifted. Captures are in ${outDir}` +
-      (args.write
-        ? '; fixtures overwritten (review git diff).'
-        : '; fixtures untouched.'),
+  if (failure !== undefined) {
+    logError(
+      `\nrecapture-fixtures: probe ${failure.probe.id} failed: ${failure.message}\n` +
+        `Nothing was written to the fixtures.${staged.length > 0 ? ' (Captures of the probes that finished are in ' + outDir + '.)' : ''}`,
+    )
+    writeCaptures(outDir, staged)
+    return 1
+  }
+  writeCaptures(outDir, staged)
+
+  const drifted = staged.filter((s) => s.drift.length > 0)
+  log(
+    `\n${drifted.length} of ${staged.length} fixture(s) drifted. Captures are in ${outDir}.`,
   )
+  if (drifted.length === 0) return 0
+  if (!args.write) {
+    log('Fixtures untouched; re-run with --write to overwrite the drifted ones.')
+    return 3
+  }
+  const temps = []
+  try {
+    for (const { probe, text } of drifted) {
+      const tmp = join(fixtureDir, `.${probe.fixture}.tmp`)
+      writeFileSync(tmp, text)
+      temps.push([tmp, join(fixtureDir, probe.fixture)])
+    }
+  } catch (error) {
+    for (const [tmp] of temps) rmSync(tmp, { force: true })
+    logError(
+      `recapture-fixtures: could not stage the fixtures (${error.message}); none written`,
+    )
+    return 1
+  }
+  for (const [tmp, final] of temps) renameSync(tmp, final)
+  log(`Overwrote ${drifted.map((s) => s.probe.fixture).join(', ')} (review git diff).`)
+  return 0
+}
+
+function writeCaptures(outDir, staged) {
+  if (staged.length === 0) return
+  mkdirSync(outDir, { recursive: true })
+  for (const { probe, text } of staged) writeFileSync(join(outDir, probe.fixture), text)
 }
 
 if (
   process.argv[1] !== undefined &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
-  await main()
+  process.exitCode = await recapture({ argv: process.argv.slice(2), env: process.env })
 }

@@ -11,7 +11,7 @@ manual and never run in CI.
 | `runtime-smoke/`              | `test:runtime`                     | Built ESM entries load with `node:` blocked; fake-backed calls run without `Buffer` or `process`                  |
 | `audit.mjs`                   | `audit:gate` / `test:audit-gate`   | Dependency advisories, distinguishing "vulnerable" from "the advisory service is down"                            |
 | `packed-install.mjs`          | `test:packed-install` (own CI job) | The packed tarballs install under pnpm and npm, resolve one core, and mixed versions are rejected                 |
-| `recapture-fixtures.test.mjs` | `test:scripts`                     | The re-capture tool's refusals, redaction and diff, offline                                                       |
+| `recapture-fixtures.test.mjs` | `test:scripts`                     | The re-capture tool's refusals, redaction, diff and failure handling (stubbed `fetch`), offline                   |
 
 ## Live tools (manual, spend real money, never in CI)
 
@@ -39,11 +39,18 @@ XAI_API_KEY=... node scripts/recapture-fixtures.mjs --write   # also overwrite t
   is replaced, response headers are an allow-list (`content-type`, `retry-after`,
   `x-ratelimit-*`, `x-request-id`), and a capture that still contains the key aborts the run.
 - **Output.** Without `--write` the captures go to `.recapture/` (gitignored) and the fixtures are
-  untouched. With `--write` the fixtures are overwritten, so `git diff` shows the drift.
+  untouched. With `--write` the fixtures that drifted are overwritten, so `git diff` shows the drift.
+- **A failed probe is never a fixture.** A response that is not what the probe expects stops the run
+  at once: a rate limit (429, 408), a 5xx, a rejected key on a request that carries the real one, an
+  error body where a success is expected, a thrown `fetch`, or no answer within 60 s. Nothing is
+  written to a fixture in that case (every probe is staged first; `--write` writes only after all of
+  them succeeded, each file through a temporary name and a rename). Exit codes: `0` no drift (or
+  the drift was written), `1` a probe failed, `2` refused or bad arguments, `3` drift found and
+  `--write` not given.
 - **Diff.** `+` a new path, `-` a removed one, `~` a changed type, status or stable value. Ids,
   timestamps, answer text and token counts change on every call and are compared by type only.
 - **Which fixtures.** Only those whose request is known: 02 (minimal call), 09 (error taxonomy),
-  13 (`effort: none` on grok-4.6) and 14 (`/v1/models` prices). Most older fixtures do not record
+  13 (`effort: none` on grok-4.6) and 14 (`/v1/models` prices, for the model ids the fixture already records). Most older fixtures do not record
   their request and cannot be replayed; a new fixture should record its request and get a probe
   in `PROBES`. After a re-capture that moves a fixture, update the test that reads it in the same
   change, and the `capturedOn`/date notes that cite it.
