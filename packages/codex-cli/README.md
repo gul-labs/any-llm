@@ -101,7 +101,9 @@ JSON-Schema draft-2020-12 subschema positions (`properties`,
 the offending node's JSON path — the moment either rule is violated. The
 schema is otherwise passed through **byte-identical** (same object
 reference): this function only validates, it never mutates, clones, or
-silently injects anything into your schema.
+silently injects anything into your schema. This is the OpenAI-strict
+dialect, separate from the keyword profiles Google and xAI enforce (ADR-034):
+`assertPortableJsonSchema` does not cover this adapter.
 
 #### `toOpenAiStrictOutputSchema` — an explicit, opt-in rewriting helper
 

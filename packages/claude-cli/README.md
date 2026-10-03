@@ -87,6 +87,11 @@ envelope shape are runtime dependencies; an absent `modelUsage` fails closed.
 from the request when applicable; the prompt itself is always sent over
 stdin, never as a positional argv entry.
 
+`output.jsonSchema` is passed to `--json-schema` as written. Unlike the Google and
+xAI adapters (ADR-034), this adapter does not check the schema against a keyword
+profile: `nullable`, uppercase type names and keywords the CLI may ignore are not
+rejected here, so validate the result yourself.
+
 ## Concurrency
 
 The adapter caps concurrent `claude` CLI invocations with an internal

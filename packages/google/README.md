@@ -219,21 +219,42 @@ structured-output guide read the same day):
 - **Enforced:** `type` (a type array only as one type plus `'null'`), `properties`, `required`,
   `additionalProperties` (boolean or schema), `enum`, `anyOf`, `$ref` / `$defs` (recursive
   schemas too), `items`, `prefixItems` (and `items: false` to close a tuple), `minItems` /
-  `maxItems`, `minimum` / `maximum`, and `format` for `date-time`, `date`, `time` and `email`.
+  `maxItems`, `minimum` / `maximum`, and `format` for `date-time`, `date` and `email` (the
+  values the probe exercised; `time` is named in Google's guide but no capture exercised it, so
+  it is rejected).
 - **Accepted, but soft:** `pattern`, `minLength` and `maxLength` are supported by Google yet obeyed
-  only probabilistically (the probe saw violations on several models). They are not guarantees:
-  validate `output` yourself. The library never validates the result.
+  only probabilistically (the probe saw violations on several models, at worst 4 of 7 samples).
+  They are not guarantees: validate `output` yourself. The library never validates the result.
+  `pattern` is held to a regex subset (no backreferences, property escapes, word boundaries,
+  lookaround or inline modifiers) because no capture shows Google enforcing them.
 - **Rejected, because Google ignores them:** `const`, `allOf`, `exclusiveMinimum` /
   `exclusiveMaximum`, `multipleOf`, `uniqueItems`, and `oneOf`, which Google reads as `anyOf`.
-  `propertyNames`, `not`, `if`/`then`/`else`, `minProperties` and other `format` values are
-  outside the enforced set too.
+  `not`, `if`/`then`/`else`, `minProperties` and other `format` values are outside the enforced
+  set too, and so is any `propertyNames` except `{ type: 'string' }` (what
+  `z.record(z.string(), X)` emits; it constrains nothing and is accepted).
+- **Gemma 4 is stricter.** It ignored `format` (7 of 7 samples on both models) and
+  `minLength` / `maxLength` (7 of 7 and 6 of 7), so those three keywords are rejected on a Gemma
+  model. The profile follows the resolved model descriptor, so a declared alias of a Gemma model
+  gets it too.
 - **Annotations** (`$schema`, `$id`, `$comment`, `title`, `description`, `examples`, `default`,
   `deprecated`, `readOnly`, `writeOnly`) are always accepted.
+- **Malformed schemas** (a value in a schema position that is not a schema, `maxLength: '3000'`,
+  an invalid `pattern`, a cyclic JavaScript object, nesting deeper than 128) are `bad_request`
+  with the path, before dispatch.
+
+**Tool schemas rest on the output-schema probe.** The live probe (P3) ran `responseJsonSchema`
+only; the only live `parametersJsonSchema` evidence is two trivial schemas (an object with one
+string property and `additionalProperties: false`, and an empty `properties`) on the six 3.x
+models. `$schema`, `$ref` / `$defs`, `anyOf`, `items: false` and type arrays are verified for
+output schemas only, and the same profile is applied to tools. Do not read tool-schema acceptance
+beyond trivial schemas as live-verified.
 
 Zod: `z.literal('x')` emits `const`, which Google ignores. Write `z.enum(['x'])` instead; the
 library does not rewrite it for you. `z.discriminatedUnion` emits `oneOf`; use `z.union`, which
-emits `anyOf`. To lint a schema against what every provider enforces, call
-`assertPortableJsonSchema` from `@gullabs/core`.
+emits `anyOf`. `startsWith`, `endsWith` and `includes` emit a non-standard `format` next to a
+`pattern`: chain `.meta({ format: undefined })` after the check, or write `z.string().regex(...)`.
+To lint a schema against what both Gemini 3.x and xAI enforce, call `assertPortableJsonSchema`
+from `@gullabs/core` (it does not cover Gemma's stricter profile).
 
 ## Strict model-config expectations
 

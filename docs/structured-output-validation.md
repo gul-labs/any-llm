@@ -1,17 +1,21 @@
 # Caller-owned structured-output validation
 
-`output.jsonSchema` is standard JSON Schema that the adapter **checks and forwards** (ADR-034): it
-rejects dialect mistakes and keywords the provider would silently ignore (`const`, `oneOf`, `allOf`,
-…) before dispatch, then sends the schema verbatim. It is still not a contract the engine enforces on
-the _result_: the engine parses JSON when possible, sets `outputParsed`, and leaves shape validation
-to callers. A schema constrains the model; some keywords (`pattern`, `minLength`, `maxLength` on
-Gemini) are only obeyed probabilistically, so validate what you rely on.
+`output.jsonSchema` is standard JSON Schema that the Google and xAI adapters **check and forward**
+(ADR-034): they reject dialect mistakes, malformed schemas and keywords the provider would silently
+ignore (`const`, `oneOf`, `allOf`, …) before dispatch, then send the schema verbatim. (`claude-cli`
+forwards the schema untouched and `codex-cli` runs its own OpenAI-strict preflight.) It is still not
+a contract the engine enforces on the _result_: the engine parses JSON when possible, sets
+`outputParsed`, and leaves shape validation to callers. A schema constrains the model; some keywords
+(`pattern`, `minLength`, `maxLength` on Gemini) are only obeyed probabilistically, so validate what
+you rely on.
 
-To keep a schema inside what every provider enforces, lint it at build time with
+To keep a schema inside what both Gemini 3.x and xAI enforce, lint it at build time with
 `assertPortableJsonSchema` from `@gullabs/core`, for example from Zod:
 `assertPortableJsonSchema(z.toJSONSchema(schema))`. Zod's `z.literal('x')` emits `const` (use
-`z.enum(['x'])`), `z.discriminatedUnion` emits `oneOf` (use `z.union`), and `z.record` emits
-`propertyNames`; the portable check names each one.
+`z.enum(['x'])`), `z.discriminatedUnion` emits `oneOf` (use `z.union`), and `z.record(z.enum([...]),
+X)` emits a constraining `propertyNames`; the portable check names each one. (`z.record(z.string(),
+X)` is fine.) The portable subset does not cover Gemma, whose profile additionally rejects `format`,
+`minLength` and `maxLength`.
 
 Use this helper after any structured-output call:
 

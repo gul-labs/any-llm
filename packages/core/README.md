@@ -26,7 +26,7 @@ Every other `@gullabs/*` package declares this one as an exact-version peer depe
 | `computeCost(...)`           | Pure, provider-agnostic cost function (providers supply their own rates)                           |
 | `LlmError`                   | Typed error class — always thrown on call failure                                                  |
 | `canonicalJson(value)`       | RFC 8785 JSON Canonicalization Scheme (dependency-free), for hashing JSON independent of key order |
-| `assertPortableJsonSchema`   | Build-time lint: is this schema inside what every provider enforces? (see "JSON Schema")           |
+| `assertPortableJsonSchema`   | Build-time lint: is this schema inside what both Gemini 3.x and xAI enforce? (see "JSON Schema")   |
 | `assertStandardJsonSchema`   | Rejects OpenAPI-dialect schemas (`nullable`, uppercase types, boolean subschemas)                  |
 | `assertJsonSchemaProfile`    | What provider adapters call: checks a schema against the keywords a provider enforces              |
 | `buildRecord(input)`         | Assembles an `LlmCallRecord` from engine state (used internally)                                   |
@@ -217,18 +217,27 @@ Standard-Schema-based helper.
 
 ## JSON Schema
 
-`output.jsonSchema` and `tools[].inputJsonSchema` are **standard JSON Schema (2020-12 subset)** on
-every provider (ADR-034). Providers accept every keyword and silently ignore the ones they do not
-enforce, so each adapter rejects a keyword it would ignore with `bad_request` and the path
-(`output.jsonSchema.properties.kind`, `tools[1].inputJsonSchema...`) before dispatch. Nothing is
+`output.jsonSchema` and `tools[].inputJsonSchema` are **standard JSON Schema (2020-12 subset)**
+(ADR-034). The Google and xAI adapters enforce that contract; `claude-cli` passes the schema to the
+CLI untouched and `codex-cli` runs its own OpenAI-strict preflight, so neither rejects `nullable`
+or uppercase types. Google and xAI accept every keyword and silently ignore the ones they do not
+enforce, so each of those adapters rejects a keyword it would ignore with `bad_request` and the
+path (`output.jsonSchema.properties.kind`, `tools[1].inputJsonSchema...`) before dispatch. A
+malformed schema is rejected the same way: a value in a schema position that is not a schema, a
+keyword value of the wrong type (`maxLength: '3000'`), an invalid `pattern`, a `$ref` that points
+at data, a cyclic JavaScript object (use `$ref` / `$defs`) or nesting deeper than 128. Nothing is
 rewritten, and annotations (`$schema`, `$id`, `$comment`, `title`, `description`, `examples`,
-`default`, `deprecated`, `readOnly`, `writeOnly`) are accepted everywhere.
+`default`, `deprecated`, `readOnly`, `writeOnly`) are accepted by every profile. Only the 2020-12
+spellings are accepted (`$defs`, not `definitions`).
 
-The **portable subset** is what both Google and xAI enforce: `type` (a type array only as one type
-plus `'null'`), `properties`, `required`, `additionalProperties`, `enum`, `anyOf`, `$ref` / `$defs`
-(local and non-circular), `items`, `prefixItems`, `minItems` / `maxItems`, `minimum` / `maximum`,
-`pattern`, `minLength` / `maxLength`, and `format` for `date-time`, `date`, `time`, `email`. Lint
-every call site in a host test:
+The **portable subset** is what both the Gemini 3.x and xAI profiles enforce: `type` (a type array
+only as one type plus `'null'`), `properties`, `required`, `additionalProperties`, `enum`, `anyOf`,
+`$ref` / `$defs` (local and non-circular), `items`, `prefixItems`, `minItems` / `maxItems`,
+`minimum` / `maximum`, `pattern`, `minLength` / `maxLength`, and `format` for `date-time`, `date`
+and `email`. It is not "every provider": Gemma 4 additionally rejects `format`, `minLength` and
+`maxLength` (it ignored them), the CLI providers do not run these checks, and `pattern`,
+`minLength` and `maxLength` are only probabilistically obeyed on Gemini, so a schema inside the
+subset still needs host-side validation of `output`. Lint every call site in a host test:
 
 ```ts
 import { assertPortableJsonSchema } from '@gullabs/core'
@@ -239,11 +248,16 @@ assertPortableJsonSchema(z.toJSONSchema(Report), 'call:report') // throws LlmErr
 
 What Zod emits that is outside the subset: `z.literal('x')` emits `const` (write
 `z.enum(['x'])`); `z.discriminatedUnion` emits `oneOf`, which providers read as `anyOf` (write
-`z.union`, which emits `anyOf`); `z.record` emits `propertyNames`; `z.tuple` emits `items: false`;
-`z.union` of primitives emits a multi-type array (use `z.enum` for strings, or give the union object variants); a recursive type
-emits a recursive `$ref`, which xAI does not support. `z.toJSONSchema(schema, { reused: 'ref' })`
-emits `$defs` / `$ref`, which both providers accept. `pattern`, `minLength` and `maxLength` are
-accepted but Gemini obeys them only probabilistically; validate `output` yourself.
+`z.union`, which emits `anyOf`); `z.tuple` emits `items: false`; `z.union` of primitives emits a
+multi-type array (use `z.enum` for strings, or give the union object variants); a recursive type
+emits a recursive `$ref`, which xAI does not support; `z.record(z.enum([...]), X)` and
+`z.record(z.string().regex(...), X)` emit a constraining `propertyNames`. `z.record(z.string(), X)`
+works: its `propertyNames: { type: 'string' }` constrains nothing and is accepted. Zod's
+`startsWith`, `endsWith` and `includes` emit a non-standard `format` next to a `pattern`; the
+`format` is rejected, so chain `.meta({ format: undefined })` after the check (the pattern stays) or
+write `z.string().regex(...)`. `z.iso.duration()` also emits a `format` and a lookahead pattern:
+validate durations host-side. `z.toJSONSchema(schema, { reused: 'ref' })` emits `$defs` / `$ref`,
+which both providers accept.
 
 ## Input contracts
 

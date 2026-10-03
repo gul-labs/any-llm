@@ -429,7 +429,8 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
   structured output is enabled, and a tool's `inputJsonSchema` → `parametersJsonSchema`, both
   verbatim and in the host's key order, never the OpenAPI `responseSchema` / `parameters`
   (ADR-034). A keyword Google does not enforce (`const`, `oneOf`, `allOf`, `exclusiveMinimum`,
-  `multipleOf`, `uniqueItems`, …) is `bad_request` with its path before dispatch; `providerOptions.google.*` is a strict per-model allowlist mapped
+  `multipleOf`, `uniqueItems`, …), a malformed schema, and (on Gemma models) `format`, `minLength`
+  and `maxLength` are `bad_request` with the path before dispatch; `providerOptions.google.*` is a strict per-model allowlist mapped
   field-by-field onto the SDK call, not forwarded verbatim.
 - Routes Gemini 2.5 (`gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`),
   Gemini 3.x (`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
@@ -486,8 +487,9 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
   field lists `'null'` in `type` (`type: ['string', 'null']`). The OpenAPI `nullable` keyword,
   uppercase type names (`STRING`, `OBJECT`) and any keyword xAI does not enforce (`oneOf`,
   `allOf`, `multipleOf`, `uniqueItems`, recursive `$ref`, an unlisted `format`, a limit above
-  xAI's, …) are `bad_request` before dispatch, naming the path; the adapter never rewrites a
-  schema.
+  xAI's, a malformed schema, …) are `bad_request` before dispatch, naming the path; the adapter
+  never rewrites a schema. (`claude-cli` forwards `output.jsonSchema` to the CLI untouched and
+  `codex-cli` runs its own OpenAI-strict preflight; the checks are Google's and xAI's.)
 - Search tools plus `output.jsonSchema` is admitted on all three models
   (`structuredOutputWithTools`). A response reporting `num_server_side_tools_used: 0` and no
   `server_side_tool_usage_details` prices exactly with no tool fee. See ADR-030.

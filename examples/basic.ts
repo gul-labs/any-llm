@@ -22,7 +22,7 @@ import {
 } from '@gullabs/testing'
 
 // ---------------------------------------------------------------------------
-// 1. Define the output JSON Schema hint
+// 1. Define the output JSON Schema
 // ---------------------------------------------------------------------------
 
 const ReviewJsonSchema: JsonValue = {

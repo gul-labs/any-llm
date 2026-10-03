@@ -383,7 +383,9 @@ Important distinctions:
 
 - `descriptor.configSchema` is the runtime boundary for request config.
 - `descriptor.configJsonSchema` is derived from that same schema for form generation.
-- `request.output.jsonSchema` is only the output-format hint for structured responses.
+- `request.output.jsonSchema` is standard JSON Schema that constrains the model. The Google and xAI adapters
+  reject a keyword the provider would ignore (and malformed schemas) with `bad_request` before dispatch;
+  the library never validates the result.
 - `providerOptions.google` is a typed provider-extension lane, not a caller-wins
   override lane for `serviceTier`, sampling, reasoning, or response schema.
 
@@ -431,9 +433,12 @@ the type augmentation only makes the shape visible to the compiler.
 ## Structured output — auth + validation together
 
 `request.output = { jsonSchema }` (or `callSite.jsonSchema`) is forwarded to the
-provider as a **hint**, not enforced by the library. The engine JSON-parses the
-response and sets `outputParsed`; `result.output` is always `unknown`. **The caller
-owns shape validation** — this library does not validate output shape itself.
+provider as standard JSON Schema. The Google and xAI adapters reject, with
+`bad_request` and the path, a keyword the provider would silently ignore (`const`,
+`oneOf`, `allOf`, ...) and malformed schemas before dispatch; the schema constrains the
+model but the library does not enforce it. The engine JSON-parses the response and sets
+`outputParsed`; `result.output` is always `unknown`. **The caller owns shape
+validation** — this library does not validate output shape itself.
 
 ```ts
 import { createClient, composeProviders, googleProvider } from '@gullabs/any-llm'

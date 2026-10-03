@@ -2,7 +2,7 @@
  * Call-site definition for @gullabs/core.
  *
  * A {@link CallSite} is a reusable, named prompt template with an associated
- * model and optional JSON Schema hint for structured output.  It is the unit of
+ * model and optional JSON Schema for structured output.  It is the unit of
  * observability: every call made through a call site records a `callSiteId`
  * so usage can be grouped by prompt template in dashboards and audits.
  *
@@ -17,7 +17,7 @@ import type { StandardSchemaV1 } from './standard-schema.js'
 // ---------------------------------------------------------------------------
 
 /**
- * A reusable prompt template that bundles model, JSON Schema hint, and gen-config.
+ * A reusable prompt template that bundles model, JSON Schema, and gen-config.
  *
  * @example
  * ```ts

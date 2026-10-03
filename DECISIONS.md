@@ -2040,102 +2040,160 @@ The same probe showed the other half: `$ref` / `$defs` (recursive too), `anyOf`,
 **Decision:**
 
 1. **Contract.** `output.jsonSchema` and `tools[].inputJsonSchema` are standard JSON Schema
-   (2020-12 subset), on every provider. `@gullabs/core` exports `assertStandardJsonSchema(schema,
-path)` (moved from `@gullabs/xai`): it rejects `nullable`, uppercase or unknown `type` names,
-   `items` as an array, and boolean subschemas (`additionalProperties` and `items` may be
-   boolean). Only schema positions are inspected; `enum`, `const`, `default` and `examples`
-   values and property names are data.
-2. **Three keyword classes; the first is free.**
+   (2020-12 subset). The Google and xAI adapters enforce it (they run the checks below before
+   dispatch). `claude-cli` passes `--json-schema` to the CLI untouched and `codex-cli` runs its
+   own OpenAI-strict preflight (`output-schema.ts`), so neither rejects `nullable` or uppercase
+   types; this ADR covers the HTTP providers. `@gullabs/core` exports
+   `assertStandardJsonSchema(schema, path)` (moved from `@gullabs/xai`): it rejects `nullable`,
+   uppercase or unknown `type` names, `items` as an array, boolean subschemas
+   (`additionalProperties` and `items` may be boolean), a value in a schema position that is not
+   a schema (`properties: { a: 'string' }`), a malformed keyword value (a string `maxLength`, a
+   negative or fractional count, a non-numeric `minimum`, a `required` that is not a list of
+   names, a `pattern` that is not a valid regular expression), and a cyclic or more than
+   128-deep object (recursion is `$ref` / `$defs`, never a cyclic JavaScript object). Only schema
+   positions are inspected; `enum`, `const`, `default` and `examples` values and property names
+   are data. Only the 2020-12 spellings are accepted: xAI says Draft-07 also works, but
+   `definitions`, `dependencies` and `$anchor` are rejected with a hint (`$defs`, host-side
+   validation, a `$defs` pointer) so one schema reads the same on Google and xAI. Error paths
+   bracket-quote names that contain `.`, `[`, `]`, `"` or `\` (`properties["a.b"]`).
+2. **Three keyword classes.**
    - **Annotations** (`$schema`, `$id`, `$comment`, `title`, `description`, `examples`,
-     `default`, `deprecated`, `readOnly`, `writeOnly`) constrain nothing. Accepted on every
-     provider and passed through.
+     `default`, `deprecated`, `readOnly`, `writeOnly`) constrain nothing. Accepted by every
+     profile and passed through.
    - **Applicators and assertions** are checked against a profile each adapter declares: the
      keywords it enforces, from the provider's own documentation (read date in the adapter) and
-     live probes. Anything outside the profile is `LlmError('bad_request')` with the JSON path
-     (`output.jsonSchema.properties.kind`, `tools[1].inputJsonSchema...`) before dispatch. There
-     is no "accepted but ignored" constraint on either side and nothing is rewritten: `const`
-     is not turned into a one-value `enum`; the host writes the `enum`.
+     live probes. Anything outside the profile is `LlmError('bad_request')` with the path
+     (`output.jsonSchema.properties.kind`, `tools[1].inputJsonSchema...`) before dispatch.
+     Nothing is rewritten: `const` is not turned into a one-value `enum`; the host writes the
+     `enum`.
    - A keyword a provider documents as **reinterpreted** counts as not enforced. Both Google and
      xAI read `oneOf` as `anyOf`, losing the exclusive-match rule, so `oneOf` is in neither
      profile.
+
+   **When a keyword is "enforced".** A keyword is in a profile when the provider documents it as
+   enforced or live probes show it constraining the output. It is outside the profile when the
+   provider ignores it: for the live probe, violated in at least 6 of 7 samples on every model of
+   the family. A keyword that is supported but violated less often is **soft** (probabilistic),
+   stays accepted and is documented as soft; the library never validates the result (ADR-009).
+   `pattern`, `minLength` and `maxLength` are the soft keywords on Gemini (worst cell 4 of 7).
+   So the accurate statement is: no keyword the provider ignores is accepted, and a soft keyword
+   is a hint the host must still validate.
+
 3. **Profiles** (`assertJsonSchemaProfile(schema, path, profile)` in core; the Google profile in
    `@gullabs/google`, the xAI profile in `@gullabs/xai`). Besides the keyword list a profile
    declares the enforced `format` values, numeric limits (`maxLength` etc.), whether recursive
    `$ref` is supported, whether `items: false` is enforced and whether `pattern` is held to the
-   regex subset. `$ref` must be local (`#` or `#/...`) and must resolve. A `type` array is
-   accepted only as one type plus `'null'`; other unions use `anyOf`. An empty `enum` or `anyOf`
-   is rejected.
-4. **The portable subset** is the intersection of the two profiles. Core exports it as
-   `PORTABLE_JSON_SCHEMA_KEYWORDS` (plus `PORTABLE_JSON_SCHEMA_FORMATS`) and
-   `assertPortableJsonSchema(schema, path?)`, so a host can lint every call site in a build-time
-   test, and a schema that passes routes to any shipped provider with every constraint enforced.
-   A test keeps the exported list equal to the computed intersection. Adapters do not call the
-   portable check; they enforce their own profile.
+   regex subset (no backreferences, property escapes anywhere including inside a character
+   class, word boundaries, lookaround or inline modifiers). `$ref` must be local (`#` or
+   `#/...`) and must resolve to a schema (not to data such as `#/properties` or `#/enum/0`); a
+   chain of `$ref`s that never reaches a schema is rejected everywhere; where recursion is
+   unsupported every cycle is rejected (the error names the `$ref` that closes it, and a cyclic
+   `$defs` entry nothing points at is found too). A `type` array is accepted only as one type
+   plus `'null'`; other unions use `anyOf`. An empty `enum` or `anyOf` is rejected.
+   `propertyNames: { type: 'string' }` constrains nothing (JSON keys are strings), is what
+   `z.record(z.string(), X)` emits and is accepted by every profile and sent verbatim; any other
+   `propertyNames` is rejected.
+4. **The portable subset** is the intersection of the **Gemini 3.x and xAI** profiles. Core
+   exports it as `PORTABLE_JSON_SCHEMA_KEYWORDS` (plus `PORTABLE_JSON_SCHEMA_FORMATS`; both
+   frozen) and `assertPortableJsonSchema(schema, path?)`, so a host can lint every call site in a
+   build-time test. It is **not** "every provider", and a schema that passes is not guaranteed
+   enforced everywhere:
+   - **Gemma 4** has a stricter profile: it additionally rejects `format`, `minLength` and
+     `maxLength` (it ignored them), so a portable schema can still be `bad_request` on a Gemma
+     model.
+   - **`claude-cli` and `codex-cli`** do not run these checks (see §1).
+   - **`pattern`, `minLength` and `maxLength` are soft** on Gemini (§2): the portable check says
+     both providers accept them, not that the model always obeys them.
+
+   A test in `@gullabs/any-llm` keeps every field of the portable profile (`keywords`, `formats`,
+   `limits`, `circularRefs`, `booleanItems`, `patternSubset`) equal to what the Gemini 3.x
+   profile of every registered Gemini 3.x model and the xAI profile imply. Adapters do not call
+   the portable check; they enforce their own profile.
+
 5. **Google sends `responseJsonSchema` and `functionDeclarations[].parametersJsonSchema`, always.**
    `GeminiSchema`, `responseSchema` and `parameters` are deleted. The schema reaches the wire
    verbatim and in the host's key order (the wire tests assert the exact serialisation), so a
    host can put `reasoning` before `answer`. xAI runs the same assertion on tool schemas as on
-   output schemas.
-6. **Residual SDK schema errors are `bad_request`.** The two errors `@google/genai` throws
-   locally while converting a schema (`type and anyOf cannot be both populated`, `type: null can
-not be the only possible type`) are caller errors, not `unknown`. Standard schemas skip that
-   conversion, so they are residual.
-7. **Soft keywords stay in Google's set and are documented as soft.** Google supports `pattern`,
-   `minLength` and `maxLength` but obeys them only probabilistically (P3: violations on some
-   Gemini models). They stay accepted; hosts must still validate `output`. ADR-009 is unchanged
-   on this: the library never validates the result.
-8. **Per-provider evidence.**
+   output schemas. The Gemma profile is chosen from the resolved descriptor's canonical model
+   (`gemma-` prefix), never from the request string, so a declared alias still gets it.
+6. **Per-provider evidence.**
    - Google's set comes from its structured-output guide (read 2026-10-03: types incl.
      `["T", "null"]`, `properties`, `required`, `additionalProperties`, `enum`, `format`,
      `minimum`/`maximum`, `items`, `prefixItems`, `minItems`/`maxItems`) plus P3 for `anyOf`,
-     `$ref` / `$defs`, `items: false`, `pattern`, `minLength`, `maxLength`. P3 verified the
-     `format` values `date-time`, `date`, `time` and `email`; other values are rejected.
-     Gemma 4 ignored `format` on 7 of 7 calls and `minLength`/`maxLength` on 13 of 14, so the
-     adapter rejects those three keywords for `gemma-` models.
+     `$ref` / `$defs`, `items: false`, `pattern`, `minLength`, `maxLength`. P3 exercised the
+     `format` values `date-time`, `date` and `email` only; `time` is named in the guide but no
+     capture exercised it, so it is rejected until one does. Gemma 4 violated `format` on 7 of 7
+     samples on both models and `minLength`/`maxLength` on 7 of 7 and 6 of 7, so the adapter
+     rejects those three keywords for Gemma models (`pattern` was violated 0 of 7 and 4 of 7:
+     soft, kept). P3 probed one simple pattern, so Google's `pattern` is held to the regex subset
+     too until a capture shows lookaround or `\b` enforced.
+   - **Tool schemas on Google.** P3 ran `responseJsonSchema` only. The `parametersJsonSchema`
+     live evidence is P2's trivial schemas (an object with one string property and
+     `additionalProperties: false`, and an empty `properties`) on the six 3.x models. `$schema`,
+     `$ref` / `$defs`, `anyOf`, `items: false` and type arrays are verified for output schemas
+     only; the same profile is applied to tools on that basis. Treat tool-schema acceptance
+     beyond trivial schemas as resting on the output-schema probe until a tool-path probe runs.
    - xAI's set comes from its structured-outputs guide (read 2026-10-03): `$ref` / `$defs` are
      documented as non-circular only, so recursion is rejected; `format` is enforced for date,
      time, date-time, email, uuid, ipv4, ipv6 and uri; `minLength`/`maxLength` up to 2,048,
      `minItems`/`maxItems` up to 256 and `minProperties`/`maxProperties` up to 64 are enforced
      and a larger value is rejected; `pattern` is a regex subset; `allOf` is enforced for a
      single subschema only and is rejected outright; `not`, `if`/`then`/`else` and unlisted
-     formats are best-effort and rejected. `items: false` is undocumented and rejected.
+     formats are best-effort and rejected. `items: false` is undocumented and rejected. The
+     guide does not list `properties`, `required`, `items` or `prefixItems` as keywords (it
+     names `properties` and `prefixItems` in its 400 list), so those four rest on the listed
+     `object` and `array` types. `additionalProperties` as a schema (and Zod's
+     `additionalProperties: {}`) is forwarded on the strength of the guide's `additionalProperties`
+     entry; no xAI capture exercised it.
 
-| Keyword                                                         | Google (Gemini)              | xAI                                                 | Portable                     |
-| --------------------------------------------------------------- | ---------------------------- | --------------------------------------------------- | ---------------------------- |
-| `type` (incl. `['T', 'null']`), `properties`, `required`        | yes                          | yes                                                 | yes                          |
-| `additionalProperties` (boolean or schema)                      | yes                          | yes                                                 | yes                          |
-| `enum`, `anyOf`                                                 | yes                          | yes                                                 | yes                          |
-| `$ref` / `$defs` (local)                                        | yes, recursive too           | yes, non-circular                                   | non-circular                 |
-| `items`, `prefixItems`, `minItems` / `maxItems`                 | yes                          | yes (up to 256)                                     | yes (up to 256)              |
-| `minimum` / `maximum`                                           | yes                          | yes                                                 | yes                          |
-| `format`                                                        | date-time, date, time, email | date, time, date-time, email, uuid, ipv4, ipv6, uri | date-time, date, time, email |
-| `pattern`, `minLength` / `maxLength`                            | yes, soft                    | yes (up to 2,048; `pattern` is a regex subset)      | yes (same limits)            |
-| `items: false` (closed tuple)                                   | yes                          | no                                                  | no                           |
-| `const`                                                         | no (ignored)                 | yes                                                 | no                           |
-| `exclusiveMinimum` / `exclusiveMaximum`                         | no (ignored)                 | yes                                                 | no                           |
-| `minProperties` / `maxProperties`                               | not probed                   | yes (up to 64)                                      | no                           |
-| `oneOf`                                                         | no (read as `anyOf`)         | no (read as `anyOf`)                                | no                           |
-| `allOf`                                                         | no (ignored)                 | no (single only)                                    | no                           |
-| `multipleOf`, `uniqueItems`                                     | no (ignored)                 | undocumented                                        | no                           |
-| `not`, `if`/`then`/`else`, `propertyNames`, `patternProperties` | no                           | no                                                  | no                           |
+| Keyword                                                               | Google (Gemini)                        | xAI                                                 | Portable                          |
+| --------------------------------------------------------------------- | -------------------------------------- | --------------------------------------------------- | --------------------------------- |
+| `type` (incl. `['T', 'null']`), `properties`, `required`              | yes                                    | yes                                                 | yes                               |
+| `additionalProperties` (boolean or schema)                            | yes                                    | yes                                                 | yes                               |
+| `enum`, `anyOf`                                                       | yes                                    | yes                                                 | yes                               |
+| `$ref` / `$defs` (local)                                              | yes, recursive too                     | yes, non-circular                                   | non-circular                      |
+| `items`, `prefixItems`, `minItems` / `maxItems`                       | yes                                    | yes (up to 256)                                     | yes (up to 256)                   |
+| `minimum` / `maximum`                                                 | yes                                    | yes                                                 | yes                               |
+| `format`                                                              | date-time, date, email                 | date, time, date-time, email, uuid, ipv4, ipv6, uri | date-time, date, email            |
+| `pattern`, `minLength` / `maxLength`                                  | yes, soft; `pattern` is a regex subset | yes (up to 2,048; `pattern` is a regex subset)      | yes (same limits), soft on Gemini |
+| `propertyNames: { type: 'string' }` only                              | yes (no-op)                            | yes (no-op)                                         | yes (no-op)                       |
+| `items: false` (closed tuple)                                         | yes                                    | no                                                  | no                                |
+| `const`                                                               | no (ignored)                           | yes                                                 | no                                |
+| `exclusiveMinimum` / `exclusiveMaximum`                               | no (ignored)                           | yes                                                 | no                                |
+| `minProperties` / `maxProperties`                                     | not probed                             | yes (up to 64)                                      | no                                |
+| `oneOf`                                                               | no (read as `anyOf`)                   | no (read as `anyOf`)                                | no                                |
+| `allOf`                                                               | no (ignored)                           | no (single only)                                    | no                                |
+| `multipleOf`, `uniqueItems`                                           | no (ignored)                           | undocumented                                        | no                                |
+| `not`, `if`/`then`/`else`, other `propertyNames`, `patternProperties` | no                                     | no                                                  | no                                |
+
+The table is for Gemini; Gemma additionally drops `format`, `minLength` and `maxLength`.
 
 **Consequences:**
 
 - Breaking. Schemas using the OpenAPI dialect, `const`, `oneOf`, `allOf`, `exclusiveMinimum`,
-  `multipleOf`, `uniqueItems`, `propertyNames` or an unlisted `format` are rejected before
-  dispatch on the provider that would ignore them. The changeset says what hosts change.
+  `multipleOf`, `uniqueItems`, a constraining `propertyNames` or an unlisted `format` are
+  rejected before dispatch on the provider that would ignore them, and so are malformed schemas.
+  The changeset says what hosts change.
 - Zod: `z.toJSONSchema` emits `const` for `z.literal('x')` (use `z.enum(['x'])`; `z.literal(['a',
 'b'])` already emits `enum`), `oneOf` for `z.discriminatedUnion` (model the variants with
-  `z.union`, which emits `anyOf`), `propertyNames` for `z.record`, `items: false` for
-  `z.tuple`, a multi-type `type` array for a union of primitives, and a recursive `$ref: '#'` for a
-  recursive type. `reused: 'ref'` emits `$defs`/`$ref`, which both providers accept. The pinned
-  fixture `packages/core/src/__fixtures__/zod-4.6.5-json-schemas.json` records the output and
-  the verdict per provider and for the portable subset; a Zod upgrade that changes the output
-  fails its test.
+  `z.union`, which emits `anyOf`), `items: false` for `z.tuple`, a multi-type `type` array for a
+  union of primitives, and a recursive `$ref: '#'` for a recursive type. `z.record(z.string(),
+X)` emits the no-op `propertyNames: { type: 'string' }` and works; `z.record(z.enum([...]), X)`
+  and `z.record(z.string().regex(...), X)` emit a constraining `propertyNames` and are rejected.
+  `reused: 'ref'` emits `$defs`/`$ref`, which both providers accept. Zod's `startsWith`,
+  `endsWith` and `includes` (and `z.iso.duration()`) emit a non-standard `format` next to a
+  `pattern`; the format is rejected (it is not enforced anywhere). For the first three, keep the
+  pattern and drop the format with `.meta({ format: undefined })` after the check, or write
+  `z.string().regex(...)` directly; `z.iso.duration()`'s pattern uses lookahead and is outside
+  the regex subset, so validate durations host-side. The pinned fixture
+  `packages/core/src/__fixtures__/zod-4.6.5-json-schemas.json` records the output and the
+  verdict per provider and for the portable subset (including both workarounds); a Zod upgrade
+  that changes the output fails its test. Re-pinning (`PIN_ZOD_FIXTURES=1`) is refused when `CI`
+  is set.
 - Hosts that need a schema one provider rejects either change the schema or validate that
   constraint themselves. The library offers no converter.
-- The Codex and Claude CLI adapters keep their own schema rules (codex-cli's strict
-  preflight); this ADR covers the HTTP providers.
+- The Codex and Claude CLI adapters keep their own schema rules (codex-cli's strict preflight;
+  claude-cli forwards the schema untouched); this ADR covers the HTTP providers.
 - Fixtures: `packages/google/src/__fixtures__/response-json-schema-2026-10-03.json` (P3 counts per
   keyword and model), `packages/xai/src/__fixtures__/structured-output-schema-docs-2026-10-03.json`
   (the documented rules), and the Zod fixture above (ADR-013).
