@@ -4,14 +4,20 @@
  * under `xai` and bound to the model string the host sent.
  */
 import { describe, expect, it } from 'vitest'
-import { composeProviders, createClient, createModelRegistry } from '@gullabs/core'
-import type { LlmResult, Message, ToolDefinition } from '@gullabs/core'
+import {
+  composeProviders,
+  createClient,
+  createModelRegistry,
+  LlmError,
+} from '@gullabs/core'
+import type { JsonValue, LlmResult, Message, ToolDefinition } from '@gullabs/core'
 import { makeFakeXai, runToolLoop } from '@gullabs/testing'
 import type { XaiResponseLike } from '@gullabs/testing'
 import { xaiAdapter } from './adapter.js'
 import { grok47ModelDescriptor, xaiModelDescriptors } from './models.js'
 import { xaiProvider } from './provider.js'
 
+type XaiState = { xai: { model: string; input: unknown[] } }
 const AUTH = { apiKey: 'test-key' }
 const USER: Message = { role: 'user', parts: [{ kind: 'text', text: 'Weather?' }] }
 const TOOLS: ToolDefinition[] = [
@@ -241,37 +247,91 @@ describe('grok-4.7 continues by state', () => {
     ).rejects.toMatchObject({ kind: 'bad_request' })
   })
 
-  it.each([
-    ['another provider (google)', { google: { signatures: [] } }],
+  // Each bad state is the real first-turn state with exactly one property
+  // altered, sent with a tool result that pairs with the state's own function
+  // call, so the only thing wrong with the request is the property under test.
+  // The control proves that request is otherwise accepted.
+  const WRONG = /unexpected key\(s\)|bound to the requested model/
+
+  it('control: the untouched first-turn state is accepted with its tool result', async () => {
+    const { result, client } = await firstTurn()
+    const second = await client.generate(
+      {
+        provider: 'xai',
+        model: 'grok-4.7',
+        tools: TOOLS,
+        messages: [toolResult],
+        transientProviderState: result.transientProviderState as JsonValue,
+      },
+      { auth: AUTH },
+    )
+    expect(second.text).toBe('ok')
+  })
+
+  it.each<[string, (state: XaiState) => unknown, RegExp]>([
+    [
+      'another provider (google)',
+      () => ({ google: { signatures: [] } }),
+      /unexpected key\(s\) \[google\]/,
+    ],
     [
       'the unscoped { model, input } shape',
-      { model: 'grok-4.7', input: [{ role: 'user' }] },
+      (state) => state.xai,
+      /unexpected key\(s\) \[model, input\]/,
     ],
     [
       'an extra key beside xai',
-      { xai: { model: 'grok-4.7', input: [{ role: 'user' }] }, x: 1 },
+      (state) => ({ ...state, x: 1 }),
+      /unexpected key\(s\) \[xai, x\]/,
     ],
     [
       'a state bound to another model',
-      { xai: { model: 'grok-4.6', input: [{ role: 'user' }] } },
+      (state) => ({ xai: { ...state.xai, model: 'grok-4.6' } }),
+      /bound to the requested model "grok-4.7"/,
     ],
-    ['an empty input', { xai: { model: 'grok-4.7', input: [] } }],
-    ['no model', { xai: { input: [{ role: 'user' }] } }],
-  ])('rejects state from %s before dispatch', async (_label, state) => {
-    const fake = makeFakeXai(response('grok-4.7', [message('x')]))
+    [
+      'an empty input',
+      (state) => ({ xai: { ...state.xai, input: [] } }),
+      /bound to the requested model/,
+    ],
+    [
+      'no model',
+      (state) => ({ xai: { input: state.xai.input } }),
+      /bound to the requested model/,
+    ],
+  ])('rejects state from %s before dispatch', async (_label, alter, pattern) => {
+    const fake = makeFakeXai([
+      response('grok-4.7', [reasoning, fnCall('c1', 'get_weather', { city: 'Paris' })]),
+      response('grok-4.7', [message('unused')]),
+    ])
     const client = createClient({ ...composeProviders([xaiProvider({ client: fake })]) })
-    await expect(
-      client.generate(
+    const first = await client.generate(
+      { provider: 'xai', model: 'grok-4.7', messages: [USER], tools: TOOLS },
+      { auth: AUTH },
+    )
+    const state = first.transientProviderState as XaiState
+    expect(Object.keys(state)).toEqual(['xai'])
+    const dispatched = fake.calls.length
+    const error: unknown = await client
+      .generate(
         {
           provider: 'xai',
           model: 'grok-4.7',
+          tools: TOOLS,
           messages: [toolResult],
-          transientProviderState: state,
+          transientProviderState: alter(structuredClone(state)) as JsonValue,
         },
         { auth: AUTH },
-      ),
-    ).rejects.toMatchObject({ kind: 'bad_request' })
-    expect(fake.calls).toHaveLength(0)
+      )
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      )
+    expect(error).toBeInstanceOf(LlmError)
+    expect(error).toMatchObject({ kind: 'bad_request' })
+    expect((error as LlmError).message).toMatch(pattern)
+    expect((error as LlmError).message).toMatch(WRONG)
+    expect(fake.calls).toHaveLength(dispatched)
   })
 
   it('a declared alias stays an alias: the state is bound to the string the host sent', async () => {
