@@ -103,17 +103,37 @@ describe('spendPreflightMiddleware', () => {
     })
   })
 
-  it('lets an error from the ledger read propagate', async () => {
-    const boom = new Error('ledger down')
-    const mw = spendPreflightMiddleware({
-      limitMicroUsd: 10,
-      key: 'k',
-      spentSoFar: () => {
-        throw boom
+  it.each([
+    [
+      'a throw',
+      () => {
+        throw new Error('ledger down')
       },
-    })
-    await expect(mw.intercept(REQ, CTX, async () => RESULT)).rejects.toBe(boom)
-  })
+    ],
+    ['a rejected promise', () => Promise.reject(new Error('ledger down'))],
+    [
+      'a thrown string',
+      () => {
+        throw 'ledger down'
+      },
+    ],
+  ])(
+    'fails closed as a non-retryable server error carrying the cause (%s)',
+    async (_n, read) => {
+      const next = vi.fn(async () => RESULT)
+      const mw = spendPreflightMiddleware({
+        limitMicroUsd: 10,
+        key: 'k',
+        spentSoFar: read as unknown as () => number,
+      })
+      const err = await mw.intercept(REQ, CTX, next).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(LlmError)
+      expect(err).toMatchObject({ kind: 'server', retryable: false, provider: 'p' })
+      expect((err as LlmError).message).toContain('spentSoFar("k") failed: ledger down')
+      expect((err as LlmError).cause).toBeDefined()
+      expect(next).not.toHaveBeenCalled()
+    },
+  )
 })
 
 describe('spendPreflightMiddleware inside a client', () => {
@@ -184,6 +204,20 @@ describe('spendPreflightMiddleware inside a client', () => {
       errorKind: 'rate_limited',
       errorReason: 'spend_ceiling',
     })
+  })
+
+  it('a ledger failure refuses the call as server, retryable false, with a row and no dispatch', async () => {
+    const boom = new Error('ledger down')
+    const { adapter, sink, client } = build(() => {
+      throw boom
+    })
+    const err = await client
+      .generate(request, { auth: { apiKey: 'k' } })
+      .catch((e: unknown) => e)
+    expect(err).toMatchObject({ kind: 'server', retryable: false })
+    expect((err as LlmError).cause).toBe(boom)
+    expect(adapter.calls).toHaveLength(0)
+    expect(sink.records.at(-1)).toMatchObject({ errorKind: 'server' })
   })
 
   it('stops a retry once the ceiling is reached mid-call', async () => {

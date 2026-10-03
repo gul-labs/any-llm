@@ -20,6 +20,7 @@ import {
 import type { LlmErrorIssue, NormalizedSchemaIssue } from './errors.js'
 import { buildRecord, normalizeUsage } from './record.js'
 import { providerCostDriftWarning } from './cost.js'
+import { assertMessagesShape, assertPartsShape } from './input-shapes.js'
 import { assertTimerMs } from './timer.js'
 import { redactSecrets } from './redact.js'
 import { boundedModelText, unknownModelMessage } from './registry.js'
@@ -286,22 +287,33 @@ export interface RunStructuredOptions {
   /**
    * Parts appended to the rendered user message, after its text: a file, an
    * image, audio. The rendered text part is omitted when the template renders
-   * to the empty string, so the message may be attachments only. An empty
-   * array is the same as none. The adapter checks each part against the model
-   * (admitted media types, tool parts rejected) before dispatch.
+   * to the empty string or whitespace only, so the message may be attachments
+   * only. An empty array is the same as none. Each element must be a part
+   * object of a known `kind` (else `bad_request` naming `attachments[i]`).
+   * `tool-call` and `tool-result` parts are `bad_request`: a call site declares
+   * no tools. Media types are checked against the model by the adapter before
+   * dispatch.
    */
   attachments?: Part[]
   /**
    * Earlier conversation turns, prepended before the rendered user message and
-   * sent unchanged (the same validation as `LlmRequest.messages`: tool-call
-   * and tool-result pairing, no empty assistant message). Use it to continue a
-   * conversation from a call site.
+   * sent unchanged, so a follow-up call can continue a text or media
+   * conversation from a call site. Each element must be a `{ role, parts }`
+   * message of known part kinds (else `bad_request` naming `history[i]`), with
+   * the same checks as `LlmRequest.messages` (no empty assistant message).
+   * `tool-call` and `tool-result` parts are `bad_request`: a call site declares
+   * no tools, so a tool loop belongs to `generate`. History is not rewritten:
+   * a history that ends in a user message is followed by the rendered user
+   * message as a second consecutive user turn; turns are never merged.
    */
   history?: Message[]
   /**
    * Opaque continuation state from the previous result, passed back exactly as
    * for {@link LlmRequest.transientProviderState}: only models that declare
-   * `capabilities.providerState` admit it, and it is never persisted.
+   * `capabilities.providerState` admit it (any other model is `bad_request`),
+   * and it is never persisted. It lets a follow-up structured call reuse what
+   * the provider returned with the earlier result (for example reasoning state)
+   * alongside `history`; it does not make a call site a tool loop.
    */
   transientProviderState?: JsonValue
 }
@@ -2750,6 +2762,7 @@ export function createClient(config: ClientConfig): Client {
       const provider = request.provider
       const model = request.model
       const resolved = registry.resolve(provider, model)
+      assertMessagesShape(request.messages, 'messages')
       validateFunctionCalling(request, resolved?.capabilities?.continuation === 'state')
       const runtimeOpts = opts as GenerateOptions | undefined
       const callAuth = requireAuth(runtimeOpts?.auth)
@@ -2861,21 +2874,36 @@ export function createClient(config: ClientConfig): Client {
       // (row-less, like the other prologue checks).
       const attachments = runtimeOpts?.attachments ?? []
       const history = runtimeOpts?.history ?? []
-      if (!Array.isArray(attachments)) {
-        throw new LlmError('attachments must be an array of parts.', {
-          kind: 'bad_request',
-          retryable: false,
-          issues: [{ path: 'attachments', message: 'must be an array of parts.' }],
-        })
+      assertPartsShape(attachments, 'attachments')
+      assertMessagesShape(history, 'history')
+      // A call site declares no tools, so a tool call or result has nothing to
+      // refer to: refuse it here rather than send function-call history to a
+      // provider with no declarations.
+      const toolPath = (
+        [
+          ...attachments.map((part, i) => ({ part, path: `attachments[${i}]` })),
+          ...history.flatMap((message, mi) =>
+            message.parts.map((part, pi) => ({
+              part,
+              path: `history[${mi}].parts[${pi}]`,
+            })),
+          ),
+        ] as Array<{ part: Part; path: string }>
+      ).find(({ part }) => isToolCallPart(part) || isToolResultPart(part))
+      if (toolPath !== undefined) {
+        throw new LlmError(
+          `${toolPath.path}: runStructured call sites declare no tools, so ${toolPath.part.kind} parts are not accepted; use generate for a tool loop.`,
+          {
+            kind: 'bad_request',
+            retryable: false,
+            issues: [
+              { path: toolPath.path, message: `${toolPath.part.kind} is not accepted.` },
+            ],
+          },
+        )
       }
-      if (!Array.isArray(history)) {
-        throw new LlmError('history must be an array of messages.', {
-          kind: 'bad_request',
-          retryable: false,
-          issues: [{ path: 'history', message: 'must be an array of messages.' }],
-        })
-      }
-      if (userText.length === 0 && attachments.length === 0) {
+      // Whitespace alone is as empty as the empty string: it is not a turn.
+      if (userText.trim().length === 0 && attachments.length === 0) {
         throw new LlmError(
           `Call site "${callSite.id}" rendered an empty user message and no attachments were given; add a userTemplate that renders text, or pass attachments.`,
           {
@@ -2891,7 +2919,9 @@ export function createClient(config: ClientConfig): Client {
         )
       }
       const userParts: Part[] = [
-        ...(userText.length > 0 ? [{ kind: 'text' as const, text: userText }] : []),
+        ...(userText.trim().length > 0
+          ? [{ kind: 'text' as const, text: userText }]
+          : []),
         ...attachments,
       ]
 

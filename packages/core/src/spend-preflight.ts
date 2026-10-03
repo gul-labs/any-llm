@@ -26,7 +26,11 @@ export interface SpendPreflightOptions {
    * The host's own total for `key`, in micro-USD, read from its ledger. The
    * library reads no ledger itself. Must resolve to a finite number >= 0;
    * anything else is `bad_request` (the middleware does not guess). An error it
-   * throws fails the call with that error classified.
+   * throws (or a promise it rejects) fails the call closed with
+   * `LlmError { kind: 'server', retryable: false, cause }`: the call is not
+   * dispatched, retry middleware does not repeat it, and `cause` carries the
+   * ledger's own error. A ledger outage is therefore not `rate_limited` (no
+   * ceiling was reached) and not `unknown`.
    */
   spentSoFar: (key: string, ctx: EngineCtx) => number | Promise<number>
 }
@@ -46,7 +50,10 @@ export interface SpendPreflightOptions {
  * **Placement.** It sets no `role` and works anywhere in the chain. Outside
  * `retryMiddleware` (first in the list) it runs once per logical call and a
  * refusal consumes no quota; inside, it re-reads `spentSoFar` before each
- * attempt, which lets a retry stop once the ceiling is reached mid-call.
+ * attempt, which lets a retry stop once the ceiling is reached mid-call. In
+ * that placement a provider failure followed by a ceiling hit leaves the caller
+ * with the `spend_ceiling` error; the provider's error is only in the earlier
+ * attempt's sink row.
  */
 export function spendPreflightMiddleware(opts: SpendPreflightOptions): Middleware {
   if (
@@ -70,7 +77,23 @@ export function spendPreflightMiddleware(opts: SpendPreflightOptions): Middlewar
           retryable: false,
         })
       }
-      const spent = await opts.spentSoFar(key, ctx)
+      let spent: number
+      try {
+        spent = await opts.spentSoFar(key, ctx)
+      } catch (err) {
+        // The ledger is the host's, so its failure is not the caller's request
+        // being wrong (`bad_request`) and not a provider fault. `server` is the
+        // kind for "a backend this call depends on failed", and it is not
+        // retryable: the same call re-reads the same ledger, and a host that
+        // falls back to another provider on `server` should not mistake a
+        // ledger outage for one. The call fails closed.
+        throw new LlmError(
+          `spendPreflightMiddleware: reading spentSoFar("${key}") failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          { kind: 'server', retryable: false, provider: req.provider, cause: err },
+        )
+      }
       if (typeof spent !== 'number' || !Number.isFinite(spent) || spent < 0) {
         throw new LlmError(
           `spendPreflightMiddleware: spentSoFar("${key}") must resolve to a finite number >= 0 (micro-USD), got ${String(spent)}.`,

@@ -10,4 +10,4 @@
 What hosts must change:
 
 - A call site with no `userTemplate` (or one that renders to the empty string) must now pass `attachments`, or the call fails with `bad_request`. Give such a call site a template, or pass the content as an attachment.
-- Hosts that fell back to `generate()` to set `externalId`, attach a file, send history or continue a tool loop can use `runStructured` again.
+- Hosts that fell back to `generate()` to set `externalId`, attach a file or send text or media history can use `runStructured` again. A call site has no tools, so a tool loop stays on `generate`.

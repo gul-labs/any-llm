@@ -228,18 +228,6 @@ describe('runStructured empty and invalid messages', () => {
 
   it('history is validated like generate messages', async () => {
     const { adapter, client } = setup()
-    const unpaired: Message[] = [
-      {
-        role: 'user',
-        parts: [{ kind: 'tool-result', toolCallId: 'nope', toolName: 't', result: 1 }],
-      },
-    ]
-    await expect(
-      client.runStructured(site, VARS, { auth: AUTH, history: unpaired }),
-    ).rejects.toMatchObject({
-      kind: 'bad_request',
-      issues: [{ path: 'messages.0.parts.0.toolCallId' }],
-    })
     await expect(
       client.runStructured(site, VARS, {
         auth: AUTH,
@@ -260,22 +248,108 @@ describe('runStructured empty and invalid messages', () => {
     expect(adapter.calls).toHaveLength(0)
   })
 
-  it('a tool loop can continue through history (call, then its result)', async () => {
+  it('tool-call and tool-result parts in history are bad_request: a call site declares no tools', async () => {
+    const { adapter, sink, client } = setup()
+    const call: Message = {
+      role: 'assistant',
+      parts: [{ kind: 'tool-call', toolCallId: 'c1', toolName: 'get', args: { q: 1 } }],
+    }
+    const result: Message = {
+      role: 'user',
+      parts: [{ kind: 'tool-result', toolCallId: 'c1', toolName: 'get', result: 'v' }],
+    }
+    await expect(
+      client.runStructured(site, VARS, { auth: AUTH, history: [call, result] }),
+    ).rejects.toMatchObject({
+      kind: 'bad_request',
+      issues: [{ path: 'history[0].parts[0]' }],
+    })
+    await expect(
+      client.runStructured(site, VARS, {
+        auth: AUTH,
+        history: [{ role: 'user', parts: [{ kind: 'text', text: 'x' }] }, call, result],
+      }),
+    ).rejects.toMatchObject({ issues: [{ path: 'history[1].parts[0]' }] })
+    await expect(
+      client.runStructured(site, VARS, {
+        auth: AUTH,
+        attachments: [result.parts[0] as Part],
+      }),
+    ).rejects.toMatchObject({ issues: [{ path: 'attachments[0]' }] })
+    expect(adapter.calls).toHaveLength(0)
+    expect(sink.records).toHaveLength(0)
+  })
+
+  it('text and media history continues a conversation, sent unchanged and in order', async () => {
     const { adapter, client } = setup()
     const history: Message[] = [
-      { role: 'user', parts: [{ kind: 'text', text: 'look it up' }] },
-      {
-        role: 'assistant',
-        parts: [{ kind: 'tool-call', toolCallId: 'c1', toolName: 'get', args: { q: 1 } }],
-      },
-      {
-        role: 'user',
-        parts: [{ kind: 'tool-result', toolCallId: 'c1', toolName: 'get', result: 'v' }],
-      },
+      { role: 'user', parts: [{ kind: 'text', text: 'first' }, PDF] },
+      { role: 'assistant', parts: [{ kind: 'text', text: 'answer' }] },
     ]
     await client.runStructured(site, VARS, { auth: AUTH, history })
-    expect(adapter.calls[0]?.messages).toHaveLength(4)
+    const sent = adapter.calls[0]?.messages ?? []
+    expect(sent).toHaveLength(3)
+    expect(sent.slice(0, 2)).toEqual(history)
+    expect(sent[2]?.role).toBe('user')
   })
+
+  it('a history ending in a user message gives two consecutive user turns, not merged', async () => {
+    const { adapter, client } = setup()
+    await client.runStructured(site, VARS, {
+      auth: AUTH,
+      history: [{ role: 'user', parts: [{ kind: 'text', text: 'earlier' }] }],
+    })
+    expect((adapter.calls[0]?.messages ?? []).map((m) => m.role)).toEqual([
+      'user',
+      'user',
+    ])
+  })
+
+  it('a whitespace-only rendered message counts as empty: refused, or omitted next to attachments', async () => {
+    const blank = defineCallSite({
+      id: 'blank',
+      provider: 'p',
+      model: 'm',
+      userTemplate: '  {{v}}\n ',
+    })
+    const { adapter, client } = setup()
+    await expect(
+      client.runStructured(blank, { v: ' ' }, { auth: AUTH }),
+    ).rejects.toMatchObject({ kind: 'bad_request', issues: [{ path: 'userTemplate' }] })
+    expect(adapter.calls).toHaveLength(0)
+    await client.runStructured(blank, { v: ' ' }, { auth: AUTH, attachments: [PDF] })
+    expect(adapter.calls[0]?.messages[0]?.parts).toEqual([PDF])
+  })
+
+  it.each([
+    ['attachments', [null], 'attachments[0]'],
+    ['attachments', [{}], 'attachments[0].kind'],
+    ['attachments', [{ kind: 'zzz' }], 'attachments[0].kind'],
+    ['attachments', [[]], 'attachments[0]'],
+    ['history', [null], 'history[0]'],
+    ['history', [{ role: 'user' }], 'history[0].parts'],
+    ['history', [{ role: 'system', parts: [] }], 'history[0].role'],
+    ['history', [{ role: 'user', parts: [null] }], 'history[0].parts[0]'],
+    [
+      'history',
+      [{ role: 'user', parts: [{ kind: 'nope' }] }],
+      'history[0].parts[0].kind',
+    ],
+  ])(
+    'a malformed %s element %j is bad_request naming %s, never dispatched',
+    async (option, value, path) => {
+      const { adapter, sink, client } = setup()
+      const err = await client
+        .runStructured(site, VARS, { auth: AUTH, [option]: value })
+        .catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(LlmError)
+      expect(err).toMatchObject({ kind: 'bad_request', retryable: false })
+      expect((err as LlmError).message).toContain(path)
+      expect((err as LlmError).issues?.[0]?.path).toBe(path)
+      expect(adapter.calls).toHaveLength(0)
+      expect(sink.records).toHaveLength(0)
+    },
+  )
 
   it('non-array attachments and history are bad_request', async () => {
     const { client } = setup()
