@@ -76,10 +76,11 @@ export interface ResolvedRequest {
    */
   modelDescriptor?: ModelDescriptor
   /**
-   * Internal-use field set by the retry middleware (the type is exported, but consumers should
-   * not set this; it is overwritten per attempt and never persisted). Carries the shrinking
-   * per-attempt budget so the engine can arm the AbortSignal correctly while leaving
-   * `config.timeoutMs` equal to the caller's original value in the audit record.
+   * Internal-use field set by the engine (the type is exported, but consumers should not set
+   * it; the engine overwrites it for every attempt and never persists it). Carries the time the
+   * logical-call deadline has left for this attempt, so an adapter can size its own transport
+   * timer, while `config.timeoutMs` stays equal to the caller's original value in the audit
+   * record. Absent when no `timeoutMs` is set.
    */
   attemptTimeoutMs?: number
   /**
@@ -637,7 +638,9 @@ export interface Telemetry {
  * deadline (`config.timeoutMs`, which starts when the call starts), so
  * middleware that waits or does I/O should honour it. It is NOT the
  * per-attempt signal: the engine adds each attempt's own timeout inside
- * `runAttempt`. The deadline aborts it only while no attempt is in flight.
+ * `runAttempt`. The deadline aborts it as soon as no attempt is in flight:
+ * at the deadline when none is, otherwise when the attempt in flight ends
+ * without a result.
  */
 export interface EngineCtx {
   /** Unique ID for this logical call (stable across retries). */
@@ -651,6 +654,14 @@ export interface EngineCtx {
    * NOT include per-attempt timeouts).
    */
   signal?: AbortSignal
+  /**
+   * When the logical-call deadline ends, on {@link EngineCtx.clock}'s scale
+   * (`clock.now() + config.timeoutMs` at the moment the call started). Absent
+   * when no `timeoutMs` is set. Middleware that sleeps or retries measures its
+   * budget against this, never against the time it was entered, so time spent
+   * in middleware before it counts.
+   */
+  deadlineAt?: number
 }
 
 /**

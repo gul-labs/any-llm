@@ -297,56 +297,117 @@ describe('maxDeferMs', () => {
     }
   })
 
-  it('with [retry, quota] a 50 s rpm deferral is slept through and the call completes', async () => {
-    const at = Date.UTC(2026, 5, 30, 12, 0, 10)
-    const redis = makeRedisEmulator()
-    const store = upstashQuotaStore({ invoke: redis.invoke })
-    const adapter = new FakeAdapter('google', {
-      message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
-      text: 'ok',
-      usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
-      model: 'm',
-      warnings: [],
-    } satisfies AdapterResult)
-    // A second caller has already used this minute's only unit.
-    await store.checkAndConsume({ scope: 'google:m', nowMs: at, rpm: 1 })
-    let clockNow = at
-    const sleeps: number[] = []
+  function retryQuotaClient(opts: {
+    at: number
+    adapter: FakeAdapter
+    store: ReturnType<typeof upstashQuotaStore>
+    sleeps: number[]
+    maxDelayMs?: number
+  }): { client: ReturnType<typeof createClient>; clockNow: () => number } {
+    let clockNow = opts.at
     const client = createClient({
-      adapters: [adapter],
+      adapters: [opts.adapter],
       modelRegistry: createModelRegistry([
         makePermissiveTestDescriptor({ provider: 'google', model: 'm' }),
       ]),
-      clock: new FakeClock(at),
+      clock: new FakeClock(opts.at),
       ids: new FakeIds(),
       middleware: [
+        // Retry defaults, except for the two injected test seams.
         retryMiddleware(
-          { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 60_000 },
+          {
+            maxAttempts: 3,
+            baseDelayMs: 0,
+            ...(opts.maxDelayMs !== undefined ? { maxDelayMs: opts.maxDelayMs } : {}),
+          },
           {
             sleep: async (ms) => {
-              sleeps.push(ms)
+              opts.sleeps.push(ms)
               clockNow += ms
             },
             random: () => 1,
-            now: () => 0,
           },
         ),
         providerQuotaMiddleware({
           policy: quotaPolicyForGemini({ models: { m: { rpm: 1 } } }),
-          store,
+          store: opts.store,
           now: () => clockNow,
         }),
       ],
     })
+    return { client, clockNow: () => clockNow }
+  }
 
-    await expect(
-      client.generate(
+  const OK_RESULT = {
+    message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
+    text: 'ok',
+    usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
+    model: 'm',
+    warnings: [],
+  } satisfies AdapterResult
+
+  it.each([
+    // 31 s, 50 s and 60 s of deferral: the whole range above the old 30 s retry default.
+    [29, 31_000],
+    [10, 50_000],
+    [0, 60_000],
+  ])(
+    'with [retry, quota] on their defaults a rpm deferral starting %i s into the minute (%i ms) is slept through and the call completes',
+    async (second, deferralMs) => {
+      const at = Date.UTC(2026, 5, 30, 12, 0, second)
+      const store = upstashQuotaStore({ invoke: makeRedisEmulator().invoke })
+      const adapter = new FakeAdapter('google', OK_RESULT)
+      // A second caller has already used this minute's only unit.
+      await store.checkAndConsume({ scope: 'google:m', nowMs: at, rpm: 1 })
+      const sleeps: number[] = []
+      const { client } = retryQuotaClient({ at, adapter, store, sleeps })
+
+      await expect(
+        client.generate(
+          { provider: 'google', model: 'm', messages: req.messages },
+          { auth: { apiKey: 'k' } },
+        ),
+      ).resolves.toMatchObject({ text: 'ok' })
+
+      // One sleep, never shorter than the deferral (the retry adds up to 1 s of
+      // jitter on top), and the adapter ran once, after the window rolled over.
+      expect(sleeps).toHaveLength(1)
+      expect(sleeps[0]).toBeGreaterThanOrEqual(deferralMs)
+      expect(sleeps[0]).toBeLessThanOrEqual(deferralMs + 1_000)
+      expect(adapter.calls).toHaveLength(1)
+    },
+  )
+
+  it("a deferral longer than the retry middleware's maxDelayMs ends the call with the quota error, untouched", async () => {
+    const at = Date.UTC(2026, 5, 30, 12, 0, 10)
+    const store = upstashQuotaStore({ invoke: makeRedisEmulator().invoke })
+    const adapter = new FakeAdapter('google', OK_RESULT)
+    await store.checkAndConsume({ scope: 'google:m', nowMs: at, rpm: 1 })
+    const sleeps: number[] = []
+    const { client } = retryQuotaClient({
+      at,
+      adapter,
+      store,
+      sleeps,
+      maxDelayMs: 30_000,
+    })
+
+    const err = (await client
+      .generate(
         { provider: 'google', model: 'm', messages: req.messages },
         { auth: { apiKey: 'k' } },
-      ),
-    ).resolves.toMatchObject({ text: 'ok' })
-    expect(sleeps).toEqual([50_000])
-    expect(adapter.calls).toHaveLength(1)
+      )
+      .catch((e: unknown) => e)) as LlmError
+
+    // 50 s of deferral against a 30 s cap: no sleep, no early retry, the host
+    // sees the deferral and its delay.
+    expect(err).toMatchObject({
+      kind: 'rate_limited',
+      retryable: true,
+      retryAfterMs: 50_000,
+    })
+    expect(sleeps).toEqual([])
+    expect(adapter.calls).toHaveLength(0)
   })
 
   it('the rate-limiter path honours the same cap', async () => {
@@ -471,7 +532,6 @@ describe('maxDeferMs', () => {
               slept++
             },
             random: () => 0,
-            now: () => 0,
           },
         ),
         providerQuotaMiddleware({ policy, store: deferringStore(12 * 3_600_000, 'rpd') }),
@@ -792,7 +852,7 @@ describe('providerQuotaMiddleware role and placement', () => {
       middleware: [
         retryMiddleware(
           { maxAttempts: 3, baseDelayMs: 0 },
-          { sleep: async () => {}, random: () => 0, now: () => 0 },
+          { sleep: async () => {}, random: () => 0 },
         ),
         providerQuotaMiddleware({ policy, store }),
       ],

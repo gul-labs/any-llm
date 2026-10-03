@@ -80,18 +80,28 @@ function recordingLogger(): { logger: Logger; events: LoggedEvent[] } {
   }
 }
 
-/** Awaits a promise that must reject and returns the rejection as an LlmError. */
-async function rejection(promise: Promise<unknown>): Promise<LlmError> {
-  try {
-    await promise
-  } catch (e) {
-    return e as LlmError
-  }
-  throw new Error('expected the promise to reject')
-}
-
 const sleep = (ms: number): Promise<void> =>
   new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+/** Follows a promise without awaiting it, for tests that drive fake timers. */
+function observe<T>(promise: Promise<T>): {
+  settled: boolean
+  value?: T
+  error?: unknown
+} {
+  const o: { settled: boolean; value?: T; error?: unknown } = { settled: false }
+  void promise.then(
+    (v) => {
+      o.settled = true
+      o.value = v
+    },
+    (e: unknown) => {
+      o.settled = true
+      o.error = e
+    },
+  )
+  return o
+}
 
 afterEach(() => {
   vi.useRealTimers()
@@ -103,6 +113,7 @@ afterEach(() => {
 
 describe('engine — sinkTimeoutMs (R4.1)', () => {
   it('a sink that never settles does not hold the result past sinkTimeoutMs', async () => {
+    vi.useFakeTimers()
     const { logger, events } = recordingLogger()
     const hung: UsageSink = { record: () => new Promise<void>(() => {}) }
     const client = createClient({
@@ -115,11 +126,12 @@ describe('engine — sinkTimeoutMs (R4.1)', () => {
       ids: new FakeIds(),
     })
 
-    const started = Date.now()
-    const result = await client.generate(request(), { auth: AUTH })
+    const call = observe(client.generate(request(), { auth: AUTH }))
+    await vi.advanceTimersByTimeAsync(39)
+    expect(call.settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
 
-    expect(result.text).toBe('ok')
-    expect(Date.now() - started).toBeLessThan(1_000)
+    expect(call.value?.text).toBe('ok')
     const timeout = events.find((e) => e.event === 'llm.call.sink.timeout')
     expect(timeout?.level).toBe('error')
     expect(timeout?.fields).toMatchObject({
@@ -273,6 +285,7 @@ describe('engine — logical-call deadline (R4.1)', () => {
   }
 
   it('middleware time counts against timeoutMs, and an orphaned continuation never dispatches', async () => {
+    vi.useFakeTimers()
     const adapter = new FakeAdapter('google', OK)
     const sink = new RecordingSink()
     const client = createClient({
@@ -280,21 +293,22 @@ describe('engine — logical-call deadline (R4.1)', () => {
       modelRegistry: REGISTRY,
       sink,
       middleware: [slowMiddleware(250)],
-      clock: new FakeClock(),
       ids: new FakeIds(),
     })
 
-    const started = Date.now()
-    const err = await rejection(client.generate(request(60), { auth: AUTH }))
+    const call = observe(client.generate(request(60), { auth: AUTH }))
+    await vi.advanceTimersByTimeAsync(59)
+    expect(call.settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    const err = call.error as LlmError
 
     expect(err).toBeInstanceOf(LlmError)
     expect(err.kind).toBe('timeout')
     expect(err.retryable).toBe(true)
-    expect(Date.now() - started).toBeLessThan(200)
 
     // The slow middleware wakes up later and calls next(): nothing dispatches
     // and no extra ledger row appears for a call that already failed.
-    await sleep(350)
+    await vi.advanceTimersByTimeAsync(350)
     expect(adapter.calls).toHaveLength(0)
     expect(sink.records).toHaveLength(1)
     expect(sink.records[0]?.errorKind).toBe('timeout')
@@ -318,6 +332,7 @@ describe('engine — logical-call deadline (R4.1)', () => {
   })
 
   it('an attempt that starts after middleware delay gets only the time that is left', async () => {
+    vi.useFakeTimers()
     const adapter = new FakeAdapter('google', OK, { delayMs: 2_000 })
     const sink = new RecordingSink()
     const client = createClient({
@@ -325,21 +340,18 @@ describe('engine — logical-call deadline (R4.1)', () => {
       modelRegistry: REGISTRY,
       sink,
       middleware: [slowMiddleware(100)],
-      clock: new FakeClock(),
       ids: new FakeIds(),
     })
 
-    const started = Date.now()
-    const err = await rejection(client.generate(request(300), { auth: AUTH }))
-
-    const elapsed = Date.now() - started
+    const call = observe(client.generate(request(300), { auth: AUTH }))
+    // 100 ms of middleware, then an attempt window of exactly the 200 ms left:
+    // the call ends at 300 ms, not at 100 + 300.
+    await vi.advanceTimersByTimeAsync(299)
+    expect(call.settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    const err = call.error as LlmError
     expect(err.kind).toBe('timeout')
-    // 100 ms of middleware + at most ~200 ms for the attempt, not 100 + 300.
-    expect(elapsed).toBeLessThan(380)
-    expect(elapsed).toBeGreaterThanOrEqual(280)
-    const dispatched = adapter.calls[0]?.attemptTimeoutMs
-    expect(dispatched).toBeLessThanOrEqual(200)
-    expect(dispatched).toBeGreaterThan(0)
+    expect(adapter.calls[0]?.attemptTimeoutMs).toBe(200)
     // The attempt owned the timeout: one row, from the attempt, not a second one.
     expect(sink.records).toHaveLength(1)
     expect(sink.records[0]?.attemptNumber).toBe(1)
@@ -347,17 +359,20 @@ describe('engine — logical-call deadline (R4.1)', () => {
   })
 
   it('an attempt in flight at the deadline fails with its own error and a single row', async () => {
+    vi.useFakeTimers()
     const adapter = new FakeAdapter('google', OK, { delayMs: 500 })
     const sink = new RecordingSink()
     const client = createClient({
       adapters: [adapter],
       modelRegistry: REGISTRY,
       sink,
-      clock: new FakeClock(),
       ids: new FakeIds(),
     })
 
-    const err = await rejection(client.generate(request(50), { auth: AUTH }))
+    const call = observe(client.generate(request(50), { auth: AUTH }))
+    await vi.advanceTimersByTimeAsync(50)
+    await vi.advanceTimersByTimeAsync(5)
+    const err = call.error as LlmError
 
     expect(err.kind).toBe('timeout')
     expect(err.attemptId).toBeDefined()
@@ -521,17 +536,20 @@ function countClient(adapter: ProviderAdapter, logger?: Logger) {
 
 describe('engine — countTokens cancellation race (R4.7)', () => {
   it('timeoutMs ends the call with a retryable timeout even if the adapter ignores its signal', async () => {
+    vi.useFakeTimers()
     const adapter = new CountingAdapter(() => new Promise<TokenCount>(() => {}))
-    const started = Date.now()
 
-    const err = await rejection(
+    const call = observe(
       countClient(adapter).countTokens(COUNT_REQUEST, { auth: AUTH, timeoutMs: 40 }),
     )
+    await vi.advanceTimersByTimeAsync(39)
+    expect(call.settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    const err = call.error as LlmError
 
     expect(err).toBeInstanceOf(LlmError)
     expect(err.kind).toBe('timeout')
     expect(err.retryable).toBe(true)
-    expect(Date.now() - started).toBeLessThan(1_000)
     // A cooperative adapter is told too.
     expect(adapter.signals[0]?.aborted).toBe(true)
   })
@@ -597,9 +615,11 @@ describe('engine — countTokens cancellation race (R4.7)', () => {
       throw new TypeError('sync')
     })
     const err = (await countClient(adapter)
-      .countTokens(COUNT_REQUEST, { auth: AUTH, signal: AbortSignal.abort() })
+      .countTokens(COUNT_REQUEST, { auth: AUTH, signal: new AbortController().signal })
       .catch((e: unknown) => e)) as LlmError
     expect(err).toBeInstanceOf(LlmError)
+    expect(err.kind).toBe('unknown')
+    expect(err.cause).toBeInstanceOf(TypeError)
   })
 })
 
@@ -759,6 +779,7 @@ describe('engine — rejects only with LlmError (R4.8)', () => {
 
 describe('engine + retryMiddleware — provider delay and deadline (R4.3, R4.4)', () => {
   it('a backoff longer than the budget surfaces the attempt error at once, not a synthetic timeout', async () => {
+    vi.useFakeTimers()
     const failure = new LlmError('overloaded', {
       kind: 'server',
       retryable: true,
@@ -771,18 +792,20 @@ describe('engine + retryMiddleware — provider delay and deadline (R4.3, R4.4)'
       modelRegistry: REGISTRY,
       sink,
       middleware: [
-        retryMiddleware({ maxAttempts: 3, baseDelayMs: 60_000 }, { random: () => 1 }),
+        retryMiddleware(
+          { maxAttempts: 3, baseDelayMs: 60_000, maxDelayMs: 60_000 },
+          { random: () => 1 },
+        ),
       ],
-      clock: new FakeClock(),
       ids: new FakeIds(),
     })
 
-    const started = Date.now()
-    const err = (await client
-      .generate(request(2_000), { auth: AUTH })
-      .catch((e: unknown) => e)) as LlmError
+    // No timer advances: the error is surfaced without sleeping the budget away.
+    const call = observe(client.generate(request(2_000), { auth: AUTH }))
+    await vi.advanceTimersByTimeAsync(0)
+    const err = call.error as LlmError
 
-    expect(Date.now() - started).toBeLessThan(500)
+    expect(call.settled).toBe(true)
     expect(err.kind).toBe('server')
     expect(err.httpStatus).toBe(503)
     expect(adapter.calls).toHaveLength(1)

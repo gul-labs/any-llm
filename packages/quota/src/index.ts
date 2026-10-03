@@ -129,9 +129,13 @@ export interface ProviderQuotaMiddlewareOptions {
    * limit) being slept on, so every per-minute deferral (at most 60 s) stays
    * retryable. Must be a finite number >= 0, else `bad_request` at
    * construction. Every deferral that stays retryable consumes one of the retry
-   * middleware's `maxAttempts`, and the retry sleeps `min(retryAfterMs,
-   * maxDelayMs)`, so it can wake before the window rolls over and be deferred
-   * again.
+   * middleware's `maxAttempts`. The retry middleware sleeps exactly the
+   * deferral (plus a little jitter) when it is at most its own `maxDelayMs`,
+   * whose default is this default (60 000), and when it leaves a usable window
+   * before `timeoutMs`; a deferral beyond either ends the retry with the
+   * deferral error and its `retryAfterMs`, never waking early to be deferred
+   * again. Keep the retry `maxDelayMs` at or above this value for every
+   * retryable deferral to be waited out.
    */
   maxDeferMs?: number
 }

@@ -19,6 +19,7 @@ import {
 } from './errors.js'
 import type { LlmErrorIssue, NormalizedSchemaIssue } from './errors.js'
 import { buildRecord, normalizeUsage } from './record.js'
+import { assertTimerMs } from './timer.js'
 import { redactSecrets } from './redact.js'
 import { boundedModelText, unknownModelMessage } from './registry.js'
 import type { ModelDescriptor, ModelRegistry } from './registry.js'
@@ -96,7 +97,8 @@ export interface ClientConfig {
   sink?: UsageSink
   /**
    * Longest the engine waits for one `sink.record` call, in milliseconds.
-   * Must be a finite number greater than 0.
+   * Must be a finite number greater than 0 and at most 2147483647 (a longer
+   * timer would fire after 1 ms), else `bad_request`.
    *
    * A sink that has not settled by then is abandoned: the engine logs
    * `llm.call.sink.timeout` at `error` (with `callId`, `attemptId`,
@@ -104,12 +106,23 @@ export interface ClientConfig {
    * result or error is returned or thrown unchanged, and the row may or may
    * not be written later. A stalled database must not stall an LLM call that
    * has already been billed.
+   *
+   * The wait also ends 100 ms after the caller aborts or the call deadline
+   * (`timeoutMs`) passes, whichever of those comes first, logged at `error` as
+   * `llm.call.sink.interrupted` with the same fields (plus `graceMs`): a hung
+   * sink does not hold an abort or a deadline for the whole `sinkTimeoutMs`,
+   * and a healthy sink still has 100 ms to land its row.
    * @default 5000
    */
   sinkTimeoutMs?: number
   /**
    * Time source.  Defaults to `{ now: () => Date.now() }`.
    * Inject {@link FakeClock} in tests for deterministic latency assertions.
+   *
+   * It stamps records and measures latencies, and the call deadline
+   * (`config.timeoutMs`) is measured on it too, so a clock that does not
+   * advance in real time (a frozen one) leaves middleware time uncounted.
+   * The timers that enforce the deadline are real, monotonic timers.
    */
   clock?: Clock
   /**
@@ -237,7 +250,7 @@ export interface GenerateOptions {
 export interface CountTokensOptions extends GenerateOptions {
   /**
    * Ceiling for the whole count, in milliseconds (a finite number greater
-   * than 0). When it passes, the call rejects with `LlmError('timeout')` even
+   * than 0 and at most 2147483647, else `bad_request`). When it passes, the call rejects with `LlmError('timeout')` even
    * if the adapter ignores the abort signal. There is no default: without it
    * the count runs until the adapter settles or the caller aborts.
    */
@@ -316,8 +329,10 @@ export interface Client {
   /**
    * Count tokens for a prospective request without generating.
    * Same auth/signal semantics as {@link generate}, plus an optional
-   * `timeoutMs`. Caller abort and the timeout end the call even when the
-   * adapter ignores its signal. Throws `LlmError('bad_request')` when the
+   * `timeoutMs` (a finite number greater than 0 and at most 2147483647, else
+   * `bad_request`). Caller abort and the timeout end the call even when the
+   * adapter ignores its signal; a signal that is already aborted rejects
+   * without calling the adapter. Throws `LlmError('bad_request')` when the
    * (provider, model) pair is not registered, or when the resolved adapter
    * does not implement `countTokens`.
    */
@@ -330,6 +345,14 @@ export interface Client {
 
 /** Longest the engine waits for one `sink.record`, unless `sinkTimeoutMs` says otherwise. */
 const DEFAULT_SINK_TIMEOUT_MS = 5000
+
+/**
+ * How much longer a `sink.record` is awaited once the caller aborted or the
+ * call deadline passed. A healthy sink finishes inside it, so an aborted call
+ * still lands its row; a hung sink no longer holds the abort or the deadline
+ * for the whole `sinkTimeoutMs`.
+ */
+const SINK_INTERRUPT_GRACE_MS = 100
 
 const NOOP_LOGGER: Logger = {
   info() {},
@@ -404,6 +427,45 @@ const EMPTY_USAGE: Usage = {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * {@link classifyError}, except that a value that is the abort signal's own
+ * reason is an abort. A cooperative adapter or middleware that rejects with
+ * `signal.reason` (a host cancellation error, any custom `Error`) is reporting
+ * the abort it was handed, and `classifyError` alone would call that `unknown`.
+ * The reason is kept as `cause`. An `LlmError` reason (the deadline's
+ * `timeout`) already passes through `classifyError` unchanged.
+ */
+function classifyThrown(rawErr: unknown, signal: AbortSignal | undefined): LlmError {
+  if (
+    !(rawErr instanceof LlmError) &&
+    rawErr !== undefined &&
+    signal?.aborted === true &&
+    rawErr === signal.reason
+  ) {
+    return new LlmError('Request aborted by caller', {
+      kind: 'aborted',
+      retryable: false,
+      cause: rawErr,
+    })
+  }
+  return classifyError(rawErr)
+}
+
+/**
+ * The error for a signal that is already aborted: its reason when that is an
+ * `LlmError` (the deadline's `timeout`), else an `aborted` error carrying the
+ * reason as `cause`.
+ */
+function abortedError(signal: AbortSignal): LlmError {
+  const reason: unknown = signal.reason
+  if (reason instanceof LlmError) return reason
+  return new LlmError('Request aborted by caller', {
+    kind: 'aborted',
+    retryable: false,
+    ...(reason !== undefined ? { cause: reason } : {}),
+  })
+}
 
 /** Matches every `{{name}}` placeholder recognised by {@link interpolate}. */
 const PLACEHOLDER_RE = /\{\{(\w+)\}\}/g
@@ -759,69 +821,142 @@ function buildCancellationRace(
 // Pipeline helper: logical-call deadline
 // ---------------------------------------------------------------------------
 
+/** What {@link buildCallDeadline} hands the pipeline. */
+interface CallDeadline {
+  /** When the call must end, on the injected clock's scale. */
+  deadlineAt: number | undefined
+  /** The caller signal merged with the deadline; `EngineCtx.signal`. */
+  signal: AbortSignal | undefined
+  /**
+   * Aborts when the deadline timer fires, whether or not an attempt is in
+   * flight. Waits that are not attempts (a sink write) stop on it.
+   */
+  elapsed: AbortSignal | undefined
+  /**
+   * Settles the call at the deadline when no attempt is in flight: rejects with
+   * the deadline error, or resolves with the result an attempt already
+   * produced, so a slow or hung middleware after `next()` neither converts a
+   * billed success into a timeout nor holds the call.
+   */
+  gate: Promise<LlmResult> | undefined
+  /** True once the deadline has passed. */
+  expired(this: void): boolean
+  /** The error for a call that ran out of time (see {@link CallDeadline.gate}). */
+  error(this: void): LlmError
+  /** An attempt began; it enforces the deadline itself until it ends. */
+  attemptStarted(this: void): void
+  /** An attempt ended, with its result or `undefined` when it failed. */
+  attemptEnded(this: void, result: LlmResult | undefined): void
+  /** Idempotent; clears the timer and listeners. */
+  cleanup(this: void): void
+}
+
 /**
  * Arms `timeoutMs` for the whole logical call, not only for each attempt, so
  * time spent in middleware (a quota deferral, a store round-trip) counts
- * against it.
- *
- * Returns:
- *  - `deadlineAt`  — wall-clock ms (`Date.now()` scale) the call must end by.
- *  - `signal`      — the caller signal merged with the deadline; handed to
- *                    middleware as `EngineCtx.signal`.
- *  - `gate`        — rejects with `LlmError('timeout')` at the deadline.
- *  - `expired()`   — true once the deadline has passed.
- *  - `cleanup()`   — idempotent; clears the timer and listeners.
+ * against it. The deadline is measured on the injected clock, like every
+ * ledger latency; the timer that enforces it is a monotonic `setTimeout`, so a
+ * wall-clock jump can only make `expired()` early or late, never leave the
+ * call without its timer.
  *
  * While an attempt is in flight the deadline is that attempt's to enforce:
  * `runAttempt` arms its own timer for exactly the time that remains, records
  * the failure as its own ledger row, and lets that error travel up the chain.
  * Firing the gate then would replace the attempt's error with a second,
- * attempt-less one. So the gate and the signal fire only when no attempt is in
- * flight, which is when middleware (or a hung chain) is what is taking the
- * time. The gate rejects before the signal aborts, as in
+ * attempt-less one. So when the timer fires with an attempt in flight, the
+ * gate waits, and fires one macrotask after the attempt ends (`attemptEnded`)
+ * if the call is still pending: with the attempt's result when it produced one,
+ * otherwise with the deadline error and an abort of `ctx.signal`. The pause
+ * lets the attempt's own error (or result) reach the caller when the chain
+ * passes it straight up; the gate bounds whatever runs after the attempt (an
+ * outer middleware's `catch`, an error-reporting fetch, a hung `next()`
+ * continuation). The gate rejects before the signal aborts, as in
  * {@link buildCancellationRace}, so `timeout` wins over any abort error a
  * cooperative middleware throws in reaction.
+ *
+ * `lastAttemptError` supplies the failure of the most recent attempt: the
+ * deadline error carries it as `cause`, and when it is itself a `timeout` or is
+ * retryable with a `retryAfterMs` it is the error surfaced, so neither a
+ * provider delay nor the attempt's own row is lost to a synthetic timeout.
  */
 function buildCallDeadline(
   callerSignal: AbortSignal | undefined,
   timeoutMs: number | undefined,
-  attemptInFlight: () => boolean,
-): {
-  deadlineAt: number | undefined
-  signal: AbortSignal | undefined
-  gate: Promise<never> | undefined
-  expired(this: void): boolean
-  cleanup(this: void): void
-} {
+  clock: Clock,
+  lastAttemptError: () => LlmError | undefined,
+): CallDeadline {
   if (timeoutMs === undefined) {
     return {
       deadlineAt: undefined,
       signal: callerSignal,
+      elapsed: undefined,
       gate: undefined,
       expired: () => false,
+      error: () =>
+        new LlmError('Request timed out', { kind: 'timeout', retryable: true }),
+      attemptStarted() {},
+      attemptEnded() {},
       cleanup() {},
     }
   }
-  const deadlineAt = Date.now() + timeoutMs
+  const deadlineAt = clock.now() + timeoutMs
   const controller = new AbortController()
-  let rejectGate!: (err: LlmError) => void
-  const gate = new Promise<never>((_, reject) => {
-    rejectGate = reject
+  const elapsedController = new AbortController()
+  let settleGate!: { resolve(r: LlmResult): void; reject(e: LlmError): void }
+  const gate = new Promise<LlmResult>((resolve, reject) => {
+    settleGate = { resolve, reject }
   })
   // The gate can fire before `runPipeline` starts racing it; this keeps that
   // from being an unhandled rejection. The race still receives the error.
   gate.catch(() => {})
-  let fired = false
-  const timer = setTimeout(() => {
-    if (attemptInFlight()) return
-    fired = true
-    const err = new LlmError(`Request timed out after ${timeoutMs}ms`, {
+
+  const deadlineError = (): LlmError => {
+    const last = lastAttemptError()
+    // The attempt's own error already says what happened, has its ledger row,
+    // and keeps its provider delay: surface it when it is a timeout (the
+    // deadline hit inside the attempt) or carries a delay a host can act on.
+    if (
+      last !== undefined &&
+      (last.kind === 'timeout' || (last.retryable && last.retryAfterMs !== undefined))
+    ) {
+      return last
+    }
+    return new LlmError(`Request timed out after ${timeoutMs}ms`, {
       kind: 'timeout',
       retryable: true,
+      ...(last !== undefined ? { cause: last } : {}),
     })
+  }
+
+  let inFlight = 0
+  let timerFired = false
+  let fired = false
+  let finished = false
+  let produced: LlmResult | undefined
+  let settleTimer: ReturnType<typeof setTimeout> | undefined
+  const fire = (): void => {
+    if (fired || finished) return
+    fired = true
+    if (produced !== undefined) {
+      // The provider answered and the row is written: the result stands.
+      settleGate.resolve(produced)
+      controller.abort(
+        new LlmError(`Request timed out after ${timeoutMs}ms`, {
+          kind: 'timeout',
+          retryable: true,
+        }),
+      )
+      return
+    }
+    const err = deadlineError()
     // REJECT FIRST, abort second (see buildCancellationRace, Invariant A).
-    rejectGate(err)
+    settleGate.reject(err)
     controller.abort(err)
+  }
+  const timer = setTimeout(() => {
+    timerFired = true
+    elapsedController.abort()
+    if (inFlight === 0) fire()
   }, timeoutMs)
   const merged =
     callerSignal === undefined
@@ -830,10 +965,31 @@ function buildCallDeadline(
   return {
     deadlineAt,
     signal: merged?.signal ?? controller.signal,
+    elapsed: elapsedController.signal,
     gate,
-    expired: () => fired || Date.now() >= deadlineAt,
+    expired: () => fired || clock.now() >= deadlineAt,
+    error: deadlineError,
+    attemptStarted() {
+      inFlight++
+    },
+    attemptEnded(result) {
+      inFlight--
+      if (result !== undefined) produced = result
+      if (timerFired && inFlight === 0 && settleTimer === undefined) {
+        // The attempt's own error (or result) is already on its way up the
+        // chain, and it is the better answer: let the microtasks that carry it
+        // run first. The gate fires only if the chain is still pending after
+        // that, which is a middleware doing more work or hanging.
+        settleTimer = setTimeout(() => {
+          settleTimer = undefined
+          if (inFlight === 0) fire()
+        }, 0)
+      }
+    },
     cleanup() {
+      finished = true
       clearTimeout(timer)
+      clearTimeout(settleTimer)
       merged?.cleanup()
     },
   }
@@ -1119,11 +1275,15 @@ function buildErrorRecord(
 
 /**
  * Writes `record` to `sink` if a sink is configured, waiting at most
- * `timeoutMs`.
+ * `timeoutMs`, and at most {@link SINK_INTERRUPT_GRACE_MS} after any of
+ * `interrupts` (the caller's abort, the call deadline) fires.
  * Failures are logged at `error` as `llm.call.sink.failed` and swallowed
  * (fail-open) — a broken sink must never fail the LLM call. A sink still
  * pending at `timeoutMs` is abandoned and logged at `error` as
- * `llm.call.sink.timeout`; its late result, success or failure, is ignored.
+ * `llm.call.sink.timeout`; one still pending after an interrupt plus the grace
+ * is abandoned and logged at `error` as `llm.call.sink.interrupted`. The
+ * late result of an abandoned write, success or failure, is ignored. The write
+ * itself is always started.
  */
 async function recordToSink(
   sink: UsageSink | undefined,
@@ -1131,6 +1291,7 @@ async function recordToSink(
   logger: Logger,
   callId: string,
   timeoutMs: number,
+  interrupts: readonly (AbortSignal | undefined)[],
 ): Promise<void> {
   if (sink === undefined) return
   const fields = {
@@ -1141,21 +1302,45 @@ async function recordToSink(
     model: record.model,
   }
   let timer: ReturnType<typeof setTimeout> | undefined
+  let graceTimer: ReturnType<typeof setTimeout> | undefined
+  const detach: Array<() => void> = []
   try {
-    const timedOut = new Promise<'timeout'>((resolve) => {
+    const abandoned = new Promise<'timeout' | 'interrupted'>((resolve) => {
       timer = setTimeout(() => {
         resolve('timeout')
       }, timeoutMs)
+      const interrupted = (): void => {
+        graceTimer ??= setTimeout(() => {
+          resolve('interrupted')
+        }, SINK_INTERRUPT_GRACE_MS)
+      }
+      for (const signal of interrupts) {
+        if (signal === undefined) continue
+        if (signal.aborted) {
+          interrupted()
+        } else {
+          signal.addEventListener('abort', interrupted, { once: true })
+          detach.push(() => {
+            signal.removeEventListener('abort', interrupted)
+          })
+        }
+      }
     })
     // Started inside the try so a synchronous throw from `record` is a failure
     // like any other. `Promise.race` keeps handling the write, so a rejection
     // that arrives after the timeout is not an unhandled rejection.
     const write = Promise.resolve(sink.record(record)).then(() => 'done' as const)
-    const outcome = await Promise.race([write, timedOut])
+    const outcome = await Promise.race([write, abandoned])
     if (outcome === 'timeout') {
       // A row that may be lost. The event name and fields are stable: alert on
       // `llm.call.sink.timeout`, and use `attemptId` to find the row.
       logger.error({ ...fields, timeoutMs }, 'llm.call.sink.timeout')
+    } else if (outcome === 'interrupted') {
+      // Same, after an abort or the call deadline: `llm.call.sink.interrupted`.
+      logger.error(
+        { ...fields, graceMs: SINK_INTERRUPT_GRACE_MS },
+        'llm.call.sink.interrupted',
+      )
     } else {
       logger.debug({ callId }, 'llm.call.sink.success')
     }
@@ -1168,6 +1353,8 @@ async function recordToSink(
     )
   } finally {
     if (timer !== undefined) clearTimeout(timer)
+    if (graceTimer !== undefined) clearTimeout(graceTimer)
+    for (const off of detach) off()
   }
 }
 
@@ -1324,18 +1511,7 @@ export function createClient(config: ClientConfig): Client {
   const pricingSources: Record<string, PricingSource> = config.pricingSources ?? {}
   const sink = config.sink
   const sinkTimeoutMs = config.sinkTimeoutMs ?? DEFAULT_SINK_TIMEOUT_MS
-  if (!Number.isFinite(sinkTimeoutMs) || sinkTimeoutMs <= 0) {
-    throw new LlmError(
-      `createClient: sinkTimeoutMs must be a finite number greater than 0, got ${String(config.sinkTimeoutMs)}.`,
-      {
-        kind: 'bad_request',
-        retryable: false,
-        issues: [
-          { path: 'sinkTimeoutMs', message: 'must be a finite number greater than 0.' },
-        ],
-      },
-    )
-  }
+  assertTimerMs(sinkTimeoutMs, 'createClient: sinkTimeoutMs', 'sinkTimeoutMs')
   const clock: Clock = config.clock ?? DEFAULT_CLOCK
   const ids: IdGenerator = config.ids ?? DEFAULT_IDS
   const logger: Logger = config.logger ?? NOOP_LOGGER
@@ -1486,6 +1662,9 @@ export function createClient(config: ClientConfig): Client {
     enforceInputContract: boolean,
   ): Promise<LlmResult> {
     const { provider: callProvider, model: requestedModel } = identity
+    if (resolvedConfig.timeoutMs !== undefined) {
+      assertTimerMs(resolvedConfig.timeoutMs, 'config.timeoutMs', 'config.timeoutMs')
+    }
 
     // ── (a) Call-level prologue ────────────────────────────────────────────
     // ONE callId per logical call.  ONE onStart.  ONE log-start entry.
@@ -1557,12 +1736,16 @@ export function createClient(config: ClientConfig): Client {
 
     // The logical-call deadline (`timeoutMs`) starts here, so middleware time
     // counts against it (R4.1). It is merged into the signal middleware see.
-    let attemptsInFlight = 0
+    let lastAttemptError: LlmError | undefined
     const deadline = buildCallDeadline(
       callerSignal,
       resolvedConfig.timeoutMs,
-      () => attemptsInFlight > 0,
+      clock,
+      () => lastAttemptError,
     )
+    // A sink write stops waiting on the caller's abort and on the deadline
+    // timer, which fires even while an attempt (its sink write) is in flight.
+    const sinkInterrupts = [callerSignal, deadline.elapsed]
 
     // EngineCtx carries stable call-level state.  ctx.signal is the caller
     // signal merged with the logical-call deadline; each attempt adds its own
@@ -1572,6 +1755,7 @@ export function createClient(config: ClientConfig): Client {
       clock,
       logger: safeLogger,
       ...(deadline.signal !== undefined ? { signal: deadline.signal } : {}),
+      ...(deadline.deadlineAt !== undefined ? { deadlineAt: deadline.deadlineAt } : {}),
     }
 
     // ── (b) runAttempt — the innermost Handler ─────────────────────────────
@@ -1667,14 +1851,10 @@ export function createClient(config: ClientConfig): Client {
         // The attempt's window is what the logical deadline has left, never
         // more, so an attempt that starts late (after a quota deferral) cannot
         // run past `timeoutMs`.
-        const deadlineRemainingMs =
-          deadline.deadlineAt === undefined ? undefined : deadline.deadlineAt - Date.now()
-        const requestedAttemptMs =
-          effectiveReq.attemptTimeoutMs ?? effectiveReq.config.timeoutMs
         const attemptBudgetMs =
-          deadlineRemainingMs === undefined
-            ? requestedAttemptMs
-            : Math.min(requestedAttemptMs ?? deadlineRemainingMs, deadlineRemainingMs)
+          deadline.deadlineAt === undefined
+            ? undefined
+            : deadline.deadlineAt - ctx.clock.now()
         const cancellation = buildCancellationRace(ctx.signal, attemptBudgetMs)
         cleanup = cancellation.cleanup
         const { raceParts, combinedSignal } = cancellation
@@ -1713,6 +1893,11 @@ export function createClient(config: ClientConfig): Client {
         }
         queueDelayMs = ctx.clock.now() - acquireStartMs
 
+        // An abort that arrived before dispatch (a signal already aborted, or
+        // one that fired between attempts) must not reach the provider: a
+        // limiter that resolves at once would otherwise win the race above.
+        if (ctx.signal?.aborted === true) throw abortedError(ctx.signal)
+
         ctx.logger.debug(
           { callId: ctx.callId, attemptNumber, queueDelayMs },
           'llm.call.attempt.dispatch',
@@ -1723,9 +1908,7 @@ export function createClient(config: ClientConfig): Client {
         const adapterReq: ResolvedRequest = {
           ...effectiveReq,
           ...(combinedSignal !== undefined ? { signal: combinedSignal } : {}),
-          ...(deadlineRemainingMs !== undefined && attemptBudgetMs !== undefined
-            ? { attemptTimeoutMs: attemptBudgetMs }
-            : {}),
+          ...(attemptBudgetMs !== undefined ? { attemptTimeoutMs: attemptBudgetMs } : {}),
         }
 
         const adapterCtx: AdapterCtx = {
@@ -1862,7 +2045,14 @@ export function createClient(config: ClientConfig): Client {
         )
 
         // Step 11: Sink — fail-open.
-        await recordToSink(sink, record, ctx.logger, ctx.callId, sinkTimeoutMs)
+        await recordToSink(
+          sink,
+          record,
+          ctx.logger,
+          ctx.callId,
+          sinkTimeoutMs,
+          sinkInterrupts,
+        )
 
         // Step 12: Return LlmResult.
         const result: LlmResult = {
@@ -1923,17 +2113,7 @@ export function createClient(config: ClientConfig): Client {
         // Classify error (LlmError passes through unchanged). A cooperative
         // adapter that throws the signal's own abort reason (a DOMException, a
         // host cancellation error) is an abort, with that reason kept as cause.
-        const err =
-          !(rawErr instanceof LlmError) &&
-          rawErr !== undefined &&
-          ctx.signal?.aborted === true &&
-          rawErr === ctx.signal.reason
-            ? new LlmError('Request aborted by caller', {
-                kind: 'aborted',
-                retryable: false,
-                cause: rawErr,
-              })
-            : classifyError(rawErr)
+        const err = classifyThrown(rawErr, ctx.signal)
 
         // Some providers return a billed HTTP 200 with no usable output. Keep
         // that attempt's usage and snapshot cost even though it is retryable.
@@ -1994,7 +2174,14 @@ export function createClient(config: ClientConfig): Client {
         )
 
         // Sink error record — fail-open.
-        await recordToSink(sink, errorRecord, ctx.logger, ctx.callId, sinkTimeoutMs)
+        await recordToSink(
+          sink,
+          errorRecord,
+          ctx.logger,
+          ctx.callId,
+          sinkTimeoutMs,
+          sinkInterrupts,
+        )
 
         // Enrich the error with call context (idempotent — does not overwrite
         // if already set, e.g. by an outer middleware).
@@ -2010,25 +2197,25 @@ export function createClient(config: ClientConfig): Client {
     // logical deadline has passed (a middleware sat on the time, or the call
     // already timed out and this is an orphaned continuation), and counts the
     // attempt as in flight for the whole of `runAttemptBody`, sink write
-    // included, because that is when the attempt owns the deadline.
+    // included, because that is when the attempt owns the deadline. When it
+    // ends, the deadline learns whether it produced a result, which decides
+    // whether a deadline that passed meanwhile fails the call or leaves the
+    // billed result standing.
     async function runAttempt(
       incoming: ResolvedRequest,
       ctx: EngineCtx,
     ): Promise<LlmResult> {
-      if (deadline.expired()) {
-        throw new LlmError(
-          `Request timed out after ${String(resolvedConfig.timeoutMs)}ms`,
-          {
-            kind: 'timeout',
-            retryable: true,
-          },
-        )
-      }
-      attemptsInFlight++
+      if (deadline.expired()) throw deadline.error()
+      deadline.attemptStarted()
+      let result: LlmResult | undefined
       try {
-        return await runAttemptBody(incoming, ctx)
+        result = await runAttemptBody(incoming, ctx)
+        return result
+      } catch (e) {
+        if (e instanceof LlmError) lastAttemptError = e
+        throw e
       } finally {
-        attemptsInFlight--
+        deadline.attemptEnded(result)
       }
     }
 
@@ -2102,6 +2289,11 @@ export function createClient(config: ClientConfig): Client {
     // telemetry.onSuccess / onError and the call-level logger events fire
     // ONCE here, after the chain (including any retry middleware) settles.
     try {
+      // A signal that is already aborted never starts the call. The refusal
+      // takes the same path as any other pre-attempt failure (one synthetic
+      // row, `onError`, `llm.call.error`).
+      if (callerSignal?.aborted === true) throw abortedError(callerSignal)
+
       // D4 (generate() path only) / D3: input-contract enforcement. Runs
       // immediately after callId allocation, BEFORE the middleware chain is
       // entered — before `@gullabs/quota` (never consumes budget on a
@@ -2167,7 +2359,7 @@ export function createClient(config: ClientConfig): Client {
       )
       return result
     } catch (rawErr) {
-      const err = classifyError(rawErr)
+      const err = classifyThrown(rawErr, deadline.signal)
       // An error with an attempt id came out of `runAttempt`, which already
       // wrote its row. Anything else was thrown by a middleware or the
       // prologue (input-contract refusal, boundary refusal, quota deferral,
@@ -2216,7 +2408,14 @@ export function createClient(config: ClientConfig): Client {
           authKeyIdOf(callAuth),
           request.tools?.map((t) => t.name),
         )
-        await recordToSink(sink, syntheticRecord, safeLogger, callId, sinkTimeoutMs)
+        await recordToSink(
+          sink,
+          syntheticRecord,
+          safeLogger,
+          callId,
+          sinkTimeoutMs,
+          sinkInterrupts,
+        )
       }
 
       try {
@@ -2578,22 +2777,8 @@ export function createClient(config: ClientConfig): Client {
       const runtimeOpts = opts as CountTokensOptions | undefined
       const callAuth = requireAuth(runtimeOpts?.auth)
       const countTimeoutMs = runtimeOpts?.timeoutMs
-      if (
-        countTimeoutMs !== undefined &&
-        (typeof countTimeoutMs !== 'number' ||
-          !Number.isFinite(countTimeoutMs) ||
-          countTimeoutMs <= 0)
-      ) {
-        throw new LlmError(
-          `countTokens: timeoutMs must be a finite number greater than 0, got ${String(countTimeoutMs)}.`,
-          {
-            kind: 'bad_request',
-            retryable: false,
-            issues: [
-              { path: 'timeoutMs', message: 'must be a finite number greater than 0.' },
-            ],
-          },
-        )
+      if (countTimeoutMs !== undefined) {
+        assertTimerMs(countTimeoutMs, 'countTokens: timeoutMs', 'timeoutMs')
       }
 
       const descriptor = checkDescriptor(
@@ -2625,6 +2810,23 @@ export function createClient(config: ClientConfig): Client {
         { callId, provider: request.provider, model: request.model },
         'llm.count_tokens.start',
       )
+
+      // A signal that is already aborted never reaches the adapter.
+      if (runtimeOpts?.signal?.aborted === true) {
+        const err = abortedError(runtimeOpts.signal)
+        attachCallContext(err, { callId })
+        safeLogger.error(
+          {
+            callId,
+            provider: request.provider,
+            model: request.model,
+            errorKind: err.kind,
+            latencyMs: clock.now() - startMs,
+          },
+          'llm.count_tokens.error',
+        )
+        throw err
+      }
 
       // Same cancellation race as a generation attempt: caller abort and
       // `timeoutMs` end the call even when the adapter ignores its signal.
@@ -2660,7 +2862,7 @@ export function createClient(config: ClientConfig): Client {
         return result
       } catch (rawErr) {
         cancellation.cleanup()
-        const err = classifyError(rawErr)
+        const err = classifyThrown(rawErr, runtimeOpts?.signal)
         attachCallContext(err, { callId })
         const latencyMs = clock.now() - startMs
         safeLogger.error(

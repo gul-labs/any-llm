@@ -95,11 +95,12 @@ core doc comment points back here for the quota-specific tradeoffs and limitatio
   on, not per-minute ones: an `rpm` deferral waits at most 60 s, so it stays retryable at the default.
   `maxDeferMs` must be a finite number >= 0 (`bad_request` otherwise); `0` makes every deferral
   non-retryable. Every deferral that stays retryable consumes one of the retry middleware's
-  `maxAttempts`. The retry sleeps exactly `retryAfterMs` when that is at most its `maxDelayMs`
-  (default 30 s, `maxAttempts` 3) and the remaining `timeoutMs`; a deferral longer than either ends
-  the retry with the deferral error, `retryAfterMs` intact, rather than waking early and being
-  deferred again. Raise `maxDelayMs` or `maxAttempts` when you want a call to wait out a per-minute
-  window.
+  `maxAttempts`. The retry sleeps the deferral (plus up to 1 s of jitter) when it is at most its
+  `maxDelayMs` (default 60 s, the same as this default, `maxAttempts` 3) and leaves a usable window
+  before `timeoutMs`; a deferral beyond either ends the retry with the deferral error,
+  `retryAfterMs` intact, rather than waking early and being deferred again. Keep the retry
+  `maxDelayMs` at or above `maxDeferMs` when you want every per-minute window waited out, and raise
+  `maxAttempts` when several callers share a limit.
 - **Limits are looked up by the canonical model id.** The middleware resolves a declared alias to
   its model before it asks the policy, so `quotaPolicyForGemini({ models })` must be keyed by the
   canonical id. A table keyed by an alias would never match, and the model would silently be

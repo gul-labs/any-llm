@@ -2417,66 +2417,99 @@ was a non-retryable `unknown`.
 
 **Decision (core):**
 
-1. **A valid provider delay is honoured, never undercut.** `computeBackoffMs` returns
-   `retryAfterMs` unchanged. When the failed attempt carries one that is longer than `maxDelayMs`, or
-   not shorter than the remaining deadline, `retryMiddleware` stops and rethrows that attempt's own
-   error with `retryAfterMs` intact, so an orchestrator can schedule the work. This holds whatever a
-   custom `shouldRetry` says. There is no clamp option: a retry before the provider's delay is refused
-   again and billed again. `maxDelayMs` now caps only the computed backoff.
-2. **Backoff longer than the budget rethrows the attempt's own error at once.** With `timeoutMs`
-   set, a backoff that is not shorter than the remaining budget is not slept; the error of the attempt
-   that just failed is rethrown, instead of a synthetic one. The one synthetic deadline error left
-   (budget already spent before the next attempt) carries the last error as `cause`. `timeout` has one
-   retryability rule everywhere: it is retryable (the engine's own timer, a 408, the synthetic one);
-   the retry middleware stops because the budget is spent, not because a retry could not help.
+1. **A valid provider delay is honoured, never undercut.** `computeBackoffMs` treats the provider's
+   `retryAfterMs` (positive and finite; `NaN`, zero and negative values are not delays) as a floor and
+   adds jitter on top (at most 10 % of it, at most 1 s), so workers limited together do not retry in
+   the same millisecond. When the failed attempt carries a delay longer than `maxDelayMs`, or one that
+   leaves the next attempt no usable window before the deadline, `retryMiddleware` stops and rethrows
+   that attempt's own error with `retryAfterMs` intact, so an orchestrator can schedule the work. This
+   holds whatever a custom `shouldRetry` says. There is no clamp option: a retry before the provider's
+   delay is refused again and billed again. `maxDelayMs` caps only the computed backoff; its default is
+   60 s, equal to `@gullabs/quota`'s `maxDeferMs`, so a per-minute quota deferral is slept and retried.
+   `maxAttempts` must be a positive integer and `baseDelayMs` / `maxDelayMs` finite numbers from 0 to
+   2^31 - 1 (`bad_request` at construction).
+2. **The retry shares the engine's budget and rethrows the attempt's own error.** The engine puts the
+   end of the call's budget on `EngineCtx.deadlineAt` (on the client's `Clock`); retry measures against
+   it, never against the time it was entered, so middleware time before it counts. It does not sleep
+   into, and does not start an attempt in, a window shorter than 250 ms (a request that short cannot
+   complete and only adds a billed row): it rethrows the error of the attempt that just failed, the
+   same object with `cause` and `retryAfterMs` intact, never a synthetic one. The engine's own deadline
+   errors (the gate, a refused attempt) carry the last attempt's error as `cause`, and surface that
+   error itself when it is a `timeout` or carries a provider delay. `timeout` is retryable wherever
+   Core produces it (the engine's timer, a 408, the deadline); an adapter may mark a specific
+   transport timeout non-retryable with `reason: 'transport_timeout'` (xAI does).
 3. **The logical-call deadline starts with the call.** `runPipeline` arms `timeoutMs` before the
    middleware chain, so middleware time counts against it, and merges it into `EngineCtx.signal`.
-   An attempt's window is what the deadline has left. While no attempt is in flight the deadline
-   rejects the call with `timeout` (`timeout` wins over any abort error a cooperative middleware
-   throws in reaction), and an orphaned continuation of a middleware that wakes later is refused
-   before it can dispatch or write a row. While an attempt is in flight, including its sink write,
-   the attempt enforces the deadline itself and records the failure as its own row; firing a second,
-   attempt-less error then would add a duplicate ledger row and replace the attempt's real error. The
-   consequence is that a billed result whose sink write straddles the deadline is returned, not
-   turned into a timeout. Caller abort is still enforced by each attempt, as before; a middleware
-   that ignores the signal is not interrupted by abort, only by the deadline.
-4. **The sink write is bounded by `sinkTimeoutMs` (default 5 s).** On expiry the engine logs
-   `llm.call.sink.timeout` at `error` (`callId`, `attemptId`, `attemptNumber`, `provider`, `model`,
-   `timeoutMs`), abandons the write (a late rejection is swallowed) and carries on. This extends
-   ADR-002's fail-open rule to a sink that does not fail but does not answer. The value must be a
-   finite number greater than 0 (`bad_request` at construction otherwise).
+   An attempt's window is what the deadline has left, measured on the injected `Clock` (the timers
+   that enforce it are monotonic `setTimeout`s). While no attempt is in flight the deadline rejects
+   the call with `timeout` (`timeout` wins over any abort error a cooperative middleware throws in
+   reaction), and an orphaned continuation of a middleware that wakes later is refused before it can
+   dispatch or write a row. While an attempt is in flight, including its sink write, the attempt
+   enforces the deadline itself and records the failure as its own row; the deadline waits and, one
+   macrotask after the attempt ends, ends the call if it is still pending, so an outer middleware that
+   hangs after a failed attempt cannot hold `generate()`. If the attempt produced a result, that
+   billed result is returned, not turned into a timeout, including when work after `next()` runs past
+   the deadline or hangs (only that work's changes to the result are lost). Caller abort is still
+   enforced by each attempt, as before; a middleware that ignores the signal is not interrupted by
+   abort, only by the deadline. A signal that is already aborted never starts a call or dispatches an
+   attempt (the call fails with `aborted` and one refusal row; `countTokens` calls no adapter).
+   `config.timeoutMs` must be a finite number greater than 0 and at most 2^31 - 1 (`bad_request`
+   before any row), as must `sinkTimeoutMs` and `countTokens`' `timeoutMs`: a longer timer fires after
+   1 ms.
+4. **The sink write is bounded by `sinkTimeoutMs` (default 5 s) and by abort and the deadline.** On
+   expiry the engine logs `llm.call.sink.timeout` at `error` (`callId`, `attemptId`, `attemptNumber`,
+   `provider`, `model`, `timeoutMs`), abandons the write (a late rejection is swallowed) and carries
+   on. The wait also ends 100 ms after the caller aborts or the deadline timer fires
+   (`llm.call.sink.interrupted`, same fields plus `graceMs`); the write is always started, a healthy
+   sink still has the grace to land its row, and a hung one no longer holds an abort or the deadline
+   for `sinkTimeoutMs` per row. This extends ADR-002's fail-open rule to a sink that does not fail but
+   does not answer.
 5. **A late `acquire` is released.** When a timeout or abort wins the race against
    `rateLimiter.acquire`, the engine calls the `Release` that `acquire` resolves with later. `acquire`
    must still honour the signal; this only stops a limiter that cannot cancel from leaking a slot.
 6. **`classifyError` weighs structured evidence first.** Order: `LlmError`, `AbortError`, an HTTP
-   status (an integer 100-599 on the error or its `response` / `error` members), `TimeoutError` by
+   status (an integer 100-599, or a three-digit numeric string, as `status`, `statusCode`, `code` or
+   under `response` / `error`, on the error or any error on its `cause` chain), `TimeoutError` by
    name, a transport failure, then the message heuristic last. `isTransportError` is exported from
-   core and is the one matcher (`code` of `ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`, `EAI_AGAIN`,
-   `EPIPE` or `UND_ERR_*`, or the messages `fetch failed`, `connection error`, `socket hang up`,
-   searched along the bounded, cycle-safe `cause` chain); adapters call it rather than keep copies. A
+   core and is the one matcher, with `causeChain` as the shared bounded, cycle-safe walk: a `code`
+   of `ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`, `EAI_AGAIN`, `EPIPE`, `ENOTFOUND`, `ENETUNREACH`,
+   `EHOSTUNREACH` or an undici connection code (`UND_ERR_CONNECT_TIMEOUT`, `_HEADERS_TIMEOUT`,
+   `_BODY_TIMEOUT`, `_SOCKET`, `_RES_CONTENT_LENGTH_MISMATCH`; undici's programming errors are not
+   transport failures), or an error whose whole message is `fetch failed`, `connection error` or
+   `socket hang up` (or a Node syscall failure such as `connect ECONNREFUSED 127.0.0.1:443`). Adapters
+   call `classifyError` and overlay what a structured body proves; none keeps its own matcher. A
    transport failure is a retryable `server` error, except undici's own deadlines
    (`UND_ERR_*_TIMEOUT`), which stay retryable `timeout`. `classifyHttpStatus` maps 404 and 413 to
-   `bad_request` (not retryable) and leaves 409 `unknown`. A provider overlay can still reclassify
-   from a structured body (ADR-028).
+   `bad_request` (not retryable), leaves 409 `unknown`, and carries the provider's delay on every
+   retryable status (408, 429, 5xx). A provider overlay can still reclassify from a structured body
+   (ADR-028).
 7. **`parseRetryAfter(headers, now)`** reads `retry-after-ms`, `retry-after` (delta-seconds with
-   decimals, an HTTP-date, or a duration such as `6m0s`) and the `x-ratelimit-reset`,
-   `-requests` and `-tokens` family (a number above 1e9 is a Unix timestamp in seconds, the longest
-   reset wins). A value that is not a positive finite delay is ignored, results round up, and the cap
-   is 24 hours. It is exported, and `classifyError` uses it for `retryAfterMs`.
+   decimals, an HTTP-date, or a duration such as `6m0s`) and the reset headers (`x-ratelimit-reset`,
+   `-requests`, `-tokens`, `ratelimit-reset`; above 1e9 a Unix timestamp in seconds, above 1e12 in
+   milliseconds). Several values of `retry-after` (an array, or comma-joined duplicates) give the
+   longest. The reset headers say when each limit resets, not which one refused the call (OpenAI
+   sends `x-ratelimit-reset-tokens: 1s` beside `x-ratelimit-reset-requests: 6m0s`), so the delay is
+   the longest reset among windows whose `-remaining` is 0 and otherwise the shortest reset of all: the
+   earliest moment a retry can succeed, never a delay that stops the retry because an unrelated
+   window is long. A value that is not a positive delay is ignored, results round up, and the cap is
+   24 hours. It is exported, and `classifyError` uses it for `retryAfterMs` (from `headers` or
+   `response.headers`).
 8. **`countTokens` uses the cancellation race and takes `timeoutMs`.** `CountTokensOptions` adds an
-   optional `timeoutMs` (finite, greater than 0, `bad_request` otherwise; no default). Abort and the
-   timeout end the call even when the adapter ignores its signal. `countTokens` has no limiter and
-   writes no row.
+   optional `timeoutMs` (finite, greater than 0 and at most 2^31 - 1, `bad_request` otherwise; no
+   default). Abort and the timeout end the call even when the adapter ignores its signal.
+   `countTokens` has no limiter and writes no row.
 9. **`generate`, `runStructured` and `countTokens` reject only with `LlmError`.** Anything else
    thrown on the way (a host registry, a middleware, a bug) is passed through `classifyError` and the
    original is kept as `cause`. A caller abort keeps `AbortSignal.reason` as `cause`, including when a
-   cooperative adapter throws that reason itself.
+   cooperative adapter or middleware throws that reason itself.
 
 **Reconciled with earlier work:** the middleware boundary guard (ADR-037) is unchanged; the quota
-`maxDeferMs` cap stays, and a retryable deferral longer than the retry middleware's `maxDelayMs` now
-ends the retry with the deferral error instead of waking early; xAI's non-retryable
+`maxDeferMs` cap stays, the retry middleware's `maxDelayMs` default (60 s) equals it so a per-minute
+deferral is slept and retried, and a deferral longer than a smaller `maxDelayMs` ends the retry with
+the deferral error instead of waking early; xAI's non-retryable
 `transport_timeout` classification runs before `classifyError` and is unchanged; the
-`llm.call.sink.failed` event is unchanged and `llm.call.sink.timeout` is its sibling.
+`llm.call.sink.failed` event is unchanged and `llm.call.sink.timeout` and
+`llm.call.sink.interrupted` are its siblings.
 
 **Decision (adapters):** structured errors read from the parsed body only, never the message text
 (ADR-028).
@@ -2591,6 +2624,9 @@ stale-cache message as the one documented exception.
 - A call with `timeoutMs` and a backoff that cannot fit now fails with the provider's error (for
   example `server`, `retryable: true`) rather than a `timeout`. Hosts matching on the synthetic
   message must match on `kind`.
+- `retryMiddleware` no longer takes a `now` option (it reads `EngineCtx.clock` and `deadlineAt`), and
+  rejects invalid `maxAttempts`, `baseDelayMs` and `maxDelayMs` at construction. Its default
+  `maxDelayMs` is 60 s.
 - `EngineCtx.signal` can now abort with an `LlmError('timeout')` reason; middleware that waits should
   honour it.
 - A host that passed `opts.timeoutMs` to nothing before can pass it to `countTokens`.

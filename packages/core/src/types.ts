@@ -275,21 +275,30 @@ export interface GenConfig {
    */
   serviceTier?: string
   /**
-   * Overall wall-clock ceiling for the logical call.
+   * Overall time ceiling for the logical call, in milliseconds: a finite
+   * number greater than 0 and at most 2147483647 (`bad_request` otherwise; a
+   * longer timer would fire after 1 ms).
    *
-   * The clock starts when the call starts, so middleware time (a quota
-   * deferral, a store round-trip) counts against it. It is a **true ceiling
-   * across retry attempts** when the retry middleware is installed: the sum of
-   * all attempt windows plus back-off sleep never exceeds this value.  The
-   * middleware enforces this by:
-   * - Refusing to start a new attempt once the budget is exhausted.
-   * - Passing the shrinking remaining budget as the per-attempt timeout.
-   * - Rethrowing the failed attempt's own error, without sleeping, when the
-   *   back-off is not shorter than the remaining budget.
+   * The clock starts when the call starts and is measured on the client's
+   * `clock`, so middleware time (a quota deferral, a store round-trip) counts
+   * against it. It is a **true ceiling across retry attempts** when the retry
+   * middleware is installed: the sum of all attempt windows plus back-off sleep
+   * never exceeds this value. The engine enforces it by:
+   * - Giving each attempt only the time that is left (`attemptTimeoutMs`).
+   * - Refusing to start an attempt once the budget is exhausted.
+   * - Ending a call whose middleware (not an attempt) is taking the time, or
+   *   that is still running after the last attempt failed at the deadline,
+   *   with a `timeout` that carries the last attempt's error as `cause`; when
+   *   that error is itself a `timeout` or carries a provider `retryAfterMs`, it
+   *   is the error surfaced.
+   * - Returning a result an attempt already produced (and billed) rather than
+   *   turning it into a timeout when work after `next()` runs past it.
    *
-   * With no retry middleware it is simply the single-attempt timeout —
-   * the engine arms an `AbortSignal` at exactly the time that remains for the
-   * adapter.
+   * The retry middleware shares the same budget (`EngineCtx.deadlineAt`) and
+   * rethrows the failed attempt's own error, without sleeping, when the
+   * back-off would leave the next attempt less than 250 ms.
+   *
+   * With no retry middleware it is simply the single-attempt timeout.
    */
   timeoutMs?: number
   /** Schema-admitted provider extension lanes. Not a raw SDK passthrough. */

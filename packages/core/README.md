@@ -292,17 +292,18 @@ const client = createClient({
 
 Four levels: `debug`, `info`, `warn`, `error`. Engine events:
 
-| Event                    | Level                                                                   |
-| ------------------------ | ----------------------------------------------------------------------- |
-| `llm.call.start`         | `info`                                                                  |
-| `llm.call.attempt.start` | `debug`                                                                 |
-| `llm.call.retry`         | `debug` — includes `attemptNumber`, `delayMs`, `errorKind`, `retryable` |
-| `llm.call.success`       | `info`                                                                  |
-| `llm.call.error`         | `error`                                                                 |
-| `llm.call.cost.failed`   | `warn`                                                                  |
-| `llm.call.sink.success`  | `debug`                                                                 |
-| `llm.call.sink.failed`   | `error` (redacted)                                                      |
-| `llm.call.sink.timeout`  | `error` — `sinkTimeoutMs` passed; the row may be lost                   |
+| Event                       | Level                                                                     |
+| --------------------------- | ------------------------------------------------------------------------- |
+| `llm.call.start`            | `info`                                                                    |
+| `llm.call.attempt.start`    | `debug`                                                                   |
+| `llm.call.retry`            | `debug` — includes `attemptNumber`, `delayMs`, `errorKind`, `retryable`   |
+| `llm.call.success`          | `info`                                                                    |
+| `llm.call.error`            | `error`                                                                   |
+| `llm.call.cost.failed`      | `warn`                                                                    |
+| `llm.call.sink.success`     | `debug`                                                                   |
+| `llm.call.sink.failed`      | `error` (redacted)                                                        |
+| `llm.call.sink.timeout`     | `error` — `sinkTimeoutMs` passed; the row may be lost                     |
+| `llm.call.sink.interrupted` | `error` — 100 ms after an abort or the call deadline; the row may be lost |
 
 Host logger exceptions are swallowed by `makeSafeLogger` — fail-open; a bad logger never breaks a
 call.

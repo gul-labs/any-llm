@@ -91,7 +91,7 @@ describe('R4.13 credits exhausted / spending limit (doc-derived body)', () => {
       middleware: [
         retryMiddleware(
           { maxAttempts: 3, baseDelayMs: 0 },
-          { sleep: async () => {}, random: () => 0, now: () => 0 },
+          { sleep: async () => {}, random: () => 0 },
         ),
       ],
     })
@@ -216,7 +216,7 @@ describe('R4.14 a 200 that reports failure (doc-derived shapes)', () => {
       middleware: [
         retryMiddleware(
           { maxAttempts: 2, baseDelayMs: 0 },
-          { sleep: async () => {}, random: () => 0, now: () => 0 },
+          { sleep: async () => {}, random: () => 0 },
         ),
       ],
     })

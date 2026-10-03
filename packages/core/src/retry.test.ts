@@ -29,8 +29,6 @@ const NOOP_LOGGER = {
   debug() {},
 }
 
-const NOOP_CLOCK = { now: () => 0 }
-
 const GOOD_USAGE: Usage = {
   inputTokens: 10,
   outputTokens: 5,
@@ -50,21 +48,29 @@ const DUMMY_RESULT: LlmResult = {
   continuation: 'history',
 }
 
-function makeCtx(signal?: AbortSignal): EngineCtx {
+/**
+ * A context as the engine builds it: `deadlineAt` is when the logical call ends
+ * on `now`'s scale (the engine sets it from `config.timeoutMs` at call start).
+ */
+function makeCtx(
+  signal?: AbortSignal,
+  deadline?: { now: () => number; deadlineAt: number },
+): EngineCtx {
   return {
     callId: 'c1',
-    clock: NOOP_CLOCK,
+    clock: { now: deadline?.now ?? (() => 0) },
     logger: NOOP_LOGGER,
     ...(signal !== undefined ? { signal } : {}),
+    ...(deadline !== undefined ? { deadlineAt: deadline.deadlineAt } : {}),
   }
 }
 
-function makeReq(timeoutMs?: number): ResolvedRequest {
+function makeReq(): ResolvedRequest {
   return {
     provider: 'google',
     model: 'gemini-2.5-pro',
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
-    config: timeoutMs !== undefined ? { timeoutMs } : {},
+    config: {},
   }
 }
 
@@ -117,23 +123,33 @@ describe('computeBackoffMs', () => {
     expect(d1).toBe(500)
   })
 
-  it('retryAfterMs is honored and returned as-is when below maxDelayMs', () => {
-    const d = computeBackoffMs(1, policy, 2_000, () => 0.5)
-    expect(d).toBe(2_000) // retryAfterMs wins over exponential
+  it('retryAfterMs is a floor: the delay is the provider delay with random=0', () => {
+    expect(computeBackoffMs(1, policy, 2_000, () => 0)).toBe(2_000)
   })
 
   it('retryAfterMs is never clamped: the caller decides whether to wait that long', () => {
-    const d = computeBackoffMs(1, policy, 99_999, () => 0.5)
-    expect(d).toBe(99_999)
+    expect(computeBackoffMs(1, policy, 99_999, () => 0)).toBe(99_999)
   })
 
-  it('rand is NOT applied when retryAfterMs is present', () => {
-    // With retryAfterMs: rand() should have no effect
-    const d0 = computeBackoffMs(1, policy, 1_000, () => 0)
-    const d1 = computeBackoffMs(1, policy, 1_000, () => 1)
-    expect(d0).toBe(1_000)
-    expect(d1).toBe(1_000)
+  it('adds jitter on top of a provider delay: at most 10 % of it, at most 1 s', () => {
+    // 10 % of 2 s = 200 ms
+    expect(computeBackoffMs(1, policy, 2_000, () => 1)).toBe(2_200)
+    expect(computeBackoffMs(1, policy, 2_000, () => 0.5)).toBe(2_100)
+    // 10 % of 60 s would be 6 s; capped at 1 s
+    expect(computeBackoffMs(1, policy, 60_000, () => 1)).toBe(61_000)
+    // The jitter never lowers the provider delay.
+    for (const r of [0, 0.25, 0.5, 0.999]) {
+      expect(computeBackoffMs(1, policy, 1_000, () => r)).toBeGreaterThanOrEqual(1_000)
+    }
   })
+
+  it.each([NaN, 0, -5, -Infinity, Infinity])(
+    'a retryAfterMs of %s is not a delay: exponential back-off applies',
+    (bad) => {
+      expect(computeBackoffMs(2, policy, bad, () => 1)).toBe(1_000)
+      expect(computeBackoffMs(1, policy, bad, () => 0)).toBe(0)
+    },
+  )
 
   it('attempt=1 produces baseDelayMs as the ceiling (with rand=1)', () => {
     const d = computeBackoffMs(
@@ -237,7 +253,8 @@ describe('retryMiddleware', () => {
     await mw.intercept(makeReq(), makeCtx(), handler)
 
     expect(sleepCalls).toHaveLength(1)
-    expect(sleepCalls[0]).toBe(5_000) // retryAfterMs honored, rand not applied
+    // The provider's 5 s is the floor; jitter adds 0.5 * min(1000, 500).
+    expect(sleepCalls[0]).toBe(5_250)
   })
 
   it('a provider delay longer than maxDelayMs stops the retry and rethrows the error with retryAfterMs intact', async () => {
@@ -279,6 +296,7 @@ describe('retryMiddleware', () => {
         sleep: async (ms) => {
           sleepCalls.push(ms)
         },
+        random: () => 0,
       },
     )
 
@@ -287,7 +305,7 @@ describe('retryMiddleware', () => {
     expect(sleepCalls).toEqual([10_000])
   })
 
-  it('a provider delay longer than the remaining deadline rethrows the error with retryAfterMs intact', async () => {
+  it('a provider delay that leaves no usable window before the deadline rethrows the error with retryAfterMs intact', async () => {
     let virtualTime = 0
     const sleepCalls: number[] = []
     const original = rateLimited(8_000)
@@ -302,12 +320,15 @@ describe('retryMiddleware', () => {
           sleepCalls.push(ms)
           virtualTime += ms
         },
-        now: () => virtualTime,
       },
     )
 
     const err = await mw
-      .intercept(makeReq(5_000), makeCtx(), handler)
+      .intercept(
+        makeReq(),
+        makeCtx(undefined, { now: () => virtualTime, deadlineAt: 5_000 }),
+        handler,
+      )
       .catch((e: unknown) => e)
 
     expect(err).toBe(original)
@@ -347,11 +368,19 @@ describe('retryMiddleware', () => {
                     virtualTime += ms
                   },
                   random: () => r,
-                  now: () => virtualTime,
                 },
               )
               const err = await mw
-                .intercept(makeReq(timeoutMs), makeCtx(), handler)
+                .intercept(
+                  makeReq(),
+                  makeCtx(
+                    undefined,
+                    timeoutMs === undefined
+                      ? undefined
+                      : { now: () => virtualTime, deadlineAt: timeoutMs },
+                  ),
+                  handler,
+                )
                 .catch((e: unknown) => e as LlmError)
 
               for (const slept of sleeps) {
@@ -365,6 +394,49 @@ describe('retryMiddleware', () => {
         }
       }
     }
+  })
+
+  it.each([NaN, 0, -5])(
+    'a retryAfterMs of %s on the error is not slept as an immediate retry: exponential back-off applies',
+    async (bad) => {
+      const sleepCalls: number[] = []
+      let calls = 0
+      const handler: Handler = async () => {
+        calls++
+        if (calls === 1) throw rateLimited(bad)
+        return DUMMY_RESULT
+      }
+      const mw = retryMiddleware(
+        { maxAttempts: 2, baseDelayMs: 500 },
+        {
+          sleep: async (ms) => {
+            sleepCalls.push(ms)
+          },
+          random: () => 1,
+        },
+      )
+
+      await mw.intercept(makeReq(), makeCtx(), handler)
+
+      expect(sleepCalls).toEqual([500])
+    },
+  )
+
+  it('a NaN provider delay is not a usable delay and does not stop the retry', async () => {
+    const original = rateLimited(Number.NaN)
+    let calls = 0
+    const mw = retryMiddleware(
+      { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 10 },
+      { sleep: NO_SLEEP, random: () => 0 },
+    )
+    await mw
+      .intercept(makeReq(), makeCtx(), async () => {
+        calls++
+        throw original
+      })
+      .catch(() => {})
+    // NaN > maxDelayMs is false, but NaN must not be mistaken for a usable delay.
+    expect(calls).toBe(3)
   })
 
   it('custom shouldRetry: stops retrying when predicate returns false', async () => {
@@ -713,5 +785,80 @@ describe('engine + middleware — integration', () => {
     expect(starts).toHaveLength(1) // ONE onStart per logical call
     expect(successes).toHaveLength(1) // ONE onSuccess after chain settles
     expect((successes[0]! as { span: unknown }).span).toBe('span')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Policy validation
+// ---------------------------------------------------------------------------
+
+describe('retryMiddleware policy validation', () => {
+  const MAX = 2_147_483_647
+
+  it.each([NaN, 0, -1, 1.5, Infinity, '3' as unknown as number])(
+    'maxAttempts %s is bad_request at construction',
+    (maxAttempts) => {
+      expect(() => retryMiddleware({ maxAttempts })).toThrow(
+        expect.objectContaining({
+          kind: 'bad_request',
+          retryable: false,
+          issues: [expect.objectContaining({ path: 'maxAttempts' })],
+        }),
+      )
+    },
+  )
+
+  it.each(['baseDelayMs', 'maxDelayMs'] as const)(
+    '%s must be a finite number from 0 to 2^31 - 1',
+    (key) => {
+      for (const bad of [NaN, -1, Infinity, MAX + 1]) {
+        expect(() => retryMiddleware({ [key]: bad })).toThrow(
+          expect.objectContaining({
+            kind: 'bad_request',
+            issues: [expect.objectContaining({ path: key })],
+          }),
+        )
+      }
+      expect(() => retryMiddleware({ [key]: 0 })).not.toThrow()
+      expect(() => retryMiddleware({ [key]: MAX })).not.toThrow()
+    },
+  )
+
+  it('maxAttempts 1 is valid and never retries', async () => {
+    let calls = 0
+    const mw = retryMiddleware({ maxAttempts: 1 }, { sleep: NO_SLEEP })
+    await mw
+      .intercept(makeReq(), makeCtx(), async () => {
+        calls++
+        throw rateLimited()
+      })
+      .catch(() => {})
+    expect(calls).toBe(1)
+  })
+
+  it('the default maxDelayMs is 60 s: a 60 s provider delay is slept, 60.001 s is not', async () => {
+    const run = async (retryAfterMs: number): Promise<number[]> => {
+      const sleeps: number[] = []
+      let calls = 0
+      const mw = retryMiddleware(
+        { maxAttempts: 2 },
+        {
+          sleep: async (ms) => {
+            sleeps.push(ms)
+          },
+          random: () => 0,
+        },
+      )
+      await mw
+        .intercept(makeReq(), makeCtx(), async () => {
+          calls++
+          if (calls === 1) throw rateLimited(retryAfterMs)
+          return DUMMY_RESULT
+        })
+        .catch(() => {})
+      return sleeps
+    }
+    expect(await run(60_000)).toEqual([60_000])
+    expect(await run(60_001)).toEqual([])
   })
 })

@@ -43,7 +43,8 @@ Seams are present; machinery is intentionally small.
   `thinkingTokens` is a SUBSET of `outputTokens`. Cost math must not double-count.
 - **Cost is frozen at write time:** integer micro-USD + `pricingVersion` on every record.
 - **Side effects fail-open; the call fails-closed.** A broken sink/telemetry/cost never fails
-  the LLM call, and a sink that hangs is abandoned after `sinkTimeoutMs` (default 5 s); a broken call
+  the LLM call, and a sink that hangs is abandoned after `sinkTimeoutMs` (default 5 s), or 100 ms after
+  an abort or the call deadline; a broken call
   throws a typed `LlmError`. `generate`, `runStructured` and `countTokens` reject only with
   `LlmError`; whatever else is thrown on the way is classified and kept as `cause`.
 - **No real network in tests.** Provider SDKs are mocked via structural fakes

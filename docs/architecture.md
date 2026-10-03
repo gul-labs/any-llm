@@ -212,12 +212,19 @@ attempt. Steps:
    attempt that starts late cannot run past `timeoutMs`.
 
    **The logical-call deadline.** `timeoutMs` is armed when the call starts (ADR-036), not when
-   an attempt does, so middleware time counts against it. `EngineCtx.signal` is the caller's
-   signal merged with that deadline. While no attempt is in flight (middleware is what is taking
-   the time) the deadline ends the call with `LlmError('timeout')` even if the middleware ignores
-   the signal, and a continuation of the middleware that wakes later never dispatches. While an
-   attempt is in flight the attempt enforces the deadline itself and records the failure as its
-   own row.
+   an attempt does, so middleware time counts against it; it is measured on the client's `Clock`
+   and enforced by real timers, and `EngineCtx.deadlineAt` carries its end to middleware.
+   `EngineCtx.signal` is the caller's signal merged with that deadline. While no attempt is in
+   flight (middleware is what is taking the time) the deadline ends the call with
+   `LlmError('timeout')` even if the middleware ignores the signal, and a continuation of the
+   middleware that wakes later never dispatches. While an attempt is in flight the attempt enforces
+   the deadline itself and records the failure as its own row; one macrotask after it ends, a call
+   that is still pending is ended (so a middleware that hangs after a failed attempt cannot hold
+   `generate()`). A result the attempt already produced is returned instead of a timeout, even if
+   the work after `next()` runs past the deadline or hangs. The deadline's own error carries the
+   last attempt's error as `cause`, and is that error when it is a `timeout` or carries a provider
+   `retryAfterMs`. A signal that is already aborted never dispatches. `timeoutMs`,
+   `sinkTimeoutMs` and `countTokens`' `timeoutMs` above 2^31 - 1 are `bad_request`.
 
 4. **Rate-limiter acquire.** `rateLimiter.acquire("${provider}:${model}", signal)` (once per
    attempt, so once per retry; `model` is the descriptor's canonical id, so aliases share a
@@ -254,7 +261,9 @@ attempt. Steps:
 10. **Sink write.** `sink.record(record)` is called inside a try/catch and raced against
     `ClientConfig.sinkTimeoutMs` (default 5 s). Failure logs `llm.call.sink.failed` and is
     swallowed (fail-open); a sink still pending at the timeout is abandoned and logged as
-    `llm.call.sink.timeout`, and the result or error goes on unchanged. A record is written on
+    `llm.call.sink.timeout`, and the result or error goes on unchanged. The wait also ends 100 ms
+    after a caller abort or the call deadline (`llm.call.sink.interrupted`), so a hung sink holds
+    neither. A record is written on
     both the success path and the error path (postmortem record with whatever usage was known).
 
 11. **Return `LlmResult`.** The result carries `usage`, `cost` (including derived `cost.usd`),
@@ -341,10 +350,12 @@ linked by `callId`.
 
 **Backoff.** Two modes:
 
-- `retryAfterMs` present on the error (from a 429): the sleep duration is exactly
-  `retryAfterMs`. It is never shortened: a delay longer than `maxDelayMs`, or longer than the
-  remaining `timeoutMs` budget, stops the retry and rethrows the attempt's own error with
-  `retryAfterMs` intact (ADR-036).
+- `retryAfterMs` present on the error (a positive finite number, from a 429, 503 or 408): the
+  sleep is that delay plus a small additive jitter (at most 10 %, at most 1 s). It is never
+  shortened: a delay longer than `maxDelayMs` (default 60 s, equal to the quota middleware's
+  `maxDeferMs`), or one that leaves less than 250 ms of the call's budget for the next attempt,
+  stops the retry and rethrows the attempt's own error with `retryAfterMs` intact (ADR-036). A
+  `NaN`, zero or negative `retryAfterMs` is not a delay.
 - No hint: exponential backoff with full jitter —
   `rand() * min(maxDelayMs, baseDelayMs * 2^(attempt-1))`.
 
@@ -359,12 +370,16 @@ because it prevents retry storms when many callers fail simultaneously.
 returning true for `aborted` is overridden. Exhausting `maxAttempts` rethrows the last error. So
 does a backoff that is not shorter than the remaining `timeoutMs` budget: the attempt's own error
 is rethrown at once instead of sleeping the budget away and replacing it with a synthetic
-`timeout`. The only synthetic deadline error is the pre-attempt "budget exhausted" one; it is a
-retryable `timeout` (every `timeout` is) and carries the last attempt's error as `cause`.
+`timeout`; so does a new attempt that would start with less than 250 ms left. The middleware
+measures against `EngineCtx.deadlineAt`, the engine's budget for the whole call, so middleware time
+before it counts; it keeps no clock of its own. There is no synthetic deadline error in retry.
+Invalid `maxAttempts` (not a positive integer) or `baseDelayMs` / `maxDelayMs` (not a finite number
+from 0 to 2^31 - 1) are `bad_request` at construction.
 
 **Per-attempt timeout.** Each call to `next()` (each attempt) builds its own cancellation race.
 `timeoutMs` is the overall budget, so the attempt's window is the budget that is left
-(`attemptTimeoutMs`), never a fresh one: backoff and middleware time are counted against it.
+(`attemptTimeoutMs`, set by the engine), never a fresh one: backoff and middleware time are
+counted against it.
 
 ---
 

@@ -2030,7 +2030,7 @@ describe('engine — reconcile loop (callId/attemptId/telemetry)', () => {
       middleware: [
         retryMiddleware(
           { maxAttempts: 2, baseDelayMs: 0 },
-          { sleep: async () => {}, random: () => 0, now: () => 0 },
+          { sleep: async () => {}, random: () => 0 },
         ),
       ],
     })
