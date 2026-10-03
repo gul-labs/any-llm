@@ -212,9 +212,22 @@ paths to other repos.
   dispatch and a reconciliation against the billed cost after it, across processes. Own design; needs a
   shared store port (the quota package's store is the nearest precedent).
 - **xAI search ceiling in flight.** `providerOptions.xai.searchBudget` reports an exceeded budget after
-  the call is billed. Stopping a call mid-flight needs streaming (the plan's later release) and an
-  abort once the counters cross the budget. Keep `maxTurns` and re-probe whether xAI enforces it at each
-  model refresh.
+  the call is billed, and ADR-040 keeps it that way: xAI calls now stream internally, so the search counters
+  are visible mid-call, but whether xAI stops its search loop and its billing when a stream is aborted
+  (probe P9b) could not be tested without console billing access. An abort that saves nothing only loses
+  the result, so nothing aborts. Run P9b first (abort a streamed search call, read the console for the
+  charge); only if the billing stops, add the abort, the `rate_limited` / `retryable: false` error with
+  partial text and estimated usage, and its `LlmErrorReason` member together. Keep `maxTurns` and re-probe
+  whether xAI enforces it at each model refresh.
+- **xAI tool-using calls past 300 s.** Streaming removed the need for the undici transport on long
+  reasoning calls (live, 17 to 28 minutes, 15 s worst gap between events). A streamed call that itself runs
+  server tools past 300 s was not tested (the longest, 99 s, had the same 15 s gap). Capture one, then tell
+  hosts with tool-using calls whether they can drop the transport.
+- **xAI streamed reasoning item.** In two live search runs the streamed final object, and the stream, carried
+  no `reasoning` item where the non-streamed call had one. The adapter reconciles what the stream announces
+  with the final object but cannot rebuild an item nobody announced. Re-probe with
+  `include: ['reasoning.encrypted_content']` and a stateless replay to learn whether the missing item
+  matters for the `'state'` continuation.
 - **Output limits for providers that document none.** Gemma 4 and xAI Grok 4.x publish no maximum
   output size, so `limits.maxOutputTokens` is `null` and the schemas apply no cap. Set the real figure
   when a provider documents one (a live probe of an oversized value would also pin it).

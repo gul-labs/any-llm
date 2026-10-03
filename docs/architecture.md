@@ -83,7 +83,7 @@ Concrete implementations live outside the engine, in separate packages or in hos
        ▼
   Provider plugins (composed via composeProviders)
     ├── @gullabs/google (googleProvider → geminiAdapter → @google/genai SDK)
-    ├── @gullabs/xai    (xaiProvider → xaiAdapter → openai SDK @ api.x.ai)
+    ├── @gullabs/xai    (xaiProvider → xaiAdapter → openai SDK @ api.x.ai, streamed internally)
     └── @gullabs/claude-cli / @gullabs/codex-cli (dev-only local CLI sessions)
 ```
 
@@ -701,6 +701,16 @@ The 5 000 ms buffer ensures the engine's `AbortSignal` fires before the SDK tran
 the error is classified as `LlmError('timeout')` rather than a raw SDK error.
 `FLEX_DEFAULT_TIMEOUT_MS`, `STANDARD_DEFAULT_TIMEOUT_MS`, and `TRANSPORT_TIMEOUT_BUFFER_MS` are
 exported constants from `@gullabs/google`.
+
+### xAI: Streaming Internally
+
+`@gullabs/xai`'s `run()` always sends `stream: true` and reads the server-sent events to the terminal
+event (ADR-040), so Node's 300 s body timer does not fire on a long reasoning call. This is internal:
+`LlmClient` has no `stream()` method. The client rebuilds the output items from the events and reconciles
+them with the final response object (which a live capture showed can omit the `reasoning` item), and applies
+the request deadline (`timeoutMs + 5 000 ms`, or one hour) to the whole stream, because the SDK `timeout`
+alone covers only the wait for headers. A stream cut before its terminal event is a retryable `server`
+error with no usage (an unpriced attempt). Search budgets stay observed after the call.
 
 ---
 

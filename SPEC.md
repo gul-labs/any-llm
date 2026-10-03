@@ -208,7 +208,6 @@ export type LlmErrorReason =
   | 'credits_exhausted'
   | 'spend_ceiling'
   | 'grounding_missing'
-  | 'search_budget_exceeded' // reserved: not emitted until streaming ships (ADR-036)
   | 'cache_not_found'
   | 'quota_store_unavailable' // a quota store failed or timed out; kind 'server', retryable false (ADR-041)
 export class LlmError extends Error {
@@ -562,11 +561,21 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
   long-context tier). Same contract as the Google adapter: strict per-model schema,
   reject-don't-map, GROSS usage, never persists/loops. Full details in
   `packages/xai/README.md`.
-- **Timeouts and transport (ADR-032).** Each call passes the SDK a `timeout` of
-  `timeoutMs + 5 000`, or one hour when `timeoutMs` is unset. That does not lift Node's 300 s
-  header and body timers; a call that can run longer needs `xaiAdapter({ transport })` with an
-  undici `fetch` and `Agent({ headersTimeout, bodyTimeout })`. A header, body or SDK-deadline
-  timeout is `kind: 'timeout'`, `retryable: false`, `reason: 'transport_timeout'`.
+- **Streaming, timeouts and transport (ADR-040, ADR-032).** `run()` always streams: the real client sends
+  `stream: true`, reads the SSE events to the terminal one and returns one response object; public
+  `stream()` stays on the ROADMAP. The final object's `output` is reconciled with the items rebuilt from
+  the events (final object wins where both carry a field, the stream fills what it lacks, each correction
+  is a warning; an unreconcilable disagreement is a retryable `server` error). A stream that ends without
+  its terminal event is a retryable `server` error with no usage (an unpriced attempt); `error` events and
+  `response.failed` classify through the `error.code` table. Each call has a whole-call deadline of
+  `timeoutMs + 5 000`, or one hour when `timeoutMs` is unset: the SDK `timeout` for the header wait and
+  the client's own timer for the rest of the stream (the SDK `timeout` alone does not bound a stream).
+  A header, body or deadline timeout is `kind: 'timeout'`, `retryable: false`,
+  `reason: 'transport_timeout'`. Streaming keeps Node's 300 s body timer from firing on long reasoning
+  calls (live: 17 to 28 minute runs, maximum 15 s between events); a tool-using call that itself runs past
+  300 s with no streamed event is untested and needs `xaiAdapter({ transport })` with an undici `fetch` and
+  `Agent({ headersTimeout, bodyTimeout })`. Search budgets are observed after the call, never enforced in
+  flight.
 - `providerOptions.xai` is an allowlist; unknown keys are `bad_request`:
 
   | key                 | wire                  | rule                                                                                                                                                                     |

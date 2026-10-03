@@ -1904,8 +1904,9 @@ item 2). After the response the adapter compares xAI's counters with it: `web_se
 `maxWebSearchCalls`, `x_posts_fetched` plus `x_users_fetched` against `maxXItems`. Over budget: a
 warning naming each exceeded line and `usage.details.search_budget_exceeded = 1`; the result is
 returned and priced as usual, because the call is already billed. A counter xAI did not report cannot be
-compared and is never counted as exceeded. It is a report, not a ceiling; the enforced in-flight ceiling
-(streaming, abort once the budget is crossed) is a later release, and `maxTurns` stays and is
+compared and is never counted as exceeded. It is a report, not a ceiling. ADR-040 streams the call but
+does not turn this into an in-flight ceiling: whether xAI stops billing an aborted stream was not
+testable, so the observed-after-the-call budget stays the only budget control. `maxTurns` stays and is
 re-probed at every model refresh.
 
 ---
@@ -1973,8 +1974,8 @@ the spend repeated.
    lift undici's 300 s header timer. Only a matching undici `fetch` with
    `new Agent({ headersTimeout, bodyTimeout })` in `fetchOptions.dispatcher` does. The README shows
    the setup. The library does not build the agent itself: it has no undici dependency and the
-   dispatcher must come from the same undici the host's `fetch` comes from. Hosts keep this transport
-   until xAI calls stream internally (R9), which removes the need.
+   dispatcher must come from the same undici the host's `fetch` comes from. ADR-040 (xAI calls stream
+   internally) removes the need for long reasoning calls and says exactly which calls still need it.
 3. **Reject, don't map.** `transport` combined with an injected `client` is `bad_request` (the client
    owns its transport). `transport.fetchOptions` may not carry `headers`, `signal`, `body` or `method`;
    those belong to the request and are `bad_request`.
@@ -2002,12 +2003,26 @@ long-term fix and is a separate decision.
 
 **Consequences:**
 
-- Hosts that run xAI calls longer than 300 s must pass a `transport`; without it those calls still
-  fail at 300 s, now as a single non-retryable `timeout` with `reason: 'transport_timeout'` instead of
-  three billed attempts.
+- Hosts that run xAI calls longer than 300 s had to pass a `transport` (Amendment A: ADR-040 removes the
+  need for long reasoning calls); without it a non-streamed call failed at 300 s, as a single
+  non-retryable `timeout` with `reason: 'transport_timeout'` instead of three billed attempts.
 - `XAI_DEFAULT_TIMEOUT_MS` and `XAI_TIMEOUT_BUFFER_MS` are exported.
 - Whether xAI bills a call aborted by a timeout, and what usage a timed-out attempt reports, is not
   decided here; it needs a live probe.
+
+### Amendment A (2026-10-03): streaming changes what the timeout and the transport are for
+
+ADR-040 sends every xAI call as a stream. Two statements above change:
+
+- **The SDK `timeout` bounds a stream only until the response headers arrive** (openai 7.25.0:
+  `fetchWithTimeout` clears its timer when `fetch` resolves, and `parseResponseWithTimeout` returns a
+  streaming response unbounded). The deadline the adapter computes (decision 1) is therefore applied
+  twice by the real client: as the SDK `timeout` for the header wait, and as the client's own timer over
+  the rest of the stream, so it still bounds the whole call. A stream that outlives it ends as the same
+  non-retryable `timeout` with `reason: 'transport_timeout'`. There is no separate idle timer.
+- **The transport is no longer required for long reasoning calls.** Node's body timer is an inactivity
+  timer, and a stream is never quiet for 300 s; the host transport remains for a proxy, mTLS or egress
+  policy, and for the tool-using case ADR-040 names.
 
 ---
 
@@ -2532,8 +2547,8 @@ out of credits are all `rate_limited, retryable: false`, and a host reacts to ea
 
 1. **`LlmError.reason?: LlmErrorReason`,** a closed union exported from `@gullabs/core`. Members:
    `transport_timeout`, `quota_window`, `daily_quota`, `credits_exhausted`, `spend_ceiling`,
-   `grounding_missing`, `search_budget_exceeded`, `cache_not_found` (and `quota_store_unavailable`, added by
-   ADR-041 Amendment A). `kind` and `retryable` stay
+   `grounding_missing`, `cache_not_found` (and `quota_store_unavailable`, added by
+   ADR-041 Amendment A; `search_budget_exceeded` was reserved here and deleted by ADR-040). `kind` and `retryable` stay
    authoritative; `reason` only says why within a kind, and is absent when no named cause applies.
    `retryable` follows whether a retry can change the outcome: `grounding_missing` is `retryable: true`
    only when no output schema is attached (a schema + Search call keeps missing, ADR-035 Amendment A).
@@ -2886,11 +2901,13 @@ error as `cause` (not `rate_limited`: no ceiling was reached; not `unknown`; not
 would read the same ledger, and a host that falls back to another provider on `server` should not take
 a ledger outage for a provider fault). An invalid reading is `bad_request`.
 
-**`search_budget_exceeded` is reserved and not emitted.** It stays in the `LlmErrorReason` union for the
-streaming release (R9), which can abort a call once an xAI search counter crosses the budget. Until that
-ships nothing sets it: the xAI `searchBudget` option (ADR-030 amendment) observes the budget after a
-billed call and reports it as a warning and `usage.details.search_budget_exceeded`, never an error. Hosts
-must not branch on the reason yet.
+**`search_budget_exceeded` was reserved and is now deleted (ADR-040).** It was held back for a streaming
+release that would abort a call once an xAI search counter crossed the budget. That release streams the
+call but does not abort it (whether xAI stops billing an aborted stream could not be tested), so nothing
+emits the reason, and a closed union holds only members that are emitted. The xAI `searchBudget` option
+(ADR-030 amendment) observes the budget after a billed call and reports it as a warning and
+`usage.details.search_budget_exceeded`, never an error. A later in-flight abort adds the member back with
+its emitter.
 
 ---
 
@@ -3310,6 +3327,110 @@ which are not kept). A test reads every such fixture through `readXaiResponseMet
 and exactly the remaining headers. The `ratelimit-remaining*` prefix, which no capture has, is removed from the match. A failed call has no `providerMetadata`, and `LlmError` has no request
 id field; the id of a failed call is `error.cause.requestID` (the SDK error keeps the response headers),
 which a stubbed-500 test pins. No new field is added.
+
+---
+
+## ADR-040: xAI adapter streams internally
+
+**Status:** Accepted (2026-10-03). Amends ADR-032 (the transport and the SDK deadline) and ADR-036 (deletes
+`search_budget_exceeded`).
+
+**Context:**
+A non-streamed xAI call sends nothing until the answer is complete, so a reasoning or agentic call waits
+past Node's 300 s header timer (ADR-032). Streaming keeps the connection busy. Live probes on 2026-10-03
+(fixture `36-streamed-responses.json`, real xAI, Node's default `fetch`, no custom undici `Agent`):
+
+- **P12.** Five streamed reasoning runs of 999 to 1,705 s (grok-4.5 high, grok-4.6 xhigh x3, grok-4.7
+  xhigh) all completed with `response.completed`, first event in about 2 s, and a **maximum gap between
+  events of 15.0 s** (5% of the 300 s body timer). No `error` or `response.failed` event.
+- **P12b.** A streamed grok-4.6 xhigh call with 20 `web_search` calls ended at 99 s (max gap 15 s).
+- **P9a.** The streamed `response.completed` carries the same `usage` keys, `cost_in_usd_ticks` and
+  `server_side_tool_usage_details` as the non-streamed object, and the ticks reconcile with
+  `computeXaiCost` within rounding on all 8 responses. **But the streamed final object lacked the
+  `reasoning` item in 2 of 2 search runs** (`[web_search_call, message]` against the non-streamed
+  `[web_search_call, reasoning, message]`), and the stream announced no reasoning item either.
+- **P9b** (does xAI stop billing an aborted stream) **could not be tested**: no console billing access.
+
+**Decision:**
+
+1. **`run()` always streams.** The real client (`buildXaiClient`) sends `stream: true` with
+   `Accept: text/event-stream` and reads the events to the terminal one. There is no non-streamed path
+   and no flag. `XaiClientLike.responses.create` still resolves to one response object, so fakes
+   (`@gullabs/testing`) and the adapter's mapping are unchanged. A public `stream()` stays on the ROADMAP;
+   the streaming is internal to `run()`.
+2. **The output item list is rebuilt from the events and reconciled with the final object.** The final
+   `output` is what the assistant message, citations, annotations and the `'state'` continuation
+   (ADR-029: the provider's own output items, encrypted reasoning included) are built from, and P9a showed
+   it can be incomplete. `XaiStreamReducer` folds `response.output_item.added/done`, content-part, text,
+   annotation, reasoning-summary and function-argument events into items, then:
+   - matches items by `id` **and occurrence**: live fixtures carry two `message` items with one `msg_` id
+     and two `reasoning` items with one `rs_` id, so an id alone is not a key; an item without an id is
+     matched to the same type's n-th id-less item;
+   - treats the final object as authoritative for an item it carries, fills a field it lacks from the
+     completed (`done`) event, and keeps the final's value, with a warning naming the field, when both carry
+     different values;
+   - inserts an item the stream completed and the final object lacks at its `output_index`;
+   - assembles an item the stream never completed and the final object lacks from the deltas, marks it
+     finished (`incomplete` when the response is), and says so in a warning (a replayed `in_progress` item
+     would not be valid);
+   - **fails with `server`, `retryable: true`** (the rule for a malformed response, as for `tokenize-text`)
+     when events and final object disagree in a way no rule reconciles: the same id with two types, a
+     malformed event (no `type`, no integer `output_index`, no `item`), a terminal event without a
+     response, or an `output` that is not an array of objects. A delta for an item the stream never opened
+     is ignored: a lost delta must not fail a billed call.
+     The warnings are `{ type: 'other' }` entries on the result; a stream whose events and final object agree
+     adds none. What the stream never announced cannot be rebuilt: when xAI emits no reasoning item at all
+     (the P9a shape), the state replays without it; the library does not warn, because billed reasoning
+     with no reasoning item is not by itself a stream artifact.
+3. **Terminal and error events map as the non-streamed path does (R4).** `response.completed` and
+   `response.incomplete` go through the mapping unchanged (`incomplete` + `max_output_tokens` is
+   `finishReason: 'length'`). `response.failed` becomes a response with `status: 'failed'` and goes through
+   the failed-response rule (the `error.code` table, billed usage attached). An `error` event or `event:
+error` frame goes through the same `error.code` table: `server_error` and `rate_limit_exceeded` are
+   retryable, policy codes are `content_filter`, prompt and image codes are `bad_request`, anything else
+   is `unknown` and not retryable. A stream that ends without a terminal event, or whose body is not
+   valid event JSON, is `server`, `retryable: true`. Usage on such a failure is whatever the latest
+   `response.created` / `response.in_progress` snapshot reported, almost always none: the attempt is
+   unpriced (ADR-039, `callCost.unpricedAttempts`), never zero.
+4. **Deadlines and aborts.** The adapter still computes `timeoutMs + 5 000`, or one hour (ADR-032). The
+   openai SDK `timeout` covers a stream only until the response headers arrive, so the client applies the
+   same deadline to the rest of the stream with its own timer: a stream that outlives it ends as
+   `kind: 'timeout'`, `retryable: false`, `reason: 'transport_timeout'` (the retry reaches the same limit
+   and repeats the spend). There is no idle timer: a stream that keeps sending is cut at the deadline too.
+   The SDK ends a stream quietly when its request is aborted, so the client checks the caller's signal
+   afterwards and throws the abort (an `LlmError` abort reason, the engine's deadline, reaches the caller
+   unchanged). A transport failure or Node's body timer mid-stream classifies as before (ADR-032).
+5. **The transport.** P12 shows streaming removes the need for the ADR-032 undici transport for **long
+   reasoning calls**: the connection was never quiet for more than 15 s. **A tool-using call that itself
+   runs past 300 s was not tested**: the longest tool run (P12b) ended at 99 s. A host with tool-using
+   calls expected to run past 300 s without any streamed event should keep the transport. The `transport`
+   option stays for proxies, mTLS, egress policy and custom `fetch`, and still carries `countTokens`.
+6. **No in-flight search-budget enforcement.** P9b could not be run, so there is no evidence that aborting
+   a stream stops xAI's search loop or its billing; an abort that saves nothing would only lose the
+   result. The observed-after-the-call `searchBudget` (ADR-030 amendment) stays the only budget control.
+   `LlmErrorReason` loses `'search_budget_exceeded'` (ADR-036): nothing emits it, and the closed union holds
+   only members that are emitted. In-flight abort is a BACKLOG item that needs P9b first.
+
+**Deliberately not built:** a public `stream()`; in-flight search-budget abort; an idle-gap timer; a
+non-streamed fallback or a flag to choose; a library-owned undici agent; rebuilding an item the stream
+never announced.
+
+**Consequences:**
+
+- A host with reasoning-only xAI calls can drop the undici transport. A host with tool-using calls that
+  can run past 300 s without streamed events keeps it.
+- `XaiResponseMeta.streamNotes` carries what reconciliation did; the adapter reports each note as a
+  warning.
+- `countTokens` is untouched (`POST /v1/tokenize-text`, not a stream).
+- **Evidence and what is synthetic (ADR-013).** The probes kept event-type counts, usage, output item
+  types and timings, not event bodies. The real P9a usage objects and event types are pinned in
+  `36-streamed-responses.json`. The event sequences in the tests are synthesised from the recorded
+  non-streamed fixtures with the OpenAI Responses streaming grammar (`test-sse.ts`) and labelled synthetic;
+  a test pins the synthetic event types to the real ones. Not tested against a live stream: the exact
+  field-level equality of a streamed `done` item with its non-streamed twin, and any stream longer than
+  300 s that runs server tools.
+- Re-probe when xAI changes streaming: P9b (aborted-stream billing), a tool run past 300 s, and whether
+  the streamed final object keeps its reasoning item.
 
 ---
 

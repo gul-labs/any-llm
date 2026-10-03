@@ -18,10 +18,10 @@ xAI has no first-party TypeScript SDK. xAI's own quickstart recommends using the
 | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `xaiProvider(opts?)`               | `ProviderPlugin` factory — bundles the adapter, `grok-4.5` / `grok-4.6` / `grok-4.7` descriptors, and pricing source |
 | `xaiAdapter(opts?)`                | Creates the `ProviderAdapter` for xAI                                                                                |
-| `XaiAdapterOptions`                | `{ client?, transport? }` — inject a pre-built or fake client, or a `fetch` transport for long calls                 |
+| `XaiAdapterOptions`                | `{ client?, transport? }` — inject a pre-built or fake client, or a `fetch` transport (proxy, custom fetch)          |
 | `XaiTransport`                     | `{ fetch, fetchOptions? }` — host transport passed to the SDK client (see "Long calls and timeouts")                 |
-| `XAI_DEFAULT_TIMEOUT_MS`           | SDK deadline when `timeoutMs` is unset: 3 600 000 ms (one hour)                                                      |
-| `XAI_TIMEOUT_BUFFER_MS`            | Added to `timeoutMs` for the SDK deadline: 5 000 ms                                                                  |
+| `XAI_DEFAULT_TIMEOUT_MS`           | Request deadline when `timeoutMs` is unset: 3 600 000 ms (one hour)                                                  |
+| `XAI_TIMEOUT_BUFFER_MS`            | Added to `timeoutMs` for the request deadline: 5 000 ms                                                              |
 | `XaiClientLike`                    | Structural interface the adapter depends on (satisfied by real SDK and fakes)                                        |
 | `buildXaiClient(auth, transport?)` | Builds the real `openai`-SDK-backed client from `AuthMaterial`, pointed at xAI's base URL                            |
 | `classifyXaiError(err)`            | Classifies a raw thrown error into a typed `LlmError`, including xAI's 400-for-auth quirk                            |
@@ -324,25 +324,44 @@ The `gt200k` long-context tier is selected by **gross** `inputTokens` (including
 
 ## Long calls and timeouts
 
-xAI sends nothing until a non-streamed answer is complete, so a reasoning or agentic call can wait
-many minutes for response headers. Two separate timers sit in the way, and only one of them is
-controlled by the SDK:
+Every call streams internally (ADR-040): `run()` sends `stream: true`, reads the server-sent events to the
+final one and returns the same result a non-streamed call would. The connection is never silent, so
+Node's `fetch` (undici) does not hit its 300 s header or body timer on a long reasoning call. Public
+`stream()` is still on the ROADMAP; nothing about the streaming is visible to the caller.
 
-| Timer                                     | Default    | What sets it                                                           |
-| ----------------------------------------- | ---------- | ---------------------------------------------------------------------- |
-| `openai` SDK deadline (`timeout`)         | 10 minutes | The adapter: `timeoutMs + 5000`, or one hour when `timeoutMs` is unset |
-| Node `fetch` (undici) header + body timer | 300 s each | The host's `transport` only                                            |
+What was measured (live, 2026-10-03, Node's default `fetch` with no custom `Agent`): five streamed
+reasoning runs of 17 to 28 minutes on grok-4.5, grok-4.6 and grok-4.7 all completed, the first event
+arrived in about 2 s, and the **longest gap between events was 15 s**. Node's body timer measures the
+gap between chunks, so a 15 s gap is 5% of its 300 s limit.
 
-**The SDK timeout alone does not lift Node's 300 s header timer.** Without a transport, any call that
-takes longer than 300 s fails at 300 s, whatever `timeoutMs` says. To run longer calls, pass undici's
-own `fetch` with an `Agent` whose timers are at least the SDK deadline:
+**Not measured: a tool-using call that itself runs past 300 s.** The longest streamed run with
+`web_search` ended at 99 s (also a 15 s worst gap). **If your calls use `tools` and can run past 300 s
+without ANY streamed event, keep an undici transport** (below). For reasoning-only calls you can drop it.
+
+Two timers still apply, and the adapter sets one of them:
+
+| Timer                                     | Default    | What sets it                                                                       |
+| ----------------------------------------- | ---------- | ---------------------------------------------------------------------------------- |
+| Request deadline (whole call)             | none       | The adapter: `timeoutMs + 5000`, or one hour when `timeoutMs` is unset             |
+| Node `fetch` (undici) header + body timer | 300 s each | Only the host's `transport` raises them; a stream keeps the body timer from firing |
+
+**What the deadline means for a stream.** The `openai` SDK's own `timeout` covers a stream only until the
+response headers arrive (checked in the SDK source and pinned by a test). The adapter's client therefore
+applies the same deadline to the rest of the stream with its own timer, so `timeoutMs + 5000` (or one
+hour) still bounds the **whole call**, not the time to first byte. It is not an idle timer: a stream that
+keeps sending is cut at the deadline too. The engine's own `timeoutMs` deadline sits 5 s ahead of it, so
+you see the engine's clean timeout. A caller `signal` aborts a stream in flight.
+
+The `transport` option stays for a proxy, mTLS or an egress policy (your own `fetch`), and for the
+tool-using case above. To raise undici's timers, pass its own `fetch` with an `Agent` whose timers are at
+least the request deadline:
 
 ```ts
 import { Agent, fetch as undiciFetch } from 'undici' // pnpm add undici
 import { createClient, composeProviders } from '@gullabs/core'
 import { xaiProvider } from '@gullabs/xai'
 
-const LIMIT_MS = 3_605_000 // >= the longest SDK deadline you will use (default: 3_600_000 + slack)
+const LIMIT_MS = 3_605_000 // >= the longest request deadline you will use (default: 3_600_000 + slack)
 
 const client = createClient({
   ...composeProviders([
@@ -362,11 +381,8 @@ Notes:
 
 - Use `fetch` and `Agent` from the **same** `undici` package. Node's built-in `fetch` bundles its own
   undici, and a dispatcher from a different version is not guaranteed to work with it.
-- Size `headersTimeout` and `bodyTimeout` to at least the largest SDK deadline you use:
+- Size `headersTimeout` and `bodyTimeout` to at least the largest request deadline you use:
   `timeoutMs + 5000` for calls that set `timeoutMs`, `XAI_DEFAULT_TIMEOUT_MS` (3 600 000) otherwise.
-- **Keep this transport until streaming removes the need.** The adapter does not stream today, so the
-  transport is the only way to run a call past 300 s. A later release will stream internally; until it
-  does, treat the transport as required for any long-running xAI workload.
 - `transport` cannot be combined with an injected `client`, and `fetchOptions` cannot carry `headers`,
   `signal`, `body` or `method`. Both are `bad_request`, as is a `transport` whose `fetch` is not a
   function or whose `fetchOptions` is not an object. The adapter copies the transport when it is
@@ -374,15 +390,29 @@ Notes:
 - `transport` carries every request the adapter makes: `responses.create` **and** `countTokens`
   (`POST /v1/tokenize-text`), so a proxy, mTLS or egress policy in your `fetch` covers both.
   `XaiFileStore` is separate and takes its own `fetch` option.
-- `timeoutMs` is at most 2147478647 (Node timers overflow at 2^31 - 1 ms and the SDK deadline adds
+- `timeoutMs` is at most 2147478647 (Node timers overflow at 2^31 - 1 ms and the request deadline adds
   5 s); a larger value is `bad_request`, not clamped.
-- `timeoutMs` still works as before: the engine arms its own deadline at exactly `timeoutMs` and the
-  SDK deadline sits 5 s behind it, so you see the engine's clean timeout.
+
+### The streamed response and its final object
+
+xAI's final `response.completed` object can omit output items the stream carried (a live capture of two
+search runs lacked the `reasoning` item). The adapter rebuilds the item list from the events and reconciles
+it with the final object: the final object wins where both have a field, the stream fills what it lacks, and
+each correction is a `warnings` entry on the result. Events and final object that disagree in a way that
+cannot be reconciled (the same item id with two types, a malformed event) fail the call as a retryable
+`server` error. A stream that ends before its final event is a retryable `server` error with no usage, so
+the engine counts that attempt as unpriced (`callCost.unpricedAttempts`), not free. Mid-stream `error` and
+`response.failed` events classify through the same `error.code` table as any other failed response.
+
+### Search budgets are not enforced in flight
+
+`providerOptions.xai.searchBudget` is observed after the call. Whether xAI stops its search loop and its
+billing when a stream is aborted could not be tested, so the adapter does not abort a call at a budget.
 
 ### Timeout errors do not retry
 
-A header-timer, body-timer or SDK-deadline timeout (a transport-level timeout; it can fire before or
-after response headers) is `kind: 'timeout'`, `retryable: false`, `reason: 'transport_timeout'`.
+A header-timer, body-timer or request-deadline timeout (a transport-level timeout; it can fire before or
+after response headers, or while the stream is open) is `kind: 'timeout'`, `retryable: false`, `reason: 'transport_timeout'`.
 Retrying reaches the same limit and repeats the spend, so the retry middleware does not retry it;
 resubmit from the host if you want to. A connect timeout, an OS `ETIMEDOUT` and a TLS handshake
 timeout (nothing reached xAI) stay retryable. The `openai` SDK wraps all of those as the same
