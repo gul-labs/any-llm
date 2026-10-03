@@ -50,7 +50,7 @@ Set `operationId` once for a workflow operation and reuse it on every correlated
 
 ## Shared wiring
 
-```ts
+```ts no-check
 import { createClient, composeProviders, retryMiddleware } from '@gullabs/any-llm'
 import { googleProvider } from '@gullabs/google'
 import { drizzleUsageSink } from '@gullabs/drizzle'
@@ -67,7 +67,7 @@ function baseClientConfig(db: DbLike) {
 
 HTTP handlers often want short in-process retries for retryable provider failures:
 
-```ts
+```ts no-check
 function makeWebClient(db: DbLike) {
   return createClient({
     ...baseClientConfig(db),
@@ -119,7 +119,7 @@ A replayed or retried activity that calls the library again writes new rows, so
 (same `attemptId`, via the `attempt_id` primary key). Use `new RecordingSink({ dedupeOn: 'attemptId' })`
 in a host test to see what the ledger would hold, and assert on `externalId` and row counts accordingly.
 
-```ts
+```ts no-check
 function makeWorkerClient(db: DbLike) {
   return createClient(baseClientConfig(db))
 }
@@ -164,7 +164,7 @@ or on `globalThis`. Downstream code then reads that singleton implicitly instead
 credential as an argument. This is common when a host started with a single API key for a single
 tenant and never needed per-call scoping.
 
-```ts
+```ts no-check
 // startup.ts — runs once at process boot
 let ambientClient: SomeSdkClient | undefined
 
@@ -221,7 +221,7 @@ Do not use library retry middleware when:
 If your host needs typed context rows, write them after the call using `result.attemptId` or
 `LlmError.attemptId`:
 
-```ts
+```ts no-check
 await db.insert(llmCallContext).values({
   attemptId: result.attemptId,
   workflowId: input.workflowId,

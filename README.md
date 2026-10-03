@@ -85,6 +85,7 @@ const codeReview = defineCallSite({
   },
 })
 
+const myDiff = '- let x = 1\n+ const x = 1'
 const auth = { apiKey: process.env.MY_APP_GEMINI_KEY! }
 const result = await client.runStructured(codeReview, { diff: myDiff }, { auth })
 
@@ -106,12 +107,19 @@ import { createClient, composeProviders } from '@gullabs/core'
 import { googleProvider, GoogleFileStore } from '@gullabs/google'
 import { xaiProvider, XaiFileStore } from '@gullabs/xai'
 
+const xaiKey = 'YOUR_XAI_KEY'
+const geminiKey = 'YOUR_GEMINI_KEY'
+
 const client = createClient({
   ...composeProviders([googleProvider(), xaiProvider()]),
 })
 
 await client.generate(
-  { provider: 'xai', model: 'grok-4.6', messages: [...] },
+  {
+    provider: 'xai',
+    model: 'grok-4.6',
+    messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
+  },
   { auth: { apiKey: xaiKey } },
 )
 
@@ -130,6 +138,17 @@ config and auth. Each call has its own `callId`, is validated and priced against
 writes its own rows; give both the same `externalId` to link them.
 
 ```ts
+import { composeProviders, createClient, LlmError } from '@gullabs/core'
+import type { Message } from '@gullabs/core'
+import { googleProvider } from '@gullabs/google'
+import { xaiProvider } from '@gullabs/xai'
+
+const googleKey = 'YOUR_GEMINI_KEY'
+const xaiKey = 'YOUR_XAI_KEY'
+const client = createClient({
+  ...composeProviders([googleProvider(), xaiProvider()]),
+})
+
 async function generateWithFallback(messages: Message[], externalId: string) {
   const targets = [
     { provider: 'google', model: 'gemini-2.5-pro', auth: { apiKey: googleKey } },
@@ -152,7 +171,7 @@ async function generateWithFallback(messages: Message[], externalId: string) {
 
 The library never reads credentials from the environment or any ambient source. There is no `envAuth()`, no `AuthProvider` port, and no client-level `auth` on `createClient`. Pass `auth` on every call:
 
-```ts
+```ts no-check
 client.generate(request, { auth: { apiKey } })
 client.runStructured(callSite, { auth: { apiKey } })
 ```
@@ -246,7 +265,7 @@ PRs welcome. Only [@atifgul99](https://github.com/atifgul99) can push to `main`.
 
 ```bash
 pnpm install
-pnpm quality   # build + lint + typecheck + test (the CI gate)
+pnpm quality   # build + lint + typecheck + doc snippets + test (the CI gate)
 ```
 
 ## License

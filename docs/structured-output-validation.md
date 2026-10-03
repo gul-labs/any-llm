@@ -56,7 +56,7 @@ async function validateStructuredResult<T>(
 
 Use any Standard-Schema implementation. This example uses two hand-rolled schemas to show portability:
 
-```ts
+```ts no-check
 const summarySchema: StandardSchemaV1 = {
   '~standard': {
     version: 1,
@@ -106,7 +106,7 @@ in `docs/archive/ADOPTION-FEEDBACK.md`.
 
 ## Example usage
 
-```ts
+```ts no-check
 // Pick the schema from something you already know — e.g. which `output.jsonSchema`
 // you requested — never by introspecting `result.output`, which is `unknown` until
 // a schema has validated it.

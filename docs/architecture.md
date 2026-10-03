@@ -541,7 +541,7 @@ directly to extend or replace it.
 
 Implement `ProviderAdapter` from `@gullabs/core`:
 
-```ts
+```ts no-check
 import type {
   ProviderAdapter,
   ResolvedRequest,
@@ -572,7 +572,7 @@ Bundle the adapter with model descriptors (and an optional pricing source) into 
 `ProviderPlugin`, and compose it via `composeProviders` (ADR-023) — the same shape
 `googleProvider()` and `xaiProvider()` use:
 
-```ts
+```ts no-check
 import { composeProviders, createClient } from '@gullabs/core'
 import type { ProviderPlugin } from '@gullabs/core'
 import { toConfigJsonSchema, zodToStandardSchema } from '@gullabs/core'
@@ -601,7 +601,7 @@ const client = createClient({ ...composeProviders([myProvider()]), ... })
 
 Implement `UsageSink`:
 
-```ts
+```ts no-check
 import type { UsageSink, LlmCallRecord } from '@gullabs/core'
 
 const mySink: UsageSink = {
@@ -619,7 +619,7 @@ same `callId`.
 
 Implement `Middleware`:
 
-```ts
+```ts no-check
 import type { Middleware } from '@gullabs/core'
 
 const tracingMiddleware: Middleware = {
@@ -651,7 +651,7 @@ on duplicates.
 
 Google Search grounding is requested via `providerOptions.google`:
 
-```ts
+```ts no-check
 config: {
   providerOptions: {
     google: {

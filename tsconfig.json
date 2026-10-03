@@ -14,5 +14,5 @@
       "@gullabs/codex-cli": ["./packages/codex-cli/src/index.ts"]
     }
   },
-  "include": ["packages/*/src/**/*.ts"]
+  "include": ["packages/*/src/**/*.ts", "examples/**/*.ts"]
 }

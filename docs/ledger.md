@@ -191,7 +191,7 @@ touch them. Personal data in them (a customer's name in a tool-call argument, an
 reasoning) is yours to handle. A host that needs no text at all in `llm_calls` does not persist those columns:
 wrap the sink and drop them before delegating.
 
-```ts
+```ts no-check
 import { drizzleUsageSink } from '@gullabs/drizzle'
 import type { UsageSink } from '@gullabs/core'
 
@@ -250,7 +250,7 @@ role that runs the sink, or accept that the log holds what the table holds.
 
 ## Atomic sidecar writes (transaction composition)
 
-```ts
+```ts no-check
 function hostUsageSink(db: NodePgDatabase): UsageSink {
   return {
     async record(r: LlmCallRecord): Promise<void> {
@@ -282,7 +282,7 @@ writes roll back together and the LLM call still succeeds.
 
 If a host needs richer typed joins and retention-oriented indexes, use a richer schema:
 
-```ts
+```ts no-check
 export const llmCallContext = pgTable(
   'llm_call_context',
   {

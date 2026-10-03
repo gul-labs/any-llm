@@ -2,7 +2,7 @@
  * examples/basic.ts — network-free runnable example for any-llm.
  *
  * Demonstrates all four v1 goals without touching the network:
- *   1. Gemini Flex call via geminiAdapter (injected fake client)
+ *   1. A Gemini call through googleProvider (injected fake client)
  *   2. Token usage capture (input / output / cached / thinking)
  *   3. Thinking text capture (reasoningText) via includeThoughts
  *   4. Cost tracking in micro-USD, frozen in the persisted record
@@ -10,9 +10,9 @@
  * Run with:  pnpm example
  */
 
-import { createClient, geminiPricingSource, defineCallSite } from '@gullabs/core'
+import { composeProviders, createClient, defineCallSite } from '@gullabs/core'
 import type { JsonValue } from '@gullabs/core'
-import { geminiAdapter } from '@gullabs/google'
+import { googleProvider } from '@gullabs/google'
 import {
   FakeClock,
   FakeIds,
@@ -73,8 +73,7 @@ const clock = new FakeClock(1_700_000_000_000) // fixed timestamp
 const ids = new FakeIds()
 
 const client = createClient({
-  adapters: [geminiAdapter({ client: fakeClient })],
-  pricingSources: { google: geminiPricingSource() },
+  ...composeProviders([googleProvider({ client: fakeClient })]),
   sink,
   clock,
   ids,
@@ -98,7 +97,7 @@ const codeReview = defineCallSite({
 })
 
 // ---------------------------------------------------------------------------
-// 5. Run it — no await at top level needed in modern Node (>= 20)
+// 5. Run it (top-level await works in an ES module)
 // ---------------------------------------------------------------------------
 
 const result = await client.runStructured(
@@ -129,7 +128,7 @@ console.log('\nCost (frozen micro-USD):')
 console.log({
   microUsd: result.cost?.microUsd, // integer µUSD
   pricingVersion: result.cost?.pricingVersion,
-  details: result.cost?.details, // { input, cached, output } — must sum to microUsd
+  details: result.cost?.details, // { input, cached, output, tools } — sums to microUsd
 })
 
 console.log('\nReasoning text (thought summary):')
@@ -168,9 +167,8 @@ console.log('\n========================================\n')
 // const db = drizzle(new pg.Pool({ connectionString: process.env.DATABASE_URL }))
 //
 // const realClient = createClient({
-//   adapters: [geminiAdapter()],          // uses real @google/genai SDK
-//   pricingSources: { google: geminiPricingSource() },
-//   sink: drizzleUsageSink({ db }),       // writes to your llm_calls table
+//   ...composeProviders([googleProvider()]), // uses the real @google/genai SDK
+//   sink: drizzleUsageSink({ db }),          // writes to your llm_calls table
 // })
 //
 // const realResult = await realClient.runStructured(codeReview, { diff: '- let x = 1\n+ const x = 1' }, {

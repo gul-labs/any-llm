@@ -181,6 +181,14 @@ Redis server's clock is): pass the client's `FakeClock` and one `advance` rolls 
 does not share state between processes.
 
 ```ts
+import {
+  inMemoryQuotaStore,
+  providerQuotaMiddleware,
+  quotaPolicyForXai,
+} from '@gullabs/quota'
+import { FakeClock } from '@gullabs/testing'
+
+const policy = quotaPolicyForXai({ models: { 'grok-4.5': { rpm: 600, tpm: 2_000_000 } } })
 const clock = new FakeClock(Date.UTC(2026, 9, 3, 12))
 const store = inMemoryQuotaStore({ clock })
 const middleware = providerQuotaMiddleware({

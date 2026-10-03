@@ -36,6 +36,11 @@ pnpm add @gullabs/google @gullabs/core @google/genai
 `GoogleFileStore.delete` defaults to **fail-open** (errors → `onDeleteError`, resolve). Pass `{ failClosed: true }` when the host gates durable state on known success; HTTP/SDK not-found remains success (idempotent). Empty `handle.name` always throws `bad_request`.
 
 ```ts
+import type { GoogleFileHandle, GoogleFileStore } from '@gullabs/google'
+
+declare const store: GoogleFileStore
+declare const handle: GoogleFileHandle
+
 await store.delete(handle) // fail-open
 await store.delete(handle, { failClosed: true }) // throw on non-not-found failure
 ```
@@ -71,6 +76,12 @@ copy of your history. Continuation is `'history'`: append `result.message`, send
 and pass `result.transientProviderState` back.
 
 ```ts
+import { composeProviders, createClient } from '@gullabs/core'
+import type { JsonValue, Message } from '@gullabs/core'
+import { googleProvider } from '@gullabs/google'
+
+const client = createClient({ ...composeProviders([googleProvider()]) })
+
 const tools = [
   {
     name: 'get_weather',
@@ -147,7 +158,11 @@ for) to `dropMessagesFromSignatureState(state, indices)`. It drops the entries o
 messages, shifts the later `messageIndex`es down, and returns `undefined` when nothing is left:
 
 ```ts
+import type { JsonValue, Message } from '@gullabs/core'
 import { dropMessagesFromSignatureState } from '@gullabs/google'
+
+let messages: Message[] = []
+let state: JsonValue | undefined // the previous result's transientProviderState
 
 // Front-trim: drop the oldest turn (messages 0-3) to fit the context window.
 messages = messages.slice(4)

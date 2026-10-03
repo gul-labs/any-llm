@@ -54,8 +54,16 @@ back-off of `retryMiddleware`, and the delay of `FakeAdapter` / `SignalAwareFake
 passes, so a test of a 30-second timeout takes microseconds and cannot flake.
 
 ```ts
-import { createClient } from '@gullabs/core'
+import { composeProviders, createClient } from '@gullabs/core'
+import type { AdapterResult, LlmRequest } from '@gullabs/core'
+import { googleProvider } from '@gullabs/google'
 import { FakeAdapter, FakeClock } from '@gullabs/testing'
+import { expect } from 'vitest'
+
+declare const okResult: AdapterResult
+declare const request: LlmRequest
+const auth = { apiKey: 'test' }
+const { modelRegistry } = composeProviders([googleProvider()])
 
 const clock = new FakeClock(1_000)
 const client = createClient({
@@ -112,12 +120,16 @@ adapter calls) before throwing, and the error is an `LlmError`: `per-day-quota` 
 core classifies it, as it does for any adapter.
 
 ```ts
+import type { AdapterResult } from '@gullabs/core'
 import {
+  FakeAdapter,
   fakeBilledFailure,
   fakeHttpError,
   fakeNetworkError,
   fakeProviderError,
 } from '@gullabs/testing'
+
+declare const okResult: AdapterResult
 
 new FakeAdapter('google', [
   fakeHttpError(429, { retryAfter: 2 }), // status + a real Headers object with Retry-After
@@ -165,6 +177,7 @@ result is never silently turned into a thrown value, and the message is never re
 
 ```ts
 import { RecordingSink } from '@gullabs/testing'
+import { expect } from 'vitest'
 
 const sink = new RecordingSink({ dedupeOn: 'attemptId' })
 // ... run a call that retries ...
@@ -183,7 +196,14 @@ has no entry.
 ## RecordingTelemetry and RecordingLogger
 
 ```ts
+import { createClient } from '@gullabs/core'
+import type { LlmRequest, ModelRegistry, ProviderAdapter } from '@gullabs/core'
 import { RecordingLogger, RecordingTelemetry } from '@gullabs/testing'
+
+declare const adapters: ProviderAdapter[]
+declare const modelRegistry: ModelRegistry
+declare const request: LlmRequest
+declare const auth: { apiKey: string }
 
 const telemetry = new RecordingTelemetry()
 const logger = new RecordingLogger()
@@ -225,6 +245,8 @@ through the real provider classifier first, and an `LlmError` entry is thrown un
 ```ts
 import { FakeClient, fakeHttpError, fakeLlmResult } from '@gullabs/testing'
 
+declare function summarise(client: FakeClient, text: string): Promise<string> // host code under test
+
 const client = new FakeClient(
   [
     fakeLlmResult({ text: 'draft' }),
@@ -234,7 +256,7 @@ const client = new FakeClient(
   { countTokens: { totalTokens: 1_200, accuracy: 'exact', raw: {} } },
 )
 
-await summarise(client, 'long text') // host code under test
+await summarise(client, 'long text')
 
 client.calls // [{ method: 'generate', request, opts }, ...] exactly as the host sent them
 client.expectRequest({
@@ -288,6 +310,9 @@ classifies an SDK failure, so `fakeProviderError('google', 'per-day-quota')` arr
 import { claudeCliAdapter } from '@gullabs/claude-cli'
 import { FakeCliRunner } from '@gullabs/testing'
 
+declare const envelope: unknown // the JSON the real CLI prints
+declare function render(input: string | undefined): string
+
 const runner = new FakeCliRunner([
   { stdout: JSON.stringify(envelope) }, // stderr '' and exitCode 0 by default
   { stdout: '', stderr: 'rate limited', exitCode: 1 }, // a non-zero exit resolves, as with the real runner
@@ -311,7 +336,10 @@ the full history; for `'state'` it sends only the new tool results plus
 `result.transientProviderState`. `req.tools` declares the tools, `tools` implements them by name.
 
 ```ts
+import type { Client } from '@gullabs/core'
 import { runToolLoop } from '@gullabs/testing'
+
+declare const client: Client
 
 const { result, turns } = await runToolLoop(
   client,
@@ -387,7 +415,7 @@ const callSite = defineCallSite({
 const result = await client.runStructured(callSite, {}, { auth: { apiKey: 'fake' } })
 
 // Assertions
-console.assert(result.output?.ok === true)
+console.assert((result.output as { ok: boolean }).ok === true)
 console.assert(result.outputParsed === true)
 console.assert(result.usage.thinkingTokens === 20)
 console.assert(sink.last()?.status === 'ok')
@@ -403,7 +431,7 @@ parameters with production defaults, so tests pass fakes and production passes n
 
 **1. The host's factory module** — e.g. `src/llm/make-llm-client.ts`:
 
-```ts
+```ts no-check
 import { createClient, composeProviders } from '@gullabs/core'
 import type { Clock, IdGenerator, Scheduler, UsageSink } from '@gullabs/core'
 import { googleProvider } from '@gullabs/google'
@@ -447,7 +475,7 @@ entirely when no override is given.
 
 **2. A vitest test calling the same factory:**
 
-```ts
+```ts no-check
 import { describe, it, expect } from 'vitest'
 import { defineCallSite } from '@gullabs/core'
 import {
@@ -512,7 +540,6 @@ import { createClient, composeProviders } from '@gullabs/core'
 import { googleProvider } from '@gullabs/google'
 import { FakeAdapter, RecordingSink } from '@gullabs/testing'
 
-const { modelRegistry, pricingSources } = composeProviders([googleProvider()])
 const fakeAdapter = new FakeAdapter('google', {
   message: { role: 'assistant', parts: [{ kind: 'text', text: 'hi' }] },
   text: 'hi',
@@ -522,9 +549,8 @@ const fakeAdapter = new FakeAdapter('google', {
 })
 
 const client = createClient({
-  adapters: [fakeAdapter],
-  modelRegistry,
-  pricingSources,
+  ...composeProviders([googleProvider()]), // modelRegistry and pricingSources
+  adapters: [fakeAdapter], // replaces the real adapter
   sink: new RecordingSink(),
 })
 ```

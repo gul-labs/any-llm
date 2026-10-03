@@ -24,6 +24,7 @@ pnpm add -D @gullabs/claude-cli @gullabs/core
 
 | Export                      | Kind     | Description                                                     |
 | --------------------------- | -------- | --------------------------------------------------------------- |
+| `claudeCliProvider`         | function | The `ProviderPlugin` for `composeProviders` (adapter + models). |
 | `claudeCliAdapter`          | function | Creates the `ProviderAdapter` (`id: 'claude-cli'`).             |
 | `ClaudeCliAdapterOptions`   | type     | `{ runner?, claudePath?, maxConcurrency? }`.                    |
 | `buildClaudeCliRunner`      | function | The real `node:child_process`-backed `ClaudeCliRunner` factory. |
@@ -34,10 +35,10 @@ pnpm add -D @gullabs/claude-cli @gullabs/core
 ## Quick example
 
 ```ts
-import { claudeCliAdapter } from '@gullabs/claude-cli'
-import { createClient } from '@gullabs/core'
+import { composeProviders, createClient } from '@gullabs/core'
+import { claudeCliProvider } from '@gullabs/claude-cli'
 
-const client = createClient({ adapters: [claudeCliAdapter()] })
+const client = createClient({ ...composeProviders([claudeCliProvider()]) })
 
 const result = await client.generate(
   {

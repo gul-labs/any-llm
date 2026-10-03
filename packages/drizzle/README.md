@@ -28,15 +28,27 @@ pnpm add @gullabs/drizzle @gullabs/core @gullabs/google drizzle-orm
 ```ts
 import { drizzle } from 'drizzle-orm/node-postgres'
 import { drizzleUsageSink } from '@gullabs/drizzle'
-import { createClient, composeProviders } from '@gullabs/core'
+import { createClient, composeProviders, defineCallSite } from '@gullabs/core'
 import { googleProvider } from '@gullabs/google'
-import pg from 'pg'
 
-const db = drizzle(new pg.Pool({ connectionString: process.env.DATABASE_URL }))
+// Pass a configured `pg.Pool` instead for pool sizing and timeouts.
+const db = drizzle(process.env.DATABASE_URL!)
 
 const client = createClient({
   ...composeProviders([googleProvider()]),
   sink: drizzleUsageSink({ db }),
+})
+
+const myCallSite = defineCallSite({
+  id: 'summarise',
+  provider: 'google',
+  model: 'gemini-2.5-flash',
+  jsonSchema: {
+    type: 'object',
+    properties: { summary: { type: 'string' } },
+    required: ['summary'],
+  },
+  userTemplate: 'Summarise: {{text}}',
 })
 
 // Auth is required per call — pass it at call time, never at client construction.
@@ -114,6 +126,14 @@ By default the library stores no full prompt and no full response text. A host t
 calls opts in on the client:
 
 ```ts
+import { composeProviders, createClient } from '@gullabs/core'
+import { drizzleUsageSink } from '@gullabs/drizzle'
+import { googleProvider } from '@gullabs/google'
+import type { PostgresDb } from '@gullabs/drizzle'
+
+declare const db: PostgresDb
+declare function scrub<T>(payload: T): T
+
 const client = createClient({
   ...composeProviders([googleProvider()]),
   sink: drizzleUsageSink({ db }),
@@ -168,6 +188,12 @@ timeouts), pass it as `transaction`; it then takes over every write (a record wi
 statement runs on the handle it gives the sink:
 
 ```ts
+import { drizzleUsageSink } from '@gullabs/drizzle'
+import type { PostgresDb } from '@gullabs/drizzle'
+
+declare const db: PostgresDb
+declare function withTenantTransaction<T>(fn: (tx: PostgresDb) => Promise<T>): Promise<T>
+
 drizzleUsageSink({ db, transaction: (fn) => withTenantTransaction(fn) })
 ```
 

@@ -60,7 +60,7 @@ const summarize = defineCallSite({
 // Auth is required per call — the library never reads environment variables itself.
 const result = await client.runStructured(
   summarize,
-  { text: documentText },
+  { text: 'The document to summarize.' },
   { auth: { apiKey: process.env.GEMINI_API_KEY! } },
 )
 

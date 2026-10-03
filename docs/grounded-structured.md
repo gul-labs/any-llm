@@ -86,7 +86,7 @@ back into their own workflow tables. The stable first step is a documented recip
 
 ## Call 1: grounded research
 
-```ts
+```ts no-check
 const operationId = 'op-2026-01-research'
 
 const research = await client.generate(
@@ -168,13 +168,13 @@ does not match the segment's own text is dropped with a warning). Raw
 `groundingMetadata` stays on `providerMetadata` (without `searchEntryPoint`, which is at
 `providerMetadata.google.searchEntryPoint`; render its HTML in a sandboxed iframe). Empty / unused grounding omits the field.
 
-```ts
+```ts no-check
 const citations = research.citations
 ```
 
 ## Call 2: structured synthesis
 
-```ts
+```ts no-check
 const grounding = extractGroundingArtifacts(research.providerMetadata)
 
 const structured = await client.generate(

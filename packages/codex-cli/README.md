@@ -26,6 +26,7 @@ actual use; not required to build or test this package.
 
 | Export                                          | Description                                                                   |
 | ----------------------------------------------- | ----------------------------------------------------------------------------- |
+| `codexCliProvider(opts?)`                       | The `ProviderPlugin` for `composeProviders` (adapter + models).               |
 | `codexCliAdapter(opts?)`                        | Builds the `ProviderAdapter` (`id: 'codex-cli'`).                             |
 | `CodexCliAdapterOptions`                        | `{ runner?, codexPath?, maxConcurrency? }`.                                   |
 | `createCodexCliRunner(codexPath?)`              | Real `node:child_process`-backed `CodexCliRunner`.                            |
@@ -37,10 +38,10 @@ actual use; not required to build or test this package.
 ## Quick example
 
 ```ts
-import { codexCliAdapter } from '@gullabs/codex-cli'
-import { createClient } from '@gullabs/core'
+import { composeProviders, createClient } from '@gullabs/core'
+import { codexCliProvider } from '@gullabs/codex-cli'
 
-const client = createClient({ adapters: [codexCliAdapter()] })
+const client = createClient({ ...composeProviders([codexCliProvider()]) })
 
 const result = await client.generate(
   {

@@ -66,6 +66,11 @@ const result = await client.generate(
 ### Function-calling seam (no agent loop)
 
 ```ts
+import { composeProviders, createClient } from '@gullabs/core'
+import { xaiProvider } from '@gullabs/xai'
+
+const client = createClient({ ...composeProviders([xaiProvider()]) })
+
 const tools = [
   {
     name: 'get_temperature',
@@ -127,6 +132,19 @@ server-tool items are not in it):
   not replay `result.message`. The loop:
 
 ```ts
+import { composeProviders, createClient } from '@gullabs/core'
+import type { JsonValue, Message } from '@gullabs/core'
+import { xaiProvider } from '@gullabs/xai'
+
+const client = createClient({ ...composeProviders([xaiProvider()]) })
+const tools = [
+  {
+    name: 'get_temperature',
+    description: 'Get current temperature for a location',
+    inputJsonSchema: { type: 'object', properties: { location: { type: 'string' } } },
+  },
+]
+
 const base = { provider: 'xai', model: 'grok-4.7', tools } as const
 let messages: Message[] = [
   { role: 'user', parts: [{ kind: 'text', text: 'Temperature in SF?' }] },
@@ -183,6 +201,10 @@ Thin REST wrapper over xAI Files (`POST/GET/DELETE /v1/files`). Auth is injected
 
 ```ts
 import { XaiFileStore } from '@gullabs/xai'
+
+declare const pdfBytes: Uint8Array
+declare const db: { markReleased(fileId: string): Promise<void> } // your durable store
+declare const logger: { warn(fields: object, message: string): void }
 
 const store = new XaiFileStore({
   auth: { apiKey: 'YOUR_XAI_API_KEY' },
@@ -292,7 +314,7 @@ Enable Live Search with `providerOptions.xai.tools` (`web_search` / `x_search`).
 
 ### Controlling the search tools
 
-```ts
+```ts no-check
 config: {
   providerOptions: {
     xai: {
@@ -356,7 +378,7 @@ The `transport` option stays for a proxy, mTLS or an egress policy (your own `fe
 tool-using case above. To raise undici's timers, pass its own `fetch` with an `Agent` whose timers are at
 least the request deadline:
 
-```ts
+```ts no-check
 import { Agent, fetch as undiciFetch } from 'undici' // pnpm add undici
 import { createClient, composeProviders } from '@gullabs/core'
 import { xaiProvider } from '@gullabs/xai'

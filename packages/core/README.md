@@ -43,7 +43,10 @@ Port interfaces you implement: `ProviderAdapter`, `UsageSink`, `PricingSource`, 
 
 ```ts
 import { createClient, composeProviders, defineCallSite } from '@gullabs/core'
+import type { UsageSink } from '@gullabs/core'
 import { googleProvider } from '@gullabs/google'
+
+declare const mySink: UsageSink // your sink, e.g. drizzleUsageSink({ db })
 
 const client = createClient({
   ...composeProviders([googleProvider()]),
@@ -123,6 +126,23 @@ host needs to continue one, and the rule differs by provider:
   `result.model` (the id the provider returned) is not something to route on.
 
 ```ts
+import { composeProviders, createClient } from '@gullabs/core'
+import type { JsonValue, Message } from '@gullabs/core'
+import { googleProvider } from '@gullabs/google'
+
+const client = createClient({ ...composeProviders([googleProvider()]) })
+const auth = { apiKey: 'YOUR_KEY' }
+const provider = 'google'
+const model = 'gemini-3.6-flash'
+const userMessage: Message = {
+  role: 'user',
+  parts: [{ kind: 'text', text: 'What is the weather in Paris?' }],
+}
+const runTool = async (name: string, args: JsonValue): Promise<JsonValue> => ({
+  name,
+  args,
+})
+
 const tools = [
   {
     name: 'get_weather',
@@ -285,9 +305,12 @@ subset still needs host-side validation of `output`. Lint every call site in a h
 
 ```ts
 import { assertPortableJsonSchema } from '@gullabs/core'
+import type { JsonValue } from '@gullabs/core'
 import { z } from 'zod'
 
-assertPortableJsonSchema(z.toJSONSchema(Report), 'call:report') // throws LlmError('bad_request') with the path
+const Report = z.object({ title: z.string(), score: z.number() })
+
+assertPortableJsonSchema(z.toJSONSchema(Report) as JsonValue, 'call:report') // throws LlmError('bad_request') with the path
 ```
 
 What Zod emits that is outside the subset: `z.literal('x')` emits `const` (write
@@ -325,7 +348,7 @@ not fail LLM calls.
 Inject a pino-compatible structured logger via `ClientConfig.logger`. The `Logger` port uses an
 object-first `(o, m)` signature:
 
-```ts
+```ts no-check
 import pino from 'pino'
 
 const client = createClient({
@@ -425,6 +448,19 @@ Correlate the final outcome of a call from `result.attemptId` or `LlmError.attem
 By default the full prompt and response text is not stored. `ClientConfig.payloads` turns it on for the client:
 
 ```ts
+import { composeProviders, createClient } from '@gullabs/core'
+import type { CallSite, LlmRequest } from '@gullabs/core'
+import { drizzleUsageSink } from '@gullabs/drizzle'
+import { googleProvider } from '@gullabs/google'
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+
+declare const db: NodePgDatabase
+declare const request: LlmRequest
+declare const auth: { apiKey: string }
+declare const callSite: CallSite
+declare const vars: Record<string, string>
+declare function scrubCustomerData<T>(payload: T): T
+
 const client = createClient({
   ...composeProviders([googleProvider()]),
   sink: drizzleUsageSink({ db }), // a sink must declare acceptsPayloads: true to receive payloads
