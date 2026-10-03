@@ -23,7 +23,9 @@ import type { Usage, Warning } from './types.js'
  * - `'rate_limited'`    — 429; back-off and retry.
  * - `'server'`          — 5xx, a transport failure with no HTTP response (a
  *   refused or reset connection), or a candidate-less billed response without
- *   a safety block; retryable provider failure.
+ *   a safety block; retryable provider failure. The one exception is a quota
+ *   store failure (`reason: 'quota_store_unavailable'`), which is not
+ *   retryable and never reached the provider.
  * - `'timeout'`         — request exceeded `timeoutMs` or network timeout.
  * - `'aborted'`         — caller cancelled via `AbortSignal`.
  * - `'bad_request'`     — 400/404/413/422; the request itself is malformed,
@@ -65,6 +67,10 @@ export type LlmErrorKind =
  *   streaming release, which can abort a call at the budget: nothing emits it yet
  *   (a post-call budget overrun is a warning, not an error).
  * - `'cache_not_found'`        — a referenced provider cache entry is gone.
+ * - `'quota_store_unavailable'` — a quota store (a host's own or
+ *   `@gullabs/quota`'s) failed or timed out, so the call was refused before it
+ *   reached the provider. Always `kind: 'server'`, `retryable: false`; the
+ *   store's own error is the `cause`.
  */
 export type LlmErrorReason =
   | 'transport_timeout'
@@ -75,6 +81,7 @@ export type LlmErrorReason =
   | 'grounding_missing'
   | 'search_budget_exceeded'
   | 'cache_not_found'
+  | 'quota_store_unavailable'
 
 // ---------------------------------------------------------------------------
 // LlmError

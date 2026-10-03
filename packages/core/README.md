@@ -377,7 +377,7 @@ or 429, any other HTTP error answer) is not counted. `CallSuccessEvent` and `Cal
 `LlmError.kind` and `retryable` say what class of failure happened. `LlmError.reason` says why within
 the kind, from the closed `LlmErrorReason` union (`transport_timeout`, `quota_window`, `daily_quota`,
 `credits_exhausted`, `spend_ceiling`, `grounding_missing`, `search_budget_exceeded` (reserved: nothing emits it until streaming ships, so do not branch on it yet),
-`cache_not_found`). It is absent when no named cause applies. The reason is also persisted:
+`cache_not_found`, `quota_store_unavailable` (a quota store failed or timed out: `server`, not retryable, the store's error is the `cause`)). It is absent when no named cause applies. The reason is also persisted:
 `LlmCallRecord.errorReason`, the `error_reason` column of `@gullabs/drizzle`, and `CallErrorEvent.reason`.
 The union is closed so adapters cannot invent reasons; a new member arrives in a core minor, so keep a
 `default` branch when you switch on it. See ADR-036.

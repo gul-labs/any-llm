@@ -174,6 +174,20 @@ describe('estimateInputTokens', () => {
     expect(tokens).toBe(Math.ceil((4 + 8 + 9 + 5 + 6) / 4))
   })
 
+  it('counts the serialized output schema, which the provider receives as input', () => {
+    const schema = {
+      type: 'object',
+      properties: { answer: { type: 'string' } },
+      required: ['answer'],
+    }
+    const withSchema = estimateInputTokens({
+      messages: [{ role: 'user', parts: [{ kind: 'text', text: 'abcd' }] }],
+      outputJsonSchema: schema,
+    })
+
+    expect(withSchema).toBe(Math.ceil((4 + JSON.stringify(schema).length) / 4))
+  })
+
   it('does not count media or file parts: it is a floor for a request that carries them', () => {
     const base = estimateInputTokens({
       messages: [{ role: 'user', parts: [{ kind: 'text', text: 'abcd' }] }],
