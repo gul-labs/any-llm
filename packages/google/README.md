@@ -376,7 +376,13 @@ prompt's per-modality counts from `usageMetadata.promptTokensDetails` and `cache
 pricing source bills the audio tokens at the audio rates and every other token at the text rate. The other
 models list one rate for all modalities. The rates are from Google's pricing page, read 2026-10-03
 (page last updated 2026-10-01). A request that carries audio but whose response reports no `AUDIO` tokens
-carries a warning, and on a model that prices audio apart its cost is `'estimated'` (it can understate).
+(the entry is absent or `{ AUDIO, 0 }`) carries a warning, and on a model that prices audio apart its cost
+is `'estimated'` (it can understate); the warning and the estimate read the same predicate. Cached tokens
+are priced as text only when the audio share of the cache is known: a `cacheTokensDetails` that lists no
+audio and covers every cached token records `cached_audio: 0` (a text cache beside new audio stays
+`'exact'`), a listing that covers fewer tokens than were cached leaves it unknown, and cached tokens with
+neither `promptTokensDetails` nor `cacheTokensDetails` cannot rule out audio in the cached content, so they
+carry a warning and the cost is `'estimated'`.
 There is no batch tier: `'batch'` is an unpriced tier.
 
 `GoogleCacheStore.create` and `getOrCreate` return a handle with `totalTokenCount`, the create response's

@@ -64,6 +64,7 @@ import type {
 } from './client.js'
 import { isGeminiCapacityError } from './flex-fallback.js'
 import { classifyGoogleError } from './errors.js'
+import { audioTokensReported } from './cost.js'
 import {
   parseSignatureState,
   resolveSignatures,
@@ -683,11 +684,13 @@ function mapUsage(meta: GeminiUsageMetadataShape | undefined): Usage {
   // part included) and `cached_<modality>` (the cached part): the pricing source
   // bills audio apart from text on the models that price it apart. A modality
   // listed twice sums.
+  let cachedSplitTokens: number | undefined
   for (const [prefix, entries] of [
     ['input', meta?.promptTokensDetails],
     ['cached', meta?.cacheTokensDetails],
   ] as const) {
     if (!Array.isArray(entries)) continue
+    if (prefix === 'cached') cachedSplitTokens = 0
     for (const entry of entries as readonly unknown[]) {
       // Malformed provider output (a null entry, a missing field) is skipped.
       if (typeof entry !== 'object' || entry === null) continue
@@ -706,7 +709,21 @@ function mapUsage(meta: GeminiUsageMetadataShape | undefined): Usage {
       }
       const key = `${prefix}_${modality.toLowerCase()}`
       details[key] = (details[key] ?? 0) + count
+      if (prefix === 'cached') cachedSplitTokens = (cachedSplitTokens ?? 0) + count
     }
+  }
+  // A cache split that lists no audio and covers every cached token proves the
+  // cached audio is zero (a text cache beside audio in the new part of the prompt),
+  // so the pricing source need not treat it as unknown. A split that covers fewer
+  // tokens than were cached leaves the remainder, and so the audio share, unknown.
+  if (
+    cachedSplitTokens !== undefined &&
+    cachedContentTokenCount !== undefined &&
+    cachedContentTokenCount > 0 &&
+    cachedSplitTokens >= cachedContentTokenCount &&
+    details['cached_audio'] === undefined
+  ) {
+    details['cached_audio'] = 0
   }
 
   // Raw: the full usageMetadata object verbatim (as JsonValue).
@@ -1202,25 +1219,27 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       const modalityWarnings = (
         meta: GeminiUsageMetadataShape | undefined,
       ): Warning[] => {
-        if (!audioRequested || meta === undefined) return []
-        const hasAudio = (
-          meta.promptTokensDetails as readonly unknown[] | undefined
-        )?.some(
-          (entry) =>
-            typeof entry === 'object' &&
-            entry !== null &&
-            (entry as { modality?: unknown }).modality === 'AUDIO' &&
-            Number((entry as { tokenCount?: unknown }).tokenCount ?? 0) > 0,
+        if (meta === undefined) return []
+        const warnings: Warning[] = []
+        const mapped = mapUsage(meta)
+        if (audioRequested && !audioTokensReported(mapped)) {
+          warnings.push({
+            type: 'other',
+            message:
+              'google: the request carries audio but usageMetadata.promptTokensDetails reports no AUDIO tokens, so the audio input rate could not be applied; on a model that prices audio apart from text, cost.confidence is "estimated" and the amount can understate.',
+          })
+        }
+        const hasSplit = Object.keys(mapped.details).some(
+          (key) => key.startsWith('input_') || key.startsWith('cached_'),
         )
-        return hasAudio === true
-          ? []
-          : [
-              {
-                type: 'other',
-                message:
-                  'google: the request carries audio but usageMetadata.promptTokensDetails reports no AUDIO tokens, so the audio input rate could not be applied; on a model that prices audio apart from text, cost.confidence is "estimated" and the amount can understate.',
-              },
-            ]
+        if ((mapped.cachedInputTokens ?? 0) > 0 && !hasSplit) {
+          warnings.push({
+            type: 'other',
+            message:
+              'google: usageMetadata reports cached tokens with no per-modality split (promptTokensDetails and cacheTokensDetails are both absent), so audio in the cached content cannot be ruled out; on a model that prices audio apart from text, cost.confidence is "estimated" and the amount can understate.',
+          })
+        }
+        return warnings
       }
       /** `usage` (and the grounding note) a failed-but-billed attempt carries. */
       const billedFailure = (

@@ -384,7 +384,9 @@ details = { input, cached, output }   // thinking billed at output rate (folded 
   cached text); the adapter records `promptTokensDetails` / `cacheTokensDetails` as
   `details.input_<modality>` / `cached_<modality>` and the pricing source bills the audio tokens at the audio
   rates and the rest at the text rate. Every other model has one input rate for all modalities. An audio
-  request whose response reports no audio tokens is `estimated`. Source: Google's pricing page, read
+  request whose response reports no audio tokens (absent or zero) is `estimated`, as are cached tokens
+  beside audio with no cached split and cached tokens with no per-modality split at all; a cache split that
+  lists no audio and covers every cached token proves cached audio is zero and the call stays exact. Source: Google's pricing page, read
   2026-10-03 (ADR-039).
 - Priced tiers are `standard` and `flex`; there is no Batch API path, so no batch rates are carried.
 - `Cost.providerReported?: { microUsd }` is the total a provider itself reports billing (xAI

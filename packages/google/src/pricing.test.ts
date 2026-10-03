@@ -43,7 +43,9 @@ function makeUsage(fields: {
 }): Usage {
   return {
     ...fields,
-    details: {},
+    // A real response splits the prompt by modality; without a split a cached
+    // prompt on a model with an audio rate is estimated (audio in the cache).
+    details: { input_text: fields.inputTokens },
     raw: null,
   }
 }

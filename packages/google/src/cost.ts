@@ -30,6 +30,24 @@ function tokenDetail(usage: Usage, key: string): number | undefined {
 }
 
 /**
+ * Whether the response reported a non-zero number of audio prompt tokens
+ * (`details.input_audio`, from `promptTokensDetails`). Audio always has tokens, so
+ * a request that carried audio and a response that reports none (the entry is
+ * absent or `{ AUDIO, 0 }`) leaves the audio share unknown. The pricing source's
+ * confidence and the adapter's warning both read this one predicate.
+ *
+ * @internal
+ */
+export function audioTokensReported(usage: Usage): boolean {
+  return (tokenDetail(usage, 'input_audio') ?? 0) > 0
+}
+
+/** Whether any `<prefix>_<modality>` lane was reported (a per-modality split exists). */
+function hasModalitySplit(usage: Usage, prefix: 'input_' | 'cached_'): boolean {
+  return Object.keys(usage.details).some((key) => key.startsWith(prefix))
+}
+
+/**
  * Price one call: the input split by modality, the token lanes through core,
  * then the grounding fee on the `tools` lane from the normalised search facts in
  * `usage.details`.
@@ -40,9 +58,13 @@ function tokenDetail(usage: Usage, key: string): number | undefined {
  * `cacheTokensDetails`) at the cached audio rate; every other token is priced at
  * the text/image/video rates through core. The audio amounts are added to the
  * `input` and `cached` lanes. The cost is `'estimated'` when audio was sent
- * (`details.audio_input_requested`) but the response reports no audio tokens, or
- * when cached tokens exist beside audio with no cached split: the audio share is
- * then unknown.
+ * (`details.audio_input_requested`) but the response reports no audio tokens (the
+ * entry is absent or zero, {@link audioTokensReported}), when cached tokens exist
+ * beside audio with no cached split, or when cached tokens exist and the response
+ * reports no per-modality split at all (audio in a cache cannot be ruled out): the
+ * audio share is then unknown. A cached split that lists only other modalities and
+ * covers every cached token is a known zero (`cached_audio: 0`, set by the
+ * adapter), so a text cache beside new audio is exact.
  *
  * **Grounding.**
  * - No `web_search_requested`: the call is token-priced and exact.
@@ -103,10 +125,17 @@ function priceCall(model: string, usage: Usage, tier: string | undefined): Cost 
   const audioSentUnreported =
     audioRates !== undefined &&
     usage.details['audio_input_requested'] === 1 &&
-    tokenDetail(usage, 'input_audio') === undefined
+    !audioTokensReported(usage)
   const cachedSplitUnknown =
     audioInput > 0 && cachedTotal > 0 && tokenDetail(usage, 'cached_audio') === undefined
-  if (audioSentUnreported || cachedSplitUnknown)
+  // Cached tokens with neither a prompt nor a cache split: the cache may hold audio
+  // (it is invisible to the request), and the cached text rate would understate it.
+  const cachedModalityUnknown =
+    audioRates !== undefined &&
+    cachedTotal > 0 &&
+    !hasModalitySplit(usage, 'input_') &&
+    !hasModalitySplit(usage, 'cached_')
+  if (audioSentUnreported || cachedSplitUnknown || cachedModalityUnknown)
     cost = { ...cost, confidence: 'estimated' }
 
   if (usage.details['web_search_requested'] !== 1) return cost

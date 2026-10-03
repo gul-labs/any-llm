@@ -3101,3 +3101,21 @@ all unpriced reports `{ microUsd: 0, attempts, unpricedAttempts }`. It is added 
 (an `onSuccess`-only metrics hook could not read it) as well as `CallErrorEvent` and `LlmResult`. The ledger
 statement that the SQL sum equals `callCost` now holds as stated: `SUM(cost_micro_usd)` over the call's rows
 equals `microUsd`, NULL rows being the unpriced attempts.
+
+**Item 8 (Gemini audio confidence).** Four corrections to when an audio-priced call is `'estimated'`:
+
+- A request with audio and a response that reports `{ AUDIO, 0 }` is estimated, exactly like an absent AUDIO
+  entry (audio always has tokens, so a zero is the same missing information). The adapter's warning and the
+  pricing source read one predicate (`audioTokensReported`), and the modality is compared after
+  `mapUsage` lower-cases it (the warning compared the upper-case spelling).
+- Cached tokens beside new audio are exact when the cached part is provably audio-free: a
+  `cacheTokensDetails` that lists no audio and whose entries sum to at least `cachedContentTokenCount` makes
+  the adapter record `details.cached_audio = 0`. A listing that covers fewer tokens than were cached leaves
+  the remainder unknown (estimated), as before. Previously every audio call with a text cache was estimated
+  although its amount was right.
+- Audio inside a `cachedContent` is invisible to the request (the adapter sees only the cache name), so the
+  `audio_input_requested` marker cannot cover it. The response decides instead: on a model with an audio rate,
+  cached tokens with neither `promptTokensDetails` nor `cacheTokensDetails` make the call estimated and warn,
+  because the cached text rate would understate a cache that holds audio. A response that splits the
+  prompt and shows no audio proves the cache holds none and stays exact. No capture with cached tokens
+  exists in the evidence; the rule is fail-closed on a split Google documents as optional.

@@ -204,6 +204,69 @@ describe('the audio share can be unknown, which makes the call estimated', () =>
   })
 })
 
+describe('audio cost confidence: one predicate for the estimate and the warning', () => {
+  it('audio sent and the response reports zero audio tokens is estimated, like an absent split', () => {
+    const cost = pricing.price(
+      'gemini-2.5-flash',
+      usage({
+        inputTokens: 10_000,
+        details: { audio_input_requested: 1, input_audio: 0, input_text: 10_000 },
+      }),
+    )
+    expect(cost.confidence).toBe('estimated')
+  })
+
+  it('a text cache beside audio in the new part of the prompt is known and exact', () => {
+    // 10,000 input of which 3,000 audio (new); 5,000 cached, all text.
+    const cost = pricing.price(
+      'gemini-2.5-flash',
+      usage({
+        inputTokens: 10_000,
+        cachedInputTokens: 5_000,
+        details: {
+          audio_input_requested: 1,
+          input_audio: 3_000,
+          input_text: 7_000,
+          cached_text: 5_000,
+          cached_audio: 0,
+        },
+      }),
+    )
+    // audio 3,000 * 1.00 + uncached text 2,000 * 0.30 + cached text 5,000 * 0.03
+    expect(cost.microUsd).toBe(3_000 + 600 + 150)
+    expect(cost.confidence).toBe('exact')
+  })
+
+  it('cached tokens with no modality split at all cannot rule out audio in the cache: estimated', () => {
+    const cost = pricing.price(
+      'gemini-2.5-flash',
+      usage({ inputTokens: 10_000, cachedInputTokens: 5_000 }),
+    )
+    expect(cost.confidence).toBe('estimated')
+  })
+
+  it('cached tokens beside a prompt split that shows no audio is exact (the cache is part of the prompt)', () => {
+    const cost = pricing.price(
+      'gemini-2.5-flash',
+      usage({
+        inputTokens: 10_000,
+        cachedInputTokens: 5_000,
+        details: { input_text: 10_000 },
+      }),
+    )
+    expect(cost.confidence).toBe('exact')
+  })
+
+  it('a model with one rate for every modality is exact with cached tokens and no split', () => {
+    expect(
+      pricing.price(
+        'gemini-3.8-flash',
+        usage({ inputTokens: 10_000, cachedInputTokens: 5_000 }),
+      ).confidence,
+    ).toBe('exact')
+  })
+})
+
 describe('the dead batch tier is gone', () => {
   it('batch is not a priced tier', () => {
     expect(GEMINI_PRICED_TIERS).toEqual(['standard', 'flex'])
@@ -285,6 +348,68 @@ describe('adapter: promptTokensDetails reach usage.details and the cost', () => 
     expect(result.cost?.confidence).toBe('estimated')
     expect(result.warnings.map((w) => w.message)).toEqual([
       expect.stringContaining('reports no AUDIO tokens'),
+    ])
+  })
+
+  it('a cache listing only text, covering every cached token, makes cached audio provably zero', async () => {
+    const { result } = await run(audioMessage, {
+      cachedContentTokenCount: 5_000,
+      promptTokensDetails: [
+        { modality: 'TEXT', tokenCount: 7_000 },
+        { modality: 'AUDIO', tokenCount: 3_000 },
+      ],
+      cacheTokensDetails: [{ modality: 'TEXT', tokenCount: 5_000 }],
+    })
+    expect(result.usage.details).toMatchObject({ cached_text: 5_000, cached_audio: 0 })
+    expect(result.cost?.confidence).toBe('exact')
+    expect(result.cost?.microUsd).toBe(3_000 + 600 + 150 + 1_250)
+    expect(result.warnings).toEqual([])
+  })
+
+  it('a cache listing that covers fewer tokens than were cached leaves cached audio unknown', async () => {
+    const { result } = await run(audioMessage, {
+      cachedContentTokenCount: 5_000,
+      promptTokensDetails: [
+        { modality: 'TEXT', tokenCount: 7_000 },
+        { modality: 'AUDIO', tokenCount: 3_000 },
+      ],
+      cacheTokensDetails: [{ modality: 'TEXT', tokenCount: 3_000 }],
+    })
+    expect(result.usage.details).not.toHaveProperty('cached_audio')
+    expect(result.cost?.confidence).toBe('estimated')
+  })
+
+  it('AUDIO reported as zero warns and is estimated: the warning and the estimate agree', async () => {
+    const { result } = await run(audioMessage, {
+      promptTokensDetails: [
+        { modality: 'TEXT', tokenCount: 10_000 },
+        { modality: 'AUDIO', tokenCount: 0 },
+      ],
+    })
+    expect(result.cost?.confidence).toBe('estimated')
+    expect(result.warnings.map((w) => w.message)).toEqual([
+      expect.stringContaining('reports no AUDIO tokens'),
+    ])
+  })
+
+  it('a lower-case audio modality is read the same way (mapUsage lower-cases it)', async () => {
+    const { result } = await run(audioMessage, {
+      promptTokensDetails: [
+        { modality: 'text', tokenCount: 6_000 },
+        { modality: 'audio', tokenCount: 4_000 },
+      ],
+    })
+    expect(result.warnings).toEqual([])
+    expect(result.cost?.confidence).toBe('exact')
+  })
+
+  it('cached tokens with no modality split warn that audio in the cache cannot be ruled out', async () => {
+    const { result } = await run(textMessage, {
+      cachedContentTokenCount: 5_000,
+    })
+    expect(result.cost?.confidence).toBe('estimated')
+    expect(result.warnings.map((w) => w.message)).toEqual([
+      expect.stringContaining('no per-modality split'),
     ])
   })
 
