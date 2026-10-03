@@ -1,5 +1,6 @@
 import { z } from 'zod'
 
+import { GOOGLE_MAX_TIMEOUT_MS } from '../client.js'
 import { GOOGLE_SAFETY_CATEGORIES, GOOGLE_SAFETY_THRESHOLDS } from '../safety-settings.js'
 
 export const Gemma426bA4bItConfigSchema = z
@@ -54,7 +55,7 @@ export const Gemma426bA4bItConfigSchema = z
         title: 'Reasoning',
         description: 'Gemma 4 26B A4B IT thinkingLevel configuration.',
       }),
-    timeoutMs: z.number().int().positive().optional().meta({
+    timeoutMs: z.number().int().positive().max(GOOGLE_MAX_TIMEOUT_MS).optional().meta({
       title: 'Timeout',
       description: 'Logical request timeout in milliseconds.',
     }),

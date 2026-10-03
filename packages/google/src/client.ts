@@ -75,6 +75,14 @@ export const STANDARD_DEFAULT_TIMEOUT_MS = 300_000
  */
 export const TRANSPORT_TIMEOUT_BUFFER_MS = 5_000
 
+/**
+ * Largest `timeoutMs` the gemini config schemas accept. Node timers fire after
+ * 1 ms (with a warning) above 2^31 - 1 ms, and the SDK deadline is `timeoutMs`
+ * plus {@link TRANSPORT_TIMEOUT_BUFFER_MS}; a larger value is rejected, not
+ * clamped.
+ */
+export const GOOGLE_MAX_TIMEOUT_MS = 2_147_483_647 - TRANSPORT_TIMEOUT_BUFFER_MS
+
 // ---------------------------------------------------------------------------
 // Response shape — mirrors the @google/genai surface we actually consume
 // ---------------------------------------------------------------------------

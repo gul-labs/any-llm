@@ -52,6 +52,7 @@ export {
   FLEX_DEFAULT_TIMEOUT_MS,
   STANDARD_DEFAULT_TIMEOUT_MS,
   TRANSPORT_TIMEOUT_BUFFER_MS,
+  GOOGLE_MAX_TIMEOUT_MS,
 } from './client.js'
 export { isGeminiCapacityError } from './flex-fallback.js'
 export type {

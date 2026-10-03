@@ -1,5 +1,6 @@
 import { z } from 'zod'
 
+import { GOOGLE_MAX_TIMEOUT_MS } from '../client.js'
 import { GOOGLE_SAFETY_CATEGORIES, GOOGLE_SAFETY_THRESHOLDS } from '../safety-settings.js'
 
 export const Gemini31ProPreviewConfigSchema = z
@@ -42,7 +43,7 @@ export const Gemini31ProPreviewConfigSchema = z
           title: 'Reasoning',
           description: 'Gemini 3.1 Pro Preview thinkingLevel configuration.',
         }),
-      timeoutMs: z.number().int().positive().optional().meta({
+      timeoutMs: z.number().int().positive().max(GOOGLE_MAX_TIMEOUT_MS).optional().meta({
         title: 'Timeout',
         description: 'Logical request timeout in milliseconds.',
       }),
@@ -166,7 +167,7 @@ export const Gemini31ProPreviewConfigSchema = z
           title: 'Reasoning',
           description: 'Gemini 3.1 Pro Preview thinkingLevel configuration.',
         }),
-      timeoutMs: z.number().int().positive().optional().meta({
+      timeoutMs: z.number().int().positive().max(GOOGLE_MAX_TIMEOUT_MS).optional().meta({
         title: 'Timeout',
         description: 'Logical request timeout in milliseconds.',
       }),
