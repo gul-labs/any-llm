@@ -8,6 +8,9 @@
  * @module
  */
 
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, it, expect } from 'vitest'
 import { MAX_STDERR_CHARS, MAX_STDOUT_BYTES, buildClaudeCliRunner } from './runner.js'
 
@@ -114,4 +117,63 @@ describe('buildClaudeCliRunner: stdout and stdin handling (R4.19)', () => {
     expect(result.stderr.length).toBeLessThanOrEqual(MAX_STDERR_CHARS)
     expect(result.stderr.endsWith('TAIL-MARKER')).toBe(true)
   }, 30_000)
+})
+
+describe('buildClaudeCliRunner: kill reaches grandchildren (process group)', () => {
+  // A child that spawns a grandchild sharing its stdio and living far longer
+  // than the call: killing only the child leaves the pipes open, so `close`
+  // (and the call) would wait for the grandchild.
+  const script = `
+    const { spawn } = require('node:child_process');
+    const g = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], { stdio: 'inherit' });
+    require('node:fs').writeFileSync(process.argv[1], String(g.pid));
+    setTimeout(() => {}, 20000);
+  `
+  const alive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  it('a timeout settles promptly and the grandchild is dead', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'runner-grandchild-'))
+    const pidFile = join(dir, 'pid')
+    try {
+      const started = Date.now()
+      const err = await nodeRunner()
+        .run(['-e', script, pidFile], '', { cwd: process.cwd(), timeoutMs: 500 })
+        .catch((e: unknown) => e)
+      expect((err as Error).name).toBe('TimeoutError')
+      expect(Date.now() - started).toBeLessThan(4_000)
+      const grandchild = Number(readFileSync(pidFile, 'utf8'))
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      expect(alive(grandchild)).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 15_000)
+
+  it('an abort settles promptly too', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'runner-grandchild-'))
+    const pidFile = join(dir, 'pid')
+    try {
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(), 500)
+      const started = Date.now()
+      const err = await nodeRunner()
+        .run(['-e', script, pidFile], '', {
+          cwd: process.cwd(),
+          signal: controller.signal,
+        })
+        .catch((e: unknown) => e)
+      expect((err as Error).name).toBe('AbortError')
+      expect(Date.now() - started).toBeLessThan(4_000)
+      expect(alive(Number(readFileSync(pidFile, 'utf8')))).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 15_000)
 })

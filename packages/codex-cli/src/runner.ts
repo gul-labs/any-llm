@@ -68,7 +68,7 @@ export interface CodexCliRunner {
 }
 
 // ---------------------------------------------------------------------------
-// Real implementation — NEVER exercised by committed tests
+// Real implementation (exercised by runner.test.ts against the Node executable)
 // ---------------------------------------------------------------------------
 
 /** Grace period between SIGTERM and the SIGKILL follow-up, in milliseconds. */
@@ -97,9 +97,16 @@ export function createCodexCliRunner(codexPath = 'codex'): CodexCliRunner {
           return
         }
 
+        // `detached` makes the child the leader of its own process group, so a
+        // kill reaches every process it started (a grandchild that inherited
+        // the pipes would otherwise hold `close` open past the timeout or the
+        // output cap). Not on Windows, which has no process groups. A host that
+        // is interrupted (Ctrl-C) does not forward the signal to the CLI, which
+        // then runs to its own timeout.
         const child = spawn(codexPath, args, {
           cwd: opts.cwd,
           stdio: ['pipe', 'pipe', 'pipe'],
+          detached: process.platform !== 'win32',
         })
 
         // Chunks can split a multibyte UTF-8 character, so each stream keeps
@@ -124,11 +131,30 @@ export function createCodexCliRunner(codexPath = 'codex'): CodexCliRunner {
           if (hardKillTimer !== undefined) clearTimeout(hardKillTimer)
         }
 
+        // Signals the whole process group (`-pid`), falling back to the child
+        // alone where that is not possible.
+        const signalTree = (signal: 'SIGTERM' | 'SIGKILL'): void => {
+          if (process.platform !== 'win32' && child.pid !== undefined) {
+            try {
+              process.kill(-child.pid, signal)
+              return
+            } catch {
+              // The group is gone or was never made; signal the child below.
+            }
+          }
+          child.kill(signal)
+        }
+
         const terminate = (): void => {
           if (settled) return
-          child.kill('SIGTERM')
+          signalTree('SIGTERM')
           hardKillTimer = setTimeout(() => {
-            if (!settled) child.kill('SIGKILL')
+            if (settled) return
+            signalTree('SIGKILL')
+            // A process that left the group can still hold the pipes: closing
+            // our ends lets `close` fire without waiting for it.
+            child.stdout.destroy()
+            child.stderr.destroy()
           }, SIGKILL_GRACE_MS)
         }
 
