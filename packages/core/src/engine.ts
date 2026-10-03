@@ -19,6 +19,7 @@ import {
 } from './errors.js'
 import type { LlmErrorIssue, NormalizedSchemaIssue } from './errors.js'
 import { buildRecord, normalizeUsage } from './record.js'
+import { providerCostDriftWarning } from './cost.js'
 import { assertTimerMs } from './timer.js'
 import { redactSecrets } from './redact.js'
 import { boundedModelText, unknownModelMessage } from './registry.js'
@@ -42,6 +43,7 @@ import type {
   Handler,
   CallStartEvent,
   CallSuccessEvent,
+  AttemptEvent,
   CallErrorEvent,
   TokenCountRequest,
   TokenCount,
@@ -1705,6 +1707,38 @@ export function createClient(config: ClientConfig): Client {
     // They stay undefined if a middleware throws before next() is called.
     let lastAttemptId: string | undefined
     let lastAttemptNumber: number | undefined
+    // Per-attempt cost ledger for `LlmResult.callCost` / `CallErrorEvent.callCost`.
+    // `priced` sums the micro-USD of every attempt that was priced; an attempt that
+    // reported usage but could not be priced makes the sum unreportable.
+    const attemptCosts = { attempts: 0, priced: 0, microUsd: 0, hole: false }
+    let lastFailure: { usage: Usage; cost?: Cost } | undefined
+    const noteAttemptCost = (cost: Cost | undefined): void => {
+      if (cost === undefined) return
+      if (cost.microUsd === null) {
+        attemptCosts.hole = true
+        return
+      }
+      attemptCosts.priced += 1
+      attemptCosts.microUsd += cost.microUsd
+    }
+    const callCostOf = (): { microUsd: number; attempts: number } | undefined =>
+      attemptCosts.hole || attemptCosts.priced === 0
+        ? undefined
+        : { microUsd: attemptCosts.microUsd, attempts: attemptCosts.attempts }
+    const emitAttempt = (event: AttemptEvent): void => {
+      try {
+        telemetry.onAttempt?.(event, span)
+      } catch (hookErr) {
+        safeLogger.debug(
+          {
+            callId,
+            phase: 'onAttempt',
+            error: redactSecrets(String(hookErr)),
+          },
+          'llm.telemetry.hook.failed',
+        )
+      }
+    }
 
     let span: unknown
     try {
@@ -1818,6 +1852,7 @@ export function createClient(config: ClientConfig): Client {
       const attemptId = ids.attemptId()
       lastAttemptId = attemptId
       lastAttemptNumber = attemptNumber
+      attemptCosts.attempts += 1
 
       // A2: Attempt-start debug log so operators can trace individual attempts.
       ctx.logger.debug(
@@ -2002,6 +2037,8 @@ export function createClient(config: ClientConfig): Client {
             // The provider billed tokens its usage fields do not carry: the
             // amount can undercount, so it is never reported as exact.
             if (normalizedResult.estimated) cost = markEstimated(cost)
+            const drift = providerCostDriftWarning(cost)
+            if (drift !== undefined) costWarnings.push(drift)
             if (cost.microUsd === null) {
               const reason =
                 cost.unpricedReason !== undefined ? ` Reason: ${cost.unpricedReason}` : ''
@@ -2082,6 +2119,19 @@ export function createClient(config: ClientConfig): Client {
           sinkTimeoutMs,
           sinkInterrupts,
         )
+        noteAttemptCost(cost)
+        emitAttempt({
+          callId: ctx.callId,
+          attemptId,
+          attemptNumber,
+          provider,
+          model: requestedModel,
+          metadata: request.metadata ?? {},
+          latencyMs,
+          usage: normalizedResult.usage,
+          ...(cost !== undefined ? { cost } : {}),
+          ...(callSiteId !== undefined ? { callSiteId } : {}),
+        })
 
         // Step 12: Return LlmResult.
         const result: LlmResult = {
@@ -2211,6 +2261,29 @@ export function createClient(config: ClientConfig): Client {
           sinkTimeoutMs,
           sinkInterrupts,
         )
+        noteAttemptCost(failureCost)
+        lastFailure =
+          err.usage !== undefined
+            ? {
+                usage: failureUsage,
+                ...(failureCost !== undefined ? { cost: failureCost } : {}),
+              }
+            : undefined
+        emitAttempt({
+          callId: ctx.callId,
+          attemptId,
+          attemptNumber,
+          provider,
+          model: requestedModel,
+          metadata: request.metadata ?? {},
+          latencyMs,
+          usage: failureUsage,
+          ...(failureCost !== undefined ? { cost: failureCost } : {}),
+          errorKind: err.kind,
+          retryable: err.retryable,
+          ...(err.reason !== undefined ? { reason: err.reason } : {}),
+          ...(callSiteId !== undefined ? { callSiteId } : {}),
+        })
 
         // Enrich the error with call context (idempotent — does not overwrite
         // if already set, e.g. by an outer middleware).
@@ -2353,11 +2426,14 @@ export function createClient(config: ClientConfig): Client {
       const chainResult = chain(preResolvedReq, engineCtx)
       // The deadline gate ends a call whose middleware (not an attempt) is
       // taking the time; the chain's own late result or error is then dropped.
-      const result =
+      const chainedResult =
         deadline.gate === undefined
           ? await chainResult
           : await Promise.race([chainResult, deadline.gate])
       const latencyMs = clock.now() - callStartMs
+      const callCost = callCostOf()
+      const result =
+        callCost !== undefined ? { ...chainedResult, callCost } : chainedResult
       try {
         const successEvent: CallSuccessEvent = {
           callId,
@@ -2449,6 +2525,7 @@ export function createClient(config: ClientConfig): Client {
 
       try {
         const attemptIdForEvent = err.attemptId ?? lastAttemptId
+        const errorCallCost = callCostOf()
         const errorEvent: CallErrorEvent = {
           callId,
           provider: callProvider,
@@ -2460,6 +2537,15 @@ export function createClient(config: ClientConfig): Client {
           ...(err.reason !== undefined ? { reason: err.reason } : {}),
           ...(callSiteId !== undefined ? { callSiteId } : {}),
           ...(attemptIdForEvent !== undefined ? { attemptId: attemptIdForEvent } : {}),
+          // Usage and cost only when the failing attempt reported usage; a
+          // failure that came from a refusal has none.
+          ...(attemptRecorded && lastFailure !== undefined
+            ? {
+                usage: lastFailure.usage,
+                ...(lastFailure.cost !== undefined ? { cost: lastFailure.cost } : {}),
+              }
+            : {}),
+          ...(errorCallCost !== undefined ? { callCost: errorCallCost } : {}),
         }
         telemetry.onError?.(errorEvent, span)
       } catch (hookErr) {

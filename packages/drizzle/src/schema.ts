@@ -1,5 +1,7 @@
+import { sql } from 'drizzle-orm'
 import {
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -7,6 +9,43 @@ import {
   text,
   timestamp,
 } from 'drizzle-orm/pg-core'
+import type { LlmCallRecord, LlmErrorKind } from '@gullabs/core'
+
+/**
+ * The closed `status` and `error_kind` vocabularies the table CHECKs admit.
+ * Both are exhaustive over the core unions (the `Missing*` types below fail to
+ * compile when core adds a member), so a new value is a core change that
+ * ships with SQL. `error_reason` is deliberately not constrained.
+ */
+const STATUS_VALUES = [
+  'ok',
+  'api_error',
+  'timeout',
+  'aborted',
+  'content_filter',
+] as const satisfies readonly LlmCallRecord['status'][]
+
+const ERROR_KIND_VALUES = [
+  'invalid_auth',
+  'rate_limited',
+  'server',
+  'timeout',
+  'aborted',
+  'bad_request',
+  'content_filter',
+  'unknown',
+] as const satisfies readonly LlmErrorKind[]
+
+type MissingStatus = Exclude<LlmCallRecord['status'], (typeof STATUS_VALUES)[number]>
+type MissingErrorKind = Exclude<LlmErrorKind, (typeof ERROR_KIND_VALUES)[number]>
+const _exhaustive: [MissingStatus, MissingErrorKind] extends [never, never]
+  ? true
+  : never = true
+void _exhaustive
+
+function sqlList(values: readonly string[]) {
+  return sql.raw(values.map((v) => `'${v}'`).join(', '))
+}
 
 /**
  * `llm_calls` — the append-only ledger table for `@gullabs/core`'s
@@ -33,8 +72,8 @@ import {
  * - `metadata` — ALWAYS populated (`metadata ?? {}`, host-supplied or
  *   defaulted). Never null on any code path; `.notNull()` is correct.
  *
- * Consumers upgrading from a version where `raw_usage` was `NOT NULL` must
- * run: `ALTER TABLE llm_calls ALTER COLUMN raw_usage DROP NOT NULL;`
+ * To create or upgrade the table, use the SQL in `sql/` (`install.sql`,
+ * `upgrades/NNNN-*.sql`); it is the source of truth for existing databases.
  */
 export const llmCalls = pgTable(
   'llm_calls',
@@ -63,6 +102,13 @@ export const llmCalls = pgTable(
     totalTokens: integer('total_tokens'),
     costMicroUsd: integer('cost_micro_usd'),
     pricingVersion: text('pricing_version'),
+    // Cost v2 (ADR-039). NULL on rows written before record version 2, on
+    // refusal rows and when the provider had no pricing source.
+    costConfidence: text('cost_confidence'),
+    // `{ input, cached, output, tools }` in micro-USD; NULL when unpriced.
+    costDetails: jsonb('cost_details'),
+    // Why `cost_micro_usd` is NULL (unknown model or tier, missing tool counter).
+    costUnpricedReason: text('cost_unpriced_reason'),
     tokenDetails: jsonb('token_details').notNull(),
     // Nullable: null means no provider usage payload existed for this row
     // (error, timeout, aborted, content_filter, or an ADR-025 attemptNumber:0
@@ -91,5 +137,12 @@ export const llmCalls = pgTable(
   (table) => [
     index('llm_calls_call_id_idx').on(table.callId),
     index('llm_calls_external_id_idx').on(table.externalId),
+    index('llm_calls_created_at_idx').on(table.createdAt),
+    index('llm_calls_call_site_created_at_idx').on(table.callSiteId, table.createdAt),
+    check('llm_calls_status_check', sql`${table.status} IN (${sqlList(STATUS_VALUES)})`),
+    check(
+      'llm_calls_error_kind_check',
+      sql`${table.errorKind} IN (${sqlList(ERROR_KIND_VALUES)})`,
+    ),
   ],
 )

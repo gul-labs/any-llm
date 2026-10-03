@@ -8,7 +8,7 @@ Reference Postgres schema and `UsageSink` implementation for any-llm using Drizz
 pnpm add @gullabs/drizzle @gullabs/core @gullabs/google drizzle-orm
 ```
 
-**Peer dependency:** `drizzle-orm >=0.36.0`
+**Peer dependency:** `drizzle-orm >=0.36 <1`
 
 ## Key exports
 
@@ -53,10 +53,11 @@ The `llm_calls` table mirrors `LlmCallRecord` from `@gullabs/core`: typed column
 
 The package ships plain SQL in `sql/` (resolvable as `@gullabs/drizzle/sql/install.sql` and so on):
 
-| File                                     | Use                                                                                |
-| ---------------------------------------- | ---------------------------------------------------------------------------------- |
-| `sql/install.sql`                        | Fresh install of the current `llm_calls` table and its indexes.                    |
-| `sql/upgrades/0001-add-error-reason.sql` | Adds the `error_reason` column to a table created by 0.7.2 or earlier. Idempotent. |
+| File                                     | Use                                                                                                 |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `sql/install.sql`                        | Fresh install of the current `llm_calls` table and its indexes.                                     |
+| `sql/upgrades/0001-add-error-reason.sql` | Adds the `error_reason` column to a table created by 0.7.2 or earlier. Idempotent.                  |
+| `sql/upgrades/0002-ledger-v2.sql`        | Adds the cost columns, the `created_at` indexes and the `status` / `error_kind` CHECKs. Idempotent. |
 
 Apply every upgrade you have not run yet, in order, **before** deploying the new sink, on every release that
 ships one (the packages version in lockstep, so a core bump for an unrelated fix is a drizzle bump too). The
@@ -69,7 +70,12 @@ endpoint, or at boot: it selects every column with `LIMIT 0` and rejects with a 
 `sql/upgrades/`.
 
 `error_reason` is plain text with no CHECK constraint: new reasons arrive as core releases (see ADR-036)
-and never need SQL.
+and never need SQL. `status` and `error_kind` are closed vocabularies and carry CHECKs; a new member of
+either ships with SQL. `0002-ledger-v2.sql` validates every existing row against those CHECKs and builds its
+indexes without `CONCURRENTLY`; on a very large table run it in a maintenance window, or create
+`llm_calls_created_at_idx` and `llm_calls_call_site_created_at_idx` concurrently first. The table stores
+`cost_confidence`, `cost_details` and `cost_unpriced_reason` beside `cost_micro_usd` (ADR-039), and caps
+`reasoning_text` and `error_message` at 16 KiB.
 
 ## Sink fail-open guarantee
 

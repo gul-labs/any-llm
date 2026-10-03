@@ -240,7 +240,7 @@ describe('engine — success path', () => {
     expect(sink.records).toHaveLength(1)
     const rec = sink.last()!
     expect(rec.status).toBe('ok')
-    expect(rec.recordSchemaVersion).toBe(1)
+    expect(rec.recordSchemaVersion).toBe(2)
     expect(rec.callId).toBe('call_1')
     expect(rec.attemptId).toBe('attempt_1')
     expect(rec.provider).toBe('google')

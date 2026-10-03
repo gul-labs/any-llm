@@ -80,6 +80,7 @@ export type {
   Logger,
   Telemetry,
   // Telemetry event types
+  AttemptEvent,
   CallStartEvent,
   CallSuccessEvent,
   CallErrorEvent,

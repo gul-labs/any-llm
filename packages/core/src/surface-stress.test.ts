@@ -316,7 +316,7 @@ describe('surface-stress: only LlmErrors escape + record always written', () => 
       )
 
       const rec = sink.last()!
-      expect(rec.recordSchemaVersion).toBe(1)
+      expect(rec.recordSchemaVersion).toBe(2)
       expect(rec.provider).toBe('google')
 
       if (rejected && rejectedValue instanceof LlmError) {
@@ -817,7 +817,7 @@ describe('surface-stress: non-finite values in usage.details and usage.raw', () 
         `iter ${i}: JSON.stringify must not throw`,
       ).not.toThrow()
       const roundTripped = JSON.parse(JSON.stringify(rec)) as typeof rec
-      expect(roundTripped.recordSchemaVersion, `iter ${i}: round-trip sanity`).toBe(1)
+      expect(roundTripped.recordSchemaVersion, `iter ${i}: round-trip sanity`).toBe(2)
     }
   })
 })

@@ -246,6 +246,7 @@ try {
     for (const file of [
       'package/sql/install.sql',
       'package/sql/upgrades/0001-add-error-reason.sql',
+      'package/sql/upgrades/0002-ledger-v2.sql',
     ]) {
       record(
         listing.split('\n').includes(file),
@@ -481,7 +482,11 @@ ${callSite}`,
       import { existsSync } from 'node:fs'
       import { fileURLToPath } from 'node:url'
       const require = createRequire(import.meta.url)
-      for (const f of ['install.sql', 'upgrades/0001-add-error-reason.sql']) {
+      for (const f of [
+        'install.sql',
+        'upgrades/0001-add-error-reason.sql',
+        'upgrades/0002-ledger-v2.sql',
+      ]) {
         const viaRequire = require.resolve('@gullabs/drizzle/sql/' + f)
         const viaImport = fileURLToPath(import.meta.resolve('@gullabs/drizzle/sql/' + f))
         if (!existsSync(viaRequire) || !existsSync(viaImport)) throw new Error('missing ' + f)

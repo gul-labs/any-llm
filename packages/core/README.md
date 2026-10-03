@@ -338,10 +338,16 @@ call.
 ### Telemetry
 
 Inject a `Telemetry` hook via `ClientConfig.telemetry` for OTel / Sentry / PostHog integration.
-All three methods (`onStart`, `onSuccess`, `onError`) are optional and fire once per logical call
-(not per attempt). The opaque value returned by `onStart` is forwarded as `span` to `onSuccess`
-and `onError`. Hook failures are swallowed fail-open. `CallErrorEvent` carries `errorKind`, `retryable`
-and, when the error has one, `reason`.
+All four methods (`onStart`, `onAttempt`, `onSuccess`, `onError`) are optional. `onStart`, `onSuccess`
+and `onError` fire once per logical call; `onAttempt` fires once per provider attempt, after the attempt's
+ledger row was handed to the sink, with `attemptNumber`, `usage`, `cost` and, on failure, `errorKind`,
+`reason` and `retryable` (a refusal that never reached an attempt emits none). The opaque value returned by
+`onStart` is forwarded as `span` to the others. Hook failures are swallowed fail-open. `CallErrorEvent`
+carries `errorKind`, `retryable`, `reason` when the error has one, and `usage` and `cost` of the last
+failing attempt when it reported usage. `LlmResult.callCost` is `{ microUsd, attempts }`: the library-priced
+amount of every attempt summed, retries and billed failures included (`result.cost` is the successful attempt
+alone); it is absent when no attempt was priced or any attempt with usage was unpriced, and `CallErrorEvent`
+carries the same total for a call that failed.
 
 ### Error reasons
 
@@ -373,6 +379,13 @@ idempotent on `r.attemptId`. Key traceability fields: `callId` (stable across re
 `attemptId`, `attemptNumber` (1-based), `latencyMs`, token counts, `costMicroUsd`, `errorKind`,
 `queueDelayMs`, and `metadata` (host-supplied, stored verbatim). `latencyMs` measures provider
 dispatch only; `queueDelayMs` measures pre-send wait inside `RateLimiter.acquire`.
+
+Record version 2 (`recordSchemaVersion: 2`, ADR-039) persists the cost facts the engine computes:
+`costConfidence` (`'exact'` or `'estimated'`), `costDetails` (`{ input, cached, output, tools }` in
+micro-USD, only when priced) and `costUnpricedReason` (only when `costMicroUsd` is `null`). `reasoningText`
+and `errorMessage` are capped at 16 KiB (UTF-8) with a `…[truncated]` marker and a warning; the live result
+and error keep the full text. `Cost.providerReported` carries the total a provider itself reports billing
+(xAI) and the engine warns when it drifts from the priced total.
 
 Every provider attempt is its own billed row with its own minted `attemptId`. A call whose final
 error did not come out of an attempt (input-contract refusal, middleware refusal, quota deferral, retry

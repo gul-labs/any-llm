@@ -529,6 +529,47 @@ export interface CallStartEvent {
 }
 
 /**
+ * Event emitted once per provider attempt, after the attempt's ledger row was
+ * handed to the sink (success or failure).
+ *
+ * A refusal that never reached an attempt (a middleware refusal, an exhausted
+ * retry budget, an input-contract violation) is not an attempt and emits no
+ * `AttemptEvent`; the call's `onError` reports it.
+ *
+ * @remarks
+ * `metadata` carries the caller's domain anchors as high-cardinality attributes;
+ * do NOT promote arbitrary keys to metric labels.
+ */
+export interface AttemptEvent {
+  /** Stable call identifier (shared by every attempt of the call). */
+  callId: string
+  /** This attempt's identifier (matches the persisted row). */
+  attemptId: string
+  /** 1-based ordinal of the attempt within the call. */
+  attemptNumber: number
+  /** Provider identifier, sourced from `req.provider`. */
+  provider: string
+  /** Model string as supplied by the caller. */
+  model: string
+  /** Call-site identifier, if the call was made via `runStructured`. */
+  callSiteId?: string
+  /** Caller-supplied domain metadata (opaque; never branch on contents). */
+  metadata: CallMetadata
+  /** Wall-clock provider-dispatch latency of this attempt, in milliseconds. */
+  latencyMs: number
+  /** Token usage of this attempt (zeros when the attempt carried none). */
+  usage: Usage
+  /** This attempt's cost, when it was priced or known to be unpriced. */
+  cost?: Cost
+  /** The error kind when the attempt failed; absent when it succeeded. */
+  errorKind?: LlmErrorKind
+  /** Typed reason within `errorKind`, when the error carries one. */
+  reason?: LlmErrorReason
+  /** Whether the failing error was considered retryable (failed attempts only). */
+  retryable?: boolean
+}
+
+/**
  * Event emitted after a successful LLM call (post-sink, post-retry if any).
  *
  * @remarks
@@ -592,6 +633,20 @@ export interface CallErrorEvent {
   reason?: LlmErrorReason
   /** Whether the error was considered retryable. */
   retryable: boolean
+  /**
+   * Token usage of the last failing attempt, when the provider reported one (a
+   * billed failure such as an HTTP 200 with no usable output). Absent when the
+   * failure carried no usage.
+   */
+  usage?: Usage
+  /** Cost of that attempt's usage, when `usage` is present and a pricing source exists. */
+  cost?: Cost
+  /**
+   * What every attempt of the call cost the library could price, summed (see
+   * `LlmResult.callCost`). Absent when no attempt was priced or any attempt with
+   * usage was unpriced.
+   */
+  callCost?: { microUsd: number; attempts: number }
 }
 
 /**
@@ -601,9 +656,9 @@ export interface CallErrorEvent {
  * Telemetry failures are swallowed by the engine (fail-open).
  *
  * @remarks
- * Events fire once per logical call (not per retry attempt). The `metadata`
- * field on each event carries caller domain anchors as high-cardinality
- * attributes — suitable for log fields and OTel span tags, but implementers
+ * `onStart`, `onSuccess` and `onError` fire once per logical call; `onAttempt`
+ * fires once per provider attempt. The `metadata` field on each event carries
+ * caller domain anchors as high-cardinality attributes — suitable for log fields and OTel span tags, but implementers
  * MUST NOT promote arbitrary metadata keys to metric labels (cardinality risk).
  */
 export interface Telemetry {
@@ -612,6 +667,14 @@ export interface Telemetry {
    * May return an opaque span handle that is forwarded to `onSuccess` / `onError`.
    */
   onStart?(e: CallStartEvent): unknown
+  /**
+   * Called once per provider attempt, after its ledger row was handed to the sink
+   * (success or failure), before the call settles. Retries, billed failures and
+   * the final attempt each get one event.
+   * @param e - Attempt event with usage, cost and, on failure, the error kind.
+   * @param span - The opaque span returned by `onStart`, if any.
+   */
+  onAttempt?(e: AttemptEvent, span?: unknown): void
   /**
    * Called after a successful call (adapter returned, record persisted).
    * @param e - Success event with usage, cost, and latency.

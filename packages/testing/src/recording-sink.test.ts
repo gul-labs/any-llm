@@ -4,7 +4,7 @@ import type { LlmCallRecord } from '@gullabs/core'
 
 function makeRecord(overrides: Partial<LlmCallRecord> = {}): LlmCallRecord {
   return {
-    recordSchemaVersion: 1,
+    recordSchemaVersion: 2,
     callId: 'call_1',
     attemptId: 'attempt_1',
     attemptNumber: 1,

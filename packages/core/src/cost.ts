@@ -3,7 +3,7 @@
  *
  * This module provides `computeCost` — a **pure function** with zero
  * provider/tier vocabulary. Core has no pricing tables and no tier names
- * (`flex`/`standard`/`batch` are Google's, not core's): every provider
+ * (`flex`/`standard` are Google's, not core's): every provider
  * package owns its own rates table and supplies a lookup that already
  * resolved the concrete per-tier {@link ModelRates}. This is the seam that
  * lets a new provider ship pricing with zero core changes — see
@@ -35,7 +35,7 @@
  * @module
  */
 
-import type { Cost, Usage } from './types.js'
+import type { Cost, Usage, Warning } from './types.js'
 import type { ModelRates } from './pricing.js'
 
 /**
@@ -120,7 +120,7 @@ function selectRates(
  * @param model - Model identifier string used for routing (e.g. `"gemini-2.5-pro"`).
  * @param usage - GROSS token usage for the call.
  * @param tier - Opaque, provider-defined service tier string (e.g. `'flex'`,
- *   `'standard'`, `'batch'`). `undefined` means "no tier specified"; the
+ *   `'standard'`). `undefined` means "no tier specified"; the
  *   lookup resolves that to the provider's standard rates. A *defined* tier
  *   the lookup does not price is never mapped to `standard` (reject-don't-map).
  * @param rates - Caller-supplied rates lookup (see {@link CostRatesLookup}).
@@ -185,5 +185,34 @@ export function computeCost(
       output: outputCost,
       tools: 0,
     },
+  }
+}
+
+/**
+ * Compares the library's priced total with the total the provider reported
+ * (`Cost.providerReported`) and returns a warning when they drift apart.
+ *
+ * Only totals are compared: a provider reports no lanes. Each priced lane
+ * (`details.input`, `cached`, `output`, `tools` with a non-zero amount) is
+ * rounded to whole micro-USD independently and the provider's figure is
+ * converted with the same rounding, so each lane can account for up to 1 µUSD
+ * of difference; a larger gap means the snapshot's rates are stale or a billed
+ * lane is not priced. `undefined` when there is nothing to compare (unpriced, or
+ * the provider reported no total) or the totals agree within that tolerance.
+ *
+ * @internal
+ */
+export function providerCostDriftWarning(cost: Cost): Warning | undefined {
+  if (cost.microUsd === null || cost.providerReported === undefined) return undefined
+  const lanes = Object.values(cost.details).filter((micro) => micro !== 0).length
+  const tolerance = Math.max(1, lanes)
+  const difference = cost.providerReported.microUsd - cost.microUsd
+  if (Math.abs(difference) <= tolerance) return undefined
+  return {
+    type: 'other',
+    message:
+      `cost drift: the provider reported ${cost.providerReported.microUsd} µUSD but pricing snapshot ` +
+      `${cost.pricingVersion} computed ${cost.microUsd} µUSD (difference ${difference}, tolerance ${tolerance} ` +
+      `for ${lanes} priced lane${lanes === 1 ? '' : 's'}); the snapshot's rates may be stale or a billed lane is not priced.`,
   }
 }

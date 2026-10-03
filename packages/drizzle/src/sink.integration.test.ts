@@ -38,7 +38,7 @@ const CREATE_TABLE_SQL = readFileSync(
 
 function makeRecord(overrides: Partial<LlmCallRecord> = {}): LlmCallRecord {
   return {
-    recordSchemaVersion: 1,
+    recordSchemaVersion: 2,
     callId: 'call_integration_1',
     attemptId: 'attempt_integration_1',
     attemptNumber: 1,
@@ -125,7 +125,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
     const row = rows[0]!
 
     // Identity
-    expect(row.recordSchemaVersion).toBe(1)
+    expect(row.recordSchemaVersion).toBe(2)
     expect(row.callId).toBe('call_integration_1')
     expect(row.attemptId).toBe('attempt_integration_1')
     expect(row.callSiteId).toBe('site_integration')
@@ -506,7 +506,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
     // reasoningText, queueDelayMs, token subset counts) are simply absent,
     // not present-as-undefined — buildRecord's conditional-spread convention.
     const record: LlmCallRecord = {
-      recordSchemaVersion: 1,
+      recordSchemaVersion: 2,
       callId: 'call_error_null_raw_usage',
       attemptId: 'error_null_raw_usage',
       attemptNumber: 1,
@@ -553,7 +553,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
     // begins (e.g. a D3/D4 input-contract refusal): EMPTY_USAGE throughout,
     // attemptNumber: 0, and only the fields buildRecord always includes.
     const record: LlmCallRecord = {
-      recordSchemaVersion: 1,
+      recordSchemaVersion: 2,
       callId: 'call_refusal_attempt_0',
       attemptId: 'refusal_attempt_0',
       attemptNumber: 0,

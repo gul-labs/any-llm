@@ -35,8 +35,11 @@ import { redactSecrets } from './redact.js'
  * on any breaking schema change.
  */
 export interface LlmCallRecord {
-  /** Schema version — always `1` for this release. */
-  recordSchemaVersion: 1
+  /**
+   * Schema version — always `2` for this release. Version 2 added
+   * `costConfidence`, `costDetails` and `costUnpricedReason` (ADR-039).
+   */
+  recordSchemaVersion: 2
 
   // --- identity ---
   /** Unique ID for the logical call (shared across retries). */
@@ -137,6 +140,25 @@ export interface LlmCallRecord {
   costMicroUsd?: number | null
   /** Pricing snapshot identifier (e.g. `"gemini-2026-06-27"`). */
   pricingVersion?: string
+  /**
+   * Whether `costMicroUsd` is exact (`'exact'`) or approximate or absent
+   * (`'estimated'`: a web-search fee that is an upper bound or unknown, an
+   * unpriced model or tier, tokens the usage fields do not carry). Present
+   * whenever a `Cost` was computed; absent on refusal rows and when the provider
+   * has no pricing source.
+   */
+  costConfidence?: Cost['confidence']
+  /**
+   * The cost split into lanes in micro-USD (`{ input, cached, output, tools }`,
+   * summing to `costMicroUsd`), so tool fees can be separated from token spend
+   * in SQL. Present only when the call was priced (`costMicroUsd` is not null).
+   */
+  costDetails?: Cost['details']
+  /**
+   * Why the call is unpriced (an unknown model, an unpriced tier or tool
+   * counter). Present only when `costMicroUsd` is `null`.
+   */
+  costUnpricedReason?: string
 
   // --- forward-compat JSONB lanes ---
   /** Open token-type detail map from `Usage.details` (JSONB). */
@@ -179,7 +201,9 @@ export interface LlmCallRecord {
   /**
    * Thought-summary text returned by the provider.
    * Present only when `config.reasoning.includeThoughts` was `true` and the
-   * provider returned thought text.  Truncated to a cap in the engine.
+   * provider returned thought text. Truncated by `buildRecord` to
+   * {@link RECORD_TEXT_CAP_BYTES} (UTF-8) with a `…[truncated]` marker and a
+   * warning; the live result keeps the full text.
    */
   reasoningText?: string
 
@@ -192,7 +216,11 @@ export interface LlmCallRecord {
    * carries no reason; `errorKind` stays authoritative.
    */
   errorReason?: LlmErrorReason
-  /** Truncated error message (absent on success). */
+  /**
+   * Redacted error message (absent on success), truncated by `buildRecord` to
+   * {@link RECORD_TEXT_CAP_BYTES} (UTF-8) with a `…[truncated]` marker and a
+   * warning; the thrown `LlmError` keeps the full message.
+   */
   errorMessage?: string
 
   // --- host anchors ---
@@ -599,6 +627,53 @@ function sanitizeUsage(usage: Usage): SanitizeUsageResult {
 }
 
 // ---------------------------------------------------------------------------
+// Text cap
+// ---------------------------------------------------------------------------
+
+/**
+ * Largest `reasoningText` / `errorMessage` a record carries, in UTF-8 bytes,
+ * marker included. Both are provider-controlled and unbounded; a ledger row must
+ * not grow with them.
+ */
+export const RECORD_TEXT_CAP_BYTES = 16 * 1024
+
+const TRUNCATION_MARKER = '…[truncated]'
+
+function utf8Length(codePoint: number): number {
+  if (codePoint < 0x80) return 1
+  if (codePoint < 0x800) return 2
+  if (codePoint < 0x10000) return 3
+  return 4
+}
+
+/**
+ * Caps `text` at {@link RECORD_TEXT_CAP_BYTES} UTF-8 bytes. A longer text is cut
+ * at a code-point boundary and ends with `…[truncated]`, so the result never
+ * exceeds the cap.
+ */
+function capRecordText(text: string): { text: string; truncated: boolean } {
+  // UTF-16 length * 3 bounds the UTF-8 length from above.
+  if (text.length * 3 <= RECORD_TEXT_CAP_BYTES) return { text, truncated: false }
+  let total = 0
+  for (const ch of text) {
+    total += utf8Length(ch.codePointAt(0) as number)
+    if (total > RECORD_TEXT_CAP_BYTES) break
+  }
+  if (total <= RECORD_TEXT_CAP_BYTES) return { text, truncated: false }
+  let budget = RECORD_TEXT_CAP_BYTES
+  for (const ch of TRUNCATION_MARKER) budget -= utf8Length(ch.codePointAt(0) as number)
+  let used = 0
+  let end = 0
+  for (const ch of text) {
+    const bytes = utf8Length(ch.codePointAt(0) as number)
+    if (used + bytes > budget) break
+    used += bytes
+    end += ch.length
+  }
+  return { text: text.slice(0, end) + TRUNCATION_MARKER, truncated: true }
+}
+
+// ---------------------------------------------------------------------------
 // buildRecord
 // ---------------------------------------------------------------------------
 
@@ -640,6 +715,28 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
     ),
   ]
 
+  // Provider-controlled free text is capped; the live result and error keep the
+  // full text. `errorMessage` is redacted first so a secret cannot be cut in half
+  // and survive as an unrecognisable fragment.
+  const reasoning =
+    input.reasoningText !== undefined ? capRecordText(input.reasoningText) : undefined
+  const errorText =
+    input.error !== undefined
+      ? capRecordText(redactSecrets(input.error.message))
+      : undefined
+  if (reasoning?.truncated === true) {
+    allWarnings.push({
+      type: 'other',
+      message: `reasoningText was truncated to ${RECORD_TEXT_CAP_BYTES} bytes in the ledger record.`,
+    })
+  }
+  if (errorText?.truncated === true) {
+    allWarnings.push({
+      type: 'other',
+      message: `errorMessage was truncated to ${RECORD_TEXT_CAP_BYTES} bytes in the ledger record.`,
+    })
+  }
+
   // C1: Scoped provider extension redaction.
   // Only secret-bearing provider lanes are redacted; all standard generation knobs
   // (temperature, topP, maxOutputTokens, stopSequences, serviceTier, etc.) pass
@@ -668,7 +765,7 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
   // Build the record using conditional spreads for every optional property so
   // `exactOptionalPropertyTypes` is satisfied (we never assign `undefined`).
   const record: LlmCallRecord = {
-    recordSchemaVersion: 1,
+    recordSchemaVersion: 2,
     callId: input.callId,
     attemptId: input.attemptId,
     attemptNumber: input.attemptNumber,
@@ -703,6 +800,11 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
       ? {
           costMicroUsd: input.cost.microUsd,
           pricingVersion: input.cost.pricingVersion,
+          costConfidence: input.cost.confidence,
+          ...(input.cost.microUsd !== null ? { costDetails: input.cost.details } : {}),
+          ...(input.cost.unpricedReason !== undefined
+            ? { costUnpricedReason: input.cost.unpricedReason }
+            : {}),
         }
       : {}),
     // JSONB lanes.
@@ -723,18 +825,18 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
     ...(allWarnings.length > 0 ? { warnings: allWarnings } : {}),
     generationConfig,
     // Reasoning capture.
-    ...(input.reasoningText !== undefined ? { reasoningText: input.reasoningText } : {}),
+    ...(reasoning !== undefined ? { reasoningText: reasoning.text } : {}),
     // Postmortem — only on failure.
     // errorMessage is redacted before persistence so secrets in provider error
     // text (API keys in URLs, Bearer tokens) are not written to the audit record.
     // The live LlmError thrown to the caller is NOT modified.
-    ...(input.error !== undefined
+    ...(input.error !== undefined && errorText !== undefined
       ? {
           errorKind: input.error.kind,
           ...(input.error.reason !== undefined
             ? { errorReason: input.error.reason }
             : {}),
-          errorMessage: redactSecrets(input.error.message),
+          errorMessage: errorText.text,
         }
       : {}),
     metadata: input.metadata,

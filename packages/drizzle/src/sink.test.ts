@@ -11,7 +11,7 @@ type InsertCall = {
 
 function makeRecord(overrides: Partial<LlmCallRecord> = {}): LlmCallRecord {
   return {
-    recordSchemaVersion: 1,
+    recordSchemaVersion: 2,
     callId: 'call_1',
     attemptId: 'attempt_1',
     attemptNumber: 1,
@@ -69,6 +69,23 @@ function makeDb(spy: InsertCall[]): InsertableDb {
 }
 
 describe('drizzleUsageSink', () => {
+  it('writes the cost v2 fields (ADR-039) to their columns', async () => {
+    const calls: InsertCall[] = []
+    await drizzleUsageSink(makeDb(calls)).record(
+      makeRecord({
+        costConfidence: 'estimated',
+        costDetails: { input: 300, cached: 40, output: 100, tools: 16 },
+        costUnpricedReason: 'why',
+      }),
+    )
+    expect(calls[0]?.values).toMatchObject({
+      recordSchemaVersion: 2,
+      costConfidence: 'estimated',
+      costDetails: { input: 300, cached: 40, output: 100, tools: 16 },
+      costUnpricedReason: 'why',
+    })
+  })
+
   it('maps every record field and dedupes retries with onConflictDoNothing', async () => {
     const calls: InsertCall[] = []
     const db = makeDb(calls)
@@ -83,7 +100,7 @@ describe('drizzleUsageSink', () => {
     // Conflict target must be pinned to the attemptId column (unique index).
     expect(calls[0]?.conflictTarget).toBe(llmCalls.attemptId)
     expect(calls[0]?.values).toEqual({
-      recordSchemaVersion: 1,
+      recordSchemaVersion: 2,
       callId: 'call_1',
       attemptId: 'attempt_1',
       callSiteId: 'site_1',

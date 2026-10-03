@@ -3,7 +3,12 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { buildRecord, errorKindToStatus, normalizeUsage } from './record.js'
+import {
+  buildRecord,
+  errorKindToStatus,
+  normalizeUsage,
+  RECORD_TEXT_CAP_BYTES,
+} from './record.js'
 import { LlmError } from './errors.js'
 import type { BuildRecordInput } from './record.js'
 import type { Usage, Cost, GenConfig } from './types.js'
@@ -63,9 +68,9 @@ function makeBaseInput(overrides: Partial<BuildRecordInput> = {}): BuildRecordIn
 // ---------------------------------------------------------------------------
 
 describe('buildRecord — success path', () => {
-  it('sets recordSchemaVersion to 1', () => {
+  it('sets recordSchemaVersion to 2', () => {
     const r = buildRecord(makeBaseInput())
-    expect(r.recordSchemaVersion).toBe(1)
+    expect(r.recordSchemaVersion).toBe(2)
   })
 
   it('persists requested toolNames and toolCount even without toolCalls', () => {
@@ -578,5 +583,120 @@ describe('normalizeUsage — totalTokens above input + output (R2.3)', () => {
     const { warnings } = normalizeUsage(usage)
     const record = buildRecord(makeBaseInput({ usage, warnings }))
     expect(record.warnings).toEqual(warnings)
+  })
+})
+
+describe('buildRecord — cost v2 fields (ADR-039)', () => {
+  it('persists confidence and the four lanes of a priced cost', () => {
+    const r = buildRecord(
+      makeBaseInput({
+        cost: makeCost({
+          confidence: 'estimated',
+          details: { input: 1000, cached: 100, output: 300, tools: 100 },
+        }),
+      }),
+    )
+    expect(r.costMicroUsd).toBe(1500)
+    expect(r.costConfidence).toBe('estimated')
+    expect(r.costDetails).toEqual({ input: 1000, cached: 100, output: 300, tools: 100 })
+    expect(r.costUnpricedReason).toBeUndefined()
+  })
+
+  it('an exact cost is recorded as exact', () => {
+    expect(buildRecord(makeBaseInput({ cost: makeCost() })).costConfidence).toBe('exact')
+  })
+
+  it('an unpriced cost keeps the reason and drops the meaningless zero lanes', () => {
+    const r = buildRecord(
+      makeBaseInput({
+        cost: makeCost({
+          microUsd: null,
+          usd: null,
+          confidence: 'estimated',
+          details: { input: 0, cached: 0, output: 0, tools: 0 },
+          unpricedReason: 'Unknown model "x"; no pricing entry found.',
+        }),
+      }),
+    )
+    expect(r.costMicroUsd).toBeNull()
+    expect(r.costConfidence).toBe('estimated')
+    expect(r.costUnpricedReason).toBe('Unknown model "x"; no pricing entry found.')
+    expect('costDetails' in r).toBe(false)
+  })
+
+  it('a row without a cost has none of the cost fields', () => {
+    const r = buildRecord(makeBaseInput())
+    for (const key of [
+      'costMicroUsd',
+      'costConfidence',
+      'costDetails',
+      'costUnpricedReason',
+    ]) {
+      expect(key in r, key).toBe(false)
+    }
+  })
+})
+
+describe('buildRecord — 16 KiB cap on reasoningText and errorMessage (D-01)', () => {
+  const utf8 = (text: string) => new TextEncoder().encode(text).length
+
+  it('the cap is 16 KiB', () => {
+    expect(RECORD_TEXT_CAP_BYTES).toBe(16_384)
+  })
+
+  it('leaves text at or under the cap untouched, with no warning', () => {
+    const text = 'a'.repeat(RECORD_TEXT_CAP_BYTES)
+    const r = buildRecord(makeBaseInput({ reasoningText: text }))
+    expect(r.reasoningText).toBe(text)
+    expect(r.warnings).toBeUndefined()
+  })
+
+  it('truncates reasoningText over the cap, marks it and warns', () => {
+    const r = buildRecord(makeBaseInput({ reasoningText: 'a'.repeat(50_000) }))
+    expect(utf8(r.reasoningText as string)).toBeLessThanOrEqual(RECORD_TEXT_CAP_BYTES)
+    expect(r.reasoningText?.endsWith('…[truncated]')).toBe(true)
+    expect(r.reasoningText?.startsWith('aaaa')).toBe(true)
+    expect(r.warnings).toEqual([
+      {
+        type: 'other',
+        message: `reasoningText was truncated to ${RECORD_TEXT_CAP_BYTES} bytes in the ledger record.`,
+      },
+    ])
+  })
+
+  it('cuts multi-byte text on a code point boundary, within the byte cap', () => {
+    // Each emoji is 4 UTF-8 bytes and 2 UTF-16 units.
+    const r = buildRecord(makeBaseInput({ reasoningText: '😀'.repeat(10_000) }))
+    const text = r.reasoningText as string
+    expect(utf8(text)).toBeLessThanOrEqual(RECORD_TEXT_CAP_BYTES)
+    const body = text.slice(0, -'…[truncated]'.length)
+    expect(body).toMatch(/^(?:😀)+$/)
+    expect(utf8(text)).toBeGreaterThan(RECORD_TEXT_CAP_BYTES - 8)
+  })
+
+  it('truncates errorMessage after redaction; the live error keeps the full message', () => {
+    const secretLine = 'key=AIzaSyA1234567890abcdefghijklmnopqrstuv1'
+    const message = `${secretLine} ${'x'.repeat(40_000)}`
+    const err = new LlmError(message, { kind: 'server', retryable: false })
+    const r = buildRecord(makeBaseInput({ error: err, status: 'api_error' }))
+    expect(utf8(r.errorMessage as string)).toBeLessThanOrEqual(RECORD_TEXT_CAP_BYTES)
+    expect(r.errorMessage?.endsWith('…[truncated]')).toBe(true)
+    expect(r.errorMessage).not.toContain('AIzaSyA1234567890')
+    expect(err.message).toBe(message)
+    expect(
+      (r.warnings as Array<{ message: string }> | undefined)?.map((w) => w.message),
+    ).toContain(
+      `errorMessage was truncated to ${RECORD_TEXT_CAP_BYTES} bytes in the ledger record.`,
+    )
+  })
+
+  it('a short error message is unchanged', () => {
+    const r = buildRecord(
+      makeBaseInput({
+        error: new LlmError('boom', { kind: 'server', retryable: false }),
+        status: 'api_error',
+      }),
+    )
+    expect(r.errorMessage).toBe('boom')
   })
 })

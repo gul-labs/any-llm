@@ -550,6 +550,19 @@ export interface Cost {
    * verbatim in the "unpriced" warning.
    */
   unpricedReason?: string
+  /**
+   * The total the provider itself reported billing for this call, in micro-USD,
+   * when it reports one (xAI's `cost_in_usd_ticks`). Informational: `microUsd`
+   * stays the library's own snapshot price and is never replaced by it. It is
+   * present even when `microUsd` is `null`, so a host can use the provider's
+   * figure for a call the snapshot cannot price.
+   *
+   * The engine compares the two totals and adds a warning when they differ by
+   * more than the per-lane rounding of the priced lanes: a drift means the
+   * pricing snapshot is stale or a lane is missing. A provider reports a total
+   * only, so there is no per-lane reconciliation.
+   */
+  providerReported?: { microUsd: number }
 }
 
 /**
@@ -611,6 +624,17 @@ export interface LlmResult {
    * Absent when the model is not in the pricing table.
    */
   cost?: Cost
+  /**
+   * What the whole call cost, across every attempt: the library-priced micro-USD
+   * of each attempt (retries and billed failures included) summed, and the
+   * number of attempts that ran. `cost` is the successful attempt alone.
+   *
+   * Absent when no attempt was priced, and when any attempt that reported usage
+   * was unpriced (a sum with a hole is not reported). It adds the attempts'
+   * `microUsd` only: if any attempt's `confidence` was `'estimated'`, so is the
+   * total. Per-attempt detail is on `Telemetry.onAttempt` and in the ledger.
+   */
+  callCost?: { microUsd: number; attempts: number }
   /**
    * The model identifier as returned by the provider (may differ from the
    * requested string, for example a dated snapshot behind an alias). Do not
