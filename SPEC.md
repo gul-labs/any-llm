@@ -422,6 +422,11 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
   long-context tier). Same contract as the Google adapter: strict per-model schema,
   reject-don't-map, GROSS usage, never persists/loops. Full details in
   `packages/xai/README.md`.
+- **Timeouts and transport (ADR-032).** Each call passes the SDK a `timeout` of
+  `timeoutMs + 5 000`, or one hour when `timeoutMs` is unset. That does not lift Node's 300 s
+  header and body timers; a call that can run longer needs `xaiAdapter({ transport })` with an
+  undici `fetch` and `Agent({ headersTimeout, bodyTimeout })`. A header, body or SDK-deadline
+  timeout is `kind: 'timeout'`, `retryable: false`, `reason: 'transport_timeout'`.
 - `providerOptions.xai` is an allowlist; unknown keys are `bad_request`:
 
   | key                 | wire                  | rule                                                                                                                                                                  |

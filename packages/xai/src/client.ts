@@ -263,10 +263,60 @@ export interface XaiClientLike {
   responses: {
     create(
       params: XaiResponseCreateParams,
-      options?: { signal?: AbortSignal },
+      options?: XaiRequestOptions,
     ): Promise<XaiResponseShape>
   }
 }
+
+/** Per-request options the adapter passes to `responses.create`. */
+export interface XaiRequestOptions {
+  signal?: AbortSignal
+  /**
+   * The SDK's own whole-request deadline in milliseconds. It does not move
+   * Node's header and body timers; see {@link XaiTransport}.
+   */
+  timeout?: number
+}
+
+/**
+ * Host-supplied HTTP transport for every `responses.create` call.
+ *
+ * Node's `fetch` enforces its own 300 s header and body timers, independent of
+ * the SDK `timeout`. A non-streamed call that waits longer than that is killed
+ * unless the host passes a `fetch` whose dispatcher raises those timers (for
+ * example undici's `fetch` with `new Agent({ headersTimeout, bodyTimeout })`
+ * in `fetchOptions.dispatcher`). See ADR-032 and the package README.
+ */
+export interface XaiTransport {
+  fetch: typeof fetch
+  /**
+   * Extra `fetch` init (for example `{ dispatcher }`). `headers`, `signal`,
+   * `body` and `method` belong to the request and are rejected.
+   */
+  fetchOptions?: Omit<RequestInit, 'headers' | 'signal' | 'body' | 'method'>
+}
+
+/** `fetchOptions` keys the SDK owns; a host-supplied value would override the request. */
+export const XAI_RESERVED_FETCH_OPTION_KEYS = [
+  'headers',
+  'signal',
+  'body',
+  'method',
+] as const
+
+/**
+ * SDK deadline for a request with no `timeoutMs`: one hour. xAI reasoning and
+ * agentic calls can run for many minutes; the SDK default (10 minutes) would
+ * cut them off.
+ */
+export const XAI_DEFAULT_TIMEOUT_MS = 3_600_000
+
+/**
+ * Added to `timeoutMs` for the SDK deadline, so the engine's own deadline
+ * (armed at exactly `timeoutMs`) always fires first and the caller sees the
+ * engine's clean timeout rather than a raw SDK error.
+ */
+export const XAI_TIMEOUT_BUFFER_MS = 5_000
 
 // ---------------------------------------------------------------------------
 // buildXaiClient — imports the real `openai` SDK
@@ -279,8 +329,13 @@ export interface XaiClientLike {
  * Only API-key authentication is supported.
  *
  * @param auth - API key credentials ({ apiKey }).
+ * @param transport - Optional host-supplied `fetch` and `fetchOptions` passed to
+ *   the SDK client unchanged.
  */
-export async function buildXaiClient(auth: AuthMaterial): Promise<XaiClientLike> {
+export async function buildXaiClient(
+  auth: AuthMaterial,
+  transport?: XaiTransport,
+): Promise<XaiClientLike> {
   // Resolve and validate auth BEFORE importing the SDK so auth-rejection
   // tests never need to touch the real `openai` module (and thus never hit
   // the network).
@@ -292,13 +347,21 @@ export async function buildXaiClient(auth: AuthMaterial): Promise<XaiClientLike>
     apiKey,
     baseURL: 'https://api.x.ai/v1',
     maxRetries: 0,
+    ...(transport !== undefined
+      ? {
+          fetch: transport.fetch,
+          ...(transport.fetchOptions !== undefined
+            ? { fetchOptions: transport.fetchOptions }
+            : {}),
+        }
+      : {}),
   })
 
   return {
     responses: {
       async create(
         params: XaiResponseCreateParams,
-        options?: { signal?: AbortSignal },
+        options?: XaiRequestOptions,
       ): Promise<XaiResponseShape> {
         // Cast needed: our structural types are subsets of the real SDK types,
         // and the real SDK's types do not exactly match xAI's actual response
@@ -306,7 +369,7 @@ export async function buildXaiClient(auth: AuthMaterial): Promise<XaiClientLike>
         return (
           client.responses.create as unknown as (
             p: unknown,
-            o?: { signal?: AbortSignal },
+            o?: XaiRequestOptions,
           ) => Promise<XaiResponseShape>
         )(params, options)
       },

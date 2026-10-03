@@ -8,8 +8,15 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { LlmError, createClient, createModelRegistry } from '@gullabs/core'
+import {
+  LlmError,
+  createClient,
+  createModelRegistry,
+  retryMiddleware,
+} from '@gullabs/core'
 import type { ResolvedRequest, AdapterCtx, ModelDescriptor } from '@gullabs/core'
+import { XAI_DEFAULT_TIMEOUT_MS, XAI_TIMEOUT_BUFFER_MS } from './client.js'
+import type { XaiClientLike, XaiRequestOptions, XaiTransport } from './client.js'
 import {
   FakeClock,
   FakeIds,
@@ -209,7 +216,7 @@ describe('basic text completion', () => {
     const adapter = xaiAdapter({ _clientFactory: factory })
     const result = await adapter.run(makeResolvedReq(), FAKE_CTX)
 
-    expect(factory).toHaveBeenCalledWith(FAKE_CTX.auth)
+    expect(factory).toHaveBeenCalledWith(FAKE_CTX.auth, undefined)
     expect(result.text).toBe('factory-built')
   })
 
@@ -1191,12 +1198,8 @@ describe('transport-failure classification', () => {
     expect(result.provider).toBe('xai')
   })
 
-  it('classifies APIConnectionTimeoutError (subclass of APIConnectionError) as retryable', () => {
-    // The openai SDK's default message for this subclass is "Request timed
-    // out.", which core's classifyError already recognizes via its own
-    // timeout heuristic (kind: 'timeout', retryable: true) — so this never
-    // even needs the transport-fallback path to be safe to retry. Confirm
-    // it does NOT fall through to the non-retryable 'unknown' kind.
+  it('classifies the SDK deadline (APIConnectionTimeoutError) as a non-retryable transport timeout', () => {
+    // A retry reaches the same SDK deadline and repeats the spend.
     class APIConnectionError extends Error {}
     class APIConnectionTimeoutError extends APIConnectionError {
       constructor() {
@@ -1205,13 +1208,12 @@ describe('transport-failure classification', () => {
     }
     const result = classifyXaiError(new APIConnectionTimeoutError())
     expect(result.kind).toBe('timeout')
-    expect(result.retryable).toBe(true)
+    expect(result.retryable).toBe(false)
+    expect(result.reason).toBe('transport_timeout')
+    expect(result.provider).toBe('xai')
   })
 
-  it('classifies an APIConnectionTimeoutError with a non-timeout-worded message via the transport fallback', () => {
-    // Simulate a caller-supplied custom message that does not happen to
-    // contain the word "timeout" — the constructor-name check must still
-    // catch it.
+  it('classifies APIConnectionTimeoutError by constructor name even with a non-timeout message', () => {
     class APIConnectionError extends Error {}
     class APIConnectionTimeoutError extends APIConnectionError {
       constructor() {
@@ -1219,8 +1221,28 @@ describe('transport-failure classification', () => {
       }
     }
     const result = classifyXaiError(new APIConnectionTimeoutError())
-    expect(result.kind).toBe('server')
+    expect(result.kind).toBe('timeout')
+    expect(result.retryable).toBe(false)
+    expect(result.reason).toBe('transport_timeout')
+  })
+
+  it('keeps a connect timeout retryable: nothing was sent, so a retry is safe', () => {
+    class APIConnectionTimeoutError extends Error {
+      constructor(cause: Error) {
+        super('Request timed out.')
+        this.cause = cause
+      }
+    }
+    const connect = Object.assign(new Error('Connect Timeout Error'), {
+      name: 'ConnectTimeoutError',
+      code: 'UND_ERR_CONNECT_TIMEOUT',
+    })
+    const result = classifyXaiError(
+      new APIConnectionTimeoutError(new TypeError('fetch failed', { cause: connect })),
+    )
+    expect(result.kind).toBe('timeout')
     expect(result.retryable).toBe(true)
+    expect(result.reason).toBeUndefined()
   })
 
   it('classifies a plain Error with "Connection error." message as retryable server', () => {
@@ -1293,6 +1315,285 @@ describe('transport-failure classification', () => {
       retryable: true,
       provider: 'xai',
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Transport and timeout (ADR-032)
+// ---------------------------------------------------------------------------
+
+function undiciError(name: string, code: string, message: string): Error {
+  return Object.assign(new Error(message), { name, code })
+}
+
+/** A client that records the per-request options and returns a canned response. */
+function makeOptionsCapturingClient(): {
+  client: XaiClientLike
+  optionCalls: Array<XaiRequestOptions | undefined>
+} {
+  const optionCalls: Array<XaiRequestOptions | undefined> = []
+  const response = fakeXaiResponse({ text: 'ok' })
+  const client: XaiClientLike = {
+    responses: {
+      create(_params, options) {
+        optionCalls.push(options)
+        return Promise.resolve(response as never)
+      },
+    },
+  }
+  return { client, optionCalls }
+}
+
+describe('xai SDK timeout derivation', () => {
+  it('derives the SDK timeout from config.timeoutMs plus the buffer', async () => {
+    const { client, optionCalls } = makeOptionsCapturingClient()
+    await xaiAdapter({ client }).run(
+      makeResolvedReq({ config: { timeoutMs: 120_000 } }),
+      FAKE_CTX,
+    )
+    expect(XAI_TIMEOUT_BUFFER_MS).toBe(5_000)
+    expect(optionCalls[0]?.timeout).toBe(125_000)
+  })
+
+  it('falls back to XAI_DEFAULT_TIMEOUT_MS (one hour) when timeoutMs is unset', async () => {
+    const { client, optionCalls } = makeOptionsCapturingClient()
+    await xaiAdapter({ client }).run(makeResolvedReq(), FAKE_CTX)
+    expect(XAI_DEFAULT_TIMEOUT_MS).toBe(3_600_000)
+    expect(optionCalls[0]?.timeout).toBe(3_600_000)
+  })
+
+  it('still forwards the abort signal next to the timeout', async () => {
+    const { client, optionCalls } = makeOptionsCapturingClient()
+    const controller = new AbortController()
+    await xaiAdapter({ client }).run(makeResolvedReq(), {
+      ...FAKE_CTX,
+      signal: controller.signal,
+    })
+    expect(optionCalls[0]?.signal).toBe(controller.signal)
+    expect(optionCalls[0]?.timeout).toBe(3_600_000)
+  })
+})
+
+describe('xai transport option', () => {
+  it('passes the transport to the client factory', async () => {
+    const transport: XaiTransport = {
+      fetch: (() => Promise.reject(new Error('unused'))) as unknown as typeof fetch,
+      fetchOptions: { keepalive: true },
+    }
+    const { client } = makeOptionsCapturingClient()
+    const factory = vi.fn((_auth: unknown, _transport?: XaiTransport) => client)
+    await xaiAdapter({ transport, _clientFactory: factory }).run(
+      makeResolvedReq(),
+      FAKE_CTX,
+    )
+    expect(factory).toHaveBeenCalledTimes(1)
+    expect(factory.mock.calls[0]?.[0]).toEqual({ apiKey: 'test-key' })
+    expect(factory.mock.calls[0]?.[1]).toBe(transport)
+  })
+
+  it('passes undefined when no transport is configured', async () => {
+    const { client } = makeOptionsCapturingClient()
+    const factory = vi.fn((_auth: unknown, _transport?: XaiTransport) => client)
+    await xaiAdapter({ _clientFactory: factory }).run(makeResolvedReq(), FAKE_CTX)
+    expect(factory.mock.calls[0]?.[1]).toBeUndefined()
+  })
+
+  it('rejects transport combined with an injected client', () => {
+    const { client } = makeOptionsCapturingClient()
+    const transport: XaiTransport = { fetch: (() => {}) as unknown as typeof fetch }
+    expect(() => xaiAdapter({ client, transport })).toThrow(
+      expect.objectContaining({ kind: 'bad_request' }) as never,
+    )
+  })
+
+  it.each(['headers', 'signal', 'body', 'method'] as const)(
+    'rejects transport.fetchOptions.%s, which the request owns',
+    (key) => {
+      const transport = {
+        fetch: (() => {}) as unknown as typeof fetch,
+        fetchOptions: { [key]: undefined },
+      } as unknown as XaiTransport
+      expect(() => xaiAdapter({ transport })).toThrow(
+        expect.objectContaining({
+          kind: 'bad_request',
+          message: expect.stringContaining(`fetchOptions.${key}`) as never,
+        }) as never,
+      )
+    },
+  )
+
+  it('reaches the real SDK: the stub fetch carries the request, the options and the timeout', async () => {
+    const dispatcher = { sentinel: 'undici-agent' }
+    const seen: Array<{ url: string; init: Record<string, unknown> }> = []
+    const stubFetch = ((input: unknown, init: Record<string, unknown>) => {
+      seen.push({ url: String(input), init })
+      return Promise.resolve(
+        new Response(JSON.stringify(fakeXaiResponse({ text: 'wire ok' })), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+    }) as unknown as typeof fetch
+    const adapter = xaiAdapter({
+      transport: {
+        fetch: stubFetch,
+        fetchOptions: { dispatcher } as unknown as XaiTransport['fetchOptions'] & object,
+      },
+    })
+
+    const result = await adapter.run(
+      makeResolvedReq({ config: { timeoutMs: 600_000 } }),
+      FAKE_CTX,
+    )
+
+    expect(result.text).toBe('wire ok')
+    expect(seen).toHaveLength(1)
+    expect(seen[0]?.url).toBe('https://api.x.ai/v1/responses')
+    expect(seen[0]?.init['dispatcher']).toBe(dispatcher)
+    expect(
+      new Headers(
+        seen[0]?.init['headers'] as ConstructorParameters<typeof Headers>[0],
+      ).get('authorization'),
+    ).toBe('Bearer test-key')
+    expect(JSON.parse(String(seen[0]?.init['body']))).toMatchObject({
+      model: 'grok-4.5',
+      store: false,
+    })
+  })
+})
+
+describe('xai transport-timeout classification', () => {
+  const headers = undiciError(
+    'HeadersTimeoutError',
+    'UND_ERR_HEADERS_TIMEOUT',
+    'Headers Timeout Error',
+  )
+  const body = undiciError(
+    'BodyTimeoutError',
+    'UND_ERR_BODY_TIMEOUT',
+    'Body Timeout Error',
+  )
+
+  it('classifies undici headers timeout under fetch failed as non-retryable with a reason', () => {
+    const result = classifyXaiError(new TypeError('fetch failed', { cause: headers }))
+    expect(result).toMatchObject({
+      kind: 'timeout',
+      retryable: false,
+      reason: 'transport_timeout',
+      provider: 'xai',
+    })
+    expect(result.message).toContain('headers')
+  })
+
+  it('classifies undici body timeout (terminated) as non-retryable with a reason', () => {
+    const result = classifyXaiError(new TypeError('terminated', { cause: body }))
+    expect(result).toMatchObject({
+      kind: 'timeout',
+      retryable: false,
+      reason: 'transport_timeout',
+      provider: 'xai',
+    })
+    expect(result.message).toContain('body')
+  })
+
+  it('finds the undici error through the SDK wrapper two levels deep', () => {
+    class APIConnectionTimeoutError extends Error {
+      constructor(cause: Error) {
+        super('Request timed out. Node.js fetch timed out waiting for response headers')
+        this.cause = cause
+      }
+    }
+    const result = classifyXaiError(
+      new APIConnectionTimeoutError(new TypeError('fetch failed', { cause: headers })),
+    )
+    expect(result).toMatchObject({
+      kind: 'timeout',
+      retryable: false,
+      reason: 'transport_timeout',
+    })
+  })
+
+  it('matches by class name when the code is absent', () => {
+    const named = Object.assign(new Error('x'), { name: 'HeadersTimeoutError' })
+    const result = classifyXaiError(new TypeError('fetch failed', { cause: named }))
+    expect(result.reason).toBe('transport_timeout')
+    expect(result.retryable).toBe(false)
+  })
+
+  it('survives a cyclic cause chain', () => {
+    const a = new Error('a') as Error & { cause?: unknown }
+    const b = new Error('b') as Error & { cause?: unknown }
+    a.cause = b
+    b.cause = a
+    expect(classifyXaiError(a).kind).toBe('unknown')
+  })
+
+  it('a plain ETIMEDOUT stays a retryable server error (not a transport deadline)', () => {
+    const err = Object.assign(new Error('read ETIMEDOUT'), { code: 'ETIMEDOUT' })
+    const result = classifyXaiError(err)
+    expect(result.kind).toBe('server')
+    expect(result.retryable).toBe(true)
+    expect(result.reason).toBeUndefined()
+  })
+
+  it('end-to-end: a headers timeout is not retried and the ledger row carries the reason', async () => {
+    const client = makeFakeXai(() => {
+      throw new TypeError('fetch failed', { cause: headers })
+    })
+    const sink = new RecordingSink()
+    const llm = createClient({
+      adapters: [xaiAdapter({ client })],
+      modelRegistry: xaiRegistry,
+      sink,
+      middleware: [
+        retryMiddleware({ maxAttempts: 3 }, { sleep: () => Promise.resolve() }),
+      ],
+    })
+
+    await expect(
+      llm.generate(
+        {
+          provider: 'xai',
+          model: 'grok-4.5',
+          messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
+        },
+        { auth: { apiKey: 'test-key' } },
+      ),
+    ).rejects.toMatchObject({
+      kind: 'timeout',
+      retryable: false,
+      reason: 'transport_timeout',
+    })
+
+    expect(client.calls).toHaveLength(1)
+    expect(sink.records).toHaveLength(1)
+    expect(sink.last()?.errorKind).toBe('timeout')
+    expect(sink.last()?.errorReason).toBe('transport_timeout')
+  })
+
+  it('control: a retryable connection error is retried by the same middleware', async () => {
+    const client = makeFakeXai(() => {
+      throw new Error('Connection error.')
+    })
+    const llm = createClient({
+      adapters: [xaiAdapter({ client })],
+      modelRegistry: xaiRegistry,
+      sink: new RecordingSink(),
+      middleware: [
+        retryMiddleware({ maxAttempts: 3 }, { sleep: () => Promise.resolve() }),
+      ],
+    })
+    await expect(
+      llm.generate(
+        {
+          provider: 'xai',
+          model: 'grok-4.5',
+          messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
+        },
+        { auth: { apiKey: 'test-key' } },
+      ),
+    ).rejects.toMatchObject({ kind: 'server' })
+    expect(client.calls).toHaveLength(3)
   })
 })
 

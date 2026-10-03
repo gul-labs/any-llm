@@ -28,12 +28,20 @@ import type {
   TokenCountRequest,
   TokenCount,
 } from '@gullabs/core'
-import { buildXaiClient, requireApiKey } from './client.js'
+import {
+  buildXaiClient,
+  requireApiKey,
+  XAI_DEFAULT_TIMEOUT_MS,
+  XAI_RESERVED_FETCH_OPTION_KEYS,
+  XAI_TIMEOUT_BUFFER_MS,
+} from './client.js'
 import { xaiRegistry } from './models.js'
 import { assertXaiOutputJsonSchema } from './output-schema.js'
 import { X_SEARCH_ITEM_COUNTERS } from './pricing.js'
 import type {
   XaiClientLike,
+  XaiRequestOptions,
+  XaiTransport,
   XaiResponseCreateParams,
   XaiInputContentPart,
   XaiRequestInputItem,
@@ -582,6 +590,63 @@ function isXaiTransportError(rawErr: unknown): boolean {
   return false
 }
 
+/** undici error codes for Node's own header and body timers. */
+const UNDICI_HEADERS_TIMEOUT_CODE = 'UND_ERR_HEADERS_TIMEOUT'
+const UNDICI_BODY_TIMEOUT_CODE = 'UND_ERR_BODY_TIMEOUT'
+/** Connect timeout: the request never reached xAI, so a retry is safe. */
+const UNDICI_CONNECT_TIMEOUT_CODE = 'UND_ERR_CONNECT_TIMEOUT'
+
+/** `rawErr` followed by its `.cause` chain (bounded, cycle-safe). */
+function errorCauseChain(rawErr: unknown): unknown[] {
+  const chain: unknown[] = []
+  let current: unknown = rawErr
+  while (
+    current !== null &&
+    typeof current === 'object' &&
+    !chain.includes(current) &&
+    chain.length < 8
+  ) {
+    chain.push(current)
+    current = (current as { cause?: unknown }).cause
+  }
+  return chain
+}
+
+/**
+ * Which transport deadline killed the request, or `undefined` when none did.
+ *
+ * - `'headers'` / `'body'`: Node's undici header or body timer fired (the 300 s
+ *   default). Matched by undici error `code` (or class name) anywhere in the
+ *   cause chain; the `openai` SDK wraps the undici error as the cause of its
+ *   own `APIConnectionTimeoutError`, or lets it escape raw while the body is
+ *   read.
+ * - `'sdk'`: the SDK's own deadline (`APIConnectionTimeoutError` with no
+ *   connect-timeout cause) fired.
+ *
+ * A retry reaches the same limit and repeats the spend, so all three are
+ * non-retryable. A connect timeout is not matched: nothing was sent.
+ */
+function xaiTransportTimeoutKind(
+  rawErr: unknown,
+): 'headers' | 'body' | 'sdk' | undefined {
+  const chain = errorCauseChain(rawErr)
+  const has = (code: string, name: string): boolean =>
+    chain.some((e) => {
+      const o = e as { code?: unknown; name?: unknown }
+      return o.code === code || o.name === name
+    })
+  if (has(UNDICI_HEADERS_TIMEOUT_CODE, 'HeadersTimeoutError')) return 'headers'
+  if (has(UNDICI_BODY_TIMEOUT_CODE, 'BodyTimeoutError')) return 'body'
+  if (
+    rawErr instanceof Error &&
+    rawErr.constructor.name === 'APIConnectionTimeoutError' &&
+    !has(UNDICI_CONNECT_TIMEOUT_CODE, 'ConnectTimeoutError')
+  ) {
+    return 'sdk'
+  }
+  return undefined
+}
+
 /**
  * Classify a raw error thrown from the xAI Responses API call into a typed
  * {@link LlmError}.
@@ -599,10 +664,13 @@ function isXaiTransportError(rawErr: unknown): boolean {
  *    `"Content violates usage guidelines"` (fixture 15; `SAFETY_CHECK_TYPE_*`
  *    suffixes vary) → `content_filter`. A bare 403 without that body stays
  *    the core default, `invalid_auth`.
- * 4. `kind: 'unknown'` with a known transport-failure signature (see
+ * 4. A transport deadline (undici header or body timer, or the SDK's own
+ *    deadline; see {@link xaiTransportTimeoutKind}) → `timeout`,
+ *    `retryable: false`, `reason: 'transport_timeout'`.
+ * 5. `kind: 'unknown'` with a known transport-failure signature (see
  *    {@link isXaiTransportError}) → `server`, retryable. A connection that
  *    never reached xAI is not the caller's fault.
- * 5. Else rebuild the core classification tagged `provider: 'xai'`.
+ * 6. Else rebuild the core classification tagged `provider: 'xai'`.
  */
 export function classifyXaiError(rawErr: unknown): LlmError {
   if (rawErr instanceof LlmError) {
@@ -610,6 +678,19 @@ export function classifyXaiError(rawErr: unknown): LlmError {
   }
 
   const base = classifyError(rawErr)
+
+  const transportTimeout = xaiTransportTimeoutKind(rawErr)
+  if (transportTimeout !== undefined) {
+    const which =
+      transportTimeout === 'sdk' ? 'SDK deadline' : `transport ${transportTimeout} timer`
+    return new LlmError(`xAI request hit the ${which}: ${base.message}`, {
+      kind: 'timeout',
+      retryable: false,
+      reason: 'transport_timeout',
+      provider: 'xai',
+      cause: base.cause ?? rawErr,
+    })
+  }
 
   if (base.httpStatus === 400 && isXaiAuthFailureBody(rawErr)) {
     return new LlmError(base.message, {
@@ -664,13 +745,25 @@ export interface XaiAdapterOptions {
    */
   client?: XaiClientLike
   /**
+   * HTTP transport (`fetch` and `fetchOptions`) for the SDK client the adapter
+   * builds. Required in practice for any call that can run longer than 300 s:
+   * the SDK `timeout` alone does not lift Node's header and body timers, so
+   * pass an undici `fetch` with an `Agent({ headersTimeout, bodyTimeout })`
+   * dispatcher. See the package README. Cannot be combined with `client`
+   * (an injected client owns its own transport).
+   */
+  transport?: XaiTransport
+  /**
    * @internal Testing-only.
    *
    * Override the default `buildXaiClient` factory. Allows unit tests to
    * simulate construction failures without importing the real `openai` SDK.
    * Never set this in production code. Mirrors `GeminiAdapterOptions._clientFactory`.
    */
-  _clientFactory?: (auth: AuthMaterial) => XaiClientLike | Promise<XaiClientLike>
+  _clientFactory?: (
+    auth: AuthMaterial,
+    transport?: XaiTransport,
+  ) => XaiClientLike | Promise<XaiClientLike>
   /**
    * @internal Testing-only.
    *
@@ -687,8 +780,26 @@ export interface XaiAdapterOptions {
  * Create an xAI Grok provider adapter (Responses API).
  *
  * @param opts.client - Optional pre-built client (e.g. for testing).
+ * @param opts.transport - Optional `fetch` + `fetchOptions` for the built client.
  */
 export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
+  if (opts?.client !== undefined && opts.transport !== undefined) {
+    throw new LlmError(
+      'xaiAdapter: `transport` has no effect on an injected `client`; configure the transport on the client itself.',
+      { kind: 'bad_request', retryable: false, provider: 'xai' },
+    )
+  }
+  for (const key of XAI_RESERVED_FETCH_OPTION_KEYS) {
+    if (
+      opts?.transport?.fetchOptions !== undefined &&
+      key in opts.transport.fetchOptions
+    ) {
+      throw new LlmError(
+        `xaiAdapter: transport.fetchOptions.${key} is not supported; the request owns it.`,
+        { kind: 'bad_request', retryable: false, provider: 'xai' },
+      )
+    }
+  }
   return {
     id: 'xai',
 
@@ -1022,15 +1133,24 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       try {
         const buildClient = opts?._clientFactory ?? buildXaiClient
         const client: XaiClientLike =
-          opts?.client !== undefined ? opts.client : await buildClient(ctx.auth)
+          opts?.client !== undefined
+            ? opts.client
+            : await buildClient(ctx.auth, opts?.transport)
         ctx.logger.debug(
           { model, configKeys: Object.keys(params) },
           'llm.adapter.dispatch',
         )
-        response = await client.responses.create(
-          params,
-          ctx.signal !== undefined ? { signal: ctx.signal } : undefined,
-        )
+        // SDK deadline: timeoutMs + buffer so the engine's own deadline (armed
+        // at exactly timeoutMs) fires first; one hour when no timeoutMs is set.
+        // It does not lift Node's 300 s header timer (that needs `transport`).
+        const requestOptions: XaiRequestOptions = {
+          ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
+          timeout:
+            genConfig.timeoutMs !== undefined
+              ? genConfig.timeoutMs + XAI_TIMEOUT_BUFFER_MS
+              : XAI_DEFAULT_TIMEOUT_MS,
+        }
+        response = await client.responses.create(params, requestOptions)
       } catch (rawErr) {
         throw classifyXaiError(rawErr)
       }

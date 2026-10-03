@@ -1782,6 +1782,63 @@ picked the same key would also collide.
 
 ---
 
+## ADR-032: xAI transport and timeout
+
+**Status:** Accepted (2026-10-03). Twin of ADR-012, which covers the same problem for Gemini.
+
+**Context:**
+A non-streamed xAI reasoning or agentic call can run for many minutes before the first response
+byte, because the Responses API sends nothing until the answer is complete. Two independent timers
+sit between the host and xAI:
+
+1. The `openai` SDK's own deadline (`timeout`), which defaults to 10 minutes.
+2. Node's `fetch` (undici), which has a header timer and a body timer of 300 s each. These are not
+   controlled by the SDK `timeout`.
+
+`buildXaiClient` set neither, and per-request options carried only `signal`. A call past 300 s died
+in undici, the SDK reported it as a timeout, the adapter classified it `timeout` with
+`retryable: true`, and the retry middleware ran it twice more. Each retry died at the same limit and
+the spend repeated.
+
+**Decision:**
+
+1. **SDK deadline per request.** The adapter passes `timeout` in the per-request options:
+   `config.timeoutMs + XAI_TIMEOUT_BUFFER_MS` (5 000 ms) when `timeoutMs` is set, otherwise
+   `XAI_DEFAULT_TIMEOUT_MS` (3 600 000 ms, one hour). The buffer keeps the engine's own deadline,
+   armed at exactly `timeoutMs`, ahead of the SDK's, as in ADR-012. `XaiClientLike.responses.create`
+   options widen to `{ signal?: AbortSignal; timeout?: number }`.
+2. **Host-supplied transport.** `xaiAdapter({ transport: { fetch, fetchOptions? } })` (also reachable
+   through `xaiProvider`) is passed to the SDK client unchanged. The SDK timeout alone does **not**
+   lift undici's 300 s header timer. Only a matching undici `fetch` with
+   `new Agent({ headersTimeout, bodyTimeout })` in `fetchOptions.dispatcher` does. The README shows
+   the setup. The library does not build the agent itself: it has no undici dependency and the
+   dispatcher must come from the same undici the host's `fetch` comes from. Hosts keep this transport
+   until xAI calls stream internally (R9), which removes the need.
+3. **Reject, don't map.** `transport` combined with an injected `client` is `bad_request` (the client
+   owns its transport). `transport.fetchOptions` may not carry `headers`, `signal`, `body` or `method`;
+   those belong to the request and are `bad_request`.
+4. **Classification.** An undici header or body timeout (matched by `UND_ERR_HEADERS_TIMEOUT` /
+   `UND_ERR_BODY_TIMEOUT`, or the class name, anywhere in the `.cause` chain), and the SDK's own
+   deadline (`APIConnectionTimeoutError`), classify as `kind: 'timeout'`, `retryable: false`,
+   `reason: 'transport_timeout'` (ADR-036). A retry reaches the same limit and repeats the spend.
+   A connect timeout (`UND_ERR_CONNECT_TIMEOUT`) is not matched: nothing was sent, so it stays a
+   retryable `timeout`. The engine's own `timeoutMs` deadline is unchanged.
+
+**Deliberately not built:** a library-owned undici agent; an automatic retry with a longer timer;
+reading a request-level header timeout from `providerOptions`. Streaming internally is the
+long-term fix and is a separate decision.
+
+**Consequences:**
+
+- Hosts that run xAI calls longer than 300 s must pass a `transport`; without it those calls still
+  fail at 300 s, now as a single non-retryable `timeout` with `reason: 'transport_timeout'` instead of
+  three billed attempts.
+- `XAI_DEFAULT_TIMEOUT_MS` and `XAI_TIMEOUT_BUFFER_MS` are exported.
+- Whether xAI bills a call aborted by a timeout, and what usage a timed-out attempt reports, is not
+  decided here; it needs a live probe.
+
+---
+
 ## ADR-033: Exact model ids plus declared aliases
 
 **Status:** Accepted (2026-10-03). Supersedes ADR-006.

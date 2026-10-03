@@ -42,8 +42,15 @@ export type {
   XaiOutputItem,
   XaiUsageShape,
   XaiResponseShape,
+  XaiRequestOptions,
+  XaiTransport,
 } from './client.js'
-export { buildXaiClient, requireApiKey } from './client.js'
+export {
+  buildXaiClient,
+  requireApiKey,
+  XAI_DEFAULT_TIMEOUT_MS,
+  XAI_TIMEOUT_BUFFER_MS,
+} from './client.js'
 export { xaiAdapter, classifyXaiError } from './adapter.js'
 export type { XaiAdapterOptions } from './adapter.js'
 export {

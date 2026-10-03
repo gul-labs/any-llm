@@ -14,30 +14,33 @@ xAI has no first-party TypeScript SDK. xAI's own quickstart recommends using the
 
 ## Key exports
 
-| Export                  | What it is                                                                                                           |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `xaiProvider(opts?)`    | `ProviderPlugin` factory — bundles the adapter, `grok-4.5` / `grok-4.6` / `grok-4.7` descriptors, and pricing source |
-| `xaiAdapter(opts?)`     | Creates the `ProviderAdapter` for xAI                                                                                |
-| `XaiAdapterOptions`     | `{ client?: XaiClientLike }` — inject a pre-built or fake client                                                     |
-| `XaiClientLike`         | Structural interface the adapter depends on (satisfied by real SDK and fakes)                                        |
-| `buildXaiClient(auth)`  | Builds the real `openai`-SDK-backed client from `AuthMaterial`, pointed at xAI's base URL                            |
-| `classifyXaiError(err)` | Classifies a raw thrown error into a typed `LlmError`, including xAI's 400-for-auth quirk                            |
-| `grok45ModelDescriptor` | The `grok-4.5` `ModelDescriptor`                                                                                     |
-| `grok46ModelDescriptor` | The `grok-4.6` `ModelDescriptor`                                                                                     |
-| `grok47ModelDescriptor` | The `grok-4.7` `ModelDescriptor`                                                                                     |
-| `xaiModelDescriptors`   | Every model descriptor this package contributes (`grok-4.5`, `grok-4.6`, `grok-4.7`)                                 |
-| `xaiRegistry`           | Pre-built `ModelRegistry` over `xaiModelDescriptors`                                                                 |
-| `xaiPricingSource()`    | Built-in xAI `PricingSource` port implementation, backed by `XAI_PRICING`                                            |
-| `XAI_PRICING`           | Frozen xAI pricing snapshot (µUSD per million tokens)                                                                |
-| `XaiModelRates`         | Per-model rate entry type (`inputPerM`, `cachedPerM`, `outputPerM`, optional `gt200k`)                               |
-| `Grok45ConfigSchema`    | Strict Zod config schema for `grok-4.5`                                                                              |
-| `Grok46ConfigSchema`    | Strict Zod config schema for `grok-4.6`                                                                              |
-| `Grok47ConfigSchema`    | Strict Zod config schema for `grok-4.7`                                                                              |
-| `XaiProviderOptions`    | Typed `providerOptions.xai` shape for cache key, search tools, tool choice, turn cap, and parallel calls             |
-| `XaiFileStore`          | Files API store: upload (TTL), get, list, idempotent delete, content                                                 |
-| `XaiFileHandle`         | `{ id, filename?, bytes?, expiresAt?, … }` returned by the store                                                     |
-| `FileDeleteOptions`     | `{ failClosed?, signal? }` — opt-in fail-closed delete for durable release gates                                     |
-| `XAI_FILE_TTL_*`        | TTL bounds (`3600`…`2592000` seconds) and `XAI_FILE_MAX_BYTES` (48 MiB)                                              |
+| Export                             | What it is                                                                                                           |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `xaiProvider(opts?)`               | `ProviderPlugin` factory — bundles the adapter, `grok-4.5` / `grok-4.6` / `grok-4.7` descriptors, and pricing source |
+| `xaiAdapter(opts?)`                | Creates the `ProviderAdapter` for xAI                                                                                |
+| `XaiAdapterOptions`                | `{ client?, transport? }` — inject a pre-built or fake client, or a `fetch` transport for long calls                 |
+| `XaiTransport`                     | `{ fetch, fetchOptions? }` — host transport passed to the SDK client (see "Long calls and timeouts")                 |
+| `XAI_DEFAULT_TIMEOUT_MS`           | SDK deadline when `timeoutMs` is unset: 3 600 000 ms (one hour)                                                      |
+| `XAI_TIMEOUT_BUFFER_MS`            | Added to `timeoutMs` for the SDK deadline: 5 000 ms                                                                  |
+| `XaiClientLike`                    | Structural interface the adapter depends on (satisfied by real SDK and fakes)                                        |
+| `buildXaiClient(auth, transport?)` | Builds the real `openai`-SDK-backed client from `AuthMaterial`, pointed at xAI's base URL                            |
+| `classifyXaiError(err)`            | Classifies a raw thrown error into a typed `LlmError`, including xAI's 400-for-auth quirk                            |
+| `grok45ModelDescriptor`            | The `grok-4.5` `ModelDescriptor`                                                                                     |
+| `grok46ModelDescriptor`            | The `grok-4.6` `ModelDescriptor`                                                                                     |
+| `grok47ModelDescriptor`            | The `grok-4.7` `ModelDescriptor`                                                                                     |
+| `xaiModelDescriptors`              | Every model descriptor this package contributes (`grok-4.5`, `grok-4.6`, `grok-4.7`)                                 |
+| `xaiRegistry`                      | Pre-built `ModelRegistry` over `xaiModelDescriptors`                                                                 |
+| `xaiPricingSource()`               | Built-in xAI `PricingSource` port implementation, backed by `XAI_PRICING`                                            |
+| `XAI_PRICING`                      | Frozen xAI pricing snapshot (µUSD per million tokens)                                                                |
+| `XaiModelRates`                    | Per-model rate entry type (`inputPerM`, `cachedPerM`, `outputPerM`, optional `gt200k`)                               |
+| `Grok45ConfigSchema`               | Strict Zod config schema for `grok-4.5`                                                                              |
+| `Grok46ConfigSchema`               | Strict Zod config schema for `grok-4.6`                                                                              |
+| `Grok47ConfigSchema`               | Strict Zod config schema for `grok-4.7`                                                                              |
+| `XaiProviderOptions`               | Typed `providerOptions.xai` shape for cache key, search tools, tool choice, turn cap, and parallel calls             |
+| `XaiFileStore`                     | Files API store: upload (TTL), get, list, idempotent delete, content                                                 |
+| `XaiFileHandle`                    | `{ id, filename?, bytes?, expiresAt?, … }` returned by the store                                                     |
+| `FileDeleteOptions`                | `{ failClosed?, signal? }` — opt-in fail-closed delete for durable release gates                                     |
+| `XAI_FILE_TTL_*`                   | TTL bounds (`3600`…`2592000` seconds) and `XAI_FILE_MAX_BYTES` (48 MiB)                                              |
 
 ## Quick example
 
@@ -274,6 +277,63 @@ config: {
 | `grok-4.7` | `gt200k` (≥200k gross input) | $4.00/M | $1.00/M      | $12.00/M |
 
 The `gt200k` long-context tier is selected by **gross** `inputTokens` (including cached), not billable input — at or above 200,000 tokens (`long_context_threshold`), as stated on [xAI's pricing page](https://docs.x.ai/developers/pricing). The adapter surfaces the echoed Responses `service_tier` (`'default'` or `'priority'`), so `price()` receives that served value instead of `undefined`. Custom xAI `PricingSource` implementations must price `'default'` at the standard list. Built-in `xaiPricingSource().price()` prices priority at 2× every token type after the cache discount. Fixture `23-grok-4-5-priority.json` confirms Grok 4.5's 2× total, and fixture `12-grok-4-6-xhigh-priority.json` confirms Grok 4.6; cached and `gt200k` legs follow the official 2×-after-cache-discount rule. `fast` is not admitted. Any other defined tier is unpriced (`microUsd: null`). Grok 4.5/4.6 list rates are pinned to `packages/xai/src/__fixtures__/14-v1-models-pricing.json` (live `GET /v1/models` 2026-08-12); Grok 4.7 rates come from the [September 21 release notes](https://docs.x.ai/developers/release-notes).
+
+## Long calls and timeouts
+
+xAI sends nothing until a non-streamed answer is complete, so a reasoning or agentic call can wait
+many minutes for response headers. Two separate timers sit in the way, and only one of them is
+controlled by the SDK:
+
+| Timer                                     | Default    | What sets it                                                           |
+| ----------------------------------------- | ---------- | ---------------------------------------------------------------------- |
+| `openai` SDK deadline (`timeout`)         | 10 minutes | The adapter: `timeoutMs + 5000`, or one hour when `timeoutMs` is unset |
+| Node `fetch` (undici) header + body timer | 300 s each | The host's `transport` only                                            |
+
+**The SDK timeout alone does not lift Node's 300 s header timer.** Without a transport, any call that
+takes longer than 300 s fails at 300 s, whatever `timeoutMs` says. To run longer calls, pass undici's
+own `fetch` with an `Agent` whose timers are at least the SDK deadline:
+
+```ts
+import { Agent, fetch as undiciFetch } from 'undici' // pnpm add undici
+import { createClient, composeProviders } from '@gullabs/core'
+import { xaiProvider } from '@gullabs/xai'
+
+const LIMIT_MS = 3_605_000 // >= the longest SDK deadline you will use (default: 3_600_000 + slack)
+
+const client = createClient({
+  ...composeProviders([
+    xaiProvider({
+      transport: {
+        fetch: undiciFetch as unknown as typeof fetch,
+        fetchOptions: {
+          dispatcher: new Agent({ headersTimeout: LIMIT_MS, bodyTimeout: LIMIT_MS }),
+        },
+      },
+    }),
+  ]),
+})
+```
+
+Notes:
+
+- Use `fetch` and `Agent` from the **same** `undici` package. Node's built-in `fetch` bundles its own
+  undici, and a dispatcher from a different version is not guaranteed to work with it.
+- Size `headersTimeout` and `bodyTimeout` to at least the largest SDK deadline you use:
+  `timeoutMs + 5000` for calls that set `timeoutMs`, `XAI_DEFAULT_TIMEOUT_MS` (3 600 000) otherwise.
+- **Keep this transport until streaming removes the need.** The adapter does not stream today, so the
+  transport is the only way to run a call past 300 s. A later release will stream internally; until it
+  does, treat the transport as required for any long-running xAI workload.
+- `transport` cannot be combined with an injected `client`, and `fetchOptions` cannot carry `headers`,
+  `signal`, `body` or `method`. Both are `bad_request`.
+- `timeoutMs` still works as before: the engine arms its own deadline at exactly `timeoutMs` and the
+  SDK deadline sits 5 s behind it, so you see the engine's clean timeout.
+
+### Timeout errors do not retry
+
+A header-timer, body-timer or SDK-deadline timeout is `kind: 'timeout'`, `retryable: false`,
+`reason: 'transport_timeout'`. Retrying reaches the same limit and repeats the spend, so the retry
+middleware does not retry it; resubmit from the host if you want to. A connect timeout (nothing was
+sent) stays a retryable `timeout`. See ADR-032 in the repository root `DECISIONS.md`.
 
 ## Regions
 
