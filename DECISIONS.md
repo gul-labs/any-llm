@@ -2532,7 +2532,8 @@ out of credits are all `rate_limited, retryable: false`, and a host reacts to ea
 
 1. **`LlmError.reason?: LlmErrorReason`,** a closed union exported from `@gullabs/core`. Members:
    `transport_timeout`, `quota_window`, `daily_quota`, `credits_exhausted`, `spend_ceiling`,
-   `grounding_missing`, `search_budget_exceeded`, `cache_not_found`. `kind` and `retryable` stay
+   `grounding_missing`, `search_budget_exceeded`, `cache_not_found` (and `quota_store_unavailable`, added by
+   ADR-041 Amendment A). `kind` and `retryable` stay
    authoritative; `reason` only says why within a kind, and is absent when no named cause applies.
    `retryable` follows whether a retry can change the outcome: `grounding_missing` is `retryable: true`
    only when no output schema is attached (a schema + Search call keeps missing, ADR-035 Amendment A).
@@ -3277,7 +3278,7 @@ dayBoundary?, scope? })`; `quotaPolicyForGemini` and `quotaPolicyForXai` call it
 void` (ADR-008's port, widened). The engine hands `acquire` `estimateInputTokens(effectiveReq)` on every
    attempt and calls `Release` with the attempt's normalized usage when there is one (a success, a billed
    failure) and with none otherwise. `estimateInputTokens` is exported from core: the characters of system,
-   text parts, tool calls, tool results and tool declarations over 4, rounded up. It is a floor for a
+   text parts, tool calls, tool results, tool declarations and the output schema over 4, rounded up. It is a floor for a
    request with media or file parts (they carry no text) and exists to pace, never to bill or refuse, so the
    real usage corrects it. The store reserves the estimate in the minute's counter under the same atomic
    check-and-consume as the request windows (R1.5 semantics unchanged: a denied call consumes nothing; one
@@ -3285,14 +3286,15 @@ void` (ADR-008's port, widened). The engine hands `acquire` `estimateInputTokens
    never fit) and `QuotaStore.adjustTokens({ scope, nowMs, tokens })` adds `actual - reserved` to the
    acquire minute's counter, floored at 0, leaving a window that has ended alone. An attempt that ends
    with no usage keeps its reservation (the provider may have counted it). A reconciliation failure is a
-   `backend_error` event, never a call failure. `adjustTokens` is required on `QuotaStore` (greenfield: a
-   store that enforces no `tpm` implements it as a no-op).
+   `backend_error` event, never a call failure, and the correction is started without being awaited
+   (Amendment A). `adjustTokens` is required on `QuotaStore` (greenfield: a store that enforces no `tpm`
+   implements it as a no-op).
 5. **`inMemoryQuotaStore({ clock })`.** The same windows and rule in a `Map`. The clock is the store's own
    time source for counter expiry, as a Redis server's clock is, while the window a call falls in is named by
    the `nowMs` the caller passes; tests pass the client's `FakeClock`.
 6. **The middleware runs without a store.** `providerQuotaMiddleware` with no `store` still evaluates
    rules: `rpd: 0` denies with `provider_disabled` and a `deny` event. Windows cannot be checked and are
-   skipped with one `warn` (`llm.quota.windows_skipped`) per instance. The consume-only-on-allow
+   skipped with one `warn` (`llm.quota.windows_skipped`) per instance and scope. The consume-only-on-allow
    semantics, the role-order rule (quota inside retry) and `maxDeferMs` (60 s default) are unchanged.
 7. **Store failure is a stated choice, and a store call is bounded.** `onStoreError: 'fail-open' |
 'fail-closed'` has no default on the middleware, the rate limiter and `enforceProviderQuota` when they have
@@ -3320,7 +3322,7 @@ void` (ADR-008's port, widened). The engine hands `acquire` `estimateInputTokens
    `FakeClient` (request capture, `expectRequest`), `FakeGoogleFileStore`, `FakeGoogleCacheStore`,
    `FakeCliRunner`. `FakeAdapter` and `SignalAwareFakeAdapter` throw `TypeError` at construction for an
    entry that is neither an `Error` nor a complete `AdapterResult`; a plain `{ status: 429 }` is no longer
-   thrown as an error.
+   thrown as an error. What a factory error becomes in a whole-adapter fake is Amendment A.
 
 **Consequences:**
 
@@ -3333,3 +3335,69 @@ void` (ADR-008's port, widened). The engine hands `acquire` `estimateInputTokens
   `FakeClock` passed as both `clock` and `scheduler`.
 - A request with media is under-estimated for `tpm`; the reconciliation corrects the counter after the call,
   not before it.
+
+### Amendment A (audit of R8, 2026-10-03)
+
+An adversarial audit of this decision's implementation found five behaviours that contradicted the
+intent. Each is fixed; the contract is now:
+
+1. **A fail-closed store outage is a quota-store failure, not a provider failure.** Every store failure
+   under `onStoreError: 'fail-closed'` (a timeout, an HTTP failure, a transport failure, a malformed reply,
+   a store that throws its own `rate_limited`) is one `LlmError`: `kind: 'server'`, `retryable: false`,
+   `reason: 'quota_store_unavailable'`, the store's error as `cause`. `quota_store_unavailable` is a new
+   member of the closed `LlmErrorReason` union (ADR-036 item 2: a new member is a core minor; hosts keep a
+   `default` branch). It is not retryable on purpose: the audit reproduced a store timeout classified
+   `timeout` by message text, retried three times (three store calls, 6 s, load on an already degraded
+   store) and written to the ledger as a provider timeout for a call that never reached the provider. Now
+   there is one store call per dispatch and one refusal row (`server` / `quota_store_unavailable`). `server`
+   is otherwise retryable; this is the one non-retryable exception, kept by `retryable: false`, which stays
+   authoritative. A caller abort or deadline that interrupts the store call is still the abort or the
+   timeout, never a store failure, and never fail-open. A `backend_error` event is emitted once per failed
+   call.
+2. **Reconciliation never delays or masks a call.** `providerQuotaMiddleware` starts `adjustTokens` when the
+   attempt ends and does not await it (as `providerQuotaRateLimiter`'s `Release` already did), on a result
+   and on an error alike. It is at-most-once: a process that ends first loses the correction and the
+   reservation stays, which over-counts until the minute ends (the safe side). `Release` and
+   `QuotaAdmission.reconcile` correct once however often they are called. A failure is the `backend_error`
+   event plus an `llm.quota.reconcile_failed` warning. The store bounds its own call
+   (`upstashQuotaStore`'s `timeoutMs`); a custom store must too.
+3. **The shipped Lua runs on a real interpreter in CI.** The CI quality job installs `lua5.4` and sets
+   `REQUIRE_LUA=1`; with it set a missing interpreter fails the run, otherwise the real-Lua tests skip
+   locally. They cover both scripts and the Upstash store end to end (rpm, a time-zone rpd, tpm, the
+   adjust script). Redis embeds Lua 5.1 and the shim is not Redis; that stays a stated limitation.
+4. **`0` means disabled for every window.** `rpm: 0`, `rpd: 0` and `tpm: 0` all deny with
+   `provider_disabled`, with or without a store; a negative or fractional limit is `bad_request`. (Before,
+   `rpm: 0` meant unlimited and `tpm: 0` was `bad_request`.) The policy builders reject an unknown option or
+   limit key (`defaultLimits`, a misspelt `rpmm`, `rpd` on the xAI preset) instead of dropping it.
+   `onStoreError` is validated when the middleware or limiter is built.
+5. **Day counters are keyed by the canonical zone.** `US/Pacific` and `America/Los_Angeles` share a counter,
+   and UTC spelled any way is the same window as no boundary. The skipped-windows warning's message is the
+   event name `llm.quota.windows_skipped` (fields `callId`, `provider`, `model`, `scope`) once per scope.
+   `estimateInputTokens` now counts the output schema. `upstashQuotaStore` releases the timer and listener
+   when a custom `invoke` throws synchronously and cancels the body of a non-OK response.
+
+**The test package.** A provider-shaped error thrown by a whole-adapter fake behaves as the real adapter's
+does. `fakeProviderError` still returns the raw SDK error (the SDK-level fakes hand it to the real adapter,
+which classifies it) and marks it; `FakeAdapter`, `SignalAwareFakeAdapter` and `FakeClient` run a marked error
+through `classifyGoogleError` / `classifyXaiError` (loaded from `@gullabs/google` / `@gullabs/xai`, now
+optional exact-version peer dependencies of `@gullabs/testing`; `classifyGoogleError` and
+`GEMINI_INPUT_MIME_TYPES` are exported from `@gullabs/google` for this) before throwing, so a per-day quota
+stops a retry loop, exhausted xAI credits are `credits_exhausted`, a bad Gemini key is `invalid_auth`, and
+the error is an `LlmError` of the host's copy of core (fields carried over when the classifier came from the
+other module format). Tests run the same scenario through a `FakeAdapter` and through the real adapter
+over `makeFakeGemini` / `makeFakeXai` and require identical results. `FakeClient` rejects only with
+`LlmError`: it classifies an `Error` entry with core's `classifyError`. Smaller: `FakeClock`'s methods work
+detached (`Clock.now` and `Scheduler.*` are `this: void`) and `advance` rejects `NaN`, infinite and negative
+amounts and is re-entrant; concurrent delayed `FakeAdapter` calls each take their own entry;
+`FakeGoogleFileStore` applies the shared media-type admission and `failUpload`, `FakeGoogleCacheStore` takes
+`failCreate`, `preflight` and `coalesce`; `fakeLlmResult` is unpriced by default and numbers its ids;
+`fakeProviderError('xai', ...)` takes response `headers`; `fakeNetworkError` names the syscall and errno of
+its code. `GoogleFileStore` takes a `scheduler` for the poll wait and the Gemini flex/standard client-side
+ceiling runs on `ctx.scheduler`, so a `FakeClock` fires both (a CLI runner's process timers are not on the
+port). The packed-install check imports `@gullabs/testing` and runs a fake call and a classified provider
+error in ESM and CommonJS under pnpm and npm.
+
+**Consequences:** hosts that matched `reason` exhaustively add `quota_store_unavailable`; a host that
+relied on `rpm: 0` as "unlimited" omits `rpm` instead; a test that threw a `fakeProviderError` through a
+`FakeAdapter` now sees the real classification; `@gullabs/testing` peers on the provider packages at the
+release version.

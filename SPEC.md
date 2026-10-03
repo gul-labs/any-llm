@@ -210,6 +210,7 @@ export type LlmErrorReason =
   | 'grounding_missing'
   | 'search_budget_exceeded' // reserved: not emitted until streaming ships (ADR-036)
   | 'cache_not_found'
+  | 'quota_store_unavailable' // a quota store failed or timed out; kind 'server', retryable false (ADR-041)
 export class LlmError extends Error {
   kind: LlmErrorKind
   retryable: boolean
@@ -595,7 +596,9 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
 - **Fakes:** `FakeClock` (a `Clock` and a `Scheduler`: timeouts, deadlines and back-off advance with it),
   `FakeIds`, `RecordingSink` (captures records; `dedupeOn: 'attemptId'` mirrors the ledger),
   `RecordingTelemetry`, `RecordingLogger`, `fakeLlmResult`, `FakeClient`, error factories built from the real
-  SDK error classes, `FakeGoogleFileStore`, `FakeGoogleCacheStore`, `FakeCliRunner`, `makeFakeGemini` (a stub
+  SDK error classes (`FakeAdapter` and `FakeClient` run them through the real provider classifier, so they
+  throw what the real adapter throws, ADR-041 Amendment A), `FakeGoogleFileStore`, `FakeGoogleCacheStore`,
+  `FakeCliRunner`, `makeFakeGemini` (a stub
   `@google/genai` client returning scripted responses incl. usageMetadata with thoughtsTokenCount),
   `makeFakeXai` (a structural `XaiClientLike` stub replaying Responses API payloads).
 - **Unit:** cost math (GROSS/net, >200k tier, cached discount, unknown-model→null); error
