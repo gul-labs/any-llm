@@ -17,6 +17,7 @@ pnpm add @gullabs/drizzle @gullabs/core @gullabs/google drizzle-orm
 | `llmCalls`                     | Drizzle `pgTable('llm_calls', ...)` — the reference schema                                                    |
 | `drizzleUsageSink(db, table?)` | Returns a `UsageSink` that writes records via `INSERT ... ON CONFLICT DO NOTHING` (idempotent on `attemptId`) |
 | `InsertableDb`                 | Type of the `db` argument accepted by `drizzleUsageSink`                                                      |
+| `assertLlmCallsSchema(db)`     | Checks, without writing, that the table has every column the sink writes; rejects pointing at `sql/upgrades/` |
 
 ## Quick example
 
@@ -57,16 +58,22 @@ The package ships plain SQL in `sql/` (resolvable as `@gullabs/drizzle/sql/insta
 | `sql/install.sql`                        | Fresh install of the current `llm_calls` table and its indexes.                    |
 | `sql/upgrades/0001-add-error-reason.sql` | Adds the `error_reason` column to a table created by 0.7.2 or earlier. Idempotent. |
 
-Apply every upgrade you have not run yet, in order, **before** deploying the new sink. An insert that names
-a column the table lacks fails, and the engine swallows sink failures (they are logged), so ledger rows
-would silently go missing. The files assume the table is named `llm_calls`.
+Apply every upgrade you have not run yet, in order, **before** deploying the new sink, on every release that
+ships one (the packages version in lockstep, so a core bump for an unrelated fix is a drizzle bump too). The
+sink writes every column on every row, so a table that missed an upgrade makes every insert fail, successes
+included. The engine swallows sink failures, so the rows are dropped and only logged (see below). There is no
+compatibility path for the old shape. The files assume the table is named `llm_calls`.
+
+To find out before rows are lost, call `assertLlmCallsSchema(db)` from a deploy or CI step, a readiness
+endpoint, or at boot: it selects every column with `LIMIT 0` and rejects with a message that points at
+`sql/upgrades/`.
 
 `error_reason` is plain text with no CHECK constraint: new reasons arrive as core releases (see ADR-036)
 and never need SQL.
 
 ## Sink fail-open guarantee
 
-The engine swallows all sink errors — a broken database write never fails the LLM call. Errors are logged via the engine's `Logger` at level `error` with event name `llm.call.sink.failed`.
+The engine swallows all sink errors — a broken database write never fails the LLM call. Every failure is logged via the engine's `Logger` at level `error` with the stable event name `llm.call.sink.failed` and the fields `callId`, `attemptId`, `attemptNumber`, `provider`, `model` and `error`. Alert on that event: a dropped row is otherwise invisible.
 
 ## Learn more
 

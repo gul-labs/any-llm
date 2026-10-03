@@ -1,3 +1,3 @@
 export { llmCalls } from './schema.js'
-export { drizzleUsageSink } from './sink.js'
-export type { InsertableDb } from './sink.js'
+export { assertLlmCallsSchema, drizzleUsageSink } from './sink.js'
+export type { InsertableDb, SelectableDb } from './sink.js'

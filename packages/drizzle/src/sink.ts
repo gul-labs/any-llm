@@ -72,3 +72,48 @@ export function drizzleUsageSink(db: InsertableDb, table = llmCalls): UsageSink 
     },
   }
 }
+
+/**
+ * Minimal structural interface for the `db` argument of {@link assertLlmCallsSchema}.
+ */
+export interface SelectableDb {
+  select(): {
+    from(table: unknown): {
+      limit(n: number): PromiseLike<unknown>
+    }
+  }
+}
+
+/**
+ * Checks that the `llm_calls` table has every column this version of the sink
+ * writes, without writing anything: it selects every column the Drizzle schema
+ * names with `LIMIT 0`.
+ *
+ * Why it exists: the sink writes every column on every row, so a table that
+ * missed an upgrade (`sql/upgrades/`) makes every insert fail, successes
+ * included. The engine swallows sink failures by design (ADR-002), so those
+ * rows would otherwise vanish quietly; each failure is logged at `error` with
+ * the event `llm.call.sink.failed`. This function is the explicit, opt-in way
+ * to find out before that happens. It needs no running client, so call it
+ * wherever it fits: a deploy or CI step, a readiness endpoint, or once at
+ * boot. It rejects with an `Error` whose `cause` is the driver error.
+ *
+ * @throws Error when the select fails (a missing column, a missing table, or an
+ *   unreachable database); the message points at `sql/upgrades/`.
+ */
+export async function assertLlmCallsSchema(
+  db: SelectableDb,
+  table = llmCalls,
+): Promise<void> {
+  try {
+    await db.select().from(table).limit(0)
+  } catch (cause) {
+    throw new Error(
+      'llm_calls could not be read with every column @gullabs/drizzle writes. ' +
+        'The table may be missing columns from a release you have not migrated to: apply every ' +
+        'script in @gullabs/drizzle/sql/upgrades/ in order (or sql/install.sql on a fresh database) ' +
+        `before deploying this version. Driver error: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    )
+  }
+}
