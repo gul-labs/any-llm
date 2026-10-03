@@ -532,6 +532,17 @@ and includes it in `result.providerMetadata` alongside any `promptFeedback`. The
 grounding attribution from `result.providerMetadata['groundingMetadata']` as `JsonValue`; the
 library does not model the grounding metadata structure as a typed field.
 
+**Amendment (2026-10-03):** "Admit the combinations Google documents" was too generous. Live probes
+(`docs/grounded-structured.md`) showed Gemini 3.x accepting `googleSearch` plus a response schema while
+Flash-Lite models skipped Search and no model returned `groundingMetadata` with `responseSchema`. An
+accepted request is not evidence the tool ran, so all six Gemini 3.x descriptors now set
+`structuredOutputWithTools: false`. The combination fails with `bad_request` before dispatch, naming the
+two-call recipe (grounded research without a schema, then structured synthesis). Separately, any call that
+sent `googleSearch` reports `cost.confidence: 'estimated'` plus a warning, because grounding fees are not
+part of the token price; the adapter signals this with the synthetic `usage.details.google_search_requested`
+key (the same pattern xAI uses for `server_tools_requested`). Hosts that need to turn the combination
+back on, or have it priced, need a new decision backed by probe evidence.
+
 **Consequences:**
 
 - Grounding support stays provider-specific without pretending to be a cross-provider generic field.
@@ -1192,7 +1203,8 @@ details?: Record<string, number>; raw: JsonValue }`. The engine (`packages/core/
 retryable: false })`. Implemented for Google via `@google/genai`'s `models.countTokens`
    (`packages/google/src/adapter.ts`), sharing `mapMessagesToGeminiContents` with `run()` so both
    code paths map messages identically — a divergence here would make a token count unrepresentative
-   of the actual generation call it is meant to estimate.
+   of the actual generation call it is meant to estimate. (Google rejects `system` and `tools`; see
+   ADR-029 item 9.)
 
 2. **`GoogleCacheStore` token pre-flight.** `GoogleCacheStoreOptions.preflight` (`packages/google/src/
 cache-store.ts`) is an optional `{ minTokens: number; countTokens: (payload) => Promise<number> }`
@@ -1651,9 +1663,13 @@ policy would be framework magic this library explicitly refuses.
    replayed `function_call` + `function_call_output` with `store: false`.
    Named `tool_choice` uses the flat Responses form
    `{ type: 'function', name }` (nested chat-completions form 422s).
-9. **`countTokens`:** `TokenCountRequest.tools` is forwarded by Google
-   (`accuracy: 'exact'`). xAI `bad_request`s `tools` (tokenize-text cannot
-   represent declarations).
+9. **`countTokens`:** neither provider counts `tools`. Google `bad_request`s both
+   `system` and `tools` before dispatch: the Gemini Developer API's `countTokens`
+   (through `@google/genai`) cannot carry a system instruction or tool declarations,
+   and a count that dropped them would be a lower bound reported as `exact`. Count
+   `messages` alone, or read `inputTokens` from a `generate()` result. xAI
+   `bad_request`s `tools` (tokenize-text cannot represent declarations). (This item
+   previously said Google forwarded `tools`; it never worked.)
 10. **`parallelToolCalls`** is xAI-only (`providerOptions.xai`).
 
 **Consequences:**
@@ -1801,6 +1817,63 @@ with an alias list would have been rejected on its first call.
   add the suffix as an alias in a custom registry.
 - A new model variant is unpriced-by-mistake no more: it fails closed until it is registered.
 - The Claude and Codex CLI adapters keep their own exact-id guards; they declare no aliases.
+
+---
+
+## ADR-036: Retry honours provider delays; errors carry typed reasons
+
+**Status:** Accepted (2026-10-03). The reasons half is implemented now; the retry-delay half is
+specified by a later change and is marked below.
+
+### Part 1 — Error reasons are a closed, typed vocabulary
+
+**Context:**
+`LlmErrorKind` and `retryable` say what class of failure happened and whether a retry may help, but
+several distinct causes share one kind: a local quota window, a provider daily quota and an account
+out of credits are all `rate_limited, retryable: false`, and a host reacts to each differently
+(reschedule, alert, top up). Hosts were left matching message text.
+
+**Decision:**
+
+1. **`LlmError.reason?: LlmErrorReason`,** a closed union exported from `@gullabs/core`. Members:
+   `transport_timeout`, `quota_window`, `daily_quota`, `credits_exhausted`, `spend_ceiling`,
+   `grounding_missing`, `search_budget_exceeded`, `cache_not_found`. `kind` and `retryable` stay
+   authoritative; `reason` only says why within a kind, and is absent when no named cause applies.
+2. **The union is closed on purpose,** so adapters cannot invent reasons. Adding a member is a core
+   minor release under the lockstep versioning in `RELEASING.md` (pre-1.0, so a minor may break an
+   exhaustive `switch`). The changeset lists the new members and hosts keep a `default` branch. There is no
+   namespaced extension form: a provider-specific condition that needs a reason gets a core member.
+3. **The reason is persisted and observable.** `LlmCallRecord.errorReason` (absent on success and when
+   the error has no reason), the `error_reason` text column of `llm_calls`, and
+   `CallErrorEvent.reason`. It is written on provider-attempt rows and on `attemptNumber: 0` refusal rows
+   alike.
+4. **The database column has no CHECK constraint.** The vocabulary lives in the TypeScript union; a new
+   member must never need SQL. A host that wants database-side validation can add its own constraint and
+   owns keeping it in step with the changeset notes.
+5. **SQL ships with the column.** `@gullabs/drizzle` ships `sql/install.sql` (fresh install),
+   `sql/upgrades/0001-add-error-reason.sql` (from the 0.7.2 shape, idempotent) and a migration test
+   that proves the upgraded table equals a fresh install and keeps existing rows. A
+   `recordSchemaVersion` bump alone would migrate nothing, and the record version stays `1`: the field is
+   additive and optional.
+6. **Wrappers keep the reason.** Adapter overlays that rebuild an `LlmError` (`classifyGoogleError`) copy
+   `reason`; an adapter or middleware that throws a reasoned `LlmError` is persisted as thrown.
+
+**Consequences:**
+
+- Hosts branch on `error.reason` (or the `error_reason` column) instead of message text.
+- Existing rows keep `error_reason` NULL. Hosts using `@gullabs/drizzle` apply
+  `sql/upgrades/0001-add-error-reason.sql` before upgrading the sink, or inserts fail on the missing
+  column.
+- Some members are declared before every emitter ships; the changesets say which release emits which
+  reason.
+
+### Part 2 — Retry honours provider delays
+
+> **Reserved for the engine/retry release (plan item R4).** That change extends this ADR with: a valid
+> provider `Retry-After` is never undercut (a delay longer than `maxDelayMs` or the remaining deadline
+> stops the retry and rethrows the original error with `retryAfterMs` intact), backoff longer than the
+> remaining budget rethrows the attempt's own error at once, and the new reasons it emits (`daily_quota`,
+> `credits_exhausted`, `cache_not_found`). Do not write that policy here until it ships.
 
 ---
 

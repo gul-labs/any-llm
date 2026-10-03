@@ -19,11 +19,14 @@ ledger shape unless you have a concrete reason to stop consuming the shared sink
 | `externalId`    | caller  | Correlation id for host-ledger queries; give every host retry of one operation the same value.                                        |
 | `queueDelayMs`  | library | Time spent waiting in the configured rate limiter before provider dispatch; use alongside `latencyMs` when attributing spend/latency. |
 | `metadata`      | caller  | Small, stable, non-secret host anchors persisted verbatim.                                                                            |
+| `error_kind`    | library | Failure class (`rate_limited`, `timeout`, ...). Drives `status`; authoritative with `retryable`.                                      |
+| `error_reason`  | library | Why, within the kind, from the closed `LlmErrorReason` set (`quota_window`, `transport_timeout`, ...). NULL when the error has none.  |
 
 Rules that matter:
 
 - `attemptId` is the durable row identity.
 - Every attempt is a billed row with its own `attemptId`. The library never deduplicates provider calls; a host retry is a new call and new rows. Tie retries together with a shared `externalId`.
+- `error_reason` is plain text with no CHECK constraint, so a reason added to core later needs no SQL. Match on the values in `LlmErrorReason`, and treat an unknown value as "some other reason".
 - `metadata` is for low-cardinality JSON anchors, not secrets or large debug payloads.
 - If a host field needs typed indexes or joins, put it in a sidecar table.
 
@@ -79,6 +82,19 @@ Write pattern:
 through the sidecar table. Retention and deletion ownership is entirely host-owned: no TTL or
 `deleted_at` policy is defined in `llm_calls` today, so host code that implements those policies must
 also decide whether and how to clean dependent sidecar rows.
+
+## Creating and upgrading the table
+
+`@gullabs/drizzle` ships plain SQL next to the Drizzle schema, in `sql/` inside the package:
+
+- `sql/install.sql` creates the current `llm_calls` table and its indexes on a database that has none.
+- `sql/upgrades/NNNN-*.sql` moves an existing table forward. Apply every file you have not yet applied, in
+  order. Each is idempotent. `0001-add-error-reason.sql` takes the table published in 0.7.2 and adds
+  `error_reason`.
+
+Apply the upgrade before deploying a sink that writes the new column: an insert that names a column the table
+lacks fails, and the engine swallows sink failures, so the rows would silently go missing. Both files assume
+the table is called `llm_calls`; substitute your name if it differs.
 
 ## Atomic sidecar writes (transaction composition)
 

@@ -146,7 +146,7 @@ export interface Usage {
 export interface Cost {
   microUsd: number | null
   pricingVersion: string
-  confidence: 'exact' | 'estimated' // 'estimated' if any priced field had to be inferred
+  confidence: 'exact' | 'estimated' // 'estimated' if any priced field had to be inferred, or a known charge is not priced (e.g. a call that sent googleSearch)
   details: { input: number; cached: number; output: number; tools: number }
   // MUST sum to microUsd: input + cached + output + tools.
   // NOTE: thinking tokens are inside outputTokens and billed at the output rate — NO separate
@@ -166,9 +166,20 @@ export type LlmErrorKind =
   | 'bad_request'
   | 'content_filter'
   | 'unknown'
+// Closed on purpose: adapters cannot invent reasons; a new member is a core release (ADR-036).
+export type LlmErrorReason =
+  | 'transport_timeout'
+  | 'quota_window'
+  | 'daily_quota'
+  | 'credits_exhausted'
+  | 'spend_ceiling'
+  | 'grounding_missing'
+  | 'search_budget_exceeded'
+  | 'cache_not_found'
 export class LlmError extends Error {
   kind: LlmErrorKind
   retryable: boolean
+  reason?: LlmErrorReason // why, within `kind`; kind + retryable stay authoritative
   httpStatus?: number
   retryAfterMs?: number
   provider?: string
@@ -361,14 +372,16 @@ export interface LlmCallRecord {
   reasoningText?: string // truncated to a cap; null when not requested/returned
   // postmortem
   errorKind?: LlmErrorKind
+  errorReason?: LlmErrorReason // LlmError.reason; absent on success and when the error has none
   errorMessage?: string // truncated; diagnostics on failure
   metadata: JsonValue // host anchors
   createdAt: string // Clock-stamped
 }
 ```
 
-`@gullabs/drizzle` ships the matching `pgTable('llm_calls', …)` (typed columns + jsonb lanes) and
-`drizzleUsageSink(db, table)`. Insert is `onConflictDoNothing` on `attemptId`, which only absorbs an
+`@gullabs/drizzle` ships the matching `pgTable('llm_calls', …)` (typed columns + jsonb lanes),
+`drizzleUsageSink(db, table)`, and the SQL for it: `sql/install.sql` (fresh install) and
+`sql/upgrades/*.sql`. `error_reason` is plain text with no CHECK constraint (ADR-036). Insert is `onConflictDoNothing` on `attemptId`, which only absorbs an
 at-least-once sink re-delivering the same record; every attempt has its own minted `attemptId`.
 Core imports no ORM; a host with a different store implements `UsageSink` directly.
 

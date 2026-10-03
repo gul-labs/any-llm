@@ -178,7 +178,25 @@ call.
 Inject a `Telemetry` hook via `ClientConfig.telemetry` for OTel / Sentry / PostHog integration.
 All three methods (`onStart`, `onSuccess`, `onError`) are optional and fire once per logical call
 (not per attempt). The opaque value returned by `onStart` is forwarded as `span` to `onSuccess`
-and `onError`. Hook failures are swallowed fail-open.
+and `onError`. Hook failures are swallowed fail-open. `CallErrorEvent` carries `errorKind`, `retryable`
+and, when the error has one, `reason`.
+
+### Error reasons
+
+`LlmError.kind` and `retryable` say what class of failure happened. `LlmError.reason` says why within
+the kind, from the closed `LlmErrorReason` union (`transport_timeout`, `quota_window`, `daily_quota`,
+`credits_exhausted`, `spend_ceiling`, `grounding_missing`, `search_budget_exceeded`,
+`cache_not_found`). It is absent when no named cause applies. The reason is also persisted:
+`LlmCallRecord.errorReason`, the `error_reason` column of `@gullabs/drizzle`, and `CallErrorEvent.reason`.
+The union is closed so adapters cannot invent reasons; a new member arrives in a core minor, so keep a
+`default` branch when you switch on it. See ADR-036.
+
+### Output budget and reasoning
+
+`GenConfig.maxOutputTokens` includes reasoning tokens on providers that reason. When a call ends with
+`finishReason: 'length'`, produced no answer text and no tool call, and spent reasoning tokens, the result
+and the record carry a warning that the cap was used up by reasoning. Raise the cap or lower the reasoning
+effort.
 
 ### LlmCallRecord and UsageSink
 
