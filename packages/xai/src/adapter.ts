@@ -15,6 +15,7 @@ import {
   assertJsonSchemaProfile,
   assertInputMimeTypesAdmitted,
   assertModelMatchesDescriptor,
+  estimateInputTokens,
 } from '@gullabs/core'
 import type {
   ProviderAdapter,
@@ -35,12 +36,17 @@ import {
   buildXaiClient,
   requireApiKey,
   XAI_DEFAULT_TIMEOUT_MS,
+  XAI_MAX_TIMEOUT_MS,
   XAI_RESERVED_FETCH_OPTION_KEYS,
   XAI_TIMEOUT_BUFFER_MS,
 } from './client.js'
 import { xaiRegistry } from './models.js'
 import { XAI_JSON_SCHEMA_PROFILE } from './json-schema.js'
-import { X_SEARCH_ITEM_COUNTERS, unpricedXaiToolCounters } from './pricing.js'
+import {
+  X_SEARCH_ITEM_COUNTERS,
+  XAI_ESTIMATED_USAGE_KEY,
+  unpricedXaiToolCounters,
+} from './pricing.js'
 import { XaiStreamError } from './stream.js'
 import type {
   XaiClientLike,
@@ -778,13 +784,21 @@ function xaiTransportTimeoutKind(
  *    is made one here). A connection that never reached xAI is not the
  *    caller's fault.
  * 6. Else rebuild the core classification tagged `provider: 'xai'`.
+ *
+ * A streamed call that failed mid-stream arrives as an `XaiStreamError`; see
+ * {@link classifyStreamError} (`estimatedInputTokens` is the request's input
+ * estimate, used only for a failure after output began).
  */
-export function classifyXaiError(rawErr: unknown, deadline?: XaiSdkDeadline): LlmError {
+export function classifyXaiError(
+  rawErr: unknown,
+  deadline?: XaiSdkDeadline,
+  estimatedInputTokens = 0,
+): LlmError {
   if (rawErr instanceof LlmError) {
     return rawErr
   }
   if (rawErr instanceof XaiStreamError) {
-    return classifyStreamError(rawErr)
+    return classifyStreamError(rawErr, estimatedInputTokens)
   }
 
   const base = classifyError(rawErr)
@@ -907,16 +921,57 @@ function classifyFailedResponseCode(
 }
 
 /**
- * The error for a call that failed while streaming (ADR-040). Usage is attached
- * only when the latest response snapshot carried it, which is rare: the final
- * usage arrives on the terminal event, so a cut stream is normally an unpriced
- * attempt, not a free one.
+ * The lower-bound usage of a stream that failed after output began, as an
+ * ESTIMATE (ADR-040 Amendment A): input is the request's length over 4, output
+ * is the characters received over 4. Hidden reasoning tokens, tool fees and the
+ * provider's own prompt overhead are not counted, so the real spend is higher.
+ * The `usage_estimated` detail makes the pricing source report the cost as
+ * `'estimated'`; no `cost_in_usd_ticks` is ever attached.
  */
-function classifyStreamError(err: XaiStreamError): LlmError {
+function estimatedStreamUsage(outputChars: number, inputTokens: number): Usage {
+  const outputTokens = Math.ceil(outputChars / 4)
+  return {
+    inputTokens,
+    outputTokens,
+    details: { input: inputTokens, output: outputTokens, [XAI_ESTIMATED_USAGE_KEY]: 1 },
+    raw: {
+      estimated: true,
+      basis:
+        'lower bound: request length / 4 for input, received output characters / 4 for output',
+      outputChars,
+    },
+  }
+}
+
+/**
+ * The error for a call that failed while streaming (ADR-040, Amendment A).
+ *
+ * A failure BEFORE any output event stays what a refused or dropped connection
+ * is: retryable, no usage, an unpriced attempt. A failure AFTER output began
+ * (or after the terminal event) is never retryable: the model was generating,
+ * a reasoning call burns tokens before its first visible event, a retry repeats
+ * that spend and cannot resume it (the reasoning of ADR-032's timeouts). It
+ * carries the terminal usage when one arrived (exact, ticks included), else a
+ * lower-bound ESTIMATE from what was received ({@link estimatedStreamUsage}).
+ * Snapshot usage from `response.created` / `response.in_progress` is never used.
+ * An `error` event is booked as possibly billed (`mayHaveBilled`): the stream had
+ * started, so even `rate_limited` and `bad_request` are not known-free.
+ */
+function classifyStreamError(
+  err: XaiStreamError,
+  estimatedInputTokens: number,
+): LlmError {
   const failure = err.failure
+  const { progressed, outputChars } = err.progress
+  const usage =
+    err.terminalUsage !== undefined
+      ? mapUsage(err.terminalUsage)
+      : progressed
+        ? estimatedStreamUsage(outputChars, estimatedInputTokens)
+        : undefined
   const common = {
     provider: 'xai',
-    ...(err.partialUsage !== undefined ? { usage: mapUsage(err.partialUsage) } : {}),
+    ...(usage !== undefined ? { usage } : {}),
     ...(err.servedServiceTier !== undefined
       ? { servedServiceTier: err.servedServiceTier }
       : {}),
@@ -926,8 +981,26 @@ function classifyStreamError(err: XaiStreamError): LlmError {
     case 'ended_early':
     case 'malformed':
       // A connection that closed early or a body that is not valid is a
-      // transient provider fault; a retry may complete.
-      return new LlmError(err.message, { kind: 'server', retryable: true, ...common })
+      // transient provider fault, and a retry may complete, but only while
+      // nothing was generated.
+      return new LlmError(err.message, {
+        kind: 'server',
+        retryable: !progressed,
+        ...common,
+      })
+    case 'cut': {
+      // A transport failure after output began. Node's own timers keep their
+      // kind; every other failure is a `server` error that is not retried.
+      const base = classifyXaiError(err.cause)
+      return base.kind === 'timeout'
+        ? new LlmError(base.message, {
+            kind: 'timeout',
+            retryable: false,
+            ...(base.reason !== undefined ? { reason: base.reason } : {}),
+            ...common,
+          })
+        : new LlmError(err.message, { kind: 'server', retryable: false, ...common })
+    }
     case 'deadline':
       // The same limit again, the same spend again.
       return new LlmError(`xAI request hit the SDK deadline: ${err.message}`, {
@@ -936,10 +1009,34 @@ function classifyStreamError(err: XaiStreamError): LlmError {
         reason: 'transport_timeout',
         ...common,
       })
+    case 'idle':
+      return new LlmError(`xAI request hit the idle timeout: ${err.message}`, {
+        kind: 'timeout',
+        retryable: false,
+        reason: 'transport_timeout',
+        ...common,
+      })
     case 'error_event': {
-      const { kind, retryable } = classifyFailedResponseCode(failure.code)
-      return new LlmError(err.message, { kind, retryable, ...common })
+      const mapped = classifyFailedResponseCode(failure.code)
+      // Inside an open stream a retry repeats whatever the call already did:
+      // `rate_limit_exceeded` is not retried, and `server_error` only before
+      // any output.
+      return new LlmError(err.message, {
+        kind: mapped.kind,
+        retryable: mapped.kind === 'server' && !progressed,
+        mayHaveBilled: true,
+        ...common,
+      })
     }
+    case 'not_event_stream':
+      // Misconfiguration of the host's `fetch`, not a bad request, but a retry
+      // repeats it, and the upstream call may have run and billed.
+      return new LlmError(err.message, {
+        kind: 'bad_request',
+        retryable: false,
+        mayHaveBilled: true,
+        ...common,
+      })
   }
 }
 
@@ -988,14 +1085,16 @@ export interface XaiAdapterOptions {
    */
   client?: XaiClientLike
   /**
-   * HTTP transport (`fetch` and `fetchOptions`) for the SDK client the adapter
-   * builds: a proxy, mTLS or egress policy, or an undici `fetch` with an
-   * `Agent({ headersTimeout, bodyTimeout })` dispatcher. Calls stream
+   * HTTP transport (`fetch`, `fetchOptions`, `idleTimeoutMs`) for the SDK client
+   * the adapter builds: a proxy, mTLS or egress policy, or an undici `fetch` with
+   * an `Agent({ headersTimeout, bodyTimeout })` dispatcher. Calls stream
    * internally (ADR-040), so a reasoning call no longer needs it to run past
    * 300 s; a tool-using call expected to run past 300 s without any streamed
-   * event still does (untested, see the package README). Also used for `countTokens`
-   * (`POST /v1/tokenize-text`). Validated and copied when the adapter is
-   * created. Cannot be combined with `client` (an injected client owns its own
+   * event still does (untested, see the package README). `idleTimeoutMs` ends a
+   * stream that sends no bytes for that long (off by default). `fetch` must return
+   * the request's `text/event-stream` response unchanged. `fetch` and
+   * `fetchOptions` also carry `countTokens` (`POST /v1/tokenize-text`). Validated
+   * and copied when the adapter is created. Cannot be combined with `client` (an injected client owns its own
    * transport).
    */
   transport?: XaiTransport
@@ -1026,8 +1125,9 @@ export interface XaiAdapterOptions {
  * Validates a host transport and returns a private copy of it.
  *
  * @throws LlmError `bad_request` for a transport that is not an object, whose
- *   `fetch` is not a function, whose `fetchOptions` is not a plain object, or
- *   whose `fetchOptions` carries a key the request owns.
+ *   `fetch` is not a function, whose `fetchOptions` is not a plain
+ *   object, whose `fetchOptions` carries a key the request owns, or whose
+ *   `idleTimeoutMs` is not an integer from 1 to {@link XAI_MAX_TIMEOUT_MS}.
  */
 function snapshotXaiTransport(
   transport: XaiTransport | undefined,
@@ -1041,28 +1141,53 @@ function snapshotXaiTransport(
     })
   const candidate = transport as unknown
   if (candidate === null || typeof candidate !== 'object') {
-    throw reject('transport must be an object { fetch, fetchOptions? }.')
+    throw reject('transport must be an object { fetch, fetchOptions?, idleTimeoutMs? }.')
   }
   if (typeof transport.fetch !== 'function') {
     throw reject('transport.fetch must be a function.')
   }
-  const fetchOptions = transport.fetchOptions as unknown
-  if (fetchOptions === undefined) return { fetch: transport.fetch }
+  const idle = transport.idleTimeoutMs as unknown
   if (
-    fetchOptions === null ||
-    typeof fetchOptions !== 'object' ||
-    Array.isArray(fetchOptions)
+    idle !== undefined &&
+    (typeof idle !== 'number' ||
+      !Number.isInteger(idle) ||
+      idle < 1 ||
+      idle > XAI_MAX_TIMEOUT_MS)
+  ) {
+    throw reject(
+      `transport.idleTimeoutMs must be an integer from 1 to ${XAI_MAX_TIMEOUT_MS}.`,
+    )
+  }
+  const fetchOptions = transport.fetchOptions as unknown
+  if (
+    fetchOptions !== undefined &&
+    (fetchOptions === null ||
+      typeof fetchOptions !== 'object' ||
+      Array.isArray(fetchOptions))
   ) {
     throw reject('transport.fetchOptions must be an object.')
   }
-  for (const key of XAI_RESERVED_FETCH_OPTION_KEYS) {
-    if (key in fetchOptions) {
-      throw reject(`transport.fetchOptions.${key} is not supported; the request owns it.`)
+  if (fetchOptions !== undefined) {
+    for (const key of XAI_RESERVED_FETCH_OPTION_KEYS) {
+      if (key in fetchOptions) {
+        throw reject(
+          `transport.fetchOptions.${key} is not supported; the request owns it.`,
+        )
+      }
     }
   }
   return {
     fetch: transport.fetch,
-    fetchOptions: { ...(fetchOptions as NonNullable<XaiTransport['fetchOptions']>) },
+    ...(fetchOptions !== undefined
+      ? {
+          fetchOptions: {
+            ...(fetchOptions as NonNullable<XaiTransport['fetchOptions']>),
+          },
+        }
+      : {}),
+    ...(transport.idleTimeoutMs !== undefined
+      ? { idleTimeoutMs: transport.idleTimeoutMs }
+      : {}),
   }
 }
 
@@ -1455,7 +1580,8 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
         // as the SDK `timeout` (the wait for headers only, for a stream) and as
         // its own timer over the rest of the stream, so it bounds the whole
         // call. It does not move Node's 300 s header timer (that needs
-        // `transport`); the stream keeps the body timer from ever going quiet.
+        // `transport`); the stream keeps the body timer from ever going quiet,
+        // and `transport.idleTimeoutMs` bounds a connection that goes quiet anyway.
         const sdkTimeoutMs =
           genConfig.timeoutMs !== undefined
             ? genConfig.timeoutMs + XAI_TIMEOUT_BUFFER_MS
@@ -1478,6 +1604,7 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
                 elapsedMs: performance.now() - sdkCallStart.startedAt,
               }
             : undefined,
+          estimateInputTokens(req),
         )
       }
 
@@ -1494,249 +1621,292 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       if (response.status === 'failed' || response.status === 'cancelled') {
         throw failedResponseError(response)
       }
+      // A terminal response that carries no token counts cannot be priced or
+      // mapped. It is billed, so the attempt is unpriced and a retry would
+      // repeat the spend: a typed non-retryable error, not a TypeError.
+      if (
+        !isPlainRecord(response.usage) ||
+        typeof response.usage.input_tokens !== 'number' ||
+        typeof response.usage.output_tokens !== 'number'
+      ) {
+        throw new LlmError(
+          `xAI response ${String(response.id)} (status "${String(response.status)}") carries no numeric usage; it cannot be priced.`,
+          {
+            kind: 'server',
+            retryable: false,
+            provider: 'xai',
+            cause: { id: response.id },
+          },
+        )
+      }
       // What reconciling the stream with its final object had to do (ADR-040).
       for (const message of responseMeta?.streamNotes ?? []) {
         warnings.push({ type: 'other', message })
       }
 
       // ------------------------------------------------------------------
-      // 7. Map response
+      // 7. Map response. The response is billed and complete by now, so a
+      //    failure to map it (a shape this version did not expect) is a typed
+      //    error that carries the exact usage, never a bare TypeError that
+      //    would lose it, and a retry would repeat the spend.
       // ------------------------------------------------------------------
-      let text = ''
-      let reasoningText: string | undefined
-      const messageItems: XaiMessageOutputItem[] = []
-      const toolCalls: NonNullable<AdapterResult['toolCalls']> = []
-      // Output order of the representable items (message and function_call);
-      // the assistant message is built from it once the last message item is known.
-      const outputOrder: Array<
-        XaiMessageOutputItem | NonNullable<AdapterResult['toolCalls']>[number]
-      > = []
+      try {
+        let text = ''
+        let reasoningText: string | undefined
+        const messageItems: XaiMessageOutputItem[] = []
+        const toolCalls: NonNullable<AdapterResult['toolCalls']> = []
+        // Output order of the representable items (message and function_call);
+        // the assistant message is built from it once the last message item is known.
+        const outputOrder: Array<
+          XaiMessageOutputItem | NonNullable<AdapterResult['toolCalls']>[number]
+        > = []
 
-      for (const item of response.output) {
-        if (isXaiMessageItem(item)) {
-          messageItems.push(item)
-          outputOrder.push(item)
-        } else if (isXaiReasoningItem(item)) {
-          const joined = item.summary.map((s) => s.text).join('')
-          if (joined.length > 0) {
-            reasoningText = (reasoningText ?? '') + joined
-          }
-        } else if (item.type === 'function_call') {
-          const callId = typeof item['call_id'] === 'string' ? item['call_id'] : ''
-          const name = typeof item['name'] === 'string' ? item['name'] : ''
-          let args: JsonValue = {}
-          if (typeof item['arguments'] === 'string') {
-            try {
-              args = JSON.parse(item['arguments']) as JsonValue
-            } catch {
-              args = item['arguments']
+        for (const item of response.output) {
+          if (isXaiMessageItem(item)) {
+            messageItems.push(item)
+            outputOrder.push(item)
+          } else if (isXaiReasoningItem(item)) {
+            const joined = item.summary.map((s) => s.text).join('')
+            if (joined.length > 0) {
+              reasoningText = (reasoningText ?? '') + joined
+            }
+          } else if (item.type === 'function_call') {
+            const callId = typeof item['call_id'] === 'string' ? item['call_id'] : ''
+            const name = typeof item['name'] === 'string' ? item['name'] : ''
+            let args: JsonValue = {}
+            if (typeof item['arguments'] === 'string') {
+              try {
+                args = JSON.parse(item['arguments']) as JsonValue
+              } catch {
+                args = item['arguments']
+              }
+            }
+            if (callId.length > 0 && name.length > 0) {
+              const call = { toolCallId: callId, toolName: name, args }
+              toolCalls.push(call)
+              outputOrder.push(call)
             }
           }
-          if (callId.length > 0 && name.length > 0) {
-            const call = { toolCallId: callId, toolName: name, args }
-            toolCalls.push(call)
-            outputOrder.push(call)
+        }
+
+        // xAI's Responses API convention: when multiple `type: 'message'`
+        // output items are present, the LAST one is the response — earlier
+        // ones are superseded (observed live in strict json_schema mode,
+        // grok-4.5, reasoning effort high: two complete-JSON message items in
+        // one response). Concatenating across items corrupts the payload
+        // (e.g. two JSON documents back-to-back); joining `output_text` parts
+        // WITHIN a single message item is still correct (segmentation, not
+        // duplication).
+        if (messageItems.length > 0) {
+          const lastMessage = messageItems[
+            messageItems.length - 1
+          ] as XaiMessageOutputItem
+          text = lastMessage.content.map((part) => part.text).join('')
+
+          if (messageItems.length > 1) {
+            warnings.push({
+              type: 'other',
+              message: `xai: response contained ${messageItems.length} message output items; using the last one and discarding ${
+                messageItems.length - 1
+              } earlier message item(s).`,
+            })
           }
         }
-      }
 
-      // xAI's Responses API convention: when multiple `type: 'message'`
-      // output items are present, the LAST one is the response — earlier
-      // ones are superseded (observed live in strict json_schema mode,
-      // grok-4.5, reasoning effort high: two complete-JSON message items in
-      // one response). Concatenating across items corrupts the payload
-      // (e.g. two JSON documents back-to-back); joining `output_text` parts
-      // WITHIN a single message item is still correct (segmentation, not
-      // duplication).
-      if (messageItems.length > 0) {
-        const lastMessage = messageItems[messageItems.length - 1] as XaiMessageOutputItem
-        text = lastMessage.content.map((part) => part.text).join('')
-
-        if (messageItems.length > 1) {
-          warnings.push({
-            type: 'other',
-            message: `xai: response contained ${messageItems.length} message output items; using the last one and discarding ${
-              messageItems.length - 1
-            } earlier message item(s).`,
-          })
+        // Ordered assistant message: provider order, the last message item as the
+        // single text part (earlier ones are superseded, as for `text`), reasoning
+        // and server-tool items omitted (they live in the replay state).
+        const lastMessageItem = messageItems[messageItems.length - 1]
+        const messageParts: Part[] = []
+        for (const entry of outputOrder) {
+          if ('toolCallId' in entry) {
+            messageParts.push({ kind: 'tool-call', ...entry })
+          } else if (entry === lastMessageItem && text.length > 0) {
+            messageParts.push({ kind: 'text', text })
+          }
         }
-      }
 
-      // Ordered assistant message: provider order, the last message item as the
-      // single text part (earlier ones are superseded, as for `text`), reasoning
-      // and server-tool items omitted (they live in the replay state).
-      const lastMessageItem = messageItems[messageItems.length - 1]
-      const messageParts: Part[] = []
-      for (const entry of outputOrder) {
-        if ('toolCallId' in entry) {
-          messageParts.push({ kind: 'tool-call', ...entry })
-        } else if (entry === lastMessageItem && text.length > 0) {
-          messageParts.push({ kind: 'text', text })
+        // Parse structured output (JSON text → rawStructured).
+        let rawStructured: unknown
+        if (structuredOutputRequested && text.length > 0) {
+          try {
+            rawStructured = JSON.parse(text)
+          } catch {
+            // Core reports unparsed via absence of rawStructured; callers own
+            // validation/retry policy (ADR-009).
+          }
         }
-      }
 
-      // Parse structured output (JSON text → rawStructured).
-      let rawStructured: unknown
-      if (structuredOutputRequested && text.length > 0) {
-        try {
-          rawStructured = JSON.parse(text)
-        } catch {
-          // Core reports unparsed via absence of rawStructured; callers own
-          // validation/retry policy (ADR-009).
-        }
-      }
+        const usage = mapUsage(response.usage)
+        const finishReason = mapFinishReason(response)
 
-      const usage = mapUsage(response.usage)
-      const finishReason = mapFinishReason(response)
-
-      const expectedToolCounters = expectedServerToolCounters(
-        xaiProviderConfig.tools,
-        hasFileRef,
-      )
-      // A response where no server tool ran reports
-      // `num_server_side_tools_used: 0` and omits the per-tool counters
-      // (live 2026-10-02, fixture 32: `tool_choice: 'none'`; the same shape
-      // comes back when the model skips the search under `auto`). That is an
-      // explicit zero, not a missing counter, so the call prices exactly
-      // with no tool cost. A zero that arrives WITH a counters object is
-      // contradictory and keeps the missing-counter checks.
-      const noServerToolRan =
-        response.usage['num_server_side_tools_used'] === 0 &&
-        response.usage['server_side_tool_usage_details'] === undefined
-      // Normalised search facts (ADR-035), the same names on every provider:
-      // `web_search_requested` is 1 when the request enabled web search, and
-      // `web_search_calls` is the observed count. The count comes from the
-      // provider's counters; an explicit "no server tool ran" is a known zero.
-      if (
-        xaiProviderConfig.tools?.some((tool) => tool['type'] === 'web_search') === true
-      ) {
-        usage.details['web_search_requested'] = 1
-        if (noServerToolRan) usage.details[WEB_SEARCH_COUNTER] = 0
-      }
-      // The call is already billed when the counters arrive, so an exceeded
-      // budget is reported, never thrown: the result is still returned.
-      if (xaiProviderConfig.searchBudget !== undefined) {
-        const over = exceededSearchBudget(xaiProviderConfig.searchBudget, usage.details)
-        if (over.length > 0) {
-          usage.details['search_budget_exceeded'] = 1
-          warnings.push({
-            type: 'other',
-            message: `xai: search budget exceeded (${over.join('; ')}); the call is already billed and its result is returned.`,
-          })
-        }
-      }
-      // A non-zero counter for a server tool that xAI bills per use and the
-      // pricing snapshot has no rate for (code interpreter, file or document
-      // search, image generation), or one the snapshot does not know, is not
-      // priced here: the call is priced 'estimated' and understates. Token-only
-      // tools (MCP) are fully priced by their tokens and do not warn.
-      const unpricedCounters = unpricedXaiToolCounters(usage)
-      if (unpricedCounters.length > 0) {
-        warnings.push({
-          type: 'other',
-          message: `xai: server tool counter(s) [${unpricedCounters
-            .map((key) => `${key}=${String(usage.details[key])}`)
-            .join(
-              ', ',
-            )}] are non-zero but have no rate in the pricing snapshot (xAI bills the tool per use, or the counter is unknown); the call's cost is estimated and understates.`,
-        })
-      }
-      if ((expectedToolCounters.length > 0 || hasFileRef) && !noServerToolRan) {
-        usage.details['server_tools_requested'] = 1
+        const expectedToolCounters = expectedServerToolCounters(
+          xaiProviderConfig.tools,
+          hasFileRef,
+        )
+        // A response where no server tool ran reports
+        // `num_server_side_tools_used: 0` and omits the per-tool counters
+        // (live 2026-10-02, fixture 32: `tool_choice: 'none'`; the same shape
+        // comes back when the model skips the search under `auto`). That is an
+        // explicit zero, not a missing counter, so the call prices exactly
+        // with no tool cost. A zero that arrives WITH a counters object is
+        // contradictory and keeps the missing-counter checks.
+        const noServerToolRan =
+          response.usage['num_server_side_tools_used'] === 0 &&
+          response.usage['server_side_tool_usage_details'] === undefined
+        // Normalised search facts (ADR-035), the same names on every provider:
+        // `web_search_requested` is 1 when the request enabled web search, and
+        // `web_search_calls` is the observed count. The count comes from the
+        // provider's counters; an explicit "no server tool ran" is a known zero.
         if (
-          xaiProviderConfig.tools?.some((tool) => tool['type'] === 'x_search') === true
+          xaiProviderConfig.tools?.some((tool) => tool['type'] === 'web_search') === true
         ) {
-          usage.details['x_search_requested'] = 1
+          usage.details['web_search_requested'] = 1
+          if (noServerToolRan) usage.details[WEB_SEARCH_COUNTER] = 0
         }
-        const missing = expectedToolCounters.filter((key) => !(key in usage.details))
-        if (missing.length > 0) {
-          usage.details['server_tools_missing'] = 1
+        // The call is already billed when the counters arrive, so an exceeded
+        // budget is reported, never thrown: the result is still returned.
+        if (xaiProviderConfig.searchBudget !== undefined) {
+          const over = exceededSearchBudget(xaiProviderConfig.searchBudget, usage.details)
+          if (over.length > 0) {
+            usage.details['search_budget_exceeded'] = 1
+            warnings.push({
+              type: 'other',
+              message: `xai: search budget exceeded (${over.join('; ')}); the call is already billed and its result is returned.`,
+            })
+          }
+        }
+        // A non-zero counter for a server tool that xAI bills per use and the
+        // pricing snapshot has no rate for (code interpreter, file or document
+        // search, image generation), or one the snapshot does not know, is not
+        // priced here: the call is priced 'estimated' and understates. Token-only
+        // tools (MCP) are fully priced by their tokens and do not warn.
+        const unpricedCounters = unpricedXaiToolCounters(usage)
+        if (unpricedCounters.length > 0) {
           warnings.push({
             type: 'other',
-            message: `xai: server tools were requested but usage is missing counters [${missing.join(
-              ', ',
-            )}]; the call is unpriced.`,
+            message: `xai: server tool counter(s) [${unpricedCounters
+              .map((key) => `${key}=${String(usage.details[key])}`)
+              .join(
+                ', ',
+              )}] are non-zero but have no rate in the pricing snapshot (xAI bills the tool per use, or the counter is unknown); the call's cost is estimated and understates.`,
           })
         }
-        if (hasFileRef) {
-          // Attachment_search counter is not live-pinned (ZDR blocks file
-          // attach). Never claim exact $0 for a file-ref call.
-          usage.details['attachment_search_unpinned'] = 1
-          warnings.push({
-            type: 'other',
-            message:
-              'xai: file-ref enables attachment_search but that counter is not live-pinned; tool cost is estimated.',
-          })
+        if ((expectedToolCounters.length > 0 || hasFileRef) && !noServerToolRan) {
+          usage.details['server_tools_requested'] = 1
+          if (
+            xaiProviderConfig.tools?.some((tool) => tool['type'] === 'x_search') === true
+          ) {
+            usage.details['x_search_requested'] = 1
+          }
+          const missing = expectedToolCounters.filter((key) => !(key in usage.details))
+          if (missing.length > 0) {
+            usage.details['server_tools_missing'] = 1
+            warnings.push({
+              type: 'other',
+              message: `xai: server tools were requested but usage is missing counters [${missing.join(
+                ', ',
+              )}]; the call is unpriced.`,
+            })
+          }
+          if (hasFileRef) {
+            // Attachment_search counter is not live-pinned (ZDR blocks file
+            // attach). Never claim exact $0 for a file-ref call.
+            usage.details['attachment_search_unpinned'] = 1
+            warnings.push({
+              type: 'other',
+              message:
+                'xai: file-ref enables attachment_search but that counter is not live-pinned; tool cost is estimated.',
+            })
+          }
         }
-      }
 
-      const citations = collectXaiCitations(response, messageItems, (message) =>
-        warnings.push({ type: 'other', message }),
-      )
+        const citations = collectXaiCitations(response, messageItems, (message) =>
+          warnings.push({ type: 'other', message }),
+        )
 
-      // Response-level metadata → providerMetadata: usage.context_details
-      // (non-numeric usage extra) and response.metadata (e.g.
-      // system_fingerprint). Numeric usage extras live in usage.details; the
-      // full raw usage payload is already in usage.raw.
-      const providerMeta: { [k: string]: JsonValue } = {}
-      const contextDetails = response.usage['context_details']
-      if (isPlainRecord(contextDetails)) {
-        providerMeta['context_details'] = contextDetails as unknown as JsonValue
-      }
-      if (isPlainRecord(response.metadata)) {
-        providerMeta['metadata'] = response.metadata as unknown as JsonValue
-      }
-      // The HTTP response's request id and remaining-quota headers, when the
-      // client exposes them (the real client does).
-      if (responseMeta !== undefined) {
-        const xaiMeta: { [k: string]: JsonValue } = {}
-        if (responseMeta.requestId !== undefined)
-          xaiMeta['requestId'] = responseMeta.requestId
-        if (responseMeta.rateLimitRemaining !== undefined) {
-          xaiMeta['rateLimitRemaining'] = { ...responseMeta.rateLimitRemaining }
+        // Response-level metadata → providerMetadata: usage.context_details
+        // (non-numeric usage extra) and response.metadata (e.g.
+        // system_fingerprint). Numeric usage extras live in usage.details; the
+        // full raw usage payload is already in usage.raw.
+        const providerMeta: { [k: string]: JsonValue } = {}
+        const contextDetails = response.usage['context_details']
+        if (isPlainRecord(contextDetails)) {
+          providerMeta['context_details'] = contextDetails as unknown as JsonValue
         }
-        if (Object.keys(xaiMeta).length > 0) providerMeta['xai'] = xaiMeta
-      }
-      let transientProviderState: JsonValue | undefined
-      if (replayRequired) {
-        // Preserve every provider output item in wire order. This includes
-        // messages and encrypted server-tool items that normalized Message
-        // cannot represent. The next request appends only new user/tool-result
-        // messages; callers do not repeat normalized history with state.
-        const state: XaiReplayState = {
-          xai: { model, input: [...params.input, ...response.output] },
+        if (isPlainRecord(response.metadata)) {
+          providerMeta['metadata'] = response.metadata as unknown as JsonValue
         }
-        transientProviderState = state as unknown as JsonValue
+        // The HTTP response's request id and remaining-quota headers, when the
+        // client exposes them (the real client does).
+        if (responseMeta !== undefined) {
+          const xaiMeta: { [k: string]: JsonValue } = {}
+          if (responseMeta.requestId !== undefined)
+            xaiMeta['requestId'] = responseMeta.requestId
+          if (responseMeta.rateLimitRemaining !== undefined) {
+            xaiMeta['rateLimitRemaining'] = { ...responseMeta.rateLimitRemaining }
+          }
+          if (Object.keys(xaiMeta).length > 0) providerMeta['xai'] = xaiMeta
+        }
+        let transientProviderState: JsonValue | undefined
+        if (replayRequired) {
+          // Preserve every provider output item in wire order. This includes
+          // messages and encrypted server-tool items that normalized Message
+          // cannot represent. The next request appends only new user/tool-result
+          // messages; callers do not repeat normalized history with state.
+          const state: XaiReplayState = {
+            xai: { model, input: [...params.input, ...response.output] },
+          }
+          transientProviderState = state as unknown as JsonValue
+        }
+
+        // Surface the echoed tier verbatim. xAI can remap (flex → default);
+        // discarding non-priority values would let the engine fall back to the
+        // requested tier and bill 2× on a default-served call.
+        const servedServiceTier =
+          typeof response.service_tier === 'string' && response.service_tier.length > 0
+            ? response.service_tier
+            : undefined
+
+        const result: AdapterResult = {
+          model: response.model,
+          message: { role: 'assistant', parts: messageParts },
+          usage,
+          warnings,
+          finishReason,
+          responseId: response.id,
+          ...(text.length > 0 ? { text } : {}),
+          ...(reasoningText !== undefined ? { reasoningText } : {}),
+          ...(rawStructured !== undefined ? { rawStructured } : {}),
+          ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
+          ...(Object.keys(providerMeta).length > 0
+            ? { providerMetadata: providerMeta }
+            : {}),
+          ...(transientProviderState !== undefined ? { transientProviderState } : {}),
+          ...(citations.length > 0 ? { citations } : {}),
+          ...(toolCalls.length > 0 ? { toolCalls, finishReason: 'tool_calls' } : {}),
+        }
+
+        return result
+      } catch (mapErr) {
+        if (mapErr instanceof LlmError) throw mapErr
+        throw new LlmError(
+          `xAI response ${String(response.id)} could not be mapped: ${
+            mapErr instanceof Error ? mapErr.message : String(mapErr)
+          }`,
+          {
+            kind: 'server',
+            retryable: false,
+            provider: 'xai',
+            usage: mapUsage(response.usage),
+            ...(typeof response.service_tier === 'string' &&
+            response.service_tier.length > 0
+              ? { servedServiceTier: response.service_tier }
+              : {}),
+            cause: mapErr,
+          },
+        )
       }
-
-      // Surface the echoed tier verbatim. xAI can remap (flex → default);
-      // discarding non-priority values would let the engine fall back to the
-      // requested tier and bill 2× on a default-served call.
-      const servedServiceTier =
-        typeof response.service_tier === 'string' && response.service_tier.length > 0
-          ? response.service_tier
-          : undefined
-
-      const result: AdapterResult = {
-        model: response.model,
-        message: { role: 'assistant', parts: messageParts },
-        usage,
-        warnings,
-        finishReason,
-        responseId: response.id,
-        ...(text.length > 0 ? { text } : {}),
-        ...(reasoningText !== undefined ? { reasoningText } : {}),
-        ...(rawStructured !== undefined ? { rawStructured } : {}),
-        ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
-        ...(Object.keys(providerMeta).length > 0
-          ? { providerMetadata: providerMeta }
-          : {}),
-        ...(transientProviderState !== undefined ? { transientProviderState } : {}),
-        ...(citations.length > 0 ? { citations } : {}),
-        ...(toolCalls.length > 0 ? { toolCalls, finishReason: 'tool_calls' } : {}),
-      }
-
-      return result
     },
 
     async countTokens(req: TokenCountRequest, ctx: AdapterCtx): Promise<TokenCount> {

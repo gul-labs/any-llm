@@ -147,6 +147,13 @@ export function unpricedXaiToolCounters(usage: Usage): string[] {
   return unpriced
 }
 
+/**
+ * `usage.details` marker the adapter sets on usage it ESTIMATED for a stream that
+ * failed after output began (ADR-040 Amendment A). Such a call is priced
+ * `'estimated'`: the tokens are a lower bound, never the provider's count.
+ */
+export const XAI_ESTIMATED_USAGE_KEY = 'usage_estimated'
+
 /** 1 tick = 1e-10 USD, so 10,000 ticks are 1 µUSD. */
 const TICKS_PER_MICRO_USD = 10_000
 
@@ -410,7 +417,10 @@ function priceXaiCall(model: string, usage: Usage, tier?: string): Cost {
     usd: microUsd / 1_000_000,
     pricingVersion: xaiPricingVersion,
     confidence:
-      missingWebCounter || attachmentUnpinned || unpricedCounters.length > 0
+      missingWebCounter ||
+      attachmentUnpinned ||
+      unpricedCounters.length > 0 ||
+      usage.details[XAI_ESTIMATED_USAGE_KEY] === 1
         ? 'estimated'
         : 'exact',
     details: {

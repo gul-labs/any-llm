@@ -11,6 +11,7 @@
 
 import { LlmError } from '@gullabs/core'
 import type { AuthMaterial } from '@gullabs/core'
+import { readSseFrames } from './sse.js'
 import { XaiStreamError, XaiStreamReducer } from './stream.js'
 
 // ---------------------------------------------------------------------------
@@ -355,6 +356,11 @@ export function readXaiResponseMeta(
  * unless the host passes a `fetch` whose dispatcher raises those timers (for
  * example undici's `fetch` with `new Agent({ headersTimeout, bodyTimeout })`
  * in `fetchOptions.dispatcher`). See ADR-032 and the package README.
+ *
+ * `fetch` must return the request's own `text/event-stream` response: the call
+ * always streams (ADR-040), and a `fetch` that buffers the answer into a JSON
+ * body (a record/replay or caching wrapper) fails every call with a non-retryable
+ * error naming the cause.
  */
 export interface XaiTransport {
   fetch: typeof fetch
@@ -363,6 +369,16 @@ export interface XaiTransport {
    * `body` and `method` belong to the request and are rejected.
    */
   fetchOptions?: Omit<RequestInit, 'headers' | 'signal' | 'body' | 'method'>
+  /**
+   * Ends a stream that sends no bytes at all (heartbeat comments included) for
+   * this many milliseconds, as a non-retryable `timeout` with
+   * `reason: 'transport_timeout'`. Off by default. The request deadline bounds
+   * the whole call; this bounds a half-open connection (a NAT drop with no
+   * reset) that the deadline would hold for up to an hour. Integer, at least 1.
+   * Set it above the longest quiet gap you expect: live reasoning runs showed a
+   * longest gap of 15 s.
+   */
+  idleTimeoutMs?: number
 }
 
 /** `fetchOptions` keys the SDK owns; a host-supplied value would override the request. */
@@ -432,6 +448,7 @@ export async function buildXaiClient(
         }
       : {}),
   })
+  const idleTimeoutMs = transport?.idleTimeoutMs
 
   return {
     responses: {
@@ -446,15 +463,10 @@ export async function buildXaiClient(
         // events rebuild what the terminal object can omit. Cast needed: our
         // structural types are subsets of the real SDK types, and the real
         // SDK's types do not exactly match xAI's actual response shape (see
-        // module doc comment). `withResponse()` exposes the HTTP response
-        // (headers) beside the event stream.
-        type Pending = {
-          withResponse(): Promise<{
-            data: AsyncIterable<unknown>
-            response: Response
-            request_id: string | null
-          }>
-        }
+        // module doc comment). `asResponse()` hands over the raw HTTP response:
+        // the SDK still sends the request and turns an HTTP error status into
+        // its `APIError`, but the body is read here (see `sse.ts`).
+        type Pending = { asResponse(): Promise<Response> }
         const send = (p: unknown, o: unknown): Pending =>
           (client.responses.create as unknown as (p: unknown, o: unknown) => Pending)(
             p,
@@ -472,57 +484,97 @@ export async function buildXaiClient(
         else signal?.addEventListener('abort', forwardAbort, { once: true })
         const startedAt = performance.now()
         let deadlineTimer: ReturnType<typeof setTimeout> | undefined
-        const deadline = { hit: false }
+        let idleTimer: ReturnType<typeof setTimeout> | undefined
+        const ended = { deadline: false, idle: false }
         const reducer = new XaiStreamReducer()
-        const deadlineError = (): XaiStreamError =>
-          new XaiStreamError(
-            { kind: 'deadline', timeoutMs: timeout ?? 0 },
-            reducer.context(),
-          )
+        const failure = (): XaiStreamError | undefined => {
+          if (ended.deadline) {
+            return new XaiStreamError(
+              { kind: 'deadline', timeoutMs: timeout ?? 0 },
+              reducer.context(),
+            )
+          }
+          if (ended.idle) {
+            return new XaiStreamError(
+              { kind: 'idle', idleTimeoutMs: idleTimeoutMs ?? 0 },
+              reducer.context(),
+            )
+          }
+          return undefined
+        }
         try {
-          const { data, response, request_id } = await send(
+          const response = await send(
             { ...params, stream: true },
             {
               signal: controller.signal,
               headers: { accept: 'text/event-stream' },
               ...(timeout !== undefined ? { timeout } : {}),
             },
-          ).withResponse()
+          ).asResponse()
           if (timeout !== undefined) {
             deadlineTimer = setTimeout(
               () => {
-                deadline.hit = true
+                ended.deadline = true
                 controller.abort()
               },
               Math.max(0, timeout - (performance.now() - startedAt)),
             )
           }
+          const touch = (): void => {
+            if (idleTimeoutMs === undefined) return
+            if (idleTimer !== undefined) clearTimeout(idleTimer)
+            idleTimer = setTimeout(() => {
+              ended.idle = true
+              controller.abort()
+            }, idleTimeoutMs)
+          }
+          touch()
+          const contentType = response.headers.get('content-type')
+          if (contentType !== null && !/text\/event-stream/i.test(contentType)) {
+            void response.body?.cancel().catch(() => undefined)
+            throw new XaiStreamError({ kind: 'not_event_stream', contentType })
+          }
+          if (response.body === null) throw reducer.endedEarly()
+          const aborted = new Promise<never>((_resolve, reject) => {
+            const onAbort = (): void => {
+              reject(new Error('aborted'))
+            }
+            if (controller.signal.aborted) onAbort()
+            else controller.signal.addEventListener('abort', onAbort, { once: true })
+          })
+          aborted.catch(() => undefined)
           let terminal = false
           try {
-            for await (const event of data) {
-              if (reducer.push(event)) {
+            for await (const frame of readSseFrames(response.body, {
+              onChunk: touch,
+              aborted,
+            })) {
+              if (reducer.pushFrame(frame)) {
                 terminal = true
                 break
               }
             }
           } catch (err) {
-            if (deadline.hit) throw deadlineError()
-            throw await streamFailure(err, reducer)
+            const ours = failure()
+            if (ours !== undefined) throw ours
+            if (signal?.aborted === true) throw abortError(signal)
+            throw streamFailure(err, reducer)
           }
           if (!terminal) {
-            if (deadline.hit) throw deadlineError()
-            // The SDK ends a stream quietly when its request was aborted.
+            const ours = failure()
+            if (ours !== undefined) throw ours
             if (signal?.aborted === true) throw abortError(signal)
             throw reducer.endedEarly()
           }
           const { response: reduced, notes } = reducer.result()
           onResponse?.({
-            ...readXaiResponseMeta(response.headers, request_id),
+            ...readXaiResponseMeta(response.headers),
             ...(notes.length > 0 ? { streamNotes: notes } : {}),
           })
           return reduced
         } finally {
           if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
+          if (idleTimer !== undefined) clearTimeout(idleTimer)
           signal?.removeEventListener('abort', forwardAbort)
         }
       },
@@ -544,34 +596,18 @@ function abortError(signal: AbortSignal): unknown {
 }
 
 /**
- * What an error thrown while reading the stream means. An `error` event or a
- * `data.error` payload is thrown by the SDK as a status-less `APIError`; a
- * body the SDK cannot parse is a `SyntaxError`. Both become
- * {@link XaiStreamError}s that `classifyXaiError` maps. Anything else (a
- * transport failure, an undici timer) is returned untouched.
+ * What an error thrown while reading the stream means. A transport failure after
+ * output began is an {@link XaiStreamError} of kind `cut` (the raw error is its
+ * `cause`): the model was generating, so a retry would repeat that spend. A
+ * failure before any output is returned untouched, and classifies as it always
+ * has (a reset connection is a retryable `server` error, an undici timer a
+ * transport timeout).
  */
-async function streamFailure(err: unknown, reducer: XaiStreamReducer): Promise<unknown> {
-  const { default: OpenAI } = await import('openai')
-  if (err instanceof OpenAI.APIError && err.status === undefined) {
-    const body = (err as { error?: unknown }).error
-    const field = (name: string): string | undefined => {
-      const value =
-        (err as unknown as Record<string, unknown>)[name] ??
-        (typeof body === 'object' && body !== null
-          ? (body as Record<string, unknown>)[name]
-          : undefined)
-      return typeof value === 'string' ? value : undefined
-    }
-    return new XaiStreamError(
-      { kind: 'error_event', code: field('code'), message: field('message') },
-      { ...reducer.context(), cause: err },
-    )
-  }
-  if (err instanceof SyntaxError) {
-    return new XaiStreamError(
-      { kind: 'malformed', detail: err.message },
-      { ...reducer.context(), cause: err },
-    )
-  }
-  return err
+function streamFailure(err: unknown, reducer: XaiStreamReducer): unknown {
+  if (err instanceof XaiStreamError) return err
+  if (!reducer.progress().progressed) return err
+  return new XaiStreamError(
+    { kind: 'cut', detail: err instanceof Error ? err.message : String(err) },
+    { ...reducer.context(), cause: err },
+  )
 }

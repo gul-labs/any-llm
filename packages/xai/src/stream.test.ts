@@ -1,11 +1,14 @@
 /**
  * The stream reducer (ADR-040): events in, one reconciled response out.
  *
- * SYNTHETIC (ADR-013): event sequences come from `synthesizeStreamEvents`, the
- * OpenAI Responses streaming grammar applied to the recorded non-streamed
- * fixtures. Live capture P9a/P12 kept event types, usage and timings only
- * (`36-streamed-responses.json`); the last describe block pins the synthetic
- * grammar to the event types the real stream carried.
+ * Mixed evidence, each block says which (ADR-013). The reconciliation rules run
+ * over SYNTHETIC sequences: `synthesizeStreamEvents` is the OpenAI Responses
+ * streaming grammar applied to the recorded non-streamed fixtures, so those
+ * tests prove the rules, not xAI's grammar. The delta-assembly block is
+ * hand-written (no `*.done` events, so the deltas alone decide). The reducer
+ * against REAL xAI event bodies is `stream.real.test.ts` (fixture
+ * `37-streamed-events.json`); the last block here pins the synthetic grammar to
+ * the event types of the earlier P9a/P12 captures (`36-streamed-responses.json`).
  */
 import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -99,49 +102,6 @@ describe('fixtures to stream events (synthetic grammar)', () => {
       const { response: reduced, notes } = reduce(events)
       expect(reduced['output']).toEqual(output)
       expect(notes.length === 0).toBe(withoutReasoning.length === output.length)
-    },
-  )
-
-  it.each(RESPONSES.map((r) => [r.name, r.response] as const))(
-    '%s: with no done events the items assemble from deltas to the recorded text, annotations, summaries and arguments',
-    (_name, response) => {
-      const events = synthesizeStreamEvents(response, {
-        omitDone: true,
-        finalResponse: { ...response, output: [] },
-      })
-      const { response: reduced, notes } = reduce(events)
-      const rebuilt = reduced['output'] as Plain[]
-      const recorded = response['output'] as Plain[]
-      expect(rebuilt).toHaveLength(recorded.length)
-      recorded.forEach((item, i) => {
-        const got = rebuilt[i] as Plain
-        expect(got['type']).toBe(item['type'])
-        expect(got['status']).toBe(
-          response['status'] === 'incomplete' ? 'incomplete' : 'completed',
-        )
-        if (item['type'] === 'message') {
-          const parts = (item['content'] as Plain[]).map((p) => ({
-            text: p['text'],
-            annotations: p['annotations'] ?? [],
-          }))
-          expect(
-            (got['content'] as Plain[]).map((p) => ({
-              text: p['text'],
-              annotations: p['annotations'] ?? [],
-            })),
-          ).toEqual(parts)
-        } else if (item['type'] === 'reasoning') {
-          expect((got['summary'] as Plain[]).map((p) => p['text'])).toEqual(
-            (item['summary'] as Plain[]).map((p) => p['text']),
-          )
-        } else if (item['type'] === 'function_call') {
-          expect(got['arguments']).toBe(item['arguments'])
-          expect(got['call_id']).toBe(item['call_id'])
-          expect(got['name']).toBe(item['name'])
-        }
-      })
-      expect(notes).toHaveLength(1)
-      expect(notes[0]).toContain('assembled from the stream deltas')
     },
   )
 })
@@ -249,41 +209,121 @@ describe('reconciliation rules', () => {
     ).toBe(true)
   })
 
-  it('the same id with two types cannot be reconciled', () => {
+  it('the same id with two types keeps the final object item and reports it (enrichment, never a gate)', () => {
     const final = JSON.parse(JSON.stringify(response)) as typeof response
     ;(final.output[0] as Plain)['type'] = 'function_call'
-    expect(() =>
-      reduce(synthesizeStreamEvents(response, { finalResponse: final })),
-    ).toThrow(
-      /output item function_call rs_1 is a "reasoning" in the stream and a "function_call" in the final response/,
+    const { response: reduced, notes } = reduce(
+      synthesizeStreamEvents(response, { finalResponse: final }),
+    )
+    expect(reduced['output']).toEqual(final.output)
+    expect(notes).toEqual([
+      'xai: output item function_call rs_1 is a "reasoning" in the stream and a "function_call" in the final response; the final response is used.',
+    ])
+  })
+
+  it('a final output that is not an array is replaced by the items the events built', () => {
+    const { response: reduced, notes } = reduce(
+      synthesizeStreamEvents(response, {
+        finalResponse: { ...response, output: 'nope' },
+      }),
+    )
+    expect(reduced['output']).toEqual(response.output)
+    expect(notes).toEqual([
+      'xai: the final response `output` is not an array; the output items were built from the stream events.',
+    ])
+  })
+
+  it('a final output item that is not an object is dropped and reported', () => {
+    const { response: reduced, notes } = reduce(
+      synthesizeStreamEvents(response, {
+        finalResponse: { ...response, output: ['x', ...response.output] },
+      }),
+    )
+    expect(reduced['output']).toEqual(response.output)
+    expect(notes).toEqual([
+      'xai: dropped 1 non-object item(s) from the final response `output`.',
+    ])
+  })
+
+  it('a terminal event without a response object is the one malformed shape', () => {
+    const reducer = new XaiStreamReducer()
+    expect(() => reducer.push({ type: 'response.completed' })).toThrowError(
+      /xAI stream is malformed: response.completed carries no response object/,
+    )
+  })
+
+  it('a body that is not JSON is a malformed stream', () => {
+    const reducer = new XaiStreamReducer()
+    expect(() => reducer.pushFrame({ event: undefined, data: '{not json' })).toThrowError(
+      /xAI stream is malformed: an event body is not valid JSON/,
     )
   })
 
   it.each([
-    ['a final output that is not an array', { ...response, output: 'nope' }],
-    ['a final output item that is not an object', { ...response, output: ['x'] }],
-  ])('%s is malformed', (_name, final) => {
-    expect(() =>
-      reduce(synthesizeStreamEvents(response, { finalResponse: final as Plain })),
-    ).toThrow(XaiStreamError)
-  })
-
-  it.each([
-    ['an event without a type', [{ nope: 1 }]],
-    ['a terminal event without a response', [{ type: 'response.completed' }]],
+    ['an event without a type', [{ nope: 1 }], /an event that has no string `type`/],
     [
       'an item event without an index',
       [{ type: 'response.output_item.added', item: { type: 'message' } }],
+      /output_item.added event with no integer output_index or typed item/,
     ],
     [
       'an item event without an item',
       [{ type: 'response.output_item.done', output_index: 0 }],
+      /output_item.done event with no integer output_index or typed item/,
     ],
-  ])('%s is a malformed stream', (_name, events) => {
-    const reducer = new XaiStreamReducer()
-    expect(() => {
+    [
+      'an item event with a fractional index',
+      [
+        {
+          type: 'response.output_item.done',
+          output_index: 0.5,
+          item: { type: 'message' },
+        },
+      ],
+      /output_item.done event with no integer output_index or typed item/,
+    ],
+  ])(
+    '%s is skipped, reported, and the final response is used (P1-2)',
+    (_name, events, note) => {
+      const reducer = new XaiStreamReducer()
       for (const event of events) reducer.push(event)
-    }).toThrowError(/xAI stream is malformed/)
+      reducer.push({ type: 'response.completed', response })
+      const { response: reduced, notes } = reducer.result()
+      expect(reduced.output).toEqual(response.output)
+      expect(notes).toHaveLength(1)
+      expect(notes[0]).toMatch(note)
+    },
+  )
+
+  it('a frame with no data, the [DONE] sentinel and a typeless JSON body are skipped', () => {
+    const reducer = new XaiStreamReducer()
+    expect(reducer.pushFrame({ event: 'keepalive', data: '' })).toBe(false)
+    expect(reducer.pushFrame({ event: undefined, data: '[DONE]' })).toBe(false)
+    expect(reducer.pushFrame({ event: 'ping', data: '{"hello":1}' })).toBe(false)
+    reducer.pushFrame({
+      event: 'response.completed',
+      data: JSON.stringify({ type: 'response.completed', response }),
+    })
+    const { notes } = reducer.result()
+    // The two benign frames say nothing; the typeless JSON object is reported.
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toContain('an event that has no string `type`')
+  })
+
+  it('an `event: error` frame whose JSON has no type, nested or flat, is the error event', () => {
+    for (const data of [
+      { error: { code: 'rate_limit_exceeded', message: 'slow' } },
+      { code: 'rate_limit_exceeded', message: 'slow' },
+    ]) {
+      const reducer = new XaiStreamReducer()
+      expect(() =>
+        reducer.pushFrame({ event: 'error', data: JSON.stringify(data) }),
+      ).toThrowError(
+        expect.objectContaining({
+          failure: { kind: 'error_event', code: 'rate_limit_exceeded', message: 'slow' },
+        }) as never,
+      )
+    }
   })
 
   it('a delta for an item the stream never opened is ignored', () => {
@@ -350,43 +390,385 @@ describe('reconciliation rules', () => {
     )
   })
 
-  it('a stream with no terminal event is ended_early and carries the latest usage it saw', () => {
+  it('progress: only output events count, and the received characters are totalled', () => {
     const reducer = new XaiStreamReducer()
-    reducer.push({
-      type: 'response.created',
-      response: { service_tier: 'priority', usage: null },
-    })
-    reducer.push({
-      type: 'response.in_progress',
-      response: {
-        usage: { input_tokens: 4, output_tokens: 0 },
-        service_tier: 'priority',
-      },
-    })
+    reducer.push({ type: 'response.created', response: { usage: null } })
+    reducer.push({ type: 'response.in_progress', response: { usage: null } })
+    expect(reducer.progress()).toEqual({ progressed: false, outputChars: 0 })
+    expect(reducer.endedEarly().progress.progressed).toBe(false)
     reducer.push({
       type: 'response.output_item.added',
       output_index: 0,
-      item: { type: 'message' },
+      item: { type: 'message', content: [] },
     })
+    expect(reducer.progress().progressed).toBe(true)
+    reducer.push({
+      type: 'response.content_part.added',
+      output_index: 0,
+      content_index: 0,
+      part: { type: 'output_text', text: '' },
+    })
+    reducer.push({
+      type: 'response.output_text.delta',
+      output_index: 0,
+      content_index: 0,
+      delta: 'hello',
+    })
+    reducer.push({
+      type: 'response.output_item.added',
+      output_index: 1,
+      item: { type: 'function_call', arguments: '' },
+    })
+    reducer.push({
+      type: 'response.function_call_arguments.delta',
+      output_index: 1,
+      delta: '{"a":1}',
+    })
+    expect(reducer.progress()).toEqual({ progressed: true, outputChars: 12 })
     const error = reducer.endedEarly()
     expect(error.failure).toEqual({
       kind: 'ended_early',
-      lastEventType: 'response.output_item.added',
+      lastEventType: 'response.function_call_arguments.delta',
     })
-    expect(error.partialUsage).toEqual({ input_tokens: 4, output_tokens: 0 })
-    expect(error.servedServiceTier).toBe('priority')
+    expect(error.progress).toEqual({ progressed: true, outputChars: 12 })
     expect(() => reducer.result()).toThrow(XaiStreamError)
   })
 
-  it('usage that is null or lacks token counts is not partial usage', () => {
+  it('snapshot usage and cost ticks are never partial usage; only the tier is taken from a snapshot', () => {
     const reducer = new XaiStreamReducer()
-    reducer.push({ type: 'response.created', response: { usage: null } })
     reducer.push({
       type: 'response.in_progress',
-      response: { usage: { total_tokens: 1 } },
+      response: {
+        usage: { input_tokens: 4, output_tokens: 0, cost_in_usd_ticks: 5 },
+        service_tier: 'priority',
+      },
     })
-    expect(reducer.endedEarly().partialUsage).toBeUndefined()
+    const error = reducer.endedEarly()
+    expect(error.terminalUsage).toBeUndefined()
+    expect(error.servedServiceTier).toBe('priority')
   })
+
+  it('an error after the terminal event carries the terminal usage, cost ticks included', () => {
+    const reducer = new XaiStreamReducer()
+    reducer.push({
+      type: 'response.completed',
+      response: {
+        service_tier: 'default',
+        usage: { input_tokens: 9, output_tokens: 3, cost_in_usd_ticks: 4033200000 },
+        output: [],
+      },
+    })
+    expect(reducer.progress().progressed).toBe(true)
+    const error = reducer.endedEarly()
+    expect(error.terminalUsage).toEqual({
+      input_tokens: 9,
+      output_tokens: 3,
+      cost_in_usd_ticks: 4033200000,
+    })
+    expect(error.servedServiceTier).toBe('default')
+  })
+
+  it('a terminal usage without token counts is not usage', () => {
+    const reducer = new XaiStreamReducer()
+    reducer.push({
+      type: 'response.incomplete',
+      response: { usage: { total_tokens: 1 }, output: [] },
+    })
+    expect(reducer.context().terminalUsage).toBeUndefined()
+  })
+})
+
+describe('delta assembly (hand-written event sequences with no done events)', () => {
+  const item = (index: number, body: Plain): Plain => ({
+    type: 'response.output_item.added',
+    output_index: index,
+    item: body,
+  })
+  const finish = (events: Plain[], status = 'completed') => {
+    const reducer = new XaiStreamReducer()
+    for (const event of events) reducer.push(event)
+    reducer.push({ type: 'response.completed', response: { status, output: [] } })
+    return reducer.result().response.output as Plain[]
+  }
+
+  it('a text delta is appended exactly once, in order, per part', () => {
+    const [message] = finish([
+      item(0, { type: 'message', role: 'assistant', content: [] }),
+      {
+        type: 'response.content_part.added',
+        output_index: 0,
+        content_index: 0,
+        part: { type: 'output_text', text: '', annotations: [] },
+      },
+      {
+        type: 'response.output_text.delta',
+        output_index: 0,
+        content_index: 0,
+        delta: 'Hel',
+      },
+      {
+        type: 'response.output_text.delta',
+        output_index: 0,
+        content_index: 0,
+        delta: 'lo ',
+      },
+      {
+        type: 'response.output_text.delta',
+        output_index: 0,
+        content_index: 0,
+        delta: 'wörld',
+      },
+    ])
+    expect((message?.['content'] as Plain[])[0]?.['text']).toBe('Hello wörld')
+  })
+
+  it('interleaved items and out-of-order content parts each keep their own text', () => {
+    const [first, second] = finish([
+      item(0, { type: 'message', content: [] }),
+      item(1, { type: 'message', content: [] }),
+      {
+        type: 'response.output_text.delta',
+        output_index: 1,
+        content_index: 1,
+        delta: 'B1',
+      },
+      {
+        type: 'response.output_text.delta',
+        output_index: 0,
+        content_index: 0,
+        delta: 'A0',
+      },
+      {
+        type: 'response.output_text.delta',
+        output_index: 1,
+        content_index: 0,
+        delta: 'B0',
+      },
+      {
+        type: 'response.output_text.delta',
+        output_index: 0,
+        content_index: 0,
+        delta: '+',
+      },
+    ])
+    expect((first?.['content'] as Plain[]).map((p) => p['text'])).toEqual(['A0+'])
+    expect((second?.['content'] as Plain[]).map((p) => p['text'])).toEqual(['B0', 'B1'])
+  })
+
+  it('an annotation lands at its annotation_index, not one past it', () => {
+    const [message] = finish([
+      item(0, { type: 'message', content: [] }),
+      {
+        type: 'response.content_part.added',
+        output_index: 0,
+        content_index: 0,
+        part: { type: 'output_text', text: '', annotations: [] },
+      },
+      {
+        type: 'response.output_text.annotation.added',
+        output_index: 0,
+        content_index: 0,
+        annotation_index: 1,
+        annotation: { type: 'url_citation', url: 'https://b' },
+      },
+      {
+        type: 'response.output_text.annotation.added',
+        output_index: 0,
+        content_index: 0,
+        annotation_index: 0,
+        annotation: { type: 'url_citation', url: 'https://a' },
+      },
+    ])
+    expect(
+      ((message?.['content'] as Plain[])[0]?.['annotations'] as Plain[]).map(
+        (a) => a['url'],
+      ),
+    ).toEqual(['https://a', 'https://b'])
+  })
+
+  it('function-call argument deltas and custom tool input deltas are appended', () => {
+    const [call, custom] = finish([
+      item(0, { type: 'function_call', call_id: 'c', name: 'f', arguments: '' }),
+      item(1, {
+        type: 'custom_tool_call',
+        call_id: 'x',
+        name: 'x_keyword_search',
+        input: '',
+      }),
+      { type: 'response.function_call_arguments.delta', output_index: 0, delta: '{"ci' },
+      { type: 'response.custom_tool_call_input.delta', output_index: 1, delta: '{"q":' },
+      {
+        type: 'response.function_call_arguments.delta',
+        output_index: 0,
+        delta: 'ty":"Paris"}',
+      },
+      { type: 'response.custom_tool_call_input.delta', output_index: 1, delta: '"x"}' },
+    ])
+    expect(call?.['arguments']).toBe('{"city":"Paris"}')
+    expect(custom?.['input']).toBe('{"q":"x"}')
+  })
+
+  it('reasoning summary parts assemble per summary_index', () => {
+    const [reasoning] = finish([
+      item(0, { type: 'reasoning', summary: [] }),
+      {
+        type: 'response.reasoning_summary_text.delta',
+        output_index: 0,
+        summary_index: 1,
+        delta: 'second',
+      },
+      {
+        type: 'response.reasoning_summary_text.delta',
+        output_index: 0,
+        summary_index: 0,
+        delta: 'first ',
+      },
+      {
+        type: 'response.reasoning_summary_text.delta',
+        output_index: 0,
+        summary_index: 0,
+        delta: 'part',
+      },
+    ])
+    expect((reasoning?.['summary'] as Plain[]).map((p) => p['text'])).toEqual([
+      'first part',
+      'second',
+    ])
+  })
+
+  it('an item the response ended is finished: completed, or incomplete for an incomplete response', () => {
+    const open = [item(0, { type: 'message', status: 'in_progress', content: [] })]
+    expect(finish(open)[0]?.['status']).toBe('completed')
+    expect(finish(open, 'incomplete')[0]?.['status']).toBe('incomplete')
+  })
+})
+
+describe('matching items that the final object omits (P3-1)', () => {
+  const message = (id: string | undefined, text: string): Plain => ({
+    ...(id !== undefined ? { id } : {}),
+    type: 'message',
+    role: 'assistant',
+    status: 'completed',
+    content: [{ type: 'output_text', text }],
+  })
+  const run = (streamed: Plain[], final: Plain[]) =>
+    reduce(
+      synthesizeStreamEvents(
+        {
+          id: 'r',
+          status: 'completed',
+          usage: { input_tokens: 1, output_tokens: 1 },
+          output: streamed,
+        },
+        {
+          finalResponse: {
+            id: 'r',
+            status: 'completed',
+            usage: { input_tokens: 1, output_tokens: 1 },
+            output: final,
+          },
+        },
+      ),
+    )
+
+  it('two items under one id, the final object omitting the FIRST: neither is lost or duplicated', () => {
+    const first = message('msg_1', 'first draft')
+    const second = message('msg_1', 'second')
+    const { response, notes } = run([first, second], [second])
+    expect(response.output).toEqual([first, second])
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toContain('rebuilt from the stream events')
+  })
+
+  it('the final object omitting the LAST of an id group is rebuilt at its index', () => {
+    const first = message('msg_1', 'first draft')
+    const second = message('msg_1', 'second')
+    const { response } = run([first, second], [first])
+    expect(response.output).toEqual([first, second])
+  })
+
+  it('an item the stream called by another id but with identical content is one item', () => {
+    const streamed = {
+      id: 'rs_stream',
+      type: 'reasoning',
+      status: 'completed',
+      summary: [],
+      encrypted_content: 'ENC',
+    }
+    const final = { ...streamed, id: 'rs_final' }
+    const { response, notes } = run([streamed], [final])
+    expect(response.output).toEqual([final])
+    expect(notes).toEqual([])
+  })
+
+  it('an id on one side only does not duplicate identical content either', () => {
+    const { response } = run([message(undefined, 'same')], [message('msg_late', 'same')])
+    expect(response.output).toEqual([message('msg_late', 'same')])
+  })
+
+  it('items with different content under different ids are both kept', () => {
+    const { response } = run([message('msg_a', 'a')], [message('msg_b', 'b')])
+    expect((response.output as Plain[]).map((i) => i['id'])).toEqual(['msg_a', 'msg_b'])
+  })
+})
+
+describe('what a divergence is worth reporting (live finding, 2026-10-03)', () => {
+  it('a search call whose action.sources differ is not reported; the final object is used', () => {
+    const streamed = {
+      id: 'ws_1',
+      type: 'web_search_call',
+      status: 'completed',
+      action: { type: 'search', query: 'q', sources: [{ url: 'https://a' }] },
+    }
+    const final = {
+      ...streamed,
+      action: {
+        ...streamed.action,
+        sources: [{ url: 'https://a' }, { url: 'https://b' }],
+      },
+    }
+    const { response, notes } = reduce(
+      synthesizeStreamEvents(
+        {
+          id: 'r',
+          status: 'completed',
+          usage: { input_tokens: 1, output_tokens: 1 },
+          output: [streamed],
+        },
+        {
+          finalResponse: {
+            id: 'r',
+            status: 'completed',
+            usage: { input_tokens: 1, output_tokens: 1 },
+            output: [final],
+          },
+        },
+      ),
+    )
+    expect(response.output).toEqual([final])
+    expect(notes).toEqual([])
+  })
+})
+
+describe('response.incomplete is normalised like response.failed (P3-4)', () => {
+  it.each(['in_progress', 'completed', undefined])(
+    'an incomplete event whose response says %s is incomplete, with its assembled items finished as incomplete',
+    (status) => {
+      const reducer = new XaiStreamReducer()
+      reducer.push({
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: { type: 'message', status: 'in_progress', content: [] },
+      })
+      reducer.push({
+        type: 'response.incomplete',
+        response: { ...(status !== undefined ? { status } : {}), output: [] },
+      })
+      const { response } = reducer.result()
+      expect(response.status).toBe('incomplete')
+      expect((response.output as Plain[])[0]?.['status']).toBe('incomplete')
+    },
+  )
 })
 
 describe('the synthetic grammar matches the real xAI event types (live captures P9a, P12)', () => {

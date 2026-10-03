@@ -10,23 +10,35 @@
  * own output items) is built from `output`, so this module rebuilds the output
  * item list from the events and reconciles it with the final object.
  *
+ * **Reconciliation is enrichment, never a gate (ADR-040 Amendment A).** Once the
+ * terminal event carries a response object, the call is billed and answered:
+ * the final object is the authority and nothing the events say can fail it.
+ * What the events cannot place or what disagrees with the final object is
+ * skipped and reported in the notes.
+ *
  * Reconciliation rules (a pure function of the events; no I/O):
  *
  * 1. Items are matched by `id` and occurrence (xAI repeats an id inside one
  *    `output`: live fixtures carry two `message` items with one `msg_` id); an
  *    item with no id is matched to the same type's n-th id-less item on the
- *    other side.
+ *    other side. When the two sides hold a different number of items under one
+ *    id, the occurrences are aligned from the start or from the end, whichever
+ *    pairs more items of identical content (a tie goes to the end).
  * 2. The final object is authoritative for an item it carries. A field it lacks
  *    that a completed (`output_item.done`) event carries is filled from the
  *    event; a field both carry with different values keeps the final's value
- *    and is reported in the notes.
+ *    and, for the item types the adapter consumes, is reported in the notes. An
+ *    item the same id carries with a different type keeps the final's item.
  * 3. An item the events completed and the final object lacks is inserted at its
- *    `output_index`.
+ *    `output_index`, unless an unmatched final item has the same content under
+ *    another id (then they are one item).
  * 4. An item that only ever got `output_item.added` plus deltas, and that the
  *    final object lacks, is assembled from the deltas (text, annotations,
- *    summary parts, function arguments) and marked finished; the notes say so.
- * 5. Structural disagreement cannot be reconciled and throws
- *    {@link XaiStreamError}: the same id with two types, or a malformed event.
+ *    summary parts, function arguments, custom tool input) and marked finished;
+ *    the notes say so.
+ * 5. An event with no integer `output_index` or no typed item cannot be placed
+ *    and is skipped; a final `output` that is not an array of objects is
+ *    replaced by the items the events built.
  *
  * @module
  */
@@ -39,33 +51,60 @@ export type XaiStreamFailure =
   | { kind: 'error_event'; code: string | undefined; message: string | undefined }
   | { kind: 'malformed'; detail: string }
   | { kind: 'deadline'; timeoutMs: number }
+  | { kind: 'idle'; idleTimeoutMs: number }
+  /** The connection failed after output began; `cause` is the transport error. */
+  | { kind: 'cut'; detail: string }
+  /** `transport.fetch` answered 200 with a body that is not an event stream. */
+  | { kind: 'not_event_stream'; contentType: string }
+
+/**
+ * What a stream had delivered when it failed. Output events mean the model was
+ * generating (a reasoning call burns tokens before its first visible event), so
+ * a retry would repeat that spend and cannot resume it.
+ */
+export interface XaiStreamProgress {
+  /** True once any output event or the terminal event arrived. */
+  progressed: boolean
+  /** Characters of text, reasoning summary, arguments and tool input received. */
+  outputChars: number
+}
+
+/** What a stream failure carries beside its {@link XaiStreamFailure}. */
+export interface XaiStreamErrorContext {
+  progress?: XaiStreamProgress
+  /** The terminal response's usage, exact (ticks included), when one arrived. */
+  terminalUsage?: XaiUsageShape
+  serviceTier?: string
+  cause?: unknown
+}
 
 /**
  * A streamed xAI call that failed mid-stream. `classifyXaiError` turns it into a
- * typed `LlmError`: usage here is whatever the latest `response.*` snapshot
- * carried, and usually none (the final usage only arrives on the terminal
- * event), in which case the attempt is unpriced rather than free.
+ * typed `LlmError`. A failure after the terminal event carries the terminal
+ * usage (exact); one before it carries only {@link XaiStreamProgress}, from
+ * which the adapter derives a lower-bound ESTIMATE: snapshot usage in
+ * `response.created` / `response.in_progress` is not used (every live capture
+ * had `usage: null`, and a snapshot is by definition a lower bound).
  *
  * @internal
  */
 export class XaiStreamError extends Error {
   readonly failure: XaiStreamFailure
-  readonly partialUsage: XaiUsageShape | undefined
+  readonly progress: XaiStreamProgress
+  readonly terminalUsage: XaiUsageShape | undefined
   readonly servedServiceTier: string | undefined
 
-  constructor(
-    failure: XaiStreamFailure,
-    context: { usage?: XaiUsageShape; serviceTier?: string; cause?: unknown } = {},
-  ) {
-    super(describeFailure(failure), { cause: context.cause })
+  constructor(failure: XaiStreamFailure, context: XaiStreamErrorContext = {}) {
+    super(describeFailure(failure, context.cause), { cause: context.cause })
     this.name = 'XaiStreamError'
     this.failure = failure
-    this.partialUsage = context.usage
+    this.progress = context.progress ?? { progressed: false, outputChars: 0 }
+    this.terminalUsage = context.terminalUsage
     this.servedServiceTier = context.serviceTier
   }
 }
 
-function describeFailure(failure: XaiStreamFailure): string {
+function describeFailure(failure: XaiStreamFailure, cause: unknown): string {
   switch (failure.kind) {
     case 'ended_early':
       return `xAI stream ended before response.completed${
@@ -81,6 +120,14 @@ function describeFailure(failure: XaiStreamFailure): string {
       return `xAI stream is malformed: ${failure.detail}`
     case 'deadline':
       return `the stream was still open after the ${failure.timeoutMs} ms request timeout`
+    case 'idle':
+      return `the stream sent no bytes (heartbeats included) for ${failure.idleTimeoutMs} ms`
+    case 'cut':
+      return `xAI stream was cut after output began: ${
+        cause instanceof Error ? cause.message : failure.detail
+      }`
+    case 'not_event_stream':
+      return `xAI transport returned a non-event-stream body (content-type "${failure.contentType}"); transport.fetch must return the text/event-stream response of the request unchanged`
   }
 }
 
@@ -107,6 +154,15 @@ function deepEqual(a: unknown, b: unknown): boolean {
   return false
 }
 
+/** Two items are one item when only their `id` and `status` differ. */
+function sameItemContent(a: PlainRecord, b: PlainRecord): boolean {
+  const strip = (item: PlainRecord): PlainRecord => {
+    const { id: _id, status: _status, ...rest } = item
+    return rest
+  }
+  return deepEqual(strip(a), strip(b))
+}
+
 function clone<T>(value: T): T {
   return structuredClone(value)
 }
@@ -116,6 +172,12 @@ interface StreamItem {
   item: PlainRecord
   /** True once `response.output_item.done` delivered the finished item. */
   done: boolean
+}
+
+/** One dispatched SSE frame, as `readSseFrames` yields it. */
+export interface XaiSseFrame {
+  event: string | undefined
+  data: string
 }
 
 /** The reduced result of a stream that reached a terminal event. */
@@ -132,9 +194,19 @@ const TERMINAL_EVENTS = new Set([
   'response.failed',
 ])
 
-/** Latest numeric usage a `response.*` snapshot carried, if any. */
-function usageOf(snapshot: PlainRecord | undefined): XaiUsageShape | undefined {
-  const usage = snapshot?.['usage']
+/** Item types whose content the adapter reads; a divergence in one is reported. */
+const CONSUMED_ITEM_TYPES = new Set(['message', 'reasoning', 'function_call'])
+
+/** Response-level events that open a stream without any output in them. */
+const OPENING_EVENTS = new Set([
+  'response.created',
+  'response.in_progress',
+  'response.queued',
+])
+
+/** Numeric usage a response object carries, if it carries token counts. */
+function usageOf(response: PlainRecord | undefined): XaiUsageShape | undefined {
+  const usage = response?.['usage']
   if (
     isRecord(usage) &&
     typeof usage['input_tokens'] === 'number' &&
@@ -145,33 +217,93 @@ function usageOf(snapshot: PlainRecord | undefined): XaiUsageShape | undefined {
   return undefined
 }
 
+/** Characters of model output an item holds: text, summaries, arguments, tool input. */
+function itemOutputChars(item: PlainRecord): number {
+  let chars = 0
+  const text = (value: unknown): void => {
+    if (isRecord(value) && typeof value['text'] === 'string')
+      chars += value['text'].length
+  }
+  if (Array.isArray(item['content'])) item['content'].forEach(text)
+  if (Array.isArray(item['summary'])) item['summary'].forEach(text)
+  if (typeof item['arguments'] === 'string') chars += item['arguments'].length
+  if (typeof item['input'] === 'string') chars += item['input'].length
+  return chars
+}
+
 /**
  * Folds Responses API stream events into one response object.
  *
- * Feed every event to {@link push} until it returns `true`, then call
- * {@link result}. When the stream ends before a terminal event, call
- * {@link endedEarly} for the error to throw.
+ * Feed every frame to {@link pushFrame} (or every parsed event to {@link push})
+ * until it returns `true`, then call {@link result}. When the stream ends before
+ * a terminal event, call {@link endedEarly} for the error to throw.
  */
 export class XaiStreamReducer {
   private readonly items = new Map<number, StreamItem>()
   private snapshot: PlainRecord | undefined
   private terminal: { type: string; response: PlainRecord } | undefined
   private lastType: string | undefined
+  private progressed = false
+  private readonly skipped: string[] = []
+
+  /**
+   * Applies one SSE frame. A frame with no `data` (a bare `event: keepalive`) or
+   * the `[DONE]` sentinel carries nothing and is skipped. A body that is not JSON
+   * is a malformed stream; JSON that is not an event is skipped and reported.
+   * Returns `true` once the terminal event has been seen.
+   */
+  pushFrame(frame: XaiSseFrame): boolean {
+    if (frame.data === '' || frame.data === '[DONE]') return false
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(frame.data)
+    } catch (cause) {
+      throw new XaiStreamError(
+        {
+          kind: 'malformed',
+          detail: `an event body is not valid JSON (${
+            cause instanceof Error ? cause.message : String(cause)
+          })`,
+        },
+        { ...this.context(), cause },
+      )
+    }
+    if (isRecord(parsed) && typeof parsed['type'] !== 'string') {
+      // An `event: error` frame, or a payload that is only an error object, is
+      // the stream's error event; anything else typeless is not an event.
+      const nested = isRecord(parsed['error']) ? parsed['error'] : undefined
+      if (frame.event === 'error' || nested !== undefined) {
+        const pick = (name: string): string | undefined => {
+          const value = parsed[name] ?? nested?.[name]
+          return typeof value === 'string' ? value : undefined
+        }
+        return this.push({ type: 'error', code: pick('code'), message: pick('message') })
+      }
+    }
+    return this.push(parsed)
+  }
 
   /** Applies one event. Returns `true` once the terminal event has been seen. */
   push(event: unknown): boolean {
     if (!isRecord(event) || typeof event['type'] !== 'string') {
-      throw this.malformed('an event has no string `type`')
+      this.skipped.push('an event that has no string `type`')
+      return false
     }
     const type = event['type']
     this.lastType = type
     if (TERMINAL_EVENTS.has(type)) {
       const response = event['response']
       if (!isRecord(response)) {
-        throw this.malformed(`${type} carries no response object`)
+        throw new XaiStreamError(
+          { kind: 'malformed', detail: `${type} carries no response object` },
+          this.context(),
+        )
       }
       this.terminal = { type, response }
       return true
+    }
+    if (!OPENING_EVENTS.has(type) && type !== 'error' && type.startsWith('response.')) {
+      this.progressed = true
     }
     switch (type) {
       case 'response.created':
@@ -189,10 +321,17 @@ export class XaiStreamReducer {
         )
       case 'response.output_item.added':
       case 'response.output_item.done': {
-        const index = this.indexOf(event)
+        const index = event['output_index']
         const item = event['item']
-        if (!isRecord(item) || typeof item['type'] !== 'string') {
-          throw this.malformed(`${type} carries no item with a string type`)
+        if (
+          typeof index !== 'number' ||
+          !Number.isInteger(index) ||
+          index < 0 ||
+          !isRecord(item) ||
+          typeof item['type'] !== 'string'
+        ) {
+          this.skipped.push(`a ${type} event with no integer output_index or typed item`)
+          return false
         }
         this.items.set(index, { item: clone(item), done: type.endsWith('.done') })
         return false
@@ -211,21 +350,29 @@ export class XaiStreamReducer {
     )
   }
 
-  /** Partial usage and tier the latest snapshot carried (for stream failures). */
-  context(): { usage?: XaiUsageShape; serviceTier?: string } {
-    const usage = usageOf(this.snapshot)
-    const tier = this.snapshot?.['service_tier']
+  /** What the stream had delivered so far. */
+  progress(): XaiStreamProgress {
+    let outputChars = 0
+    for (const entry of this.items.values()) outputChars += itemOutputChars(entry.item)
+    return { progressed: this.progressed || this.terminal !== undefined, outputChars }
+  }
+
+  /** The progress, the terminal usage when one arrived, and the tier, for a failure. */
+  context(): Omit<XaiStreamErrorContext, 'cause'> {
+    const terminalUsage = usageOf(this.terminal?.response)
+    const tier = (this.terminal?.response ?? this.snapshot)?.['service_tier']
     return {
-      ...(usage !== undefined ? { usage } : {}),
+      progress: this.progress(),
+      ...(terminalUsage !== undefined ? { terminalUsage } : {}),
       ...(typeof tier === 'string' && tier.length > 0 ? { serviceTier: tier } : {}),
     }
   }
 
   /**
-   * The terminal response with its output reconciled against the events.
+   * The terminal response with its output reconciled against the events. Never
+   * fails once a terminal event with a response arrived.
    *
-   * @throws XaiStreamError when the stream has no terminal event yet, or events
-   *   and the final response disagree structurally.
+   * @throws XaiStreamError only when the stream has no terminal event yet.
    */
   result(): ReducedXaiStream {
     const terminal = this.terminal
@@ -243,23 +390,24 @@ export class XaiStreamReducer {
         notes: [],
       }
     }
-    const { output, notes } = this.reconcile(response['output'], response['status'])
+    // Likewise `response.incomplete` is an incomplete response whatever its object says.
+    const status =
+      terminal.type === 'response.incomplete' ? 'incomplete' : response['status']
+    const { output, notes } = this.reconcile(response['output'], status)
     return {
-      response: { ...response, output } as unknown as XaiResponseShape,
-      notes,
+      response: { ...response, status, output } as unknown as XaiResponseShape,
+      notes: [...this.skippedNotes(), ...notes],
     }
   }
 
-  private malformed(detail: string): XaiStreamError {
-    return new XaiStreamError({ kind: 'malformed', detail }, this.context())
-  }
-
-  private indexOf(event: PlainRecord): number {
-    const index = event['output_index']
-    if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) {
-      throw this.malformed(`${String(event['type'])} has no integer output_index`)
-    }
-    return index
+  private skippedNotes(): string[] {
+    if (this.skipped.length === 0) return []
+    const counts = new Map<string, number>()
+    for (const what of this.skipped) counts.set(what, (counts.get(what) ?? 0) + 1)
+    return [...counts].map(
+      ([what, n]) =>
+        `xai: skipped ${n} stream event(s) that could not be used (${what}); the final response was used for them.`,
+    )
   }
 
   /**
@@ -295,6 +443,10 @@ export class XaiStreamReducer {
       if (!Array.isArray(item['summary'])) item['summary'] = []
       return item['summary'] as unknown[]
     }
+    const append = (target: PlainRecord, key: string, delta: unknown): void => {
+      if (typeof delta !== 'string') return
+      target[key] = `${typeof target[key] === 'string' ? target[key] : ''}${delta}`
+    }
     switch (type) {
       case 'response.content_part.added':
       case 'response.content_part.done':
@@ -302,14 +454,13 @@ export class XaiStreamReducer {
           content()[contentIndex] = clone(event['part'])
         }
         return
-      case 'response.output_text.delta': {
-        const part = textAt(content(), contentIndex, { type: 'output_text', text: '' })
-        if (typeof event['delta'] === 'string') {
-          part['text'] =
-            `${typeof part['text'] === 'string' ? part['text'] : ''}${event['delta']}`
-        }
+      case 'response.output_text.delta':
+        append(
+          textAt(content(), contentIndex, { type: 'output_text', text: '' }),
+          'text',
+          event['delta'],
+        )
         return
-      }
       case 'response.output_text.done': {
         const part = textAt(content(), contentIndex, { type: 'output_text', text: '' })
         if (typeof event['text'] === 'string') part['text'] = event['text']
@@ -330,27 +481,30 @@ export class XaiStreamReducer {
           summary()[summaryIndex] = clone(event['part'])
         }
         return
-      case 'response.reasoning_summary_text.delta': {
-        const part = textAt(summary(), summaryIndex, { type: 'summary_text', text: '' })
-        if (typeof event['delta'] === 'string') {
-          part['text'] =
-            `${typeof part['text'] === 'string' ? part['text'] : ''}${event['delta']}`
-        }
+      case 'response.reasoning_summary_text.delta':
+        append(
+          textAt(summary(), summaryIndex, { type: 'summary_text', text: '' }),
+          'text',
+          event['delta'],
+        )
         return
-      }
       case 'response.reasoning_summary_text.done': {
         const part = textAt(summary(), summaryIndex, { type: 'summary_text', text: '' })
         if (typeof event['text'] === 'string') part['text'] = event['text']
         return
       }
       case 'response.function_call_arguments.delta':
-        if (typeof event['delta'] === 'string') {
-          item['arguments'] =
-            `${typeof item['arguments'] === 'string' ? item['arguments'] : ''}${event['delta']}`
-        }
+        append(item, 'arguments', event['delta'])
         return
       case 'response.function_call_arguments.done':
         if (typeof event['arguments'] === 'string') item['arguments'] = event['arguments']
+        return
+      // xAI streams the input of a server tool call (x_search) as a custom tool call.
+      case 'response.custom_tool_call_input.delta':
+        append(item, 'input', event['delta'])
+        return
+      case 'response.custom_tool_call_input.done':
+        if (typeof event['input'] === 'string') item['input'] = event['input']
         return
       default:
         // `response.web_search_call.*`, heartbeats and event types this
@@ -359,63 +513,102 @@ export class XaiStreamReducer {
     }
   }
 
+  /** The items the events built, in output order, finished for a response that ended. */
+  private eventItems(responseStatus: unknown): PlainRecord[] {
+    return [...this.items.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, entry]) => {
+        const item = clone(entry.item)
+        if (!entry.done) item['status'] = finishedStatus(responseStatus)
+        return item
+      })
+  }
+
   private reconcile(
     finalOutput: unknown,
     responseStatus: unknown,
   ): { output: unknown[]; notes: string[] } {
     if (finalOutput !== undefined && !Array.isArray(finalOutput)) {
-      throw this.malformed('the final response `output` is not an array')
+      return {
+        output: this.eventItems(responseStatus),
+        notes: [
+          'xai: the final response `output` is not an array; the output items were built from the stream events.',
+        ],
+      }
     }
     const finalItems: PlainRecord[] = []
+    let dropped = 0
     for (const item of finalOutput ?? []) {
-      if (!isRecord(item)) {
-        throw this.malformed('the final response `output` holds a non-object item')
-      }
-      finalItems.push(clone(item))
+      if (isRecord(item)) finalItems.push(clone(item))
+      else dropped++
+    }
+    const notes: string[] = []
+    if (dropped > 0) {
+      notes.push(
+        `xai: dropped ${dropped} non-object item(s) from the final response \`output\`.`,
+      )
     }
 
     // Real xAI responses repeat an id within one `output` (two `message` items
     // sharing one `msg_` id, two `reasoning` items sharing one `rs_` id), so an
-    // id alone is not a key: it is the id plus how many times that id has
-    // appeared so far, in output order on both sides.
-    const keyOf = (counters: Map<string, number>, item: PlainRecord): string => {
+    // id alone is not a key. Items are grouped by id (or by type when they have
+    // none) and the groups are aligned from the END: the final object omits
+    // earlier items of a group, never later ones.
+    const groupOf = (item: PlainRecord): string => {
       const id = item['id']
-      const label =
-        typeof id === 'string' && id.length > 0
-          ? `id:${id}`
-          : `anon:${String(item['type'])}`
-      const n = counters.get(label) ?? 0
-      counters.set(label, n + 1)
-      return `${label}:${n}`
+      return typeof id === 'string' && id.length > 0
+        ? `id:${id}`
+        : `anon:${String(item['type'])}`
     }
     const labelOf = (item: PlainRecord): string =>
       typeof item['id'] === 'string' && item['id'].length > 0
         ? `${String(item['type'])} ${item['id']}`
         : String(item['type'])
 
-    const finalCounters = new Map<string, number>()
-    const finalByKey = new Map<string, PlainRecord>()
-    for (const item of finalItems) finalByKey.set(keyOf(finalCounters, item), item)
+    const finalGroups = new Map<string, PlainRecord[]>()
+    for (const item of finalItems) {
+      const group = groupOf(item)
+      finalGroups.set(group, [...(finalGroups.get(group) ?? []), item])
+    }
+    const eventGroups = new Map<string, Array<[number, StreamItem]>>()
+    for (const entry of [...this.items.entries()].sort(([a], [b]) => a - b)) {
+      const group = groupOf(entry[1].item)
+      eventGroups.set(group, [...(eventGroups.get(group) ?? []), entry])
+    }
 
-    const notes: string[] = []
-    const eventCounters = new Map<string, number>()
-    const insertions: Array<{ index: number; item: PlainRecord }> = []
-    const rebuilt: string[] = []
-    const assembled: string[] = []
-    const sorted = [...this.items.entries()].sort(([a], [b]) => a - b)
-    for (const [index, entry] of sorted) {
-      const key = keyOf(eventCounters, entry.item)
-      const finalItem = finalByKey.get(key)
-      if (finalItem !== undefined) {
-        if (finalItem['type'] !== entry.item['type']) {
-          throw this.malformed(
-            `output item ${labelOf(finalItem)} is a "${String(entry.item['type'])}" in the stream and a "${String(finalItem['type'])}" in the final response`,
-          )
+    const bound = new Set<PlainRecord>()
+    const unbound: Array<[number, StreamItem]> = []
+    for (const [group, entries] of eventGroups) {
+      const finals = finalGroups.get(group) ?? []
+      // The final object omits items from either end of a group, so the group
+      // is aligned from the start or from the end, whichever pairs more items
+      // of identical content (a tie goes to the end: the final object omits
+      // earlier items, never later ones, in every capture).
+      const endOffset = finals.length - entries.length
+      const matches = (offset: number): number =>
+        entries.filter(([, streamed], i) => {
+          const finalItem = finals[i + offset]
+          return finalItem !== undefined && sameItemContent(finalItem, streamed.item)
+        }).length
+      const offset = matches(0) > matches(endOffset) ? 0 : endOffset
+      entries.forEach((entry, i) => {
+        const finalItem = finals[i + offset]
+        if (finalItem === undefined) {
+          unbound.push(entry)
+          return
         }
-        if (!entry.done) continue
+        bound.add(finalItem)
+        const [, streamed] = entry
+        if (finalItem['type'] !== streamed.item['type']) {
+          notes.push(
+            `xai: output item ${labelOf(finalItem)} is a "${String(streamed.item['type'])}" in the stream and a "${String(finalItem['type'])}" in the final response; the final response is used.`,
+          )
+          return
+        }
+        if (!streamed.done) return
         const filled: string[] = []
         const diverged: string[] = []
-        for (const [field, value] of Object.entries(entry.item)) {
+        for (const [field, value] of Object.entries(streamed.item)) {
           if (!(field in finalItem)) {
             finalItem[field] = clone(value)
             filled.push(field)
@@ -428,11 +621,28 @@ export class XaiStreamReducer {
             `xai: output item ${labelOf(finalItem)} lacked field(s) [${filled.join(', ')}] in the final response; taken from the stream.`,
           )
         }
-        if (diverged.length > 0) {
+        // Server tool items (a search call) are replayed verbatim from the final
+        // object and the adapter reads nothing in them; xAI's final object also
+        // reports a search call's `action.sources` cumulatively for the whole
+        // run (live, 2026-10-03), so a difference there is not news.
+        if (diverged.length > 0 && CONSUMED_ITEM_TYPES.has(String(finalItem['type']))) {
           notes.push(
             `xai: output item ${labelOf(finalItem)} differs between the stream and the final response in field(s) [${diverged.join(', ')}]; the final response is used.`,
           )
         }
+      })
+    }
+
+    // An item the final object lacks under its id may still be there under
+    // another one: the same content is one item, not a second.
+    const spare = finalItems.filter((item) => !bound.has(item))
+    const insertions: Array<{ index: number; item: PlainRecord }> = []
+    const rebuilt: string[] = []
+    const assembled: string[] = []
+    for (const [index, entry] of unbound.sort(([a], [b]) => a - b)) {
+      const twin = spare.findIndex((item) => sameItemContent(item, entry.item))
+      if (twin !== -1) {
+        spare.splice(twin, 1)
         continue
       }
       const item = clone(entry.item)
@@ -440,7 +650,7 @@ export class XaiStreamReducer {
         // Never finished by an `output_item.done` and absent from the final
         // object: what the deltas built is all there is. The response ended, so
         // the item is finished too (a replayed `in_progress` item is not valid).
-        item['status'] = responseStatus === 'incomplete' ? 'incomplete' : 'completed'
+        item['status'] = finishedStatus(responseStatus)
         assembled.push(labelOf(item))
       } else {
         rebuilt.push(labelOf(item))
@@ -464,4 +674,8 @@ export class XaiStreamReducer {
     }
     return { output, notes }
   }
+}
+
+function finishedStatus(responseStatus: unknown): string {
+  return responseStatus === 'incomplete' ? 'incomplete' : 'completed'
 }

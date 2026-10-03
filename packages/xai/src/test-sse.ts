@@ -4,10 +4,14 @@
  * event sequence the OpenAI Responses streaming grammar documents.
  *
  * SYNTHETIC (ADR-013): the grammar here is OpenAI's documented Responses
- * streaming contract (the API xAI is compatible with), not a capture. Live
- * capture P9a pinned the event TYPES of real xAI streams (see
- * `__fixtures__/36-streamed-responses.json`); nothing here invents a capture.
- * Tests built on it label themselves synthetic.
+ * streaming contract (the API xAI is compatible with), not a capture. Real xAI
+ * event bodies are pinned in `__fixtures__/37-streamed-events.json` (and the
+ * event TYPES of the P9a/P12 runs in `36-streamed-responses.json`); nothing
+ * here invents a capture. Use it to inject failures and to run the recorded
+ * non-streamed responses through the stream path, never to prove how xAI streams:
+ * `synthesizeStreamEvents` always emits the `*.done` events that overwrite what
+ * the deltas built, so a test through it cannot see a delta-assembly bug. Tests
+ * built on it label themselves synthetic.
  *
  * @module
  */

@@ -8,10 +8,11 @@
  * (`__fixtures__/36-streamed-responses.json`), and the usage objects pinned
  * there are the real streamed ones.
  */
+import { getEventListeners } from 'node:events'
 import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { LlmError, createClient } from '@gullabs/core'
+import { LlmError, createClient, retryMiddleware } from '@gullabs/core'
 import type { AdapterCtx, AdapterResult, ResolvedRequest } from '@gullabs/core'
 import { RecordingSink, RecordingTelemetry, makeFakeXai } from '@gullabs/testing'
 import { classifyXaiError, xaiAdapter } from './adapter.js'
@@ -459,12 +460,12 @@ describe('terminal events map as the non-streamed path does (R4)', () => {
 
   it.each([
     ['server_error', 'server', true],
-    ['rate_limit_exceeded', 'rate_limited', true],
+    ['rate_limit_exceeded', 'rate_limited', false],
     ['bio_policy', 'content_filter', false],
     ['invalid_prompt', 'bad_request', false],
     ['some_future_code', 'unknown', false],
   ] as const)(
-    'an error event with code %s is %s, retryable %s',
+    'an error event with code %s before any output is %s, retryable %s',
     async (code, kind, retryable) => {
       const events: SseEvent[] = [
         ...synthesizeStreamEvents(
@@ -477,6 +478,25 @@ describe('terminal events map as the non-streamed path does (R4)', () => {
       expect(err).toMatchObject({ kind, retryable, provider: 'xai' })
       expect(err.message).toContain(code)
       expect(err.message).toContain('upstream said no')
+      // Nothing was generated, so there is nothing to estimate.
+      expect(err.usage).toBeUndefined()
+    },
+  )
+
+  it.each([
+    ['server_error', 'server'],
+    ['rate_limit_exceeded', 'rate_limited'],
+    ['invalid_prompt', 'bad_request'],
+  ] as const)(
+    'an error event with code %s after output began is %s, never retryable, with estimated usage',
+    async (code, kind) => {
+      const events: SseEvent[] = [
+        ...partialStream(null),
+        { type: 'error', code, message: 'mid-run', param: null },
+      ]
+      const err = await failure(streamingAdapter(respond(events)).run(req45(), CTX))
+      expect(err).toMatchObject({ kind, retryable: false, provider: 'xai' })
+      expect(err.usage?.details['usage_estimated']).toBe(1)
     },
   )
 
@@ -489,7 +509,8 @@ describe('terminal events map as the non-streamed path does (R4)', () => {
     const err = await failure(
       streamingAdapter(() => Promise.resolve(rawSseResponse(body))).run(req45(), CTX),
     )
-    expect(err).toMatchObject({ kind: 'rate_limited', retryable: true })
+    // A mid-stream rate limit is not retried: the call may already have billed.
+    expect(err).toMatchObject({ kind: 'rate_limited', retryable: false })
   })
 
   it('response.incomplete returns the partial answer as finish reason length, like the non-streamed path', async () => {
@@ -519,32 +540,82 @@ describe('terminal events map as the non-streamed path does (R4)', () => {
   })
 })
 
-describe('a stream that cannot be completed', () => {
-  const partial = (usage: unknown): SseEvent[] =>
-    synthesizeStreamEvents(
-      completeResponse({
-        usage,
-        output: [
-          {
-            id: 'msg_1',
-            type: 'message',
-            role: 'assistant',
-            content: [{ type: 'output_text', text: 'abc' }],
-          },
-        ],
-      }),
-      { omitTerminal: true },
-    )
+/**
+ * The stream of a one-message answer, cut after its content: the events up to
+ * and including `output_item.done`, with the terminal event omitted.
+ */
+const partialStream = (usage: unknown): SseEvent[] =>
+  synthesizeStreamEvents(
+    completeResponse({
+      usage,
+      output: [
+        {
+          id: 'msg_1',
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'abcdefgh' }],
+        },
+      ],
+    }),
+    { omitTerminal: true },
+  )
 
-  it('ends without response.completed: a retryable server error naming the last event', async () => {
-    const err = await failure(streamingAdapter(respond(partial(null))).run(req45(), CTX))
+/** The same stream cut before any output event (only the two response snapshots). */
+const openedStream = (): SseEvent[] =>
+  partialStream(null).filter(
+    (e) => e.type === 'response.created' || e.type === 'response.in_progress',
+  )
+
+/** Delivers `events`, then fails the body (an error would drop chunks still queued). */
+function cutBody(events: SseEvent[], error: unknown): Stub {
+  return () => {
+    let sent = false
+    return Promise.resolve(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (!sent) {
+              sent = true
+              controller.enqueue(new TextEncoder().encode(sseBody(events)))
+            } else {
+              controller.error(error)
+            }
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      ),
+    )
+  }
+}
+
+const resetError = (): TypeError =>
+  new TypeError('terminated', {
+    cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }),
+  })
+
+describe('a stream that cannot be completed (P1-1: progress decides whether a retry is safe)', () => {
+  it('cut BEFORE any output event: a retryable server error with no usage', async () => {
+    const err = await failure(streamingAdapter(respond(openedStream())).run(req45(), CTX))
     expect(err).toMatchObject({ kind: 'server', retryable: true, provider: 'xai' })
     expect(err.message).toContain('ended before response.completed')
-    expect(err.message).toContain('response.output_item.done')
     expect(err.usage).toBeUndefined()
   })
 
-  it('an empty body is the same error with no events', async () => {
+  it('ends AFTER output without response.completed: a NON-retryable server error with an estimate', async () => {
+    const err = await failure(
+      streamingAdapter(respond(partialStream(null))).run(req45(), CTX),
+    )
+    expect(err).toMatchObject({ kind: 'server', retryable: false, provider: 'xai' })
+    expect(err.message).toContain('ended before response.completed')
+    expect(err.message).toContain('response.output_item.done')
+    // 8 characters of text / 4; the request's input estimated from its length.
+    expect(err.usage).toMatchObject({ outputTokens: 2 })
+    expect(err.usage?.details['usage_estimated']).toBe(1)
+    expect(err.usage?.details['cost_in_usd_ticks']).toBeUndefined()
+    expect(err.cause).toBeInstanceOf(Error)
+  })
+
+  it('an empty body is the same retryable error with no events', async () => {
     const err = await failure(
       streamingAdapter(() => Promise.resolve(rawSseResponse(''))).run(req45(), CTX),
     )
@@ -552,29 +623,63 @@ describe('a stream that cannot be completed', () => {
     expect(err.message).toContain('no events')
   })
 
-  it('carries partial usage only when a response snapshot reported tokens', async () => {
-    const events = partial(null)
-    const withUsage = events.map((e) =>
-      e.type === 'response.in_progress'
-        ? {
-            ...e,
-            response: {
-              ...(e['response'] as Plain),
-              usage: { input_tokens: 12, output_tokens: 0 },
-              service_tier: 'priority',
-            },
-          }
-        : e,
+  it('usage in a response snapshot is never used: not exact, not even as the estimate', async () => {
+    const snapshot = (events: SseEvent[]) =>
+      events.map((e) =>
+        e.type === 'response.in_progress'
+          ? {
+              ...e,
+              response: {
+                ...(e['response'] as Plain),
+                usage: { input_tokens: 5000, output_tokens: 0, cost_in_usd_ticks: 9e9 },
+                service_tier: 'priority',
+              },
+            }
+          : e,
+      )
+    const before = await failure(
+      streamingAdapter(respond(snapshot(openedStream()))).run(req45(), CTX),
     )
-    const err = await failure(streamingAdapter(respond(withUsage)).run(req45(), CTX))
-    expect(err.usage).toMatchObject({ inputTokens: 12, outputTokens: 0 })
-    expect(err.servedServiceTier).toBe('priority')
+    expect(before.usage).toBeUndefined()
+    expect(before.servedServiceTier).toBe('priority')
+    const after = await failure(
+      streamingAdapter(respond(snapshot(partialStream(null)))).run(req45(), CTX),
+    )
+    expect(after.usage?.inputTokens).toBeLessThan(100)
+    expect(after.usage?.details['cost_in_usd_ticks']).toBeUndefined()
+    expect(after.servedServiceTier).toBe('priority')
   })
 
-  it('unknown usage is unpriced, not free: the call cost is a lower bound of zero over one unpriced attempt', async () => {
+  it('the estimate prices as estimated, never exact, and counts as a priced attempt', async () => {
     const telemetry = new RecordingTelemetry()
     const client = createClient({
-      adapters: [xaiAdapter({ transport: transportOf(respond(partial(null))) })],
+      adapters: [xaiAdapter({ transport: transportOf(respond(partialStream(null))) })],
+      modelRegistry: xaiRegistry,
+      pricingSources: { xai: xaiPricingSource() },
+      sink: new RecordingSink(),
+      telemetry,
+    })
+    await failure(
+      client.generate(
+        {
+          provider: 'xai',
+          model: 'grok-4.5',
+          messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
+        },
+        { auth: { apiKey: 'test-key' } },
+      ),
+    )
+    const error = telemetry.errors[0]
+    expect(error?.cost?.confidence).toBe('estimated')
+    expect(error?.cost?.providerReported).toBeUndefined()
+    expect(error?.cost?.microUsd).toBeGreaterThan(0)
+    expect(error?.callCost).toMatchObject({ attempts: 1, unpricedAttempts: 0 })
+  })
+
+  it('unknown usage before any output is unpriced, not free: a lower bound of zero over one unpriced attempt', async () => {
+    const telemetry = new RecordingTelemetry()
+    const client = createClient({
+      adapters: [xaiAdapter({ transport: transportOf(respond(openedStream())) })],
       modelRegistry: xaiRegistry,
       pricingSources: { xai: xaiPricingSource() },
       sink: new RecordingSink(),
@@ -599,95 +704,566 @@ describe('a stream that cannot be completed', () => {
     })
   })
 
-  it('a body that is not valid SSE JSON is a retryable malformed-stream error', async () => {
-    const err = await failure(
+  it('a body that is not valid SSE JSON is a malformed-stream error, retryable only before output', async () => {
+    const bad = 'event: response.created\ndata: {not json\n\n'
+    const before = await failure(
+      streamingAdapter(() => Promise.resolve(rawSseResponse(bad))).run(req45(), CTX),
+    )
+    expect(before).toMatchObject({ kind: 'server', retryable: true, provider: 'xai' })
+    expect(before.message).toContain('xAI stream is malformed')
+    const after = await failure(
       streamingAdapter(() =>
-        Promise.resolve(rawSseResponse('event: response.created\ndata: {not json\n\n')),
+        Promise.resolve(rawSseResponse(sseBody(partialStream(null)) + bad)),
       ).run(req45(), CTX),
     )
-    expect(err).toMatchObject({ kind: 'server', retryable: true, provider: 'xai' })
-    expect(err.message).toContain('xAI stream is malformed')
+    expect(after).toMatchObject({ kind: 'server', retryable: false })
+    expect(after.usage?.details['usage_estimated']).toBe(1)
   })
 
-  it('a final object that disagrees structurally with the events is a retryable server error', async () => {
+  it('a connection cut mid-body after output is a non-retryable server error carrying the cause', async () => {
+    const err = await failure(
+      streamingAdapter(cutBody(partialStream(null), resetError())).run(req45(), CTX),
+    )
+    expect(err).toMatchObject({ kind: 'server', retryable: false, provider: 'xai' })
+    expect(err.reason).toBeUndefined()
+    expect(err.usage?.details['usage_estimated']).toBe(1)
+    expect(String((err.cause as Error).cause)).toContain('terminated')
+  })
+
+  it('a connection cut before any output stays a retryable server error', async () => {
+    const err = await failure(
+      streamingAdapter(cutBody(openedStream(), resetError())).run(req45(), CTX),
+    )
+    expect(err).toMatchObject({ kind: 'server', retryable: true })
+    expect(err.usage).toBeUndefined()
+  })
+
+  it("Node's body timer firing mid-stream is a non-retryable transport timeout, with the estimate after output", async () => {
+    const bodyTimeout = Object.assign(new Error('Body Timeout Error'), {
+      name: 'BodyTimeoutError',
+      code: 'UND_ERR_BODY_TIMEOUT',
+    })
+    const err = await failure(
+      streamingAdapter(
+        cutBody(partialStream(null), new TypeError('terminated', { cause: bodyTimeout })),
+      ).run(req45(), CTX),
+    )
+    expect(err).toMatchObject({
+      kind: 'timeout',
+      retryable: false,
+      reason: 'transport_timeout',
+    })
+    expect(err.usage?.details['usage_estimated']).toBe(1)
+  })
+})
+
+describe('retries through the real engine (P1-1, P2-1)', () => {
+  /** A client with the documented retry middleware over a counted stub. */
+  function retrying(stub: Stub) {
+    const calls = { n: 0 }
+    const telemetry = new RecordingTelemetry()
+    const client = createClient({
+      adapters: [
+        xaiAdapter({
+          transport: transportOf((url, init) => {
+            calls.n++
+            return stub(url, init)
+          }),
+        }),
+      ],
+      modelRegistry: xaiRegistry,
+      pricingSources: { xai: xaiPricingSource() },
+      sink: new RecordingSink(),
+      telemetry,
+      middleware: [retryMiddleware({ maxAttempts: 3, baseDelayMs: 0 })],
+    })
+    const generate = () =>
+      failure(
+        client.generate(
+          {
+            provider: 'xai',
+            model: 'grok-4.5',
+            messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
+          },
+          { auth: { apiKey: 'test-key' } },
+        ),
+      )
+    return { calls, telemetry, generate }
+  }
+
+  it('a cut after output is NOT retried: one fetch, the attempt priced as an estimate', async () => {
+    const { calls, telemetry, generate } = retrying(
+      cutBody(partialStream(null), resetError()),
+    )
+    const err = await generate()
+    expect(calls.n).toBe(1)
+    expect(err).toMatchObject({ kind: 'server', retryable: false })
+    expect(telemetry.errors[0]?.callCost).toMatchObject({
+      attempts: 1,
+      unpricedAttempts: 0,
+    })
+    expect(telemetry.errors[0]?.cost?.confidence).toBe('estimated')
+  })
+
+  it('a stream that ends after output without its terminal event is NOT retried', async () => {
+    const { calls, generate } = retrying(respond(partialStream(null)))
+    await generate()
+    expect(calls.n).toBe(1)
+  })
+
+  it('a cut before any output IS retried, every attempt unpriced', async () => {
+    const { calls, telemetry, generate } = retrying(cutBody(openedStream(), resetError()))
+    await generate()
+    expect(calls.n).toBe(3)
+    expect(telemetry.errors[0]?.callCost).toEqual({
+      microUsd: 0,
+      attempts: 3,
+      unpricedAttempts: 3,
+    })
+  })
+
+  it('a mid-stream rate_limit_exceeded is not retried even before output, and is not known-free', async () => {
+    const events: SseEvent[] = [
+      ...openedStream(),
+      { type: 'error', code: 'rate_limit_exceeded', message: 'slow down' },
+    ]
+    const { calls, telemetry, generate } = retrying(respond(events))
+    const err = await generate()
+    expect(calls.n).toBe(1)
+    expect(err).toMatchObject({
+      kind: 'rate_limited',
+      retryable: false,
+      mayHaveBilled: true,
+    })
+    // The stream had started: unlike an HTTP 429, this attempt may have billed.
+    expect(telemetry.errors[0]?.callCost).toEqual({
+      microUsd: 0,
+      attempts: 1,
+      unpricedAttempts: 1,
+    })
+  })
+
+  it('a mid-stream invalid_prompt (bad_request) is also an unpriced attempt, not known-free', async () => {
+    const events: SseEvent[] = [
+      ...openedStream(),
+      { type: 'error', code: 'invalid_prompt', message: 'bad' },
+    ]
+    const { telemetry, generate } = retrying(respond(events))
+    await generate()
+    expect(telemetry.errors[0]?.callCost).toMatchObject({ unpricedAttempts: 1 })
+  })
+
+  it('a server_error event before any output is retried; HTTP 429 stays known-free', async () => {
+    const events: SseEvent[] = [
+      ...openedStream(),
+      { type: 'error', code: 'server_error', message: 'oops' },
+    ]
+    const server = retrying(respond(events))
+    await server.generate()
+    expect(server.calls.n).toBe(3)
+
+    const http = retrying(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ error: { message: 'slow' } }), {
+          status: 429,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    )
+    await http.generate()
+    expect(http.telemetry.errors[0]?.callCost).toMatchObject({ unpricedAttempts: 0 })
+  })
+})
+
+describe('reconciliation is enrichment: a complete, billed stream is never thrown away (P1-2)', () => {
+  const ticks = 4_033_200_000
+  const response = completeResponse({
+    output: [
+      { id: 'rs_1', type: 'reasoning', status: 'completed', summary: [] },
+      {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'the answer' }],
+      },
+    ],
+    usage: { input_tokens: 2, output_tokens: 2, cost_in_usd_ticks: ticks },
+  })
+
+  it('a final object that disagrees with an item event on type returns the answer from the final object, with a warning', async () => {
+    const wrong = {
+      ...response,
+      output: [
+        { id: 'rs_1', type: 'function_call', call_id: 'c', name: 'n', arguments: '{}' },
+        ...(response['output'] as Plain[]).slice(1),
+      ],
+    }
+    const result = await streamingAdapter(
+      respond(synthesizeStreamEvents(response, { finalResponse: wrong })),
+    ).run(req45(), CTX)
+    expect(result.text).toBe('the answer')
+    expect(result.usage.details['cost_in_usd_ticks']).toBe(ticks)
+    expect(result.warnings.map((w) => w.message)).toEqual([
+      expect.stringContaining('is a "reasoning" in the stream and a "function_call"'),
+    ])
+  })
+
+  it('item events with no output_index are skipped; the answer and the priced usage survive', async () => {
+    const events = synthesizeStreamEvents(response).map((e) => {
+      if (
+        e.type === 'response.output_item.added' ||
+        e.type === 'response.output_item.done'
+      ) {
+        const { output_index: _index, ...rest } = e
+        return rest as SseEvent
+      }
+      return e
+    })
+    const result = await streamingAdapter(respond(events)).run(req45(), CTX)
+    expect(result.text).toBe('the answer')
+    expect(result.usage.details['cost_in_usd_ticks']).toBe(ticks)
+    expect(result.warnings.map((w) => w.message)).toEqual([
+      expect.stringContaining('skipped 2 stream event(s)'),
+      expect.stringContaining('skipped 2 stream event(s)'),
+    ])
+  })
+
+  it('through the engine such a call succeeds in one fetch, priced exactly', async () => {
+    const wrong = { ...response, output: 'nope' }
+    let fetches = 0
+    const telemetry = new RecordingTelemetry()
+    const client = createClient({
+      adapters: [
+        xaiAdapter({
+          transport: transportOf(() => {
+            fetches++
+            return Promise.resolve(
+              sseResponse(synthesizeStreamEvents(response, { finalResponse: wrong })),
+            )
+          }),
+        }),
+      ],
+      modelRegistry: xaiRegistry,
+      pricingSources: { xai: xaiPricingSource() },
+      sink: new RecordingSink(),
+      telemetry,
+      middleware: [retryMiddleware({ maxAttempts: 3, baseDelayMs: 0 })],
+    })
+    const result = await client.generate(
+      {
+        provider: 'xai',
+        model: 'grok-4.5',
+        messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
+      },
+      { auth: { apiKey: 'test-key' } },
+    )
+    expect(fetches).toBe(1)
+    expect(result.text).toBe('the answer')
+    expect(result.callCost).toMatchObject({ attempts: 1, unpricedAttempts: 0 })
+  })
+
+  it('a terminal response with no token counts is a typed non-retryable server error, not a TypeError', async () => {
+    for (const usage of [undefined, null, { total_tokens: 3 }]) {
+      const noUsage = { ...response, usage }
+      const err = await failure(
+        streamingAdapter(
+          respond(synthesizeStreamEvents(noUsage, { terminal: 'response.incomplete' })),
+        ).run(req45(), CTX),
+      )
+      expect(err).toMatchObject({ kind: 'server', retryable: false, provider: 'xai' })
+      expect(err.message).toContain('resp_fixture')
+      expect(err.message).toContain('carries no numeric usage')
+    }
+  })
+
+  it('any failure to map a complete, billed response is a typed non-retryable error carrying its exact usage', async () => {
+    const strange = {
+      ...response,
+      output: [{ id: 'msg_1', type: 'message', role: 'assistant', content: [null] }],
+    }
+    const err = await failure(
+      streamingAdapter(
+        respond([
+          { type: 'response.created', response: { id: 'resp_fixture' } },
+          { type: 'response.completed', response: strange },
+        ]),
+      ).run(req45(), CTX),
+    )
+    expect(err).toMatchObject({ kind: 'server', retryable: false, provider: 'xai' })
+    expect(err.message).toContain('could not be mapped')
+    expect(err.usage?.details['cost_in_usd_ticks']).toBe(ticks)
+    expect(err.usage?.details['usage_estimated']).toBeUndefined()
+  })
+
+  it('response.incomplete whose object says in_progress is still the length finish reason', async () => {
+    const lying = {
+      ...response,
+      status: 'in_progress',
+      incomplete_details: { reason: 'max_output_tokens' },
+    }
+    const result = await streamingAdapter(
+      respond(synthesizeStreamEvents(lying, { terminal: 'response.incomplete' })),
+    ).run(req45(), CTX)
+    expect(result.finishReason).toBe('length')
+  })
+})
+
+describe('frames that are not events (P3-2, P3-3)', () => {
+  const full = synthesizeStreamEvents(
+    completeResponse({
+      output: [
+        {
+          id: 'msg_1',
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'ok' }],
+        },
+      ],
+      usage: { input_tokens: 3, output_tokens: 1 },
+    }),
+  )
+
+  it('a bare `event: keepalive` frame and a `data: [DONE]` frame are skipped silently', async () => {
+    const body = `event: keepalive\n\n${sseBody(full)}data: [DONE]\n\n`
+    const result = await streamingAdapter(() =>
+      Promise.resolve(rawSseResponse(body)),
+    ).run(req45(), CTX)
+    expect(result.text).toBe('ok')
+    expect(result.warnings).toEqual([])
+  })
+
+  it('a named JSON frame with no type is skipped and reported as a warning', async () => {
+    const body = `event: ping\ndata: {"hello":1}\n\n${sseBody(full)}`
+    const result = await streamingAdapter(() =>
+      Promise.resolve(rawSseResponse(body)),
+    ).run(req45(), CTX)
+    expect(result.text).toBe('ok')
+    expect(result.warnings.map((w) => w.message)).toEqual([
+      expect.stringContaining('an event that has no string `type`'),
+    ])
+  })
+
+  it('a transport.fetch that returns a buffered JSON body is a clear non-retryable error naming the cause', async () => {
+    const telemetry = new RecordingTelemetry()
+    let fetches = 0
+    const client = createClient({
+      adapters: [
+        xaiAdapter({
+          transport: transportOf(() => {
+            fetches++
+            return Promise.resolve(Response.json({ id: 'resp', output: [] }))
+          }),
+        }),
+      ],
+      modelRegistry: xaiRegistry,
+      pricingSources: { xai: xaiPricingSource() },
+      sink: new RecordingSink(),
+      telemetry,
+      middleware: [retryMiddleware({ maxAttempts: 3, baseDelayMs: 0 })],
+    })
+    const err = await failure(
+      client.generate(
+        {
+          provider: 'xai',
+          model: 'grok-4.5',
+          messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
+        },
+        { auth: { apiKey: 'test-key' } },
+      ),
+    )
+    expect(fetches).toBe(1)
+    expect(err).toMatchObject({ kind: 'bad_request', retryable: false, provider: 'xai' })
+    expect(err.message).toContain('non-event-stream body')
+    expect(err.message).toContain('application/json')
+    expect(err.message).toContain('transport.fetch')
+    // The upstream call may have run: not known-free.
+    expect(telemetry.errors[0]?.callCost).toMatchObject({ unpricedAttempts: 1 })
+  })
+})
+
+describe('idleTimeoutMs bounds a half-open connection (P2-5)', () => {
+  const heartbeats =
+    (everyMs: number): Stub =>
+    (_url, init) => {
+      const signal = init['signal'] as AbortSignal
+      return Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              const timer = setInterval(() => {
+                try {
+                  controller.enqueue(new TextEncoder().encode(': heartbeat\n\n'))
+                } catch {
+                  clearInterval(timer)
+                }
+              }, everyMs)
+              signal.addEventListener('abort', () => {
+                clearInterval(timer)
+                try {
+                  controller.error(new DOMException('aborted', 'AbortError'))
+                } catch {
+                  // closed
+                }
+              })
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        ),
+      )
+    }
+
+  it('a silent open stream ends as a non-retryable transport timeout, before the request deadline', async () => {
+    const adapter = xaiAdapter({
+      transport: {
+        fetch: openStream(OPEN_EVENTS) as unknown as typeof fetch,
+        idleTimeoutMs: 60,
+      },
+    })
+    const started = Date.now()
+    const err = await failure(adapter.run(req45(), CTX))
+    expect(Date.now() - started).toBeLessThan(3_000)
+    expect(err).toMatchObject({
+      kind: 'timeout',
+      retryable: false,
+      reason: 'transport_timeout',
+      provider: 'xai',
+    })
+    expect(err.message).toContain('idle timeout')
+    expect(err.message).toContain('60 ms')
+  })
+
+  it('heartbeat comments count as activity: a chatty stream is not idle, the deadline still bounds it', async () => {
+    const client = await buildXaiClient(
+      { apiKey: 'k' },
+      { fetch: heartbeats(10) as unknown as typeof fetch, idleTimeoutMs: 60 },
+    )
+    const started = Date.now()
+    const err = await client.responses.create(PARAMS, { timeout: 250 }).then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect(Date.now() - started).toBeGreaterThanOrEqual(200)
+    expect(classifyXaiError(err).message).toContain('SDK deadline')
+  })
+
+  it('is off by default: a silent stream is bounded by the deadline alone', async () => {
+    const client = await buildXaiClient(
+      { apiKey: 'k' },
+      transportOf(openStream(OPEN_EVENTS)),
+    )
+    const err = await client.responses.create(PARAMS, { timeout: 150 }).then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect(classifyXaiError(err).message).toContain('SDK deadline')
+  })
+
+  it('after output the idle error carries the usage estimate', async () => {
+    const adapter = xaiAdapter({
+      transport: {
+        fetch: openStream(partialStream(null)) as unknown as typeof fetch,
+        idleTimeoutMs: 40,
+      },
+    })
+    const err = await failure(adapter.run(req45(), CTX))
+    expect(err.message).toContain('idle timeout')
+    expect(err.usage?.details['usage_estimated']).toBe(1)
+  })
+
+  it.each([0, -1, 1.5, Number.NaN, '5', Number.MAX_SAFE_INTEGER])(
+    'rejects idleTimeoutMs %s with bad_request before anything is sent',
+    (value) => {
+      expect(() =>
+        xaiAdapter({
+          transport: { fetch: (() => {}) as never, idleTimeoutMs: value as number },
+        }),
+      ).toThrowError(expect.objectContaining({ kind: 'bad_request' }) as never)
+    },
+  )
+})
+
+describe('what the client leaves behind (P2-4)', () => {
+  const activeTimeouts = (): number =>
+    process.getActiveResourcesInfo().filter((name) => name === 'Timeout').length
+
+  const okEvents = synthesizeStreamEvents(
+    completeResponse({ output: [], usage: { input_tokens: 1, output_tokens: 1 } }),
+  )
+
+  it('leaves no timer and no abort listener after a success', async () => {
+    const before = activeTimeouts()
+    const signal = new AbortController().signal
+    const client = await buildXaiClient(
+      { apiKey: 'k' },
+      { fetch: respond(okEvents) as unknown as typeof fetch, idleTimeoutMs: 5_000 },
+    )
+    await client.responses.create(PARAMS, { signal, timeout: 60_000 })
+    expect(getEventListeners(signal, 'abort')).toHaveLength(0)
+    expect(activeTimeouts()).toBeLessThanOrEqual(before)
+  })
+
+  it('leaves none after a failure, a cut stream or a deadline', async () => {
+    const before = activeTimeouts()
+    for (const stub of [
+      respond(partialStream(null)),
+      cutBody(partialStream(null), resetError()),
+      openStream(OPEN_EVENTS),
+    ]) {
+      const signal = new AbortController().signal
+      const client = await buildXaiClient(
+        { apiKey: 'k' },
+        { fetch: stub as unknown as typeof fetch, idleTimeoutMs: 5_000 },
+      )
+      await client.responses
+        .create(PARAMS, { signal, timeout: 80 })
+        .catch(() => undefined)
+      expect(getEventListeners(signal, 'abort')).toHaveLength(0)
+    }
+    expect(activeTimeouts()).toBeLessThanOrEqual(before)
+  })
+
+  it('leaves none after a caller abort', async () => {
+    const before = activeTimeouts()
+    const controller = new AbortController()
+    const client = await buildXaiClient(
+      { apiKey: 'k' },
+      { fetch: openStream(OPEN_EVENTS) as unknown as typeof fetch, idleTimeoutMs: 5_000 },
+    )
+    const pending = client.responses
+      .create(PARAMS, { signal: controller.signal, timeout: 60_000 })
+      .catch(() => undefined)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    controller.abort()
+    await pending
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0)
+    expect(activeTimeouts()).toBeLessThanOrEqual(before)
+  })
+})
+
+describe('the fake client and the real streaming path agree (P3-7)', () => {
+  it('makeFakeXai bypasses the stream (it replaces `responses.create`, below which the reducer lives); a streamed run of the same response gives the same result', async () => {
     const response = completeResponse({
+      model: 'grok-4.5',
       output: [
         { id: 'rs_1', type: 'reasoning', status: 'completed', summary: [] },
         {
           id: 'msg_1',
           type: 'message',
           role: 'assistant',
-          content: [{ type: 'output_text', text: 'x' }],
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'same answer' }],
         },
       ],
-      usage: { input_tokens: 2, output_tokens: 2 },
+      usage: { input_tokens: 7, output_tokens: 3 },
     })
-    const wrong = {
-      ...response,
-      output: [
-        { id: 'rs_1', type: 'function_call', call_id: 'c', name: 'n', arguments: '{}' },
-      ],
-    }
-    const err = await failure(
-      streamingAdapter(
-        respond(synthesizeStreamEvents(response, { finalResponse: wrong })),
-      ).run(req45(), CTX),
+    const viaFake = await xaiAdapter({ client: makeFakeXai(response as never) }).run(
+      req45(),
+      CTX,
     )
-    expect(err).toMatchObject({ kind: 'server', retryable: true })
-    expect(err.message).toContain('is a "reasoning" in the stream and a "function_call"')
-  })
-
-  it('a connection cut mid-body is a retryable server error', async () => {
-    const stub: Stub = () =>
-      Promise.resolve(
-        new Response(
-          new ReadableStream<Uint8Array>({
-            start(controller) {
-              controller.enqueue(
-                new TextEncoder().encode(sseBody(partial(null).slice(0, 3))),
-              )
-              controller.error(
-                new TypeError('terminated', {
-                  cause: Object.assign(new Error('other side closed'), {
-                    code: 'UND_ERR_SOCKET',
-                  }),
-                }),
-              )
-            },
-          }),
-          { status: 200, headers: { 'content-type': 'text/event-stream' } },
-        ),
-      )
-    const err = await failure(streamingAdapter(stub).run(req45(), CTX))
-    expect(err).toMatchObject({ kind: 'server', retryable: true })
-    expect(err.reason).toBeUndefined()
-  })
-
-  it("Node's body timer firing mid-stream is a non-retryable transport timeout", async () => {
-    const bodyTimeout = Object.assign(new Error('Body Timeout Error'), {
-      name: 'BodyTimeoutError',
-      code: 'UND_ERR_BODY_TIMEOUT',
-    })
-    const stub: Stub = () =>
-      Promise.resolve(
-        new Response(
-          new ReadableStream<Uint8Array>({
-            start(controller) {
-              controller.enqueue(
-                new TextEncoder().encode(sseBody(partial(null).slice(0, 3))),
-              )
-              controller.error(new TypeError('terminated', { cause: bodyTimeout }))
-            },
-          }),
-          { status: 200, headers: { 'content-type': 'text/event-stream' } },
-        ),
-      )
-    const err = await failure(streamingAdapter(stub).run(req45(), CTX))
-    expect(err).toMatchObject({
-      kind: 'timeout',
-      retryable: false,
-      reason: 'transport_timeout',
-    })
+    const viaStream = await streamingAdapter(
+      respond(synthesizeStreamEvents(response)),
+    ).run(req45(), CTX)
+    expect(viaStream).toEqual(viaFake)
   })
 })
 

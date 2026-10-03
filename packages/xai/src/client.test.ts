@@ -299,7 +299,7 @@ describe('buildXaiClient — transport deadline (real SDK, stubbed fetch)', () =
                 controller.error(new TypeError('terminated', { cause: bodyErr }))
               },
             }),
-            { status: 200, headers: { 'content-type': 'application/json' } },
+            { status: 200, headers: { 'content-type': 'text/event-stream' } },
           ),
         ),
       ),
