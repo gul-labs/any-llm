@@ -14,7 +14,8 @@ import type { AuthMaterial, Logger } from '@gullabs/core'
 import type { Content, Tool, ToolConfig } from '@google/genai'
 
 import { requireApiKey } from './client.js'
-import { LlmError, classifyError, redactSecrets } from '@gullabs/core'
+import { classifyGoogleError } from './errors.js'
+import { LlmError, redactSecrets } from '@gullabs/core'
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -218,13 +219,13 @@ export class GoogleCacheStore {
       ((cacheName, err) => {
         if (this.logger !== undefined) {
           this.logger.error(
-            { name: cacheName, error: redactSecrets(classifyError(err).message) },
+            { name: cacheName, error: redactSecrets(classifyGoogleError(err).message) },
             'gemini.cache.delete.failed',
           )
         } else {
           console.error(
             `[GoogleCacheStore] delete failed for "${cacheName}":`,
-            redactSecrets(classifyError(err).message),
+            redactSecrets(classifyGoogleError(err).message),
           )
         }
       })
@@ -306,7 +307,7 @@ export class GoogleCacheStore {
     try {
       resp = await client.create({ model: input.model, config })
     } catch (e) {
-      throw classifyError(e)
+      throw classifyGoogleError(e)
     }
 
     if (resp.name === undefined || resp.name.length === 0) {

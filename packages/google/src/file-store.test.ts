@@ -286,8 +286,8 @@ describe('GoogleFileStore', () => {
     expect(client.upload).not.toHaveBeenCalled()
   })
 
-  // 4. Poll timeout → LlmError kind === 'timeout'
-  it('throws LlmError timeout when polling exceeds timeoutMs', async () => {
+  // 4. Poll timeout → server, not retryable (ADR-036: `timeout` is always retryable)
+  it('throws a non-retryable server error when polling exceeds timeoutMs', async () => {
     const client = makeClient({
       upload: vi.fn().mockResolvedValue({
         name: 'files/abc123',
@@ -312,9 +312,9 @@ describe('GoogleFileStore', () => {
     })
     const err = await store.upload(new Uint8Array([1]), 'image/png').catch((e) => e)
     expect(err).toBeInstanceOf(LlmError)
-    expect((err as LlmError).kind).toBe('timeout')
-    // Not retryable: a retry would upload the bytes again and orphan the first file.
-    expect((err as LlmError).retryable).toBe(false)
+    // Not `timeout`: ADR-036 makes every `timeout` retryable, and a retry here
+    // would upload the bytes again and orphan the first file.
+    expect(err).toMatchObject({ kind: 'server', retryable: false, provider: 'google' })
   })
 
   // 5. expiresAt is Date when expirationTime present; absent (not undefined key) when not
@@ -506,7 +506,7 @@ describe('GoogleFileStore', () => {
 
     const err = await store.upload(new Uint8Array([1]), 'image/png').catch((e) => e)
     expect(err).toBeInstanceOf(LlmError)
-    expect((err as LlmError).kind).toBe('timeout')
+    expect(err).toMatchObject({ kind: 'server', retryable: false })
     // Exactly one poll happened before the virtual clock crossed the deadline
     expect(client.get).toHaveBeenCalledTimes(1)
   })
@@ -973,5 +973,186 @@ describe('GoogleFileStore', () => {
       expect(consoleSpy).toHaveBeenCalled()
       consoleSpy.mockRestore()
     })
+  })
+
+  // ---------------------------------------------------------------------
+  // Errors classify through classifyGoogleError (one path for every Google error)
+  // ---------------------------------------------------------------------
+  describe('error classification', () => {
+    const handle: GoogleFileHandle = {
+      name: 'files/abc123',
+      uri: 'https://example.com/files/abc123',
+      mimeType: 'image/png',
+    }
+    // Bodies are built from the documented google.rpc detail types (doc-derived,
+    // see __fixtures__/error-bodies-2026-10-03.json); `message` is omitted.
+    const apiError = (status: number, body: unknown): Error =>
+      Object.assign(new Error(JSON.stringify(body)), { status, name: 'ApiError' })
+    const invalidKey = (): Error =>
+      apiError(400, {
+        error: {
+          code: 400,
+          status: 'INVALID_ARGUMENT',
+          details: [
+            {
+              '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+              reason: 'API_KEY_INVALID',
+            },
+          ],
+        },
+      })
+    const dailyQuota = (): Error =>
+      apiError(429, {
+        error: {
+          code: 429,
+          status: 'RESOURCE_EXHAUSTED',
+          details: [
+            {
+              '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+              violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel' }],
+            },
+            { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '34s' },
+          ],
+        },
+      })
+    const perMinute = (): Error =>
+      apiError(429, {
+        error: {
+          code: 429,
+          status: 'RESOURCE_EXHAUSTED',
+          details: [
+            {
+              '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+              violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel' }],
+            },
+            { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '34s' },
+          ],
+        },
+      })
+
+    it('upload: a bad API key is invalid_auth tagged google', async () => {
+      const client = makeClient({ upload: vi.fn().mockRejectedValue(invalidKey()) })
+      const store = new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+      const err = (await store
+        .upload(new Uint8Array([1]), 'image/png')
+        .catch((e) => e)) as LlmError
+      expect(err).toMatchObject({
+        kind: 'invalid_auth',
+        retryable: false,
+        provider: 'google',
+      })
+    })
+
+    it('upload: a per-day quota is not retryable and is sent once', async () => {
+      const upload = vi.fn().mockRejectedValue(dailyQuota())
+      const store = new GoogleFileStore({
+        auth: fakeAuth,
+        client: makeClient({ upload }),
+        sleep: fastSleep,
+      })
+      const err = (await store
+        .upload(new Uint8Array([1]), 'image/png')
+        .catch((e) => e)) as LlmError
+      expect(err).toMatchObject({
+        kind: 'rate_limited',
+        retryable: false,
+        reason: 'daily_quota',
+        provider: 'google',
+      })
+      expect(err.retryAfterMs).toBeUndefined()
+      expect(upload).toHaveBeenCalledTimes(1)
+    })
+
+    it('upload: a per-minute 429 carries RetryInfo as retryAfterMs', async () => {
+      const store = new GoogleFileStore({
+        auth: fakeAuth,
+        client: makeClient({ upload: vi.fn().mockRejectedValue(perMinute()) }),
+        sleep: fastSleep,
+      })
+      const err = (await store
+        .upload(new Uint8Array([1]), 'image/png')
+        .catch((e) => e)) as LlmError
+      expect(err).toMatchObject({
+        kind: 'rate_limited',
+        retryable: true,
+        retryAfterMs: 34_000,
+        provider: 'google',
+      })
+    })
+
+    it('polling get: classified through the same path', async () => {
+      const client = makeClient({
+        upload: vi.fn().mockResolvedValue({
+          name: 'files/abc123',
+          uri: 'https://example.com/files/abc123',
+          state: 'PROCESSING',
+        }),
+        get: vi.fn().mockRejectedValue(invalidKey()),
+      })
+      const store = new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+      const err = (await store
+        .upload(new Uint8Array([1]), 'image/png')
+        .catch((e) => e)) as LlmError
+      expect(err).toMatchObject({ kind: 'invalid_auth', provider: 'google' })
+    })
+
+    it('delete (fail-closed): a bad API key is invalid_auth tagged google', async () => {
+      const client = makeClient({ delete: vi.fn().mockRejectedValue(invalidKey()) })
+      const store = new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+      const err = (await store
+        .delete(handle, { failClosed: true })
+        .catch((e) => e)) as LlmError
+      expect(err).toMatchObject({
+        kind: 'invalid_auth',
+        retryable: false,
+        provider: 'google',
+      })
+    })
+  })
+
+  // ---------------------------------------------------------------------
+  // FAILED files follow the documented File.error status code
+  // ---------------------------------------------------------------------
+  describe('FAILED file classification', () => {
+    const failedWith = (error: unknown): GeminiFilesClientLike =>
+      makeClient({
+        upload: vi.fn().mockResolvedValue({
+          name: 'files/abc123',
+          uri: 'https://example.com/files/abc123',
+          state: 'FAILED',
+          ...(error !== undefined ? { error } : {}),
+        }),
+      })
+    const run = async (client: GeminiFilesClientLike): Promise<LlmError> =>
+      (await new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+        .upload(new Uint8Array([1]), 'image/png')
+        .catch((e) => e)) as LlmError
+
+    it.each([
+      [4, 'DEADLINE_EXCEEDED'],
+      [13, 'INTERNAL'],
+      [14, 'UNAVAILABLE'],
+    ])('code %i (%s) is a retryable server error', async (code) => {
+      const err = await run(failedWith({ code, message: 'processing failed' }))
+      expect(err).toMatchObject({ kind: 'server', retryable: true, provider: 'google' })
+      expect(err.message).toContain('processing failed')
+    })
+
+    it.each([[3], [9], [undefined]])(
+      'code %s stays a non-retryable bad_request',
+      async (code) => {
+        const err = await run(
+          failedWith({
+            ...(code !== undefined ? { code } : {}),
+            message: 'cannot decode',
+          }),
+        )
+        expect(err).toMatchObject({
+          kind: 'bad_request',
+          retryable: false,
+          provider: 'google',
+        })
+      },
+    )
   })
 })

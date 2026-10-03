@@ -8,9 +8,10 @@
  */
 
 import type { AuthMaterial, Logger } from '@gullabs/core'
-import { LlmError, classifyError, redactSecrets } from '@gullabs/core'
+import { LlmError, redactSecrets } from '@gullabs/core'
 
 import { requireApiKey } from './client.js'
+import { classifyGoogleError } from './errors.js'
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -187,13 +188,13 @@ export class GoogleFileStore {
       ((name, err) => {
         if (this.logger !== undefined) {
           this.logger.error(
-            { name, error: redactSecrets(classifyError(err).message) },
+            { name, error: redactSecrets(classifyGoogleError(err).message) },
             'gemini.file.delete.failed',
           )
         } else {
           console.error(
             `[GoogleFileStore] delete failed for "${name}":`,
-            redactSecrets(classifyError(err).message),
+            redactSecrets(classifyGoogleError(err).message),
           )
         }
       })
@@ -248,7 +249,7 @@ export class GoogleFileStore {
         signal,
       )
     } catch (e) {
-      throw classifyError(e)
+      throw classifyGoogleError(e)
     }
 
     const { name, uri } = uploadResp
@@ -318,12 +319,13 @@ export class GoogleFileStore {
 
     for (;;) {
       if (this.now() >= deadline) {
-        // Not retryable: the upload already succeeded, so a retry would upload
-        // the bytes again and orphan the first file (upload is not idempotent,
-        // ADR-024). Poll the existing file by name instead.
+        // `server`, not `timeout`: ADR-036 makes every `timeout` retryable, and
+        // this must not be. The upload already succeeded, so a retry would
+        // upload the bytes again and orphan the first file (upload is not
+        // idempotent, ADR-024). Poll the existing file by name instead.
         throw new LlmError(
           `Timed out waiting for uploaded file "${name}" to become ACTIVE`,
-          { kind: 'timeout', retryable: false, provider: 'google' },
+          { kind: 'server', retryable: false, provider: 'google' },
         )
       }
 
@@ -338,7 +340,7 @@ export class GoogleFileStore {
       try {
         pollResp = await client.get({ name })
       } catch (e) {
-        throw classifyError(e)
+        throw classifyGoogleError(e)
       }
 
       // Also guard here: the signal may have fired during client.get()
@@ -398,22 +400,7 @@ export class GoogleFileStore {
       if (isGoogleNotFoundError(err)) {
         return
       }
-      const classified = err instanceof LlmError ? err : classifyError(err)
-      const withProvider =
-        classified.provider === undefined
-          ? new LlmError(classified.message, {
-              kind: classified.kind,
-              retryable: classified.retryable,
-              ...(classified.httpStatus !== undefined
-                ? { httpStatus: classified.httpStatus }
-                : {}),
-              ...(classified.retryAfterMs !== undefined
-                ? { retryAfterMs: classified.retryAfterMs }
-                : {}),
-              provider: 'google',
-              cause: classified.cause ?? err,
-            })
-          : classified
+      const withProvider = classifyGoogleError(err)
 
       if (failClosed) {
         throw withProvider
@@ -439,18 +426,32 @@ export class GoogleFileStore {
 }
 
 /**
- * A `FAILED` file: `bad_request`, not retryable, carrying the provider's own
- * `File.error` (message in the text, the whole `FileStatus` as `cause`).
+ * gRPC codes (`google.rpc.Code`) a `File.error` status can carry that name a
+ * provider-side, transient failure: `DEADLINE_EXCEEDED` (4), `INTERNAL` (13)
+ * and `UNAVAILABLE` (14). Processing the same bytes again can succeed.
+ */
+const TRANSIENT_FILE_STATUS_CODES = new Set([4, 13, 14])
+
+/**
+ * A `FAILED` file, carrying the provider's own `File.error` (message in the
+ * text, the whole `FileStatus` as `cause`). `File.error` is a `google.rpc.Status`:
+ * a transient code (`DEADLINE_EXCEEDED`, `INTERNAL`, `UNAVAILABLE`) is a
+ * retryable `server` error, since the failure is the provider's and a fresh
+ * upload can succeed; any other code, or none, is a non-retryable `bad_request`
+ * (the file itself cannot be processed).
  */
 function failedFile(prefix: string, resp: FileResp): LlmError {
   const providerMessage = resp.error?.message
+  const transient =
+    typeof resp.error?.code === 'number' &&
+    TRANSIENT_FILE_STATUS_CODES.has(resp.error.code)
   return new LlmError(
     providerMessage !== undefined && providerMessage.length > 0
       ? `${prefix}: ${providerMessage}`
       : prefix,
     {
-      kind: 'bad_request',
-      retryable: false,
+      kind: transient ? 'server' : 'bad_request',
+      retryable: transient,
       provider: 'google',
       ...(resp.error !== undefined ? { cause: resp.error } : {}),
     },

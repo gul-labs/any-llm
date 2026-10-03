@@ -1005,4 +1005,80 @@ describe('GoogleCacheStore', () => {
       void store.create({ model: 'gemini-2.0-flash', ttlSeconds: 3600, contents: 'nope' })
     })
   })
+
+  // Errors classify through classifyGoogleError (bodies are doc-derived or
+  // captured shapes; see __fixtures__/error-bodies-2026-10-03.json).
+  describe('error classification', () => {
+    const apiError = (status: number, body: unknown): Error =>
+      Object.assign(new Error(JSON.stringify(body)), { status, name: 'ApiError' })
+    const createWith = async (error: Error): Promise<LlmError> => {
+      const client = makeClient({ create: vi.fn().mockRejectedValue(error) })
+      const store = new GoogleCacheStore({ auth: fakeAuth, client, now: () => BASE_NOW })
+      return (await store
+        .create({ model: 'gemini-2.0-flash', ttlSeconds: 3600 })
+        .catch((e) => e)) as LlmError
+    }
+
+    it('create: a bad API key is invalid_auth tagged google, not a bad_request', async () => {
+      const err = await createWith(
+        apiError(400, {
+          error: {
+            code: 400,
+            status: 'INVALID_ARGUMENT',
+            details: [
+              {
+                '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+                reason: 'API_KEY_INVALID',
+              },
+            ],
+          },
+        }),
+      )
+      expect(err).toMatchObject({
+        kind: 'invalid_auth',
+        retryable: false,
+        provider: 'google',
+      })
+    })
+
+    it('create: a per-day quota is rate_limited, daily_quota, not retryable', async () => {
+      const err = await createWith(
+        apiError(429, {
+          error: {
+            code: 429,
+            status: 'RESOURCE_EXHAUSTED',
+            details: [
+              {
+                '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+                violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel' }],
+              },
+            ],
+          },
+        }),
+      )
+      expect(err).toMatchObject({
+        kind: 'rate_limited',
+        retryable: false,
+        reason: 'daily_quota',
+        provider: 'google',
+      })
+    })
+
+    it('create: the stale CachedContent 403 is bad_request, cache_not_found', async () => {
+      const err = await createWith(
+        apiError(403, {
+          error: {
+            code: 403,
+            message: 'CachedContent not found (or permission denied)',
+            status: 'PERMISSION_DENIED',
+          },
+        }),
+      )
+      expect(err).toMatchObject({
+        kind: 'bad_request',
+        reason: 'cache_not_found',
+        provider: 'google',
+      })
+    })
+  })
 })

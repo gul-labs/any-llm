@@ -154,6 +154,8 @@ Unchanged. Safety is a 200-path throw. Bare 403 stays `invalid_auth`. Existing `
 
 ### 6.6 Google file-store and cache-store — **out of scope**
 
+> **Superseded (ADR-036 item 10):** `GoogleFileStore` and `GoogleCacheStore` now classify every SDK failure (upload, polling, delete, cache create) through `classifyGoogleError`, so the structured overlays (`invalid_auth` for a bad key, `daily_quota`, `cache_not_found`, `RetryInfo`) apply to them too. A resource-creating call that returns a malformed payload stays `server` and not retryable. The text below records the earlier decision.
+
 Do **not** replace `classifyError` with `classifyGoogleError`.
 
 Operation-specific contract (current, preserved):
