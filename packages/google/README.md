@@ -12,22 +12,22 @@ pnpm add @gullabs/google @gullabs/core @google/genai
 
 ## Key exports
 
-| Export                                                                     | What it is                                                                             |
-| -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `googleProvider(opts?)`                                                    | `ProviderPlugin` factory — bundles the adapter, model descriptors, and pricing source  |
-| `geminiAdapter(opts?)`                                                     | Creates the `ProviderAdapter` for Gemini                                               |
-| `GeminiAdapterOptions`                                                     | `{ client?: GeminiClientLike }` — inject a pre-built or fake client                    |
-| `GeminiClientLike`                                                         | Structural interface the adapter depends on (satisfied by real SDK and fakes)          |
-| `buildGoogleClient(auth)`                                                  | Builds the real `@google/genai` client from `AuthMaterial`                             |
-| `isGeminiCapacityError(err)`                                               | Detects Gemini Flex capacity errors (503, or 429 without a quota failure) for fallback |
-| `geminiModelDescriptors`, `gemmaModelDescriptors`, `defaultGeminiRegistry` | Built-in model descriptors + pre-built registry                                        |
-| `geminiPricingSource()`, `GEMINI_PRICING`, `resolveGeminiRates`            | Built-in Gemini pricing snapshot (concrete standard / flex / batch rates)              |
-| `GoogleFileStore`                                                          | Files API: upload + poll ACTIVE + delete                                               |
-| `FileDeleteOptions`                                                        | `{ failClosed?, signal? }` — opt-in fail-closed delete (parity with `@gullabs/xai`)    |
+| Export                                                                     | What it is                                                                            |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `googleProvider(opts?)`                                                    | `ProviderPlugin` factory — bundles the adapter, model descriptors, and pricing source |
+| `geminiAdapter(opts?)`                                                     | Creates the `ProviderAdapter` for Gemini                                              |
+| `GeminiAdapterOptions`                                                     | `{ client?: GeminiClientLike }` — inject a pre-built or fake client                   |
+| `GeminiClientLike`                                                         | Structural interface the adapter depends on (satisfied by real SDK and fakes)         |
+| `buildGoogleClient(auth)`                                                  | Builds the real `@google/genai` client from `AuthMaterial`                            |
+| `isGeminiCapacityError(err)`                                               | Detects Gemini Flex capacity errors (HTTP 503 only) for fallback                      |
+| `geminiModelDescriptors`, `gemmaModelDescriptors`, `defaultGeminiRegistry` | Built-in model descriptors + pre-built registry                                       |
+| `geminiPricingSource()`, `GEMINI_PRICING`, `resolveGeminiRates`            | Built-in Gemini pricing snapshot (concrete standard / flex / batch rates)             |
+| `GoogleFileStore`                                                          | Files API: upload + poll ACTIVE + delete                                              |
+| `FileDeleteOptions`                                                        | `{ failClosed?, signal? }` — opt-in fail-closed delete (parity with `@gullabs/xai`)   |
 
 ## File store delete modes
 
-`GoogleFileStore.upload` takes an `AbortSignal` (an abort releases the caller at once; bytes already sent may still be stored by Google), keeps Google's own `File.error` when a file ends `FAILED`, and its polling timeout is **not retryable** (the upload succeeded; a retry would upload again and orphan the file).
+`GoogleFileStore.upload` takes an `AbortSignal` (an abort releases the caller at once; bytes already sent may still be stored by Google), keeps Google's own `File.error` when a file ends `FAILED` (a transient status code, `DEADLINE_EXCEEDED`, `INTERNAL` or `UNAVAILABLE`, is a retryable `server` error; any other is `bad_request`), and its polling timeout is `kind: 'server'`, **not retryable** (the upload succeeded; a retry would upload again and orphan the file). Store errors (`GoogleFileStore`, `GoogleCacheStore`) are classified exactly like `generate()` errors, with `provider: 'google'`.
 
 `GoogleFileStore.delete` defaults to **fail-open** (errors → `onDeleteError`, resolve). Pass `{ failClosed: true }` when the host gates durable state on known success; HTTP/SDK not-found remains success (idempotent). Empty `handle.name` always throws `bad_request`.
 
@@ -364,7 +364,7 @@ Migrate both to `gemini-3.6-flash`. `servedServiceTier` reads the provider's
 actually dispatched when the echo is absent.
 An echo that differs from the requested tier emits a warning so callers can
 see a provider-side remap. `flexFallback: false` disables the adapter's retry
-at standard tier; it cannot prevent a provider-side remap after dispatch.
+at standard tier (it fires only on an HTTP 503; a Flex 429 is an ordinary rate limit and honours `RetryInfo`); it cannot prevent a provider-side remap after dispatch.
 A candidate-less HTTP 200 without a safety block is a retryable provider error;
 its reported usage and snapshot cost are saved on that failed attempt.
 

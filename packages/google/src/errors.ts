@@ -78,11 +78,6 @@ function errorInfoReasons(body: GoogleErrorBody): string[] {
   )
 }
 
-/** True when the body carries a `QuotaFailure` violation, which marks a quota limit. */
-export function hasQuotaFailure(body: GoogleErrorBody): boolean {
-  return detailOfType(body, 'google.rpc.QuotaFailure').length > 0
-}
-
 /** True when a `QuotaFailure` violation's `quotaId` names a per-day quota. */
 function isDailyQuota(body: GoogleErrorBody): boolean {
   return detailOfType(body, 'google.rpc.QuotaFailure').some(
@@ -97,16 +92,51 @@ function isDailyQuota(body: GoogleErrorBody): boolean {
   )
 }
 
+// A protobuf Duration in JSON: decimal seconds (at most 9 fractional digits)
+// followed by `s`. Anything else (`"3"`, `"1h"`, `"6m0s"`) is not a Duration.
+const PROTO_DURATION = /^\d+(?:\.\d{1,9})?s$/
+
+/**
+ * The text of a `RetryInfo.retryDelay`. The documented JSON form is the string
+ * `"34s"`; an object `{ seconds, nanos }` (the proto field layout, which a
+ * proxy or SDK may hand over unconverted) is rendered to the same text.
+ * `undefined` for anything that is not a Duration.
+ */
+function durationText(delay: unknown): string | undefined {
+  if (typeof delay === 'string') return PROTO_DURATION.test(delay) ? delay : undefined
+  if (!isRecord(delay)) return undefined
+  const { seconds, nanos } = delay
+  const whole =
+    typeof seconds === 'number' && Number.isSafeInteger(seconds) && seconds >= 0
+      ? String(seconds)
+      : typeof seconds === 'string' && /^\d+$/.test(seconds)
+        ? seconds
+        : seconds === undefined
+          ? '0'
+          : undefined
+  const fraction =
+    typeof nanos === 'number' && Number.isInteger(nanos) && nanos >= 0 && nanos < 1e9
+      ? String(nanos).padStart(9, '0')
+      : nanos === undefined
+        ? '0'
+        : undefined
+  return whole !== undefined && fraction !== undefined
+    ? `${whole}.${fraction}s`
+    : undefined
+}
+
 /**
  * `RetryInfo.retryDelay` in milliseconds. It is a protobuf Duration written as
- * decimal seconds with an `s` suffix (`"34s"`, `"34.5s"`); core's
- * `parseRetryAfter` reads that form and applies the shared rounding and cap.
+ * decimal seconds with an `s` suffix (`"34s"`, `"34.5s"`); a value that is not
+ * a Duration is ignored, and core's `parseRetryAfter` applies the shared
+ * rounding and cap. A zero delay is not a delay (`undefined`), so the caller's
+ * own back-off applies.
  */
 function retryDelayMs(body: GoogleErrorBody): number | undefined {
   for (const info of detailOfType(body, 'google.rpc.RetryInfo')) {
-    const delay = info['retryDelay']
-    if (typeof delay !== 'string') continue
-    const ms = parseRetryAfter({ 'retry-after': delay }, Date.now())
+    const text = durationText(info['retryDelay'])
+    if (text === undefined) continue
+    const ms = parseRetryAfter({ 'retry-after': text }, Date.now())
     if (ms !== undefined) return ms
   }
   return undefined

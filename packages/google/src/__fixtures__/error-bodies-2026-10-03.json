@@ -1,5 +1,5 @@
 {
-  "_note": "Gemini error bodies. `captured` entries are live responses from probe P6 (2026-10-03), bodies verbatim; the probe keys were synthetic and are not echoed by Google. `docDerived` entries are NOT captures: they are built from the field names in googleapis/googleapis google/rpc/error_details.proto (RetryInfo.retry_delay as a protobuf Duration written as decimal seconds with an 's' suffix; QuotaFailure.Violation.quota_id; ErrorInfo.reason), read 2026-10-03, because no 429 body could be captured without exhausting a quota (ADR-013).",
+  "_note": "Gemini error bodies. `captured` entries are live responses from probe P6 (2026-10-03), bodies verbatim; the probe keys were synthetic and are not echoed by Google. `docDerived` entries are NOT captures (ADR-013): they carry only structure taken from the field names in googleapis/googleapis google/rpc/error_details.proto (RetryInfo.retry_delay, a protobuf Duration written as decimal seconds with an 's' suffix; QuotaFailure.Violation.quota_id; ErrorInfo.reason), read 2026-10-03, and from Google's Flex page (ai.google.dev/gemini-api/docs/flex-inference, dated 2026-09-23) for the 503 text. They deliberately have no `message` text and no quotaValue or quotaDimensions values, because none was captured; `quotaId` values are illustrative names that follow the PerDay / PerMinute naming and exist only to exercise the substring match. No Gemini 429 body survives: the probe log (RESULTS.md, P3) records that Gemma returned HTTP 429 with the words 'exceeded your current quota' on 22 of 92 calls at 8-way concurrency, but those bodies were overwritten, so whether a real 429 carries QuotaFailure or RetryInfo is unverified. The code therefore reads those details only when present and treats every 429 as the ordinary rate limit.",
   "captured": {
     "invalidApiKey": {
       "status": 400,
@@ -63,7 +63,6 @@
       "body": {
         "error": {
           "code": 400,
-          "message": "API key expired. Please renew the API key.",
           "status": "INVALID_ARGUMENT",
           "details": [
             {
@@ -83,19 +82,13 @@
       "body": {
         "error": {
           "code": 429,
-          "message": "You exceeded your current quota.",
           "status": "RESOURCE_EXHAUSTED",
           "details": [
             {
               "@type": "type.googleapis.com/google.rpc.QuotaFailure",
               "violations": [
                 {
-                  "quotaMetric": "generativelanguage.googleapis.com/generate_content_requests",
-                  "quotaId": "GenerateRequestsPerMinutePerProjectPerModel",
-                  "quotaDimensions": {
-                    "model": "gemini-2.5-flash"
-                  },
-                  "quotaValue": "10"
+                  "quotaId": "GenerateRequestsPerMinutePerProjectPerModel"
                 }
               ]
             },
@@ -112,19 +105,13 @@
       "body": {
         "error": {
           "code": 429,
-          "message": "You exceeded your current quota.",
           "status": "RESOURCE_EXHAUSTED",
           "details": [
             {
               "@type": "type.googleapis.com/google.rpc.QuotaFailure",
               "violations": [
                 {
-                  "quotaMetric": "generativelanguage.googleapis.com/generate_content_requests",
-                  "quotaId": "GenerateRequestsPerDayPerProjectPerModel",
-                  "quotaDimensions": {
-                    "model": "gemini-2.5-flash"
-                  },
-                  "quotaValue": "250"
+                  "quotaId": "GenerateRequestsPerDayPerProjectPerModel"
                 }
               ]
             },
@@ -136,16 +123,6 @@
         }
       }
     },
-    "capacity429": {
-      "status": 429,
-      "body": {
-        "error": {
-          "code": 429,
-          "message": "Resource exhausted.",
-          "status": "RESOURCE_EXHAUSTED"
-        }
-      }
-    },
     "capacity503": {
       "status": 503,
       "body": {
@@ -153,6 +130,30 @@
           "code": 503,
           "message": "The system is currently at capacity.",
           "status": "UNAVAILABLE"
+        }
+      }
+    },
+    "retryInfoOnly": {
+      "status": 429,
+      "body": {
+        "error": {
+          "code": 429,
+          "status": "RESOURCE_EXHAUSTED",
+          "details": [
+            {
+              "@type": "type.googleapis.com/google.rpc.RetryInfo",
+              "retryDelay": "34s"
+            }
+          ]
+        }
+      }
+    },
+    "bare429": {
+      "status": 429,
+      "body": {
+        "error": {
+          "code": 429,
+          "status": "RESOURCE_EXHAUSTED"
         }
       }
     }

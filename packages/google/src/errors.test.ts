@@ -227,13 +227,75 @@ describe('classifyGoogleError: structured-body overlays (R4.9, R4.10, R4.12)', (
     expect(err.retryAfterMs).toBeUndefined()
   })
 
-  it('flex capacity comes from the structure: 503, or a 429 with no QuotaFailure; never a quota 429', () => {
+  it('flex capacity is HTTP 503 only: no 429 shape (quota, RetryInfo only, bare) is capacity', () => {
     const capacity = (name: string): boolean =>
       isGeminiCapacityError(classifyGoogleError(apiError(fixtures.docDerived[name]!)))
     expect(capacity('capacity503')).toBe(true)
-    expect(capacity('capacity429')).toBe(true)
     expect(capacity('perMinuteQuota')).toBe(false)
     expect(capacity('perDayQuota')).toBe(false)
+    expect(capacity('retryInfoOnly')).toBe(false)
+    expect(capacity('bare429')).toBe(false)
+  })
+
+  it('a 429 with RetryInfo and no QuotaFailure keeps the provider delay and stays retryable', () => {
+    const err = classifyGoogleError(apiError(fixtures.docDerived['retryInfoOnly']!))
+    expect(err).toMatchObject({
+      kind: 'rate_limited',
+      retryable: true,
+      retryAfterMs: 34_000,
+    })
+    expect(err.reason).toBeUndefined()
+  })
+
+  describe('retryDelay edge cases', () => {
+    const delayOf = (retryDelay: unknown): number | undefined =>
+      classifyGoogleError(
+        apiError({
+          status: 429,
+          body: {
+            error: {
+              code: 429,
+              status: 'RESOURCE_EXHAUSTED',
+              details: [
+                { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay },
+              ],
+            },
+          },
+        }),
+      ).retryAfterMs
+
+    it('reads an object Duration { seconds, nanos } as the same delay', () => {
+      expect(delayOf({ seconds: 34 })).toBe(34_000)
+      expect(delayOf({ seconds: '34', nanos: 500_000_000 })).toBe(34_500)
+      expect(delayOf({ nanos: 250_000_000 })).toBe(250)
+    })
+
+    it('reads the nanosecond-precision string the API emits', () => {
+      expect(delayOf('0.847655010s')).toBe(848)
+    })
+
+    it('a zero delay is not a delay, so the default back-off applies', () => {
+      expect(delayOf('0s')).toBeUndefined()
+      expect(delayOf({ seconds: 0, nanos: 0 })).toBeUndefined()
+    })
+
+    it.each([['3'], ['1h'], ['6m0s'], ['-5s'], ['5 s'], [''], [34], [null]])(
+      'ignores %j, which is not a protobuf Duration',
+      (value) => {
+        expect(delayOf(value)).toBeUndefined()
+      },
+    )
+
+    it('ignores a malformed object Duration', () => {
+      expect(delayOf({ seconds: -1 })).toBeUndefined()
+      expect(delayOf({ seconds: 1.5 })).toBeUndefined()
+      expect(delayOf({ seconds: 1, nanos: 1e9 })).toBeUndefined()
+      expect(delayOf({ seconds: 'x' })).toBeUndefined()
+    })
+
+    it('caps a very long delay at the shared 24 hours', () => {
+      expect(delayOf('864010s')).toBe(86_400_000)
+    })
   })
 
   it('a transport failure is classified by core (no local matcher): fetch failed with an errno cause', () => {

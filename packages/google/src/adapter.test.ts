@@ -324,45 +324,78 @@ describe('flex fallback', () => {
     '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
     violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel' }],
   }
+  const RETRY_INFO_DETAIL = {
+    '@type': 'type.googleapis.com/google.rpc.RetryInfo',
+    retryDelay: '30s',
+  }
+  const RETRY_INFO = RETRY_INFO_DETAIL
 
-  it('decides capacity from the structured error: 503, or 429 RESOURCE_EXHAUSTED without a QuotaFailure', () => {
+  it('decides capacity from the structured error: only HTTP 503 is capacity', () => {
     const capacity = (err: Error): boolean =>
       isGeminiCapacityError(classifyGoogleError(err))
-    expect(capacity(apiError(503, { status: 'UNAVAILABLE', message: 'x' }))).toBe(true)
-    expect(capacity(apiError(500, { status: 'INTERNAL', message: 'x' }))).toBe(false)
+    expect(capacity(apiError(503, { status: 'UNAVAILABLE' }))).toBe(true)
+    expect(capacity(apiError(500, { status: 'INTERNAL' }))).toBe(false)
+    // Google's Flex page lists 429 beside 503 for "no capacity" but documents no
+    // field that tells a capacity 429 from a quota 429, so no 429 is capacity.
+    expect(capacity(apiError(429, { status: 'RESOURCE_EXHAUSTED' }))).toBe(false)
     expect(
-      capacity(apiError(429, { status: 'RESOURCE_EXHAUSTED', message: 'anything' })),
-    ).toBe(true)
+      capacity(apiError(429, { status: 'RESOURCE_EXHAUSTED', details: [QUOTA_FAILURE] })),
+    ).toBe(false)
     expect(
-      capacity(
-        apiError(429, {
-          status: 'RESOURCE_EXHAUSTED',
-          message: 'anything',
-          details: [QUOTA_FAILURE],
-        }),
-      ),
+      capacity(apiError(429, { status: 'RESOURCE_EXHAUSTED', details: [RETRY_INFO] })),
     ).toBe(false)
   })
 
-  it('never reads the message text: capacity words in a quota 429 or a bodyless 429 do not count', () => {
+  it('never reads the message text: capacity words do not make a 429 or a bodyless error capacity', () => {
     const capacity = (err: unknown): boolean =>
       isGeminiCapacityError(classifyGoogleError(err))
-    // The old regex fell back on "capacity" in the message; a quota body wins now.
     expect(
       capacity(
         apiError(429, {
           status: 'RESOURCE_EXHAUSTED',
           message: 'shared capacity is overloaded, try again',
-          details: [QUOTA_FAILURE],
         }),
       ),
     ).toBe(false)
-    // No parseable body: no structured evidence, whatever the text says.
     expect(capacity({ status: 429, message: 'shared capacity is overloaded' })).toBe(
       false,
     )
     expect(capacity(new Error('no capacity available'))).toBe(false)
   })
+
+  describe.each([
+    ['RetryInfo only', [RETRY_INFO_DETAIL], 30_000],
+    ['a quota message with no details', undefined, undefined],
+    ['QuotaFailure and RetryInfo', [QUOTA_FAILURE, RETRY_INFO_DETAIL], 30_000],
+  ] as const)(
+    'a flex 429 with %s follows the rate-limit path',
+    (_name, details, delay) => {
+      const quota429 = (): Error =>
+        apiError(429, {
+          status: 'RESOURCE_EXHAUSTED',
+          message: 'You exceeded your current quota, please check your plan and billing.',
+          ...(details !== undefined ? { details } : {}),
+        })
+
+      it('dispatches once, with no standard attempt, and surfaces the provider delay', async () => {
+        const client = makeFakeGemini(() => {
+          throw quota429()
+        })
+        const adapter = geminiAdapter({ client })
+        const err = await adapter
+          .run(makeResolvedReq({ config: { serviceTier: 'flex' } }), FAKE_CTX)
+          .catch((e) => e as LlmError)
+        expect(client.calls).toHaveLength(1)
+        expect(err).toMatchObject({
+          kind: 'rate_limited',
+          retryable: true,
+          httpStatus: 429,
+          servedServiceTier: 'flex',
+        })
+        expect((err as LlmError).retryAfterMs).toBe(delay)
+      })
+    },
+  )
 
   it('falls back from flex 503 capacity error to one standard attempt', async () => {
     let callCount = 0
