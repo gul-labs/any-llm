@@ -352,7 +352,12 @@ export interface LlmRequest {
   output?: { jsonSchema: JsonValue }
   /** Generation configuration; merged over library defaults and call-site defaults. */
   config?: GenConfig
-  /** Opaque provider continuation state. Forwarded to the adapter but never persisted. */
+  /**
+   * Opaque provider continuation state from a previous result, passed back as
+   * `LlmResult.continuation` says. Provider-scoped and bound to this request's
+   * `model` string; only models that declare `capabilities.providerState` admit
+   * it. Forwarded to the adapter but never persisted.
+   */
   transientProviderState?: JsonValue
   /** Host-supplied metadata anchors persisted verbatim. */
   metadata?: CallMetadata
@@ -531,6 +536,34 @@ export interface LlmResult {
    * Present only when `request.output.jsonSchema` was supplied.
    */
   outputParsed?: boolean
+  /**
+   * The assistant's output as an ordered message (`role: 'assistant'`): the
+   * representable output parts **in provider order** — text parts kept
+   * separate, tool calls with their id, name and arguments. Provider parts with
+   * no {@link Part} representation (thought parts) are omitted, so part
+   * indices are defined over `message.parts` after that omission. Present on
+   * every successful result; `text` and `toolCalls` are conveniences derived
+   * from the same output.
+   *
+   * Append it to history exactly as returned when {@link continuation} is
+   * `'history'`; never replay it when `'state'` (see {@link continuation}).
+   */
+  message: Message
+  /**
+   * How the next turn of a tool loop is sent, repeated from the model
+   * descriptor's `capabilities.continuation` so a host does not need a registry
+   * lookup:
+   *
+   * - `'history'` — append {@link message} to the history, send the full
+   *   history, and pass {@link transientProviderState} back when present.
+   * - `'state'` — {@link transientProviderState} already holds the provider's
+   *   output; send **only the new messages** plus the state. {@link message}
+   *   is for display and the host's own storage and must not be replayed.
+   *
+   * The next turn goes to the same `provider` and the same `model` string the
+   * host sent (a declared alias stays an alias).
+   */
+  continuation: 'history' | 'state'
   /** Raw text content from the model. */
   text?: string
   /**
@@ -546,7 +579,11 @@ export interface LlmResult {
    * Absent when the model is not in the pricing table.
    */
   cost?: Cost
-  /** The model identifier as returned by the provider (may differ from requested). */
+  /**
+   * The model identifier as returned by the provider (may differ from the
+   * requested string, for example a dated snapshot behind an alias). Do not
+   * route on it: send the next turn with the `model` string you sent.
+   */
   model: string
   /** Provider-specific model version string (e.g. `"gemini-2.5-pro-001"`). */
   modelVersion?: string
@@ -581,7 +618,11 @@ export interface LlmResult {
    * Stored as JsonValue to avoid a hard coupling to provider-specific types.
    */
   providerMetadata?: JsonValue
-  /** Opaque provider continuation state. The caller owns secure storage and replay. */
+  /**
+   * Opaque provider continuation state, scoped to the provider and bound to the
+   * requested model. The caller owns secure storage and replay; pass it back
+   * with the next turn as {@link continuation} says.
+   */
   transientProviderState?: JsonValue
   /**
    * Library-assigned stable identifier for this logical call.

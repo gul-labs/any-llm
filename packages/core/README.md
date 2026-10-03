@@ -17,15 +17,16 @@ Every other `@gullabs/*` package declares this one as an exact-version peer depe
 
 ## Key exports
 
-| Export                       | What it is                                                                                    |
-| ---------------------------- | --------------------------------------------------------------------------------------------- |
-| `createClient(config)`       | Wires ports into a `{ generate, runStructured }` client                                       |
-| `composeProviders(plugins)`  | Merges one or more `ProviderPlugin`s into `ClientConfig` fields                               |
-| `createModelRegistry(descs)` | Builds a `ModelRegistry` from an array of `ModelDescriptor`s (exact ids + declared `aliases`) |
-| `defineCallSite(opts)`       | Defines a typed, reusable prompt template bound to a model                                    |
-| `computeCost(...)`           | Pure, provider-agnostic cost function (providers supply their own rates)                      |
-| `LlmError`                   | Typed error class — always thrown on call failure                                             |
-| `buildRecord(input)`         | Assembles an `LlmCallRecord` from engine state (used internally)                              |
+| Export                       | What it is                                                                                         |
+| ---------------------------- | -------------------------------------------------------------------------------------------------- |
+| `createClient(config)`       | Wires ports into a `{ generate, runStructured }` client                                            |
+| `composeProviders(plugins)`  | Merges one or more `ProviderPlugin`s into `ClientConfig` fields                                    |
+| `createModelRegistry(descs)` | Builds a `ModelRegistry` from an array of `ModelDescriptor`s (exact ids + declared `aliases`)      |
+| `defineCallSite(opts)`       | Defines a typed, reusable prompt template bound to a model                                         |
+| `computeCost(...)`           | Pure, provider-agnostic cost function (providers supply their own rates)                           |
+| `LlmError`                   | Typed error class — always thrown on call failure                                                  |
+| `canonicalJson(value)`       | RFC 8785 JSON Canonicalization Scheme (dependency-free), for hashing JSON independent of key order |
+| `buildRecord(input)`         | Assembles an `LlmCallRecord` from engine state (used internally)                                   |
 
 Core carries **no provider knowledge** — no Gemini/Google types, model descriptors, or pricing
 tables. `ClientConfig.modelRegistry` is required; supply it via a provider package's plugin, e.g.
@@ -76,6 +77,80 @@ const result = await client.runStructured(
 // result.reasoningText — thought summary if includeThoughts was set
 // result.queueDelayMs — wait inside RateLimiter.acquire, separate from latencyMs
 ```
+
+## Tool loops: `message`, `continuation`, `transientProviderState`
+
+The library runs no tool loop (ADR-029); the host does. Every successful result carries what the
+host needs to continue one, and the rule differs by provider:
+
+- `result.message` is the assistant's output as an ordered `Message` on **every** provider: text
+  parts and tool calls in provider order, thought parts omitted (indices are over `message.parts`).
+  `result.text` and `result.toolCalls` are conveniences derived from it.
+- `result.continuation` repeats the model descriptor's `capabilities.continuation`, so you do not
+  need a registry lookup:
+  - `'history'` (Gemini, grok-4.5/4.6, and every provider without replay state): append
+    `result.message` to your history, send the **full** history, and pass
+    `result.transientProviderState` back when it is present. On Gemini 3 that state is the thought
+    signature overlay (see `@gullabs/google`); it is an overlay on _your_ history, not a copy.
+  - `'state'` (grok-4.7): `result.transientProviderState` already holds the provider's own output.
+    Send **only the new messages** plus the state. `result.message` is still returned, for display
+    and your own storage, but must not be replayed.
+- State is provider-scoped (`{ google: … }`, `{ xai: … }`; another provider's key is `bad_request`)
+  and bound to the model string you sent. The next turn goes to the same `provider` and the same
+  `model` string, an alias included: the library never rewrites an alias to the canonical id, and
+  `result.model` (the id the provider returned) is not something to route on.
+
+```ts
+const tools = [
+  {
+    name: 'get_weather',
+    description: 'Current weather for a city',
+    inputJsonSchema: { type: 'object', properties: { city: { type: 'string' } } },
+  },
+]
+const base = { provider, model, tools } // one provider and model string for the whole loop
+let messages: Message[] = [userMessage]
+let state: JsonValue | undefined
+
+for (;;) {
+  const result = await client.generate(
+    {
+      ...base,
+      messages,
+      ...(state !== undefined ? { transientProviderState: state } : {}),
+    },
+    { auth },
+  )
+  if (result.toolCalls === undefined) break // result.text is the answer
+
+  const results: Message = {
+    role: 'user',
+    parts: await Promise.all(
+      result.toolCalls.map(async (c) => ({
+        kind: 'tool-result' as const,
+        toolCallId: c.toolCallId,
+        toolName: c.toolName,
+        result: await runTool(c.toolName, c.args),
+      })),
+    ),
+  }
+
+  if (result.continuation === 'history') {
+    messages = [...messages, result.message, results] // full history, unedited
+  } else {
+    messages = [results] // 'state': only the new messages
+  }
+  state = result.transientProviderState
+}
+```
+
+`@gullabs/testing` ships `runToolLoop(client, req, tools, { auth })`, which follows
+`result.continuation` after every turn so host tests exercise the right contract.
+
+`canonicalJson(value)` is the RFC 8785 JSON Canonicalization Scheme, with no dependency. Adapters
+use it to hash history parts so a hash does not depend on key order (a history stored in Postgres
+`jsonb` verifies after it is loaded). It accepts `JsonValue` only; `NaN`, `Infinity`, `-0`, lone
+surrogates, cycles and non-plain objects are `bad_request`.
 
 ## Model config boundary
 

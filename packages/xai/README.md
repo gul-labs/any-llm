@@ -98,17 +98,7 @@ const replay = await client.generate(
     model: 'grok-4.6',
     messages: [
       { role: 'user', parts: [{ kind: 'text', text: 'Temperature in SF?' }] },
-      {
-        role: 'assistant',
-        parts: [
-          {
-            kind: 'tool-call',
-            toolCallId: call.toolCallId,
-            toolName: call.toolName,
-            args: call.args,
-          },
-        ],
-      },
+      first.message, // grok-4.6 continues by history: append the assistant message as returned
       {
         role: 'user',
         parts: [
@@ -127,6 +117,49 @@ const replay = await client.generate(
 )
 // replay.text — model answer after the host dispatched the tool
 ```
+
+**Two continuation rules.** `result.continuation` says which one a model uses, and
+`result.message` is the ordered assistant message (text and calls in provider order; reasoning and
+server-tool items are not in it):
+
+- `'history'` (grok-4.5, grok-4.6): append `result.message` and send the full history, as above.
+- `'state'` (grok-4.7): send **only the new messages** plus `result.transientProviderState`, and do
+  not replay `result.message`. The loop:
+
+```ts
+const base = { provider: 'xai', model: 'grok-4.7', tools } as const
+let messages: Message[] = [
+  { role: 'user', parts: [{ kind: 'text', text: 'Temperature in SF?' }] },
+]
+let state: JsonValue | undefined
+
+for (;;) {
+  const result = await client.generate(
+    {
+      ...base,
+      messages,
+      ...(state !== undefined ? { transientProviderState: state } : {}),
+    },
+    { auth: { apiKey: 'YOUR_XAI_API_KEY' } },
+  )
+  if (result.toolCalls === undefined) break // result.text is the answer
+  messages = [
+    {
+      role: 'user',
+      parts: result.toolCalls.map((c) => ({
+        kind: 'tool-result' as const,
+        toolCallId: c.toolCallId,
+        toolName: c.toolName,
+        result: { temperature: 59 }, // run the tool
+      })),
+    },
+  ]
+  state = result.transientProviderState // required for 'state' continuation
+}
+```
+
+`@gullabs/testing`'s `runToolLoop` follows `result.continuation` for you in host tests. Use the same
+`model` string on every turn (an alias included).
 
 ## grok-4.5, grok-4.6, and grok-4.7
 
@@ -192,10 +225,13 @@ try {
 **Hidden input tokens:** grok-4.5, grok-4.6, and grok-4.7 bill about 1.3k hidden input tokens per request (1,532 for a one-line prompt versus 208 in July; cached on repeats).
 
 **grok-4.7 replay:** the adapter sends `store: false`. Each result returns
-`result.transientProviderState`, containing the complete wire input and
-response output in provider order, including opaque `encrypted_content`,
-messages, and server-tool items. Pass that object unchanged as
-`request.transientProviderState` on the next request. This state is not written
+`result.transientProviderState` as `{ xai: { model, input } }`: the complete wire
+input and response output in provider order, including opaque `encrypted_content`,
+messages, and server-tool items, scoped under the provider key and bound to the
+model string you sent. Pass that object unchanged as
+`request.transientProviderState` on the next request. State from another
+provider, or bound to another model string (an alias is a different string from
+its canonical id), is `bad_request`. This state is not written
 to the call ledger. It is returned even for one-shot calls and can contain the
 full prompt, inline media, and encrypted reasoning. Strip it before logging or
 caching a whole result; store it securely only when continuation is needed.
@@ -204,7 +240,7 @@ already contains prior turns. Use the new state returned by each subsequent
 result. The adapter rejects assistant history alongside state, an empty new
 message list, an unknown tool-result id, or a mismatched model. Without state,
 a request starts a fresh conversation and may include text-only assistant
-examples; function-call history requires state. Live fixtures
+examples; function-call history requires state (`continuation: 'state'`). Live fixtures
 `28-grok-4-7-replay.json`, `30-grok-4-7-search-replay.json`, and
 `31-grok-4-7-third-turn.json` cover function replay and follow-ups that replay
 assistant message and web-search items.

@@ -24,3 +24,10 @@ describe('@gullabs/testing package surface: FakeXaiFileStore', () => {
     expect(typeof FakeXaiFileStore).toBe('function')
   })
 })
+
+describe('@gullabs/testing package surface: runToolLoop', () => {
+  it('runToolLoop is a function reachable from the package root', async () => {
+    const { runToolLoop } = await import('./index.js')
+    expect(typeof runToolLoop).toBe('function')
+  })
+})

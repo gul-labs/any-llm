@@ -62,5 +62,12 @@ export type {
   InMemoryRateLimiterOptions,
   ScriptedRateLimiterOptions,
 } from './rate-limiter.js'
+export { runToolLoop } from './tool-loop.js'
+export type {
+  ToolLoopClient,
+  ToolImplementation,
+  ToolLoopOptions,
+  ToolLoopOutcome,
+} from './tool-loop.js'
 export { assertRegistryInvariants } from './registry-invariants.js'
 export type { AssertRegistryInvariantsOptions } from './registry-invariants.js'

@@ -10,20 +10,55 @@ pnpm add -D @gullabs/testing @gullabs/core @gullabs/google
 
 ## Key exports
 
-| Export                            | What it is                                                                                     |
-| --------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `FakeClock`                       | Deterministic `Clock` — `advance(ms)` / `set(ms)` for latency assertions                       |
-| `FakeIds`                         | Sequential `IdGenerator` — returns `call_1`, `attempt_1`, etc.                                 |
-| `RecordingSink`                   | In-memory `UsageSink` — accumulates records; inspect via `sink.records` / `sink.last()`        |
-| `makeFakeGemini(script)`          | Creates a fake `@google/genai`-compatible client from a scripted response                      |
-| `fakeGeminiResponse(opts)`        | Builds a `GeminiResponseLike` with usage metadata, thought parts, and JSON output              |
-| `fakeGeminiBlocked(opts)`         | Builds a safety-blocked `GeminiResponseLike` (no candidates, `promptFeedback.blockReason` set) |
-| `FakeAdapter`                     | Scriptable `ProviderAdapter` — use at the port level (bypasses Gemini SDK entirely)            |
-| `SignalAwareFakeAdapter`          | Like `FakeAdapter` but observes and honours `AbortSignal` from `AdapterCtx`                    |
-| `scriptedRateLimiter(opts)`       | RateLimiter fake with injectable wait for deterministic `queueDelayMs` assertions              |
-| `inMemoryRateLimiter(opts?)`      | Convenience re-export of `@gullabs/core`'s in-process `RateLimiter` implementation             |
-| `makeFakeXai` / `fakeXaiResponse` | Fake xAI Responses client for `@gullabs/xai` adapter tests                                     |
-| `FakeXaiFileStore`                | In-memory xAI Files store (upload/TTL/delete/`failClosed`) for host unit tests                 |
+| Export                                      | What it is                                                                                     |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `FakeClock`                                 | Deterministic `Clock` — `advance(ms)` / `set(ms)` for latency assertions                       |
+| `FakeIds`                                   | Sequential `IdGenerator` — returns `call_1`, `attempt_1`, etc.                                 |
+| `RecordingSink`                             | In-memory `UsageSink` — accumulates records; inspect via `sink.records` / `sink.last()`        |
+| `makeFakeGemini(script)`                    | Creates a fake `@google/genai`-compatible client from a scripted response                      |
+| `fakeGeminiResponse(opts)`                  | Builds a `GeminiResponseLike` with usage metadata, thought parts, and JSON output              |
+| `fakeGeminiBlocked(opts)`                   | Builds a safety-blocked `GeminiResponseLike` (no candidates, `promptFeedback.blockReason` set) |
+| `FakeAdapter`                               | Scriptable `ProviderAdapter` — use at the port level (bypasses Gemini SDK entirely)            |
+| `SignalAwareFakeAdapter`                    | Like `FakeAdapter` but observes and honours `AbortSignal` from `AdapterCtx`                    |
+| `scriptedRateLimiter(opts)`                 | RateLimiter fake with injectable wait for deterministic `queueDelayMs` assertions              |
+| `inMemoryRateLimiter(opts?)`                | Convenience re-export of `@gullabs/core`'s in-process `RateLimiter` implementation             |
+| `makeFakeXai` / `fakeXaiResponse`           | Fake xAI Responses client for `@gullabs/xai` adapter tests                                     |
+| `FakeXaiFileStore`                          | In-memory xAI Files store (upload/TTL/delete/`failClosed`) for host unit tests                 |
+| `runToolLoop(client, req, tools, { auth })` | Runs a function-calling loop, following `result.continuation` after every turn (see below)     |
+
+## Tool loops
+
+`runToolLoop(client, req, tools, { auth })` drives a function-calling conversation to its final
+answer so a host test exercises the contract the provider really has. After each turn it reads
+`result.continuation`: for `'history'` it appends `result.message` and the tool results and resends
+the full history; for `'state'` it sends only the new tool results plus
+`result.transientProviderState`. `req.tools` declares the tools, `tools` implements them by name.
+
+```ts
+import { runToolLoop } from '@gullabs/testing'
+
+const { result, turns } = await runToolLoop(
+  client,
+  {
+    provider: 'google',
+    model: 'gemini-3.6-flash',
+    messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Weather in Paris?' }] }],
+    tools: [
+      {
+        name: 'get_weather',
+        description: 'Current weather for a city',
+        inputJsonSchema: { type: 'object', properties: { city: { type: 'string' } } },
+      },
+    ],
+  },
+  { get_weather: () => ({ tempC: 18 }) },
+  { auth: { apiKey: 'test' }, maxTurns: 4 },
+)
+// result.text is the final answer; turns holds every LlmResult, in order.
+```
+
+It is a test helper, not an agent runtime: it throws if the model calls a tool you did not
+implement, or keeps calling tools past `maxTurns` (default 8).
 
 ## Quick example — end-to-end with fake Gemini client
 

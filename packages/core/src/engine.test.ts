@@ -170,7 +170,7 @@ describe('engine — success path', () => {
         makePermissiveTestDescriptor({
           model: 'gemini-2.5-pro',
           provider: 'google',
-          capabilities: { statelessReasoningReplay: true },
+          capabilities: { providerState: true },
         }),
       ]),
     })

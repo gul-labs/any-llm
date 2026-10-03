@@ -128,6 +128,7 @@ export type { RetryPolicy } from './retry.js'
 export { retryMiddleware, computeBackoffMs } from './retry.js'
 
 // Utilities
+export { canonicalJson } from './canonical-json.js'
 export { assertNever } from './assert.js'
 
 // Secret redaction (best-effort; for persisted/logged error text)

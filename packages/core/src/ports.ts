@@ -44,7 +44,10 @@ export interface ResolvedRequest {
    * this post-route.
    */
   provider: string
-  /** Final model identifier (after any alias resolution). Forwarded verbatim to the SDK/CLI. */
+  /**
+   * The model string the host sent (a declared alias is forwarded unchanged,
+   * never rewritten to the canonical id). Forwarded verbatim to the SDK/CLI.
+   */
   model: string
   /** Rendered system instruction, if any. */
   system?: string
@@ -119,6 +122,15 @@ export interface AdapterResult {
   rawStructured?: unknown
   /** Service tier actually served by the provider. */
   servedServiceTier?: string
+  /**
+   * The assistant's output as an ordered message, in provider order (see
+   * {@link LlmResult.message}). Adapters whose output can interleave text and
+   * tool calls must set it. When omitted the engine builds
+   * `[text part (if text), ...tool-call parts]` from {@link text} and
+   * {@link toolCalls}, which is exact for providers that return text and then
+   * calls.
+   */
+  message?: Message
   /** Raw text content from the model. */
   text?: string
   /**

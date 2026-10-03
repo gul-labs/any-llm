@@ -37,6 +37,10 @@ describe('@gullabs/core package surface', () => {
     expect(typeof surface.composeProviders).toBe('function')
   })
 
+  it('exports canonicalJson (RFC 8785)', () => {
+    expect(surface.canonicalJson({ b: 1, a: [true] })).toBe('{"a":[true],"b":1}')
+  })
+
   it('no longer exports the Google-specific provider option types (moved to @gullabs/google)', () => {
     // These were only ever type exports, so this `in` check cannot catch a
     // stray `export type`; it only guards against someone reintroducing them

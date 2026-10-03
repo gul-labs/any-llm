@@ -45,6 +45,8 @@ const DUMMY_RESULT: LlmResult = {
   latencyMs: 0,
   warnings: [],
   text: 'ok',
+  message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
+  continuation: 'history',
 }
 
 function makeCtx(): EngineCtx {

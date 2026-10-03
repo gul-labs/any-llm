@@ -97,10 +97,12 @@ export interface XaiFunctionCallOutputInputItem {
 export type XaiRequestInputItem =
   XaiInputItem | XaiFunctionCallInputItem | XaiFunctionCallOutputInputItem | XaiOutputItem
 
-/** Full wire history for stateless continuation. */
+/**
+ * Full wire history for stateless continuation (`continuation: 'state'`),
+ * scoped under the provider key and bound to the requested model string.
+ */
 export interface XaiReplayState {
-  model: string
-  input: XaiRequestInputItem[]
+  xai: { model: string; input: XaiRequestInputItem[] }
 }
 
 /**

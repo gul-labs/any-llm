@@ -1720,8 +1720,10 @@ describe('xai function calling', () => {
           model: 'grok-4.7',
           modelDescriptor: grok47ModelDescriptor,
           transientProviderState: {
-            model: 'grok-4.7',
-            input: [{ role: 'user', content: [{ type: 'input_text', text: 'temp?' }] }],
+            xai: {
+              model: 'grok-4.7',
+              input: [{ role: 'user', content: [{ type: 'input_text', text: 'temp?' }] }],
+            },
           },
           tools: [tool],
           messages: [
@@ -1828,7 +1830,7 @@ describe('xai function calling', () => {
           model: 'grok-4.7',
           modelDescriptor: makeXaiDescriptor({
             model: 'grok-4.7',
-            capabilities: { statelessReasoningReplay: false },
+            capabilities: { continuation: 'history' },
           }),
         }),
         FAKE_CTX,
@@ -1844,10 +1846,12 @@ describe('xai function calling', () => {
         model: 'grok-4.7',
         modelDescriptor: grok47ModelDescriptor,
         transientProviderState: {
-          model: 'grok-4.7',
-          input: [
-            { role: 'user', content: [{ type: 'input_file', file_id: 'file_abc' }] },
-          ],
+          xai: {
+            model: 'grok-4.7',
+            input: [
+              { role: 'user', content: [{ type: 'input_file', file_id: 'file_abc' }] },
+            ],
+          },
         },
         messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Summarize it.' }] }],
       }),
@@ -1865,8 +1869,10 @@ describe('xai function calling', () => {
           model: 'grok-4.7',
           modelDescriptor: grok47ModelDescriptor,
           transientProviderState: {
-            model: 'grok-4.7',
-            input: [{ role: 'user', content: [{ type: 'input_text', text: 'Hi' }] }],
+            xai: {
+              model: 'grok-4.7',
+              input: [{ role: 'user', content: [{ type: 'input_text', text: 'Hi' }] }],
+            },
           },
           messages: [
             {

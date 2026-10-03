@@ -274,19 +274,26 @@ function mapXaiProviderOptions(
 
 function parseXaiReplayState(value: unknown, model: string): XaiReplayState | undefined {
   if (value === undefined) return undefined
+  const keys = isPlainRecord(value) ? Object.keys(value) : []
+  if (keys.some((key) => key !== 'xai')) {
+    throw badXaiRequest(
+      `transientProviderState has unexpected key(s) [${keys.join(', ')}]; xAI state is exactly { xai: { model, input } } (another provider's state is rejected).`,
+    )
+  }
+  const inner = isPlainRecord(value) ? value['xai'] : undefined
   if (
-    !isPlainRecord(value) ||
-    value['model'] !== model ||
-    !Array.isArray(value['input']) ||
-    value['input'].length === 0 ||
-    value['input'].some(
+    !isPlainRecord(inner) ||
+    inner['model'] !== model ||
+    !Array.isArray(inner['input']) ||
+    inner['input'].length === 0 ||
+    inner['input'].some(
       (item) =>
         !isPlainRecord(item) ||
         (typeof item['type'] !== 'string' && typeof item['role'] !== 'string'),
     )
   ) {
     throw badXaiRequest(
-      `transientProviderState must contain the full xAI wire input for model "${model}".`,
+      `transientProviderState must be { xai: { model, input } } with the full xAI wire input, bound to the requested model "${model}".`,
     )
   }
   return value as unknown as XaiReplayState
@@ -817,12 +824,11 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
         assertModelMatchesDescriptor(req, req.modelDescriptor, 'xai')
       }
       if (
-        xaiRegistry.resolve('xai', model)?.capabilities?.statelessReasoningReplay ===
-          true &&
-        req.modelDescriptor?.capabilities?.statelessReasoningReplay !== true
+        xaiRegistry.resolve('xai', model)?.capabilities?.continuation === 'state' &&
+        req.modelDescriptor?.capabilities?.continuation !== 'state'
       ) {
         throw badXaiRequest(
-          `A matching xAI model descriptor with statelessReasoningReplay is required for "${model}".`,
+          `A matching xAI model descriptor with continuation "state" is required for "${model}".`,
         )
       }
       const genConfig = req.config
@@ -834,12 +840,11 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       // ------------------------------------------------------------------
       // 1. Map messages → input
       // ------------------------------------------------------------------
-      const replayRequired =
-        req.modelDescriptor?.capabilities?.statelessReasoningReplay === true
+      const replayRequired = req.modelDescriptor?.capabilities?.continuation === 'state'
       const replayState = parseXaiReplayState(req.transientProviderState, model)
       if (replayState !== undefined && !replayRequired) {
         throw badXaiRequest(
-          `transientProviderState requires a statelessReasoningReplay model descriptor for "${model}".`,
+          `transientProviderState requires a model descriptor with continuation "state" for "${model}".`,
         )
       }
       if (replayState !== undefined && req.messages.length === 0) {
@@ -847,15 +852,15 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
           `Stateless conversation replay for model "${model}" requires new messages to append.`,
         )
       }
-      const input: XaiRequestInputItem[] = [...(replayState?.input ?? [])]
+      const input: XaiRequestInputItem[] = [...(replayState?.xai.input ?? [])]
       const replayCallIds = new Set(
-        replayState?.input
+        replayState?.xai.input
           .filter((item) => isPlainRecord(item) && item['type'] === 'function_call')
           .map((item) => (isPlainRecord(item) ? item['call_id'] : undefined))
           .filter((id): id is string => typeof id === 'string') ?? [],
       )
       const replayedResultIds = new Set(
-        replayState?.input
+        replayState?.xai.input
           .filter(
             (item) => isPlainRecord(item) && item['type'] === 'function_call_output',
           )
@@ -1162,10 +1167,16 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       let reasoningText: string | undefined
       const messageItems: XaiMessageOutputItem[] = []
       const toolCalls: NonNullable<AdapterResult['toolCalls']> = []
+      // Output order of the representable items (message and function_call);
+      // the assistant message is built from it once the last message item is known.
+      const outputOrder: Array<
+        XaiMessageOutputItem | NonNullable<AdapterResult['toolCalls']>[number]
+      > = []
 
       for (const item of response.output) {
         if (isXaiMessageItem(item)) {
           messageItems.push(item)
+          outputOrder.push(item)
         } else if (isXaiReasoningItem(item)) {
           const joined = item.summary.map((s) => s.text).join('')
           if (joined.length > 0) {
@@ -1183,7 +1194,9 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
             }
           }
           if (callId.length > 0 && name.length > 0) {
-            toolCalls.push({ toolCallId: callId, toolName: name, args })
+            const call = { toolCallId: callId, toolName: name, args }
+            toolCalls.push(call)
+            outputOrder.push(call)
           }
         }
       }
@@ -1207,6 +1220,19 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
               messageItems.length - 1
             } earlier message item(s).`,
           })
+        }
+      }
+
+      // Ordered assistant message: provider order, the last message item as the
+      // single text part (earlier ones are superseded, as for `text`), reasoning
+      // and server-tool items omitted (they live in the replay state).
+      const lastMessageItem = messageItems[messageItems.length - 1]
+      const messageParts: Part[] = []
+      for (const entry of outputOrder) {
+        if ('toolCallId' in entry) {
+          messageParts.push({ kind: 'tool-call', ...entry })
+        } else if (entry === lastMessageItem && text.length > 0) {
+          messageParts.push({ kind: 'text', text })
         }
       }
 
@@ -1288,8 +1314,7 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
         // cannot represent. The next request appends only new user/tool-result
         // messages; callers do not repeat normalized history with state.
         const state: XaiReplayState = {
-          model,
-          input: [...params.input, ...response.output],
+          xai: { model, input: [...params.input, ...response.output] },
         }
         transientProviderState = state as unknown as JsonValue
       }
@@ -1304,6 +1329,7 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
 
       const result: AdapterResult = {
         model: response.model,
+        message: { role: 'assistant', parts: messageParts },
         usage,
         warnings,
         finishReason,

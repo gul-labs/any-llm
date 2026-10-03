@@ -790,7 +790,7 @@ describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
     )
     expect(second.text).toBe('The result is 5.')
     expect((wireClient.calls[1] as { input: unknown[] }).input).toEqual([
-      ...(first.transientProviderState as unknown as XaiReplayState).input,
+      ...(first.transientProviderState as unknown as XaiReplayState).xai.input,
       { type: 'function_call_output', call_id: call!.toolCallId, output: '5' },
     ])
     expect(sink.records).toHaveLength(2)
@@ -840,7 +840,7 @@ describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
       FAKE_CTX,
     )
     const replay = firstResult.transientProviderState as unknown as XaiReplayState
-    expect(replay.input.slice(1)).toEqual(originalOutput)
+    expect(replay.xai.input.slice(1)).toEqual(originalOutput)
     expect(JSON.stringify(firstResult.providerMetadata)).not.toContain(
       'encrypted_content',
     )
@@ -882,11 +882,11 @@ describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
           },
         ],
       },
-      ...replay.input.slice(1),
+      ...replay.xai.input.slice(1),
       { type: 'function_call_output', call_id: call!.toolCallId, output: '5' },
     ])
     expect(
-      (secondResult.transientProviderState as unknown as XaiReplayState).input,
+      (secondResult.transientProviderState as unknown as XaiReplayState).xai.input,
     ).toEqual([...wire.input, ...(fixture.second.body['output'] as unknown[])])
 
     const nextState = secondResult.transientProviderState as unknown as XaiReplayState
@@ -920,7 +920,10 @@ describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
     )
     expect(thirdResult.text).toContain('sum of 2 and 3')
     const thirdWire = thirdClient.calls[0] as { input: unknown[]; tools?: unknown }
-    expect(thirdWire.input).toEqual([...nextState.input, thirdFixture.request.next_input])
+    expect(thirdWire.input).toEqual([
+      ...nextState.xai.input,
+      thirdFixture.request.next_input,
+    ])
     expect(thirdWire.input).toHaveLength(thirdFixture.request.followup_input_length)
     expect(
       createHash('sha256').update(JSON.stringify(thirdWire.input)).digest('hex'),
@@ -958,7 +961,7 @@ describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
       FAKE_CTX,
     )
     const state = first.transientProviderState as unknown as XaiReplayState
-    expect(state.input.slice(1)).toEqual(mixed)
+    expect(state.xai.input.slice(1)).toEqual(mixed)
     const call = first.toolCalls?.[0]
     expect(call).toBeDefined()
     const client = makeFakeXai(fixture.second.body as never)
@@ -984,7 +987,7 @@ describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
       FAKE_CTX,
     )
     expect((client.calls[0] as { input: unknown[] }).input).toEqual([
-      state.input[0],
+      state.xai.input[0],
       ...mixed,
       { type: 'function_call_output', call_id: call!.toolCallId, output: '5' },
     ])
@@ -1271,7 +1274,7 @@ describe('fixture: 32-server-tool-choice (live 2026-10-02)', () => {
       FAKE_CTX,
     )
     const state = result.transientProviderState as unknown as XaiReplayState
-    const types = (state.input as Array<{ type?: string }>).map((item) => item.type)
+    const types = (state.xai.input as Array<{ type?: string }>).map((item) => item.type)
     expect(types.indexOf('web_search_call')).toBeGreaterThan(0)
     expect(types.indexOf('web_search_call')).toBeLessThan(types.lastIndexOf('message'))
   })

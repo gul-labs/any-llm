@@ -66,8 +66,24 @@ export interface ModelDescriptor {
      */
     structuredOutputWithTools?: boolean
     functionCalling?: boolean
-    /** Requires exact prior wire input/output for stateless conversation replay. */
-    statelessReasoningReplay?: boolean
+    /**
+     * How the next turn of a tool loop is sent (repeated on every
+     * `LlmResult.continuation`). Absent means `'history'`.
+     *
+     * - `'history'`: the host appends `result.message` to its history and sends
+     *   the full history (plus `result.transientProviderState` when the model
+     *   declares {@link providerState}).
+     * - `'state'`: `result.transientProviderState` holds the provider's own
+     *   output; the next request sends only the new messages plus the state.
+     *   Requires {@link providerState}.
+     */
+    continuation?: 'history' | 'state'
+    /**
+     * The model returns and accepts `transientProviderState`. The engine rejects
+     * state on a model that does not declare it. Provider-scoped and bound to the
+     * requested model string; each adapter defines the shape.
+     */
+    providerState?: boolean
     serviceTiers?: readonly string[]
   }
   /** Zod runtime schema for the full per-model config contract. */
@@ -98,6 +114,18 @@ function assertDescriptorSchemaArtifacts(descriptor: Partial<ModelDescriptor>): 
         kind: 'bad_request',
         retryable: false,
       },
+    )
+  }
+}
+
+function assertContinuationCapabilities(descriptor: ModelDescriptor): void {
+  if (
+    descriptor.capabilities?.continuation === 'state' &&
+    descriptor.capabilities.providerState !== true
+  ) {
+    throw new LlmError(
+      `Model descriptor for provider "${descriptor.provider}" model "${descriptor.model}" declares continuation "state" without providerState: true.`,
+      { kind: 'bad_request', retryable: false },
     )
   }
 }
@@ -187,6 +215,7 @@ export function createModelRegistry(descriptors: ModelDescriptor[]): ModelRegist
 
   for (const descriptor of descriptors) {
     assertDescriptorSchemaArtifacts(descriptor)
+    assertContinuationCapabilities(descriptor)
 
     const key = descriptorKey(descriptor.provider, descriptor.model)
     if (exactMap.has(key)) {

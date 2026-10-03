@@ -53,6 +53,8 @@ import type {
   Usage,
   Warning,
   Cost,
+  Message,
+  Part,
 } from './types.js'
 import { isToolCallPart, isToolResultPart } from './types.js'
 import type { CallSite } from './callsite.js'
@@ -855,6 +857,28 @@ async function validateInputContract(contract: {
 }
 
 /**
+ * The ordered assistant message for a result. Adapters that can interleave text
+ * and tool calls supply it; otherwise it is `[text, ...tool calls]`, which is
+ * the provider order for adapters that return text and then calls.
+ */
+function assistantMessageOf(adapterResult: AdapterResult): Message {
+  if (adapterResult.message !== undefined) return adapterResult.message
+  const parts: Part[] = []
+  if (adapterResult.text !== undefined && adapterResult.text.length > 0) {
+    parts.push({ kind: 'text', text: adapterResult.text })
+  }
+  for (const call of adapterResult.toolCalls ?? []) {
+    parts.push({
+      kind: 'tool-call',
+      toolCallId: call.toolCallId,
+      toolName: call.toolName,
+      args: call.args,
+    })
+  }
+  return { role: 'assistant', parts }
+}
+
+/**
  * Assembles the {@link LlmCallRecord} for the success path (Step 10).
  */
 function buildSuccessRecord(
@@ -1637,6 +1661,8 @@ export function createClient(config: ClientConfig): Client {
           attemptId,
           usage: normalizedResult.usage,
           model: adapterResult.model,
+          message: assistantMessageOf(adapterResult),
+          continuation: callDescriptor.capabilities?.continuation ?? 'history',
           latencyMs,
           queueDelayMs,
           warnings: allWarnings,
@@ -1951,7 +1977,10 @@ export function createClient(config: ClientConfig): Client {
     }
   }
 
-  function validateFunctionCalling(request: LlmRequest): void {
+  function validateFunctionCalling(
+    request: LlmRequest,
+    stateContinuation: boolean,
+  ): void {
     const issues: LlmErrorIssue[] = []
     const tools = request.tools
     if (request.toolChoice !== undefined && (tools === undefined || tools.length === 0)) {
@@ -2028,8 +2057,10 @@ export function createClient(config: ClientConfig): Client {
               message: 'tool-result parts are only valid on user messages.',
             })
           }
+          // With `continuation: 'state'` the prior calls live in the state, not in
+          // the messages, so pairing is checked by the adapter against the state.
           if (
-            request.transientProviderState === undefined &&
+            !(stateContinuation && request.transientProviderState !== undefined) &&
             !seenCallIds.includes(part.toolCallId)
           ) {
             issues.push({
@@ -2062,7 +2093,11 @@ export function createClient(config: ClientConfig): Client {
           { kind: 'bad_request', retryable: false },
         )
       }
-      validateFunctionCalling(request)
+      validateFunctionCalling(
+        request,
+        registry.resolve(request.provider, request.model)?.capabilities?.continuation ===
+          'state',
+      )
       const runtimeOpts = opts as GenerateOptions | undefined
       const callAuth = requireAuth(runtimeOpts?.auth)
       // Config resolution: libDefaults → request.config
@@ -2081,7 +2116,7 @@ export function createClient(config: ClientConfig): Client {
       }
       if (
         request.transientProviderState !== undefined &&
-        descriptor.capabilities?.statelessReasoningReplay !== true
+        descriptor.capabilities?.providerState !== true
       ) {
         throw new LlmError(
           `Model "${request.model}" does not admit transientProviderState.`,
