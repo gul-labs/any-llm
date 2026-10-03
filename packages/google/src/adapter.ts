@@ -816,6 +816,35 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         descriptorGrounding: descriptor.capabilities?.grounding,
         structuredOutputWithTools: descriptor.capabilities?.structuredOutputWithTools,
       })
+      // Grounding is billed per grounded prompt or query, which the token-only
+      // price cannot see. A call that sent `googleSearch` therefore never reports
+      // an exact cost, whether it succeeds or fails after billing: the synthetic,
+      // adapter-owned flag below (the `details` lane is open and this key is not
+      // a provider payload field) tells the pricing source to mark the cost
+      // estimated, and the warning says why.
+      const googleSearchSent =
+        googleProviderConfig.tools?.some((tool) => 'googleSearch' in tool) === true
+      const groundingWarning: Warning = {
+        type: 'other',
+        message:
+          'google: googleSearch was sent; grounding fees are not included in cost, so cost.confidence is "estimated".',
+      }
+      const usageFor = (meta: GeminiUsageMetadataShape | undefined): Usage => {
+        const mapped = mapUsage(meta)
+        if (googleSearchSent) mapped.details[GOOGLE_SEARCH_REQUESTED_DETAIL] = 1
+        return mapped
+      }
+      /** `usage` (and the grounding note) a failed-but-billed attempt carries. */
+      const billedFailure = (
+        meta: GeminiUsageMetadataShape | undefined,
+      ): { usage?: Usage; warnings?: Warning[] } =>
+        meta === undefined
+          ? {}
+          : {
+              usage: usageFor(meta),
+              ...(googleSearchSent ? { warnings: [groundingWarning] } : {}),
+            }
+
       if (googleProviderConfig.cachedContent !== undefined) {
         config.cachedContent = googleProviderConfig.cachedContent
       }
@@ -1084,9 +1113,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
             kind: hasBlockReason ? 'content_filter' : 'server',
             retryable: !hasBlockReason,
             provider: 'google',
-            ...(response.usageMetadata !== undefined
-              ? { usage: mapUsage(response.usageMetadata) }
-              : {}),
+            ...billedFailure(response.usageMetadata),
             ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
           },
         )
@@ -1101,9 +1128,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
           kind: 'server',
           retryable: true,
           provider: 'google',
-          ...(response.usageMetadata !== undefined
-            ? { usage: mapUsage(response.usageMetadata) }
-            : {}),
+          ...billedFailure(response.usageMetadata),
           ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
         })
       }
@@ -1113,9 +1138,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
           kind: 'server',
           retryable: true,
           provider: 'google',
-          ...(response.usageMetadata !== undefined
-            ? { usage: mapUsage(response.usageMetadata) }
-            : {}),
+          ...billedFailure(response.usageMetadata),
           ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
         })
       }
@@ -1233,24 +1256,9 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       // ------------------------------------------------------------------
       // 10. Build AdapterResult
       // ------------------------------------------------------------------
-      const usage = mapUsage(response.usageMetadata)
+      const usage = usageFor(response.usageMetadata)
       const finishReason = mapFinishReason(candidate.finishReason)
-
-      // Grounding is billed per grounded prompt or query, which the token-only
-      // price cannot see. Until grounding fees are priced, never call the cost exact.
-      const googleSearchSent =
-        googleProviderConfig.tools?.some((tool) => 'googleSearch' in tool) === true
-      if (googleSearchSent) {
-        // Synthetic, adapter-owned flag (the `details` lane is open and this key
-        // is not a provider payload field): the pricing source cannot see the
-        // request, so it reads this to mark the cost estimated.
-        usage.details[GOOGLE_SEARCH_REQUESTED_DETAIL] = 1
-        warnings.push({
-          type: 'other',
-          message:
-            'google: googleSearch was sent; grounding fees are not included in cost, so cost.confidence is "estimated".',
-        })
-      }
+      if (googleSearchSent) warnings.push(groundingWarning)
 
       const result: AdapterResult = {
         model,
@@ -1308,7 +1316,9 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       // or `tools`, so a count that omitted them would be a lower bound reported
       // as exact. Fail before dispatch instead of sending a different request.
       const unsupported: string[] = []
-      if (req.system !== undefined) {
+      // An empty string is not a system prompt: it adds no tokens, so the
+      // count is not a lower bound and it is treated as absent.
+      if (req.system !== undefined && req.system !== '') {
         unsupported.push('system')
       }
       if (req.tools !== undefined && req.tools.length > 0) {

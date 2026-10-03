@@ -92,6 +92,16 @@ describe('geminiAdapter.countTokens — system and tools are rejected before dis
     expect(client.countTokensCalls).toHaveLength(1)
   })
 
+  it('an empty system string is not a system prompt: treated as absent and counted', async () => {
+    const client = makeFakeGemini({ candidates: [] }, { totalTokens: 9 })
+    const adapter = geminiAdapter({ client })
+    const result = await adapter.countTokens!(makeCountReq({ system: '' }), FAKE_CTX)
+    expect(result.totalTokens).toBe(9)
+    expect(result.accuracy).toBe('exact')
+    expect(client.countTokensCalls).toHaveLength(1)
+    expect((client.countTokensCalls[0] as { config?: unknown }).config).toBeUndefined()
+  })
+
   it('messages alone send neither systemInstruction nor tools', async () => {
     const client = makeFakeGemini({ candidates: [] }, { totalTokens: 9 })
     const adapter = geminiAdapter({ client })

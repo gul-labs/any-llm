@@ -12,6 +12,7 @@ import { describe, it, expect } from 'vitest'
 import * as surface from './index.js'
 import {
   FLEX_DEFAULT_TIMEOUT_MS,
+  GOOGLE_SEARCH_REQUESTED_DETAIL,
   TRANSPORT_TIMEOUT_BUFFER_MS,
   googleProvider,
 } from './index.js'
@@ -28,6 +29,12 @@ describe('@gullabs/google package surface: timeout constants', () => {
 
   it('TRANSPORT_TIMEOUT_BUFFER_MS is exported and equals 5_000', () => {
     expect(TRANSPORT_TIMEOUT_BUFFER_MS).toBe(5_000)
+  })
+})
+
+describe('@gullabs/google package surface: grounding marker', () => {
+  it('exports the token_details key that marks a call that sent googleSearch', () => {
+    expect(GOOGLE_SEARCH_REQUESTED_DETAIL).toBe('google_search_requested')
   })
 })
 

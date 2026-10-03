@@ -187,6 +187,64 @@ describe('grounded calls are not priced as exact (R1.11)', () => {
   })
 })
 
+describe('grounded attempts that fail after billing are marked too (R1.11)', () => {
+  const GROUNDING_WARNING = 'grounding fees are not included'
+  const grounded = { providerOptions: { google: { tools: [{ googleSearch: {} }] } } }
+
+  const failures: Array<[string, Parameters<typeof makeFakeGemini>[0], string]> = [
+    [
+      'a candidate-less 200',
+      { candidates: [], usageMetadata: { promptTokenCount: 5000 } },
+      'server',
+    ],
+    [
+      'a prompt blocked on a 200',
+      {
+        candidates: [],
+        promptFeedback: { blockReason: 'SAFETY' },
+        usageMetadata: { promptTokenCount: 5000 },
+      },
+      'content_filter',
+    ],
+  ]
+
+  it.each(failures)(
+    '%s: the thrown error, the row and its cost carry the grounding marker',
+    async (_name, response, kind) => {
+      const sink = new RecordingSink()
+      const client = makeClient(makeFakeGemini(response), sink)
+      const err = (await client
+        .generate(
+          { provider: 'google', model: MODEL, messages, config: grounded },
+          { auth: AUTH },
+        )
+        .catch((e: unknown) => e)) as LlmError
+
+      expect(err.kind).toBe(kind)
+      expect(err.usage?.details[GOOGLE_SEARCH_REQUESTED_DETAIL]).toBe(1)
+      const row = sink.records[0]!
+      expect(row.costMicroUsd).toBeGreaterThan(0)
+      expect(row.tokenDetails).toMatchObject({ [GOOGLE_SEARCH_REQUESTED_DETAIL]: 1 })
+      expect(JSON.stringify(row.warnings)).toContain(GROUNDING_WARNING)
+    },
+  )
+
+  it('an ungrounded billed failure carries neither marker nor warning', async () => {
+    const sink = new RecordingSink()
+    const client = makeClient(
+      makeFakeGemini({ candidates: [], usageMetadata: { promptTokenCount: 5000 } }),
+      sink,
+    )
+    await client
+      .generate({ provider: 'google', model: MODEL, messages }, { auth: AUTH })
+      .catch(() => undefined)
+    const row = sink.records[0]!
+    expect(row.costMicroUsd).toBeGreaterThan(0)
+    expect(row.tokenDetails).not.toHaveProperty(GOOGLE_SEARCH_REQUESTED_DETAIL)
+    expect(row.warnings).toBeUndefined()
+  })
+})
+
 describe('geminiPricingSource and the googleSearch flag (R1.11)', () => {
   const usage = (details: Record<string, number>) => ({
     inputTokens: 1000,

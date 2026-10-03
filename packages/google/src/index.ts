@@ -32,7 +32,7 @@ export {
   gemmaModelDescriptors,
   defaultGeminiRegistry,
 } from './models.js'
-export { geminiPricingSource } from './cost.js'
+export { GOOGLE_SEARCH_REQUESTED_DETAIL, geminiPricingSource } from './cost.js'
 export {
   GEMINI_PRICING,
   GEMINI_PRICED_TIERS,
