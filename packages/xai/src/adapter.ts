@@ -96,11 +96,30 @@ function badXaiRequest(message: string): LlmError {
 /** 20 MiB, xAI's documented inline-image size ceiling. */
 const MAX_XAI_INLINE_IMAGE_BYTES = 20 * 1024 * 1024
 
-/** Decoded size of a base64 string, from its length and padding (no `Buffer`). */
+/**
+ * Decoded size of a base64 string, from its length and padding (no `Buffer`).
+ * ASCII whitespace (line breaks in wrapped base64) is not data and is not counted;
+ * it is only scanned for when the plain length is already over the ceiling.
+ */
 function decodedBase64Length(data: string): number {
-  let padding = 0
-  while (padding < 2 && data.charCodeAt(data.length - 1 - padding) === 0x3d) padding += 1
-  return Math.floor(((data.length - padding) * 3) / 4)
+  const plain = (length: number, tail: string) => {
+    let padding = 0
+    while (padding < 2 && tail.charCodeAt(tail.length - 1 - padding) === 0x3d)
+      padding += 1
+    return Math.floor(((length - padding) * 3) / 4)
+  }
+  const upper = plain(data.length, data)
+  if (upper <= MAX_XAI_INLINE_IMAGE_BYTES) return upper
+  let length = 0
+  let end = data.length
+  for (let i = 0; i < data.length; i += 1) {
+    const c = data.charCodeAt(i)
+    if (c !== 0x20 && c !== 0x0a && c !== 0x0d && c !== 0x09) {
+      length += 1
+      end = i + 1
+    }
+  }
+  return plain(length, data.slice(0, end))
 }
 
 /**

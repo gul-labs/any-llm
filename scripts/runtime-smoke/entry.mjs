@@ -113,6 +113,205 @@ if (core !== undefined) {
   )
 }
 
+// One fake-backed call per provider adapter, quota store and sink, with no built-ins and
+// no `Buffer` or `process`: the adapters' own code runs (base64 size checks, UTF-8 sizing,
+// thought-signature hashing, the drizzle row mapping), not just their import.
+const PNG_PIXEL =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+const userMessage = {
+  role: 'user',
+  parts: [
+    { kind: 'text', text: 'Describe this \u{1F600} image.' },
+    { kind: 'inline-media', mimeType: 'image/png', data: PNG_PIXEL },
+  ],
+}
+
+async function attempt(what, body) {
+  try {
+    await body()
+  } catch (error) {
+    failures.push(`${what}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+const calls = []
+// A structural stand-in for a Drizzle Postgres database: it records the rows.
+const fakeDb = (() => {
+  const handle = () => ({
+    insert(table) {
+      return {
+        values(values) {
+          return {
+            async onConflictDoNothing() {
+              calls.push({ table, values })
+            },
+          }
+        },
+      }
+    },
+    async execute() {},
+  })
+  return {
+    ...handle(),
+    async transaction(fn) {
+      return fn(handle())
+    },
+  }
+})()
+
+if (core !== undefined) {
+  const { geminiAdapter, geminiModelDescriptors, geminiPricingSource } =
+    entries.google ?? {}
+  await attempt('google: a fake-backed generate()', async () => {
+    check(geminiAdapter !== undefined, '@gullabs/google exports geminiAdapter')
+    const requests = []
+    const adapter = geminiAdapter({
+      client: {
+        models: {
+          async generateContent(params) {
+            requests.push(params)
+            return {
+              candidates: [
+                {
+                  content: {
+                    role: 'model',
+                    parts: [{ text: 'a pixel', thoughtSignature: 'c2lnbmF0dXJl' }],
+                  },
+                  finishReason: 'STOP',
+                },
+              ],
+              usageMetadata: {
+                promptTokenCount: 12,
+                candidatesTokenCount: 3,
+                totalTokenCount: 15,
+              },
+              modelVersion: 'gemini-3.8-flash',
+            }
+          },
+          async countTokens() {
+            return { totalTokens: 12 }
+          },
+        },
+      },
+    })
+    const descriptor = geminiModelDescriptors.find((d) => d.model === 'gemini-3.8-flash')
+    const client = core.createClient({
+      adapters: [adapter],
+      modelRegistry: core.createModelRegistry([descriptor]),
+      pricingSources: [geminiPricingSource()],
+      sink: entries.drizzle.drizzleUsageSink({ db: fakeDb }),
+      payloads: {},
+    })
+    const result = await client.generate(
+      {
+        provider: 'google',
+        model: 'gemini-3.8-flash',
+        system: 'Be brief é.',
+        messages: [userMessage],
+      },
+      { auth: { apiKey: 'test' } },
+    )
+    check(result.text === 'a pixel', 'google: the adapter returned the text')
+    check(requests.length === 1, 'google: the fake client saw one request')
+    check(
+      result.transientProviderState?.google?.signatures?.[0]?.partSha256?.length === 64,
+      'google: the thought signature was pinned with a sha256',
+    )
+    check(
+      calls.some((c) => c.values.provider === 'google'),
+      'drizzle: the ledger row reached the fake database',
+    )
+    check(
+      calls.some((c) => c.values.request !== undefined),
+      'drizzle: the payload row reached the fake database',
+    )
+  })
+
+  const { xaiAdapter, xaiModelDescriptors, xaiPricingSource } = entries.xai ?? {}
+  await attempt('xai: a fake-backed generate()', async () => {
+    check(xaiAdapter !== undefined, '@gullabs/xai exports xaiAdapter')
+    const requests = []
+    const adapter = xaiAdapter({
+      client: {
+        responses: {
+          async create(params) {
+            requests.push(params)
+            return {
+              id: 'resp_smoke',
+              model: 'grok-4.5',
+              status: 'completed',
+              incomplete_details: null,
+              output: [
+                {
+                  type: 'message',
+                  role: 'assistant',
+                  status: 'completed',
+                  content: [{ type: 'output_text', text: 'a pixel' }],
+                },
+              ],
+              usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15 },
+            }
+          },
+        },
+      },
+    })
+    const descriptor = xaiModelDescriptors.find((d) => d.model === 'grok-4.5')
+    const client = core.createClient({
+      adapters: [adapter],
+      modelRegistry: core.createModelRegistry([descriptor]),
+      pricingSources: [xaiPricingSource()],
+    })
+    const result = await client.generate(
+      { provider: 'xai', model: 'grok-4.5', messages: [userMessage] },
+      { auth: { apiKey: 'test' } },
+    )
+    check(result.text === 'a pixel', 'xai: the adapter returned the text')
+    check(requests.length === 1, 'xai: the fake client saw one request')
+    // The image-size check ran on the real decoder: an over-20-MiB image is rejected.
+    const huge = 'A'.repeat(Math.ceil(((20 * 1024 * 1024 + 3) * 4) / 3 / 4) * 4)
+    let rejected = false
+    try {
+      await client.generate(
+        {
+          provider: 'xai',
+          model: 'grok-4.5',
+          messages: [
+            {
+              role: 'user',
+              parts: [{ kind: 'inline-media', mimeType: 'image/png', data: huge }],
+            },
+          ],
+        },
+        { auth: { apiKey: 'test' } },
+      )
+    } catch (error) {
+      rejected = error?.kind === 'bad_request'
+    }
+    check(rejected, 'xai: an inline image over 20 MiB is rejected as bad_request')
+  })
+}
+
+const quota = entries.quota
+if (quota !== undefined) {
+  await attempt('quota: a store check', async () => {
+    const store = quota.inMemoryQuotaStore()
+    const nowMs = Date.now()
+    const first = await store.checkAndConsume({
+      scope: 'smoke',
+      nowMs,
+      rpm: 1,
+      rpd: 5,
+      dayBoundary: { timeZone: 'America/Los_Angeles' },
+    })
+    const second = await store.checkAndConsume({ scope: 'smoke', nowMs, rpm: 1 })
+    check(first.rpm?.allowed === true, 'quota: the first call is admitted')
+    check(
+      second.rpm?.allowed === false,
+      'quota: the second call in the minute is refused',
+    )
+  })
+}
+
 if (failures.length > 0) {
   console.error(failures.map((f) => `  - ${f}`).join('\n'))
   throw new Error(`runtime smoke failed (${failures.length})`)

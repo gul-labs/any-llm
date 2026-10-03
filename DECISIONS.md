@@ -3715,7 +3715,9 @@ supported runtimes were not written down. The README and doc examples were not c
 4. **The claim is tested, and bounded.** `pnpm test:runtime` loads the built ESM entry of each
    runtime-agnostic package under a module-resolution hook that fails any built-in import, then removes
    `Buffer` and `process` and runs a full `generate()` with a payload and an inline media part. It is in
-   `pnpm quality` and in the Node matrix. It was also run once by hand under Deno 2.4.1 and passed. No
+   `pnpm quality` and in the Node matrix. Amendment A extends it. By hand under Deno 2.4.1 every check
+   passed except the first, which asserts that `node:crypto` is blocked and only holds under the Node hook
+   (Deno has its own `node:` built-ins and `Buffer`/`process` globals). No
    Bun, Cloudflare Workers, Vercel Edge or browser runtime was available, so those are documented as not
    tested, not as supported; the wrapped SDKs (`@google/genai`, `openai`) set their own runtime support.
    `@edge-runtime/vm` is not installed, so the hook test stands in for it.

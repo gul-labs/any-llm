@@ -68,6 +68,7 @@ import { isGeminiCapacityError } from './flex-fallback.js'
 import { classifyGoogleError } from './errors.js'
 import { PLATFORM_SCHEDULER } from './platform-scheduler.js'
 import { audioTokensReported } from './cost.js'
+import { utf8ByteLength } from './utf8.js'
 import {
   parseSignatureState,
   resolveSignatures,
@@ -476,11 +477,10 @@ function assertInlinePayloadWithinLimits(
   contents: readonly GeminiContent[],
   system: string | undefined,
 ): void {
-  const utf8 = new TextEncoder()
-  let total = system === undefined ? 0 : utf8.encode(system).length
+  let total = system === undefined ? 0 : utf8ByteLength(system)
   contents.forEach((content, mi) => {
     content.parts.forEach((part, pi) => {
-      if ('text' in part) total += utf8.encode(part.text).length
+      if ('text' in part) total += utf8ByteLength(part.text)
       if (!('inlineData' in part)) return
       const { mimeType, data } = part.inlineData
       total += data.length

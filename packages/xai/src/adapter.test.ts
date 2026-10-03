@@ -691,6 +691,34 @@ describe('vision / media mapping', () => {
     ).rejects.toMatchObject({ kind: 'bad_request' })
   })
 
+  it('sizes an inline image by its base64 characters, not by its line breaks', async () => {
+    const wrap = (raw: Uint8Array) =>
+      Buffer.from(raw).toString('base64').replace(/.{76}/g, '$&\r\n')
+    const png = (bytes: number) => ({
+      kind: 'inline-media' as const,
+      mimeType: 'image/png',
+      data: wrap(new Uint8Array(bytes).fill(1)),
+    })
+    const run = (bytes: number) => {
+      const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
+      return {
+        client,
+        done: xaiAdapter({ client }).run(
+          makeResolvedReq({ messages: [{ role: 'user', parts: [png(bytes)] }] }),
+          FAKE_CTX,
+        ),
+      }
+    }
+    // 19.5 MiB decoded is about 26.6 MB of base64 once wrapped every 76 characters.
+    const within = run(19.5 * 1024 * 1024)
+    await within.done
+    expect(within.client.calls).toHaveLength(1)
+    // Wrapping does not hide an image that really is over the ceiling.
+    await expect(run(20 * 1024 * 1024 + 3).done).rejects.toMatchObject({
+      kind: 'bad_request',
+    })
+  })
+
   it('maps a FileUriPart with an https:// URL and image mimeType', async () => {
     const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
     const adapter = xaiAdapter({ client })

@@ -225,8 +225,8 @@ Published on npm under `@gullabs`, Apache-2.0, Node `>=22.12.0`.
 What is verified, and what is not:
 
 - **Node 22.12.0 and 24**: the whole test suite, in CI.
-- **No Node built-ins**: `pnpm test:runtime` (also in CI) loads the built ESM entry of each runtime-agnostic package with every `node:` import blocked, then runs a complete `generate()` with a payload and an inline media part after removing `Buffer` and `process`. It proves the library code needs neither; it does not run another engine.
-- **Deno 2.4.1**: the same script passes when run by hand. Not part of CI.
+- **No Node built-ins**: `pnpm test:runtime` (also in CI) loads the built ESM entry of each runtime-agnostic package with every `node:` import blocked, then removes `Buffer` and `process` and runs one fake-backed `generate()` through `core` (with a payload and an inline media part), one through the Gemini adapter (a signed thought, written through the drizzle sink to a fake database) and one through the xAI adapter (an inline image), plus a `quota` store check. ESLint also rejects `node:*` imports, `Buffer`, `process`, `__dirname` and `require` in those packages' non-test source. It proves the library code needs none of them; it does not run another engine.
+- **Deno 2.4.1**: run by hand (`deno run -A scripts/runtime-smoke/entry.mjs`), every check passes except the first one, which asserts that `node:crypto` is blocked and so only holds under the Node hook (Deno has `node:` built-ins and `Buffer`/`process` globals of its own; the script deletes the globals). Not part of CI.
 - **Not tested**: Bun, Cloudflare Workers, Vercel Edge, browsers. The library code has no known blocker there, but the provider SDKs it wraps (`@google/genai`, `openai`) set their own runtime support, and a host that needs one of these runtimes should run its own smoke test. The CJS builds are for Node `require`; the built-ins check covers the ESM entries.
 
 ## Pipeline
