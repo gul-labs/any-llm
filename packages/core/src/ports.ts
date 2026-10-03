@@ -19,6 +19,7 @@ import type {
   Message,
   GenConfig,
   LlmResult,
+  CallCost,
   CallMetadata,
   Cost,
   Citation,
@@ -596,6 +597,12 @@ export interface CallSuccessEvent {
   usage: Usage
   /** Cost in micro-USD (absent when model is not in the pricing table). */
   cost?: Cost
+  /**
+   * What every attempt of the call cost, as far as the library could price it
+   * (see {@link CallCost}): `cost` is the successful attempt alone. Absent only
+   * when no attempt ran. `unpricedAttempts > 0` makes `microUsd` a lower bound.
+   */
+  callCost?: CallCost
 }
 
 /**
@@ -642,11 +649,11 @@ export interface CallErrorEvent {
   /** Cost of that attempt's usage, when `usage` is present and a pricing source exists. */
   cost?: Cost
   /**
-   * What every attempt of the call cost the library could price, summed (see
-   * `LlmResult.callCost`). Absent when no attempt was priced or any attempt with
-   * usage was unpriced.
+   * What every attempt of the call cost, as far as the library could price it
+   * (see {@link CallCost}). Absent when no attempt ran. `unpricedAttempts > 0`
+   * makes `microUsd` a lower bound.
    */
-  callCost?: { microUsd: number; attempts: number }
+  callCost?: CallCost
 }
 
 /**

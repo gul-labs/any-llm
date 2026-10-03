@@ -3086,3 +3086,18 @@ No fixture has a non-zero MCP counter; the tests for it are synthetic and say so
   the upgraded table with a fresh install, and `schema.ts` with `install.sql`, instead of names; they run the
   file statement by statement twice, with violating rows present. The `drizzle-orm` peer floor (0.36) is
   declared and not tested (only the dev-dependency version can be installed).
+
+**Item 5 (`callCost`).** The shape is `{ microUsd, attempts, unpricedAttempts }` (exported as `CallCost`).
+`microUsd` sums only the attempts that were priced. `unpricedAttempts` counts attempts that were dispatched
+but have no priced usage: a timeout, abort or connection failure that reported no usage, usage the pricing
+source could not price, and an attempt still in flight when a deadline ended the call. The provider may have
+billed them, so `unpricedAttempts > 0` means `microUsd` is a lower bound. The previous rule, which dropped
+`callCost` when an attempt reported usage that could not be priced, reported two timeouts followed by a
+success as the success alone, presented as complete. Attempts known to cost nothing are not counted: one that
+ended before dispatch (waiting on the rate limiter), kinds providers do not bill (`bad_request`,
+`invalid_auth`, `rate_limited`), and any other HTTP error answer that is not a timeout or abort. `callCost` is
+present whenever an attempt ran (absent only for a refusal before any attempt), so a call whose attempts were
+all unpriced reports `{ microUsd: 0, attempts, unpricedAttempts }`. It is added to `CallSuccessEvent`
+(an `onSuccess`-only metrics hook could not read it) as well as `CallErrorEvent` and `LlmResult`. The ledger
+statement that the SQL sum equals `callCost` now holds as stated: `SUM(cost_micro_usd)` over the call's rows
+equals `microUsd`, NULL rows being the unpriced attempts.

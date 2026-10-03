@@ -15,6 +15,7 @@ import type {
   AdapterResult,
   AttemptEvent,
   CallErrorEvent,
+  CallSuccessEvent,
   Cost,
   PricingSource,
   Usage,
@@ -72,6 +73,7 @@ function makeClient(
   const sink = new RecordingSink()
   const attempts: AttemptEvent[] = []
   const errors: CallErrorEvent[] = []
+  const successes: CallSuccessEvent[] = []
   const client = createClient({
     adapters: [new FakeAdapter('google', entries)],
     pricingSources: { google: extra.pricing ?? PRICING },
@@ -82,12 +84,13 @@ function makeClient(
     telemetry: {
       onAttempt: (e) => void attempts.push(e),
       onError: (e) => void errors.push(e),
+      onSuccess: (e) => void successes.push(e),
     },
     ...(extra.retry === true
       ? { middleware: [retryMiddleware({ maxAttempts: 3, baseDelayMs: 0 })] }
       : {}),
   })
-  return { client, sink, attempts, errors }
+  return { client, sink, attempts, errors, successes }
 }
 
 describe('R7.1 the record persists cost confidence, lanes and the unpriced reason', () => {
@@ -222,28 +225,138 @@ describe('R7.3 per-attempt telemetry and the cost of the whole call', () => {
     })
     const result = await client.generate(request(), { auth: AUTH })
     expect(result.cost?.microUsd).toBe(200)
-    expect(result.callCost).toEqual({ microUsd: 20 + 20 + 200, attempts: 3 })
+    expect(result.callCost).toEqual({
+      microUsd: 20 + 20 + 200,
+      attempts: 3,
+      unpricedAttempts: 0,
+    })
   })
 
   it('a first-attempt success has a callCost of one attempt', async () => {
     const { client } = makeClient(ok())
     const result = await client.generate(request(), { auth: AUTH })
-    expect(result.callCost).toEqual({ microUsd: 200, attempts: 1 })
+    expect(result.callCost).toEqual({ microUsd: 200, attempts: 1, unpricedAttempts: 0 })
   })
 
-  it('an attempt that failed without usage adds nothing but still counts as an attempt', async () => {
-    const { client } = makeClient(
-      [new LlmError('reset', { kind: 'server', retryable: true }), ok()],
+  it('two timeouts then a success: the total is a lower bound, the two lost attempts are counted', async () => {
+    const timeout = () => new LlmError('slow', { kind: 'timeout', retryable: true })
+    const { client, attempts, successes } = makeClient([timeout(), timeout(), ok()], {
+      retry: true,
+    })
+    const result = await client.generate(request(), { auth: AUTH })
+    // microUsd is the successful attempt alone: the timed-out attempts reported no
+    // usage, so nothing can be priced, but they were dispatched and may be billed.
+    expect(result.callCost).toEqual({ microUsd: 200, attempts: 3, unpricedAttempts: 2 })
+    expect(successes).toHaveLength(1)
+    expect(successes[0]?.callCost).toEqual(result.callCost)
+    expect(attempts.map((a) => a.cost?.microUsd)).toEqual([undefined, undefined, 200])
+  })
+
+  it('callCost.microUsd equals the sum of the call rows cost_micro_usd; the NULL rows are the unpriced attempts', async () => {
+    const { client, sink } = makeClient(
+      [new LlmError('slow', { kind: 'timeout', retryable: true }), billedFailure(), ok()],
       { retry: true },
     )
     const result = await client.generate(request(), { auth: AUTH })
-    expect(result.callCost).toEqual({ microUsd: 200, attempts: 2 })
+    const rows = sink.records
+    const sum = rows.reduce((acc, row) => acc + (row.costMicroUsd ?? 0), 0)
+    expect(sum).toBe(result.callCost?.microUsd)
+    expect(rows.filter((row) => row.costMicroUsd == null)).toHaveLength(
+      result.callCost?.unpricedAttempts ?? -1,
+    )
   })
 
-  it('callCost is absent when the call is unpriced (a sum with a hole is not reported)', async () => {
+  it('a billed failure with usage is priced; a dispatched failure without usage is not', async () => {
+    const { client } = makeClient(
+      [billedFailure(), new LlmError('reset', { kind: 'server', retryable: true }), ok()],
+      { retry: true },
+    )
+    const result = await client.generate(request(), { auth: AUTH })
+    expect(result.callCost).toEqual({
+      microUsd: 20 + 200,
+      attempts: 3,
+      unpricedAttempts: 1,
+    })
+  })
+
+  it.each([
+    ['a 429', { kind: 'rate_limited', retryable: true, httpStatus: 429 }],
+    ['a provider 400', { kind: 'bad_request', retryable: true, httpStatus: 400 }],
+    ['a 401', { kind: 'invalid_auth', retryable: true, httpStatus: 401 }],
+    [
+      'a 503 answered by the provider',
+      { kind: 'server', retryable: true, httpStatus: 503 },
+    ],
+    ['a pre-dispatch bad_request (no status)', { kind: 'bad_request', retryable: true }],
+  ] as const)(
+    '%s is known to cost nothing, so it is not an unpriced attempt',
+    async (_name, opts) => {
+      const { client } = makeClient([new LlmError('refused', { ...opts }), ok()], {
+        retry: true,
+      })
+      const result = await client.generate(request(), { auth: AUTH })
+      expect(result.callCost).toEqual({ microUsd: 200, attempts: 2, unpricedAttempts: 0 })
+    },
+  )
+
+  it.each([
+    ['a connection reset (no status)', { kind: 'server', retryable: true }],
+    ['an unknown failure', { kind: 'unknown', retryable: true }],
+    ['a gateway timeout', { kind: 'timeout', retryable: true, httpStatus: 504 }],
+  ] as const)('%s after dispatch is an unpriced attempt', async (_name, opts) => {
+    const { client } = makeClient([new LlmError('lost', { ...opts }), ok()], {
+      retry: true,
+    })
+    const result = await client.generate(request(), { auth: AUTH })
+    expect(result.callCost).toEqual({ microUsd: 200, attempts: 2, unpricedAttempts: 1 })
+  })
+
+  it('an abort after dispatch is unpriced on the error event', async () => {
+    const { client, errors } = makeClient(
+      new LlmError('cancelled', { kind: 'aborted', retryable: false }),
+    )
+    await expect(client.generate(request(), { auth: AUTH })).rejects.toBeInstanceOf(
+      LlmError,
+    )
+    expect(errors[0]?.callCost).toEqual({ microUsd: 0, attempts: 1, unpricedAttempts: 1 })
+  })
+
+  it('a call whose every attempt is unpriced reports zero priced and every attempt unpriced', async () => {
     const { client } = makeClient(ok({ model: 'unpriced' }))
     const result = await client.generate(request('unpriced'), { auth: AUTH })
-    expect(result.callCost).toBeUndefined()
+    expect(result.callCost).toEqual({ microUsd: 0, attempts: 1, unpricedAttempts: 1 })
+  })
+
+  it('an attempt with usage but no price counts as unpriced beside priced attempts', async () => {
+    const source: PricingSource = {
+      version: 'flaky',
+      price: (_m, u) =>
+        u.inputTokens === 10
+          ? ({
+              microUsd: null,
+              usd: null,
+              pricingVersion: 'flaky',
+              confidence: 'estimated',
+              details: { input: 0, cached: 0, output: 0, tools: 0 },
+              unpricedReason: 'no rate',
+            } satisfies Cost)
+          : PRICING.price('m1', u),
+      hasModel: () => true,
+      listModels: () => ['m1'],
+    }
+    const { client } = makeClient(
+      [
+        new LlmError('empty 200', {
+          kind: 'server',
+          retryable: true,
+          usage: usage({ inputTokens: 10, outputTokens: 5 }),
+        }),
+        ok(),
+      ],
+      { retry: true, pricing: source },
+    )
+    const result = await client.generate(request(), { auth: AUTH })
+    expect(result.callCost).toEqual({ microUsd: 200, attempts: 2, unpricedAttempts: 1 })
   })
 
   it('CallErrorEvent carries the failing attempt usage and cost, and the call total', async () => {
@@ -257,7 +370,11 @@ describe('R7.3 per-attempt telemetry and the cost of the whole call', () => {
     expect(errors).toHaveLength(1)
     expect(errors[0]?.usage?.inputTokens).toBe(10)
     expect(errors[0]?.cost?.microUsd).toBe(20)
-    expect(errors[0]?.callCost).toEqual({ microUsd: 60, attempts: 3 })
+    expect(errors[0]?.callCost).toEqual({
+      microUsd: 60,
+      attempts: 3,
+      unpricedAttempts: 0,
+    })
     expect(errors[0]?.reason).toBeUndefined()
   })
 
@@ -274,7 +391,9 @@ describe('R7.3 per-attempt telemetry and the cost of the whole call', () => {
     )
     expect(errors[0]?.usage).toBeUndefined()
     expect(errors[0]?.cost).toBeUndefined()
-    expect(errors[0]?.callCost).toBeUndefined()
+    // The timed-out attempt was dispatched and its usage is unknown: nothing priced,
+    // one attempt unpriced.
+    expect(errors[0]?.callCost).toEqual({ microUsd: 0, attempts: 1, unpricedAttempts: 1 })
     expect(errors[0]?.reason).toBe('transport_timeout')
   })
 })

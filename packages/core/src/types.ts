@@ -566,6 +566,35 @@ export interface Cost {
 }
 
 /**
+ * What a whole logical call cost across every attempt (retries and billed
+ * failures included), as far as the library could price it.
+ *
+ * - `microUsd` sums the micro-USD of the attempts that were priced. If any
+ *   priced attempt's `Cost.confidence` was `'estimated'` the sum is an
+ *   estimate too (read `Cost.confidence` per attempt on `Telemetry.onAttempt`).
+ * - `attempts` is the number of provider attempts that began.
+ * - `unpricedAttempts` counts attempts that were dispatched but have no priced
+ *   usage: a timeout, abort or connection failure that reported no usage, usage
+ *   the pricing source could not price, or an attempt still in flight when the
+ *   call ended. The provider may have billed them. Attempts known to cost nothing
+ *   (rejected before dispatch, a provider 400/401/429 or other HTTP error answer)
+ *   are not counted.
+ *
+ * `unpricedAttempts > 0` means `microUsd` is a **lower bound**; `0` means every
+ * attempt is accounted for. The SQL sum of `cost_micro_usd` over the call's rows
+ * equals `microUsd` (NULL rows add nothing, and a failure that reported no usage
+ * leaves a row with no cost).
+ */
+export interface CallCost {
+  /** Micro-USD of the priced attempts, summed. */
+  microUsd: number
+  /** Provider attempts that began. */
+  attempts: number
+  /** Attempts dispatched with no priced usage; `> 0` makes `microUsd` a lower bound. */
+  unpricedAttempts: number
+}
+
+/**
  * The value returned by a successful (or partially-successful) LLM call.
  *
  */
@@ -625,16 +654,12 @@ export interface LlmResult {
    */
   cost?: Cost
   /**
-   * What the whole call cost, across every attempt: the library-priced micro-USD
-   * of each attempt (retries and billed failures included) summed, and the
-   * number of attempts that ran. `cost` is the successful attempt alone.
-   *
-   * Absent when no attempt was priced, and when any attempt that reported usage
-   * was unpriced (a sum with a hole is not reported). It adds the attempts'
-   * `microUsd` only: if any attempt's `confidence` was `'estimated'`, so is the
-   * total. Per-attempt detail is on `Telemetry.onAttempt` and in the ledger.
+   * What the whole call cost, across every attempt: see {@link CallCost}.
+   * `cost` is the successful attempt alone. Present whenever at least one
+   * attempt ran. When `callCost.unpricedAttempts > 0`, `callCost.microUsd` is a
+   * lower bound. Per-attempt detail is on `Telemetry.onAttempt` and in the ledger.
    */
-  callCost?: { microUsd: number; attempts: number }
+  callCost?: CallCost
   /**
    * The model identifier as returned by the provider (may differ from the
    * requested string, for example a dated snapshot behind an alias). Do not

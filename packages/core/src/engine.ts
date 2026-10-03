@@ -52,6 +52,7 @@ import type {
 import type {
   LlmRequest,
   LlmResult,
+  CallCost,
   GenConfig,
   CallMetadata,
   JsonValue,
@@ -471,6 +472,31 @@ const EMPTY_USAGE: Usage = {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Whether a failed attempt that reported no usage is known to have cost nothing.
+ *
+ * True when nothing was dispatched (the attempt ended while it still waited for
+ * the rate limiter), when the failure is one providers do not bill (`bad_request`,
+ * `invalid_auth`, `rate_limited`), or when the provider answered with an HTTP
+ * error status that is not a timeout or abort. False for a timeout or abort after
+ * dispatch, and for a failure that carried no status (a connection reset, an
+ * unknown failure): the provider may have run, and billed, the request.
+ */
+function failedAttemptCostsNothing(err: LlmError, dispatched: boolean): boolean {
+  if (!dispatched) return true
+  switch (err.kind) {
+    case 'bad_request':
+    case 'invalid_auth':
+    case 'rate_limited':
+      return true
+    case 'timeout':
+    case 'aborted':
+      return false
+    default:
+      return err.httpStatus !== undefined
+  }
+}
 
 /**
  * {@link classifyError}, except that a value that is the abort signal's own
@@ -1720,23 +1746,31 @@ export function createClient(config: ClientConfig): Client {
     let lastAttemptId: string | undefined
     let lastAttemptNumber: number | undefined
     // Per-attempt cost ledger for `LlmResult.callCost` / `CallErrorEvent.callCost`.
-    // `priced` sums the micro-USD of every attempt that was priced; an attempt that
-    // reported usage but could not be priced makes the sum unreportable.
-    const attemptCosts = { attempts: 0, priced: 0, microUsd: 0, hole: false }
+    // `microUsd` sums only the attempts that were priced. An attempt that was
+    // dispatched and has no priced usage (a timeout, an abort or a connection
+    // failure that reported no usage, or usage the pricing source could not price)
+    // is unpriced: the provider may have billed it, so the sum is a lower bound.
+    // `noted` counts attempts whose outcome was recorded; one still in flight when
+    // the call settles (a deadline ended the call) is unpriced too.
+    const attemptCosts = { attempts: 0, noted: 0, microUsd: 0, unpriced: 0 }
     let lastFailure: { usage: Usage; cost?: Cost } | undefined
-    const noteAttemptCost = (cost: Cost | undefined): void => {
-      if (cost === undefined) return
-      if (cost.microUsd === null) {
-        attemptCosts.hole = true
-        return
+    const noteAttemptCost = (cost: Cost | undefined, knownFree = false): void => {
+      attemptCosts.noted += 1
+      if (cost !== undefined && cost.microUsd !== null) {
+        attemptCosts.microUsd += cost.microUsd
+      } else if (!knownFree) {
+        attemptCosts.unpriced += 1
       }
-      attemptCosts.priced += 1
-      attemptCosts.microUsd += cost.microUsd
     }
-    const callCostOf = (): { microUsd: number; attempts: number } | undefined =>
-      attemptCosts.hole || attemptCosts.priced === 0
+    const callCostOf = (): CallCost | undefined =>
+      attemptCosts.attempts === 0
         ? undefined
-        : { microUsd: attemptCosts.microUsd, attempts: attemptCosts.attempts }
+        : {
+            microUsd: attemptCosts.microUsd,
+            attempts: attemptCosts.attempts,
+            unpricedAttempts:
+              attemptCosts.unpriced + (attemptCosts.attempts - attemptCosts.noted),
+          }
     const emitAttempt = (event: AttemptEvent): void => {
       try {
         telemetry.onAttempt?.(event, span)
@@ -2273,7 +2307,15 @@ export function createClient(config: ClientConfig): Client {
           sinkTimeoutMs,
           sinkInterrupts,
         )
-        noteAttemptCost(failureCost)
+        // A failure that reported no usage is known to cost nothing only when
+        // nothing was dispatched, or the provider answered with an error that is
+        // never billed (see `failedAttemptCostsNothing`).
+        noteAttemptCost(
+          failureCost,
+          err.usage === undefined &&
+            normalizedResult === undefined &&
+            failedAttemptCostsNothing(err, dispatchStartMs !== undefined),
+        )
         lastFailure =
           err.usage !== undefined
             ? {
@@ -2456,6 +2498,7 @@ export function createClient(config: ClientConfig): Client {
           latencyMs,
           usage: result.usage,
           ...(result.cost !== undefined ? { cost: result.cost } : {}),
+          ...(callCost !== undefined ? { callCost } : {}),
           ...(callSiteId !== undefined ? { callSiteId } : {}),
         }
         telemetry.onSuccess?.(successEvent, span)

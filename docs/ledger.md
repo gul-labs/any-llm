@@ -49,9 +49,16 @@ Rules that matter:
   recorded and not priced. Rows written before record version 2 have NULL in all three cost columns: their
   confidence was never stored and cannot be recovered (`record_schema_version = 1`). Refusal rows (no
   attempt ran) have no cost.
-- Money you can reconcile: the ledger sums `cost_micro_usd` per attempt. `LlmResult.callCost` is the same
-  sum for one call in process (retries and billed failures included), and `Telemetry.onAttempt` reports
-  each attempt as it happens.
+- Money you can reconcile: the ledger writes `cost_micro_usd` per attempt, NULL when the attempt has no
+  price (an unpriced model, or a failure that reported no usage). `LlmResult.callCost` is
+  `{ microUsd, attempts, unpricedAttempts }` for one call in process: `microUsd` equals the SQL
+  `SUM(cost_micro_usd)` over the call's rows (barring a dropped sink write, which is logged), and
+  `unpricedAttempts` counts the attempts that were dispatched but have no priced usage, such as a timeout
+  or an abort. The provider may have billed those, so when `unpricedAttempts > 0` both the SQL sum and
+  `microUsd` are a **lower bound** (a call with two timeouts and a success has `unpricedAttempts: 2`). Find
+  such calls in SQL with the rows whose `status` is `timeout` or `aborted` and `cost_micro_usd IS NULL`.
+  `callCost` is on `CallSuccessEvent`, `CallErrorEvent` and `LlmResult`; `Telemetry.onAttempt` reports each
+  attempt as it happens.
 - `reasoning_text` and `error_message` are provider-controlled and are capped at 16 KiB (UTF-8, marker
   included) when the record is built. A longer text ends in `…[truncated]` and the row carries a warning;
   the live result and the thrown error keep the full text. `error_message` is redacted before it is cut.

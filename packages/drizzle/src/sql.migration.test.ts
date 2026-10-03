@@ -264,8 +264,8 @@ describe('install.sql (fresh install)', () => {
     // own rendering, so a wrong column list or order fails (names alone would not).
     const declaredIndexes = config.indexes
       .map((i) => ({
-        indexname: i.config.name,
-        indexdef: `CREATE ${i.config.unique ? 'UNIQUE ' : ''}INDEX ${i.config.name} ON public.llm_calls USING btree (${i.config.columns
+        indexname: i.config.name ?? '',
+        indexdef: `CREATE ${i.config.unique ? 'UNIQUE ' : ''}INDEX ${i.config.name ?? ''} ON public.llm_calls USING btree (${i.config.columns
           .map((c) => (c as { name: string }).name)
           .join(', ')})`,
       }))

@@ -34,6 +34,7 @@ export type {
   Warning,
   Usage,
   Cost,
+  CallCost,
   Citation,
   LlmResult,
 } from './types.js'

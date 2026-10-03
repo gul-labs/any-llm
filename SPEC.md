@@ -289,7 +289,7 @@ export interface Telemetry {
   onStart?(e: object): unknown
   onAttempt?(e: AttemptEvent, span?: unknown): void // once per provider attempt: usage, cost, error kind (ADR-039)
   onSuccess?(e: object, span?: unknown): void
-  onError?(e: object, span?: unknown): void // carries usage, cost and callCost of the failing attempts when known
+  onError?(e: object, span?: unknown): void // carries usage, cost and callCost of the failing attempts when known; onSuccess carries callCost too
 }
 ```
 
@@ -321,7 +321,7 @@ runStructured(callSite, vars?, opts?)  /  generate(request)
  13. telemetry.onSuccess + log 'llm.call.success'
  14. return LlmResult
   (any throw → classify → telemetry.onError + log 'llm.call.error' + record status + rethrow LlmError)
-  LlmResult.callCost = { microUsd, attempts }: every attempt's priced amount summed (retries and billed failures included)
+  LlmResult.callCost = { microUsd, attempts, unpricedAttempts }: the priced amount of every attempt summed (retries and billed failures included); unpricedAttempts > 0 makes microUsd a lower bound (ADR-039 Amendment A)
 ```
 
 Canonical log events (identical across hosts): `llm.call.start` / `.success` / `.error`.

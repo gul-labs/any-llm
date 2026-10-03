@@ -361,10 +361,14 @@ ledger row was handed to the sink, with `attemptNumber`, `usage`, `cost` and, on
 `reason` and `retryable` (a refusal that never reached an attempt emits none). The opaque value returned by
 `onStart` is forwarded as `span` to the others. Hook failures are swallowed fail-open. `CallErrorEvent`
 carries `errorKind`, `retryable`, `reason` when the error has one, and `usage` and `cost` of the last
-failing attempt when it reported usage. `LlmResult.callCost` is `{ microUsd, attempts }`: the library-priced
-amount of every attempt summed, retries and billed failures included (`result.cost` is the successful attempt
-alone); it is absent when no attempt was priced or any attempt with usage was unpriced, and `CallErrorEvent`
-carries the same total for a call that failed.
+failing attempt when it reported usage. `LlmResult.callCost` is `{ microUsd, attempts, unpricedAttempts }`
+(`result.cost` is the successful attempt alone): `microUsd` sums the attempts that were priced, retries and
+billed failures included; `attempts` counts the attempts that began; `unpricedAttempts` counts attempts that
+were dispatched but have no priced usage (a timeout, abort or connection failure that reported no usage, usage
+the pricing source could not price). The provider may have billed those, so **`unpricedAttempts > 0` means
+`microUsd` is a lower bound**. An attempt known to cost nothing (rejected before dispatch, a provider 400, 401
+or 429, any other HTTP error answer) is not counted. `CallSuccessEvent` and `CallErrorEvent` carry the same
+`callCost`, so an `onSuccess`-only metrics hook can read the total.
 
 ### Error reasons
 
