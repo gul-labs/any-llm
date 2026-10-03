@@ -127,6 +127,7 @@ export { composeProviders } from './plugin.js'
 // Model registry
 export type { ModelDescriptor, ModelLimits, ModelRegistry } from './registry.js'
 export {
+  SHUTDOWN_WARNING_DAYS,
   createModelRegistry,
   assertModelMatchesDescriptor,
   assertInputMimeTypesAdmitted,

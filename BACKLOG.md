@@ -137,6 +137,7 @@ paths to other repos.
 ## Model refresh deferrals (2026-09-25)
 
 - **2027-01-01 Gemini intro-price re-snapshot.** `gemini-3.6-flash`, `gemini-3.7-flash`, and `gemini-3.8-flash` ship at the published intro rates $0.75 / $0.075 / $3.75 per million (input / cached / output). On 2027-01-01 those become $1.50 / $0.15 / $7.50. Re-snapshot `GEMINI_PRICING` and bump `pricingVersion` before that date. The owner chose a dated backlog item instead of date-windowed pricing (plan D1).
+- **2027-05-07 `gemini-3.1-flash-lite` shutdown.** Google's deprecations page (read 2026-10-03) lists the date and `gemini-3.5-flash-lite` as the replacement. The descriptor warns from 2027-02-06 (`shutdownDate`, ADR-043). After the date, delete the descriptor, its pricing row, config schema and fixtures in one change; do not keep an alias to the replacement. Re-read the page before each release: a new shutdown date is a one-line descriptor change.
 - Gemini `priority` tier. P-G7 captured a `usageMetadata.serviceTier` flex echo and the adapter now reads served tier. Priority still needs live admission, pricing, and downgrade accounting before the schema admits it.
 - Other Gemini features: built-in tools beyond `googleSearch` (URL context, Maps, code execution, file search); `media_resolution: ultra_high`; `gemini-3.1-pro-preview-customtools`.
 - xAI models not in this refresh: grok-4.3, the grok-4.20 family (including multi-agent), grok-build-0.1.

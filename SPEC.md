@@ -368,6 +368,7 @@ Invariants of the middleware chain (ADR-037) and model resolution (ADR-033):
   `findByModel` returns every descriptor naming the string as canonical id or alias, across providers.
   `ModelDescriptor.configKeys` is the sorted top-level keys of `configSchema` across union branches
   (ADR-033, Amendment B).
+- `ModelDescriptor.shutdownDate?: 'YYYY-MM-DD'` is the provider's announced end of service for the model (ADR-043). A successful call within 90 days of it, or past it, carries a `warnings` entry naming the date; the call is never refused for it. An invalid date is `bad_request` at `createModelRegistry`.
 - Every `ModelDescriptor` states `limits: { contextWindow, maxOutputTokens }` (required; `contextWindow` a
   positive integer, `maxOutputTokens` a positive integer `<= contextWindow` the provider documents, or
   `null` when it documents none, from the provider's documentation). A numeric limit caps the config

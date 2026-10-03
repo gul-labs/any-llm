@@ -17,7 +17,7 @@ import type * as z from 'zod'
 import { LlmError } from './errors.js'
 import { toConfigJsonSchema, toConfigKeys } from './model-config/index.js'
 import type { StandardSchemaV1 } from './standard-schema.js'
-import type { JsonValue, Message, ReasoningEffort } from './types.js'
+import type { JsonValue, Message, ReasoningEffort, Warning } from './types.js'
 
 /**
  * Token limits of a model, taken from the provider's own documentation (the
@@ -75,6 +75,15 @@ export interface ModelDescriptor {
    * states them, so hosts can size a call without a provider round trip.
    */
   limits: ModelLimits
+  /**
+   * The date the provider has announced it will stop serving this model, as
+   * `YYYY-MM-DD` (UTC). Absent when no shutdown is announced. A successful call
+   * to a model within {@link SHUTDOWN_WARNING_DAYS} days of this date, or past
+   * it, carries a `warnings` entry naming the date. The call is never refused
+   * for it: the provider decides what it still serves. Cite the provider page
+   * and the date it was read next to the value.
+   */
+  shutdownDate?: string
   /** Capability flags for routing and adapter logic. */
   capabilities?: {
     reasoning?: boolean
@@ -242,6 +251,57 @@ function assertLimits(descriptor: Partial<ModelDescriptor>): void {
         retryable: false,
       },
     )
+  }
+}
+
+/** A successful call to a model this close to its `shutdownDate` (or past it) warns. */
+export const SHUTDOWN_WARNING_DAYS = 90
+
+const SHUTDOWN_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/
+
+/** Midnight UTC of a `YYYY-MM-DD` date, or `undefined` for anything else (including 2027-02-30). */
+function parseShutdownDate(value: unknown): number | undefined {
+  if (typeof value !== 'string') return undefined
+  const m = SHUTDOWN_DATE_RE.exec(value)
+  if (m === null) return undefined
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+  return new Date(ms).toISOString().startsWith(value) ? ms : undefined
+}
+
+function assertShutdownDate(descriptor: Partial<ModelDescriptor>): void {
+  if (descriptor.shutdownDate === undefined) return
+  if (parseShutdownDate(descriptor.shutdownDate) === undefined) {
+    throw new LlmError(
+      `Model descriptor for provider "${descriptor.provider ?? '<unknown>'}" model "${
+        descriptor.model ?? '<unknown>'
+      }" has an invalid shutdownDate: expected a real calendar date as YYYY-MM-DD.`,
+      { kind: 'bad_request', retryable: false },
+    )
+  }
+}
+
+/**
+ * The advisory for a model announced to shut down: `undefined` until `nowMs` is
+ * within {@link SHUTDOWN_WARNING_DAYS} days of the descriptor's `shutdownDate`,
+ * then a warning naming the date and the days left (or gone by).
+ */
+export function shutdownWarning(
+  descriptor: Pick<ModelDescriptor, 'model' | 'shutdownDate'>,
+  nowMs: number,
+): Warning | undefined {
+  const shutdownMs = parseShutdownDate(descriptor.shutdownDate)
+  if (shutdownMs === undefined) return undefined
+  const days = Math.ceil((shutdownMs - nowMs) / 86_400_000)
+  if (days > SHUTDOWN_WARNING_DAYS) return undefined
+  const when =
+    days > 0
+      ? `in ${days} day${days === 1 ? '' : 's'}`
+      : days === 0
+        ? 'today'
+        : `${-days} day${days === -1 ? '' : 's'} ago`
+  return {
+    type: 'other',
+    message: `Model "${descriptor.model}" is scheduled to shut down on ${descriptor.shutdownDate} (${when}); move to a model without a shutdown date before then.`,
   }
 }
 
@@ -513,6 +573,7 @@ export function createModelRegistry(input: readonly ModelDescriptor[]): ModelReg
     assertDescriptorSchemaArtifacts(descriptor)
     assertConfigKeys(descriptor)
     assertLimits(descriptor)
+    assertShutdownDate(descriptor)
     assertInputMimeTypes(descriptor)
     assertContinuationCapabilities(descriptor)
     // A table shared by several descriptors must not be writable through any

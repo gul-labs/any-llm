@@ -121,6 +121,10 @@ export const geminiModelDescriptors: ModelDescriptor[] = [
   {
     model: 'gemini-3.1-flash-lite',
     provider: 'google',
+    // Google's deprecations page (https://ai.google.dev/gemini-api/docs/deprecations,
+    // "Page last updated" 2026-10-01, read 2026-10-03) lists a May 7, 2027
+    // shutdown, replacement gemini-3.5-flash-lite.
+    shutdownDate: '2027-05-07',
     limits: GOOGLE_MODEL_LIMITS['gemini-3.1-flash-lite'],
     pricingFamily: 'gemini-3.1-flash-lite',
     capabilities: {
@@ -276,6 +280,10 @@ export const geminiModelDescriptors: ModelDescriptor[] = [
   },
 ]
 
+// `grounding: true` on both Gemma descriptors rests on a live capture (ADR-013):
+// `__fixtures__/gemma-grounding-2026-10-03.json`, three Search prompts per model.
+// `groundingMetadata` came back on 5 of 6 calls; the one miss was `MAX_TOKENS` with
+// an empty answer (thinking used the 800-token cap), not an absent feature.
 export const gemmaModelDescriptors: ModelDescriptor[] = [
   {
     model: 'gemma-4-31b-it',

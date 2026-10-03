@@ -3654,3 +3654,36 @@ supported runtimes were not written down. The README and doc examples were not c
 **Consequences:** hosts that imported `VERSION` read their own `package.json`. A host on a runtime other
 than Node and Deno must run its own smoke test, and must not rely on this repository for it.
 `pnpm quality` needs a Node with `node --import` (22.12 has it) and the built packages.
+
+---
+
+## ADR-043: Model lifecycle: `shutdownDate`
+
+**Status:** Accepted (2026-10-03).
+
+**Context:**
+Google's deprecations page (https://ai.google.dev/gemini-api/docs/deprecations, "Page last updated"
+2026-10-01, read 2026-10-03) lists a May 7, 2027 shutdown for `gemini-3.1-flash-lite`, with
+`gemini-3.5-flash-lite` as the replacement. The descriptor carried no lifecycle data, so a host found out
+when the provider began to answer 404, and the only record was a prose note. Separately, both Gemma 4
+descriptors declared `grounding: true` with no capture behind it.
+
+**Decision:**
+
+1. **`ModelDescriptor.shutdownDate?: string` (`YYYY-MM-DD`, UTC).** `createModelRegistry` rejects anything
+   that is not a real calendar date (`2027-02-30`, `2027-5-7`, a prose date) with `bad_request`.
+2. **A warning, never a refusal.** A successful call whose clock reads within 90 days of the date
+   (`SHUTDOWN_WARNING_DAYS`), on the day or after it, carries one `warnings` entry naming the model, the
+   date and the days left or gone by. The engine uses its injected clock, so a test advances a `FakeClock`.
+   The provider decides what it still serves, and a model that is gone fails with the provider's own error;
+   the library does not guess. An error path carries no advisory: the call did not succeed.
+3. **`gemini-3.1-flash-lite` is the only descriptor with a date.** Gemini 2.5 access is limited to existing
+   users on the same page with no date, and Gemma 4 is not listed, so none is set. Removing the model
+   after the date is a dated BACKLOG item (delete it, no alias to the replacement).
+4. **Gemma `grounding: true` stays, on a capture.** Live, 2026-10-03: three Search prompts on each Gemma 4
+   model returned `groundingMetadata` on 5 of 6 calls; the one miss was `MAX_TOKENS` with an empty answer
+   (thinking used the 800-token cap). Pinned as `gemma-grounding-2026-10-03.json` with a test that ties it
+   to the descriptors (ADR-013).
+
+**Consequences:** a host that alerts on warnings sees the advisory 90 days ahead of the shutdown. Host
+descriptors may carry a date too. Nothing about a model without `shutdownDate` changes.

@@ -1,0 +1,156 @@
+{
+  "capturedOn": "2026-10-03",
+  "description": "Gemma 4 calls with tools [{ googleSearch: {} }], three prompts per model, no schema, maxOutputTokens 800. Whether groundingMetadata came back, its queries and chunk count, the finish reason and usage. Model answer text removed. Redacted per ADR-013.",
+  "calls": [
+    {
+      "model": "gemma-4-31b-it",
+      "prompt": "What is the latest stable release of the Node.js runtime and when was it published? Use Google Search.",
+      "status": 200,
+      "hasGroundingMetadata": true,
+      "webSearchQueries": [
+        "latest stable release of Node.js and publication date"
+      ],
+      "groundingChunks": 2,
+      "finishReason": "STOP",
+      "answerEmpty": false,
+      "usage": {
+        "promptTokenCount": 64,
+        "candidatesTokenCount": 205,
+        "totalTokenCount": 826,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 64
+          }
+        ],
+        "thoughtsTokenCount": 557,
+        "serviceTier": "standard"
+      }
+    },
+    {
+      "model": "gemma-4-31b-it",
+      "prompt": "Which team won the most recent Formula 1 Grand Prix? Use Google Search.",
+      "status": 200,
+      "hasGroundingMetadata": true,
+      "webSearchQueries": [
+        "most recent Formula 1 Grand Prix winner 2026",
+        "F1 race results September 2026"
+      ],
+      "groundingChunks": 3,
+      "finishReason": "STOP",
+      "answerEmpty": false,
+      "usage": {
+        "promptTokenCount": 81,
+        "candidatesTokenCount": 46,
+        "totalTokenCount": 345,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 81
+          }
+        ],
+        "thoughtsTokenCount": 218,
+        "serviceTier": "standard"
+      }
+    },
+    {
+      "model": "gemma-4-31b-it",
+      "prompt": "What is the current stable version of PostgreSQL? Use Google Search.",
+      "status": 200,
+      "hasGroundingMetadata": true,
+      "webSearchQueries": [
+        "current stable version of PostgreSQL"
+      ],
+      "groundingChunks": 3,
+      "finishReason": "STOP",
+      "answerEmpty": false,
+      "usage": {
+        "promptTokenCount": 53,
+        "candidatesTokenCount": 69,
+        "totalTokenCount": 309,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 53
+          }
+        ],
+        "thoughtsTokenCount": 187,
+        "serviceTier": "standard"
+      }
+    },
+    {
+      "model": "gemma-4-26b-a4b-it",
+      "prompt": "What is the latest stable release of the Node.js runtime and when was it published? Use Google Search.",
+      "status": 200,
+      "hasGroundingMetadata": false,
+      "webSearchQueries": [],
+      "groundingChunks": 0,
+      "finishReason": "MAX_TOKENS",
+      "answerEmpty": true,
+      "usage": {
+        "promptTokenCount": 85,
+        "candidatesTokenCount": 22,
+        "totalTokenCount": 904,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 85
+          }
+        ],
+        "thoughtsTokenCount": 797,
+        "serviceTier": "standard"
+      }
+    },
+    {
+      "model": "gemma-4-26b-a4b-it",
+      "prompt": "Which team won the most recent Formula 1 Grand Prix? Use Google Search.",
+      "status": 200,
+      "hasGroundingMetadata": true,
+      "webSearchQueries": [
+        "most recent Formula 1 Grand Prix winner October 2026",
+        "F1 race results 2026 season"
+      ],
+      "groundingChunks": 4,
+      "finishReason": "STOP",
+      "answerEmpty": false,
+      "usage": {
+        "promptTokenCount": 93,
+        "candidatesTokenCount": 59,
+        "totalTokenCount": 731,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 93
+          }
+        ],
+        "thoughtsTokenCount": 579,
+        "serviceTier": "standard"
+      }
+    },
+    {
+      "model": "gemma-4-26b-a4b-it",
+      "prompt": "What is the current stable version of PostgreSQL? Use Google Search.",
+      "status": 200,
+      "hasGroundingMetadata": true,
+      "webSearchQueries": [
+        "current stable version of PostgreSQL"
+      ],
+      "groundingChunks": 2,
+      "finishReason": "STOP",
+      "answerEmpty": false,
+      "usage": {
+        "promptTokenCount": 47,
+        "candidatesTokenCount": 97,
+        "totalTokenCount": 644,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 47
+          }
+        ],
+        "thoughtsTokenCount": 500,
+        "serviceTier": "standard"
+      }
+    }
+  ]
+}

@@ -32,7 +32,7 @@ import {
   snapshotPayloadSource,
 } from './payload.js'
 import type { BuildControl, LlmCallPayload, PayloadsConfig } from './payload.js'
-import { boundedModelText, unknownModelMessage } from './registry.js'
+import { boundedModelText, shutdownWarning, unknownModelMessage } from './registry.js'
 import type { ModelDescriptor, ModelRegistry } from './registry.js'
 import type {
   ProviderAdapter,
@@ -2349,12 +2349,14 @@ export function createClient(config: ClientConfig): Client {
           })
         }
 
-        // Collect all warnings (adapter + normalize + reasoning cap + cost).
+        // Collect all warnings (adapter + normalize + reasoning cap + cost + shutdown).
+        const shutdownAdvisory = shutdownWarning(callDescriptor, ctx.clock.now())
         const allWarnings: Warning[] = [
           ...adapterResult.warnings,
           ...normalizedResult.warnings,
           ...reasoningCapWarnings,
           ...costWarnings,
+          ...(shutdownAdvisory !== undefined ? [shutdownAdvisory] : []),
         ]
 
         // Step 10: Build LlmCallRecord.
