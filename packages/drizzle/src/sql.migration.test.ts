@@ -316,7 +316,8 @@ describe('a table that was not migrated is detectable, and the engine logs every
       debug() {},
       info() {},
       warn() {},
-      error: (ctx, event) => void events.push({ level: 'error', event, ctx }),
+      error: (ctx, event) =>
+        void events.push({ level: 'error', event, ctx: ctx as Record<string, unknown> }),
     }
     let seen = 0
     const adapter = new FakeAdapter('google', [
