@@ -1,11 +1,17 @@
 # Grounded -> Structured on Gemini
 
-The Google adapter admits `googleSearch` plus `output.jsonSchema` on all six
-registered Gemini 3.x models. The 2026-09-26 live probes returned structured
-JSON, but did not return `groundingMetadata` even when prompted to search.
-Treat the combination as an accepted request shape, not proof that Search ran
-or a source of normalized citations. If a workflow needs auditable citations,
-use the two-call recipe below and check the first call's grounding metadata.
+The Google adapter rejects `googleSearch` plus `output.jsonSchema` on every
+registered Gemini model (`structuredOutputWithTools: false` on all six Gemini 3.x
+descriptors) with `bad_request`, before any network call. The error message points
+here. The provider accepts the request shape, but an accepted request is not proof
+that Search ran: the 2026-09-26 and 2026-10-02 live probes (table below) show models
+that skipped Search or returned no `groundingMetadata` when a schema was attached.
+Use the two-call recipe below: a grounded call without a schema, then a structured
+call over its text.
+
+A call that sends `googleSearch` is never priced as exact. Grounding fees are not in
+the token price, so the result's `cost.confidence` is `'estimated'` and the result
+carries a warning saying grounding fees are not included.
 
 Live re-probe on 2026-10-02 (Developer API, one grounded question per model, with
 `responseSchema` and with `responseJsonSchema`):
@@ -20,9 +26,10 @@ Live re-probe on 2026-10-02 (Developer API, one grounded question per model, wit
 | `gemini-3.1-flash-lite`  | no on 3 of 4 calls                               | no                             |
 
 The same question without a schema returned `groundingMetadata` with four or five search
-queries. The adapter sends `responseSchema`. On the Flash-Lite models an accepted request
-with a schema usually means Search did not run at all, so do not attach a schema to a
-grounded call there. `BACKLOG.md` tracks the two open decisions.
+queries. The adapter sends `responseSchema` for structured output. The table is the evidence
+for keeping the capability off: on the Flash-Lite models an accepted request with a schema
+usually means Search did not run at all, and no model returned `groundingMetadata` with
+`responseSchema`.
 
 If you send a grounded call without a schema and want JSON back, say so in the prompt
 ("respond with JSON only, no code fences"). The adapter returns the model's text unchanged;
@@ -32,10 +39,10 @@ The old `googleSearchRetrieval` tool name is not a compatibility alias. Use the
 documented `googleSearch` tool shape or the descriptor schema rejects the
 config.
 
-For citation-sensitive workflows, use two calls:
+For any grounded workflow that needs structured output, make two calls:
 
-1. grounded research;
-2. structured synthesis.
+1. grounded research, with `googleSearch` and no schema;
+2. structured synthesis, with `output.jsonSchema` and no `googleSearch`.
 
 Both attempts flow through the normal sink and keep separate ledger rows.
 

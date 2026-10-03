@@ -117,7 +117,6 @@ const count = await client.countTokens(
   {
     provider: 'google',
     model: 'gemini-2.5-flash',
-    system: 'You are a concise summarizer.',
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello!' }] }],
   },
   { auth: { apiKey: myResolvedGeminiKey } },
@@ -129,8 +128,10 @@ console.log(count.raw) // provider's raw token-count response, verbatim
 ```
 
 `TokenCountRequest` is deliberately narrower than a generate request — no `config`, no
-`output`, no `providerOptions`; token counting only needs `provider`, `model`,
-`system`, and `messages`.
+`output`, no `providerOptions`; token counting only needs `provider`, `model`, and
+`messages`. Google rejects `system` and `tools` with `bad_request` (its count cannot
+include them, so the number would be wrong); xAI rejects `tools`. To budget a call that
+has a system prompt or tools, read `usage.inputTokens` from a real `generate()` result.
 
 ## Composing multiple providers — xAI Grok example
 

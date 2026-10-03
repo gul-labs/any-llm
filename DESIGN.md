@@ -179,11 +179,13 @@ recommended `validateStructuredResult` + Standard Schema v1 pattern.
 Grounding is requested via `providerOptions.google.tools: [{ googleSearch: {} }]`.
 The adapter validates this strict allowlist before dispatch; `googleSearchRetrieval`
 is not admitted. With `req.outputJsonSchema`, the descriptor must set
-`structuredOutputWithTools`. All six registered Gemini 3.x models set that flag
-after the 2026-09-26 live probes. A successful structured response does not
-guarantee Search ran: those probes did not return `groundingMetadata` when
-Search was requested. When present, `candidate.groundingMetadata` is captured
-alongside `promptFeedback` in `result.providerMetadata`.
+`structuredOutputWithTools`. No registered Google model sets that flag: the six Gemini
+3.x descriptors set it to `false`, because an accepted structured request with
+`googleSearch` does not show that Search ran (see `docs/grounded-structured.md`), so
+the combination fails with `bad_request` and hosts use the two-call recipe. When
+present, `candidate.groundingMetadata` is captured alongside `promptFeedback` in
+`result.providerMetadata`. A call that sent `googleSearch` reports an estimated cost (`confidence: 'estimated'`)
+and a warning, because grounding fees are not priced.
 
 ### Transport Timeout
 
@@ -255,10 +257,10 @@ have `sampling: 'fixed'` and reject `temperature`, `topP`, `topK` at call time.
 
 **Grounding.** Requested via `providerOptions.google.tools: [{ googleSearch: {} }]`. The adapter
 captures `candidate.groundingMetadata` into `result.providerMetadata`. Grounding plus
-`output.jsonSchema` is admitted only when `structuredOutputWithTools` is set
-(all six registered Gemini 3.x models). Other models fail with `bad_request`
-before the SDK call. A successful structured response may omit grounding
-metadata, so callers needing auditable citations must check it explicitly.
+`output.jsonSchema` is admitted only when `structuredOutputWithTools` is set (no
+registered Google model sets it). Every other model fails with `bad_request` before the
+SDK call. A successful grounded response may omit grounding metadata, so callers needing
+auditable citations must check it explicitly.
 
 **Flex transport timeout.** The adapter sets `config.httpOptions.timeout` automatically:
 1 500 000 ms (25 minutes) for Flex calls without `timeoutMs`, and `timeoutMs + 5 000 ms` when

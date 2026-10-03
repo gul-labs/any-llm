@@ -44,6 +44,7 @@ import type {
 } from './client.js'
 import { isGeminiCapacityError } from './flex-fallback.js'
 import { classifyGoogleError } from './errors.js'
+import { GOOGLE_SEARCH_REQUESTED_DETAIL } from './cost.js'
 
 type GeminiGoogleSearchTool = { googleSearch: Record<string, never> }
 
@@ -303,7 +304,7 @@ function mapGoogleProviderOptions({
 
     if (structuredOutputRequested && structuredOutputWithTools !== true) {
       throw badGoogleProviderOptions(
-        `Structured output with googleSearch is not supported for model "${model}".`,
+        `Structured output with googleSearch is not enabled for model "${model}": the provider accepts the request but Search does not reliably run when a response schema is attached. Make two calls instead: grounded research without a schema, then structured synthesis (the two-call recipe in docs/grounded-structured.md).`,
       )
     }
 
@@ -1028,15 +1029,27 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
 
       if (hasBlockReason || !hasCandidates) {
         const reason = response.promptFeedback?.blockReason ?? 'NO_CANDIDATES'
-        throw new LlmError(`Gemini response has no usable candidate: ${reason}`, {
-          kind: hasBlockReason ? 'content_filter' : 'server',
-          retryable: !hasBlockReason,
-          provider: 'google',
-          ...(response.usageMetadata !== undefined
-            ? { usage: mapUsage(response.usageMetadata) }
-            : {}),
-          ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
-        })
+        const thoughtTokens = response.usageMetadata?.thoughtsTokenCount ?? 0
+        // The usual cause of a candidate-less 200 that billed reasoning is a
+        // cap spent on thinking, so name it. The payload does not prove the cause.
+        const reasoningHint =
+          !hasBlockReason && thoughtTokens > 0
+            ? `. The call billed ${thoughtTokens} reasoning tokens, and maxOutputTokens (${
+                config.maxOutputTokens ?? 'the provider default'
+              }) includes reasoning tokens, so a low cap can be used up by reasoning before any answer is produced`
+            : ''
+        throw new LlmError(
+          `Gemini response has no usable candidate: ${reason}${reasoningHint}`,
+          {
+            kind: hasBlockReason ? 'content_filter' : 'server',
+            retryable: !hasBlockReason,
+            provider: 'google',
+            ...(response.usageMetadata !== undefined
+              ? { usage: mapUsage(response.usageMetadata) }
+              : {}),
+            ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
+          },
+        )
       }
 
       // ------------------------------------------------------------------
@@ -1122,6 +1135,22 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       const usage = mapUsage(response.usageMetadata)
       const finishReason = mapFinishReason(candidate.finishReason)
 
+      // Grounding is billed per grounded prompt or query, which the token-only
+      // price cannot see. Until grounding fees are priced, never call the cost exact.
+      const googleSearchSent =
+        googleProviderConfig.tools?.some((tool) => 'googleSearch' in tool) === true
+      if (googleSearchSent) {
+        // Synthetic, adapter-owned flag (the `details` lane is open and this key
+        // is not a provider payload field): the pricing source cannot see the
+        // request, so it reads this to mark the cost estimated.
+        usage.details[GOOGLE_SEARCH_REQUESTED_DETAIL] = 1
+        warnings.push({
+          type: 'other',
+          message:
+            'google: googleSearch was sent; grounding fees are not included in cost, so cost.confidence is "estimated".',
+        })
+      }
+
       const result: AdapterResult = {
         model,
         usage,
@@ -1172,35 +1201,36 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         )
       }
 
+      // The SDK's Gemini Developer API `countTokens` carries no `systemInstruction`
+      // or `tools`, so a count that omitted them would be a lower bound reported
+      // as exact. Fail before dispatch instead of sending a different request.
+      const unsupported: string[] = []
+      if (req.system !== undefined) {
+        unsupported.push('system')
+      }
+      if (req.tools !== undefined && req.tools.length > 0) {
+        unsupported.push('tools')
+      }
+      if (unsupported.length > 0) {
+        throw new LlmError(
+          `Google countTokens does not support ${unsupported.join(' or ')}: the token count would omit them. Count the messages alone, or read inputTokens from a generate() result.`,
+          {
+            kind: 'bad_request',
+            retryable: false,
+            provider: 'google',
+            issues: unsupported.map((path) => ({
+              path,
+              message: 'not supported by Google countTokens',
+            })),
+          },
+        )
+      }
+
       const contents = mapMessagesToGeminiContents(req.messages)
-      const countTools =
-        req.tools !== undefined && req.tools.length > 0
-          ? [
-              {
-                functionDeclarations: req.tools.map((tool) => ({
-                  name: tool.name,
-                  description: tool.description,
-                  parameters: tool.inputJsonSchema,
-                })),
-              },
-            ]
-          : undefined
       const params: GeminiCountTokensParams = {
         model: req.model,
         contents,
-        ...(req.system !== undefined ||
-        ctx.signal !== undefined ||
-        countTools !== undefined
-          ? {
-              config: {
-                ...(req.system !== undefined
-                  ? { systemInstruction: { parts: [{ text: req.system }] } }
-                  : {}),
-                ...(ctx.signal !== undefined ? { abortSignal: ctx.signal } : {}),
-                ...(countTools !== undefined ? { tools: countTools } : {}),
-              },
-            }
-          : {}),
+        ...(ctx.signal !== undefined ? { config: { abortSignal: ctx.signal } } : {}),
       }
 
       try {

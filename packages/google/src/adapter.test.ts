@@ -2005,49 +2005,90 @@ describe('grounding — model-aware tool guard', () => {
     expect(client.calls).toHaveLength(0)
   })
 
-  it.each([
+  const GEMINI_3_MODELS = [
     'gemini-3.1-pro-preview',
     'gemini-3.8-flash',
     'gemini-3.7-flash',
     'gemini-3.6-flash',
     'gemini-3.5-flash-lite',
     'gemini-3.1-flash-lite',
-  ])(
-    'allows structured output + googleSearch on %s when the descriptor admits it',
+  ]
+
+  it.each(GEMINI_3_MODELS)(
+    'rejects structured output + googleSearch on %s with the two-call recipe, before dispatch',
     async (model) => {
       const client = makeFakeGemini(
         fakeGeminiResponse({ structuredJson: '{"winner":"Spain"}' }),
       )
       const adapter = geminiAdapter({ client })
       const descriptor = geminiModelDescriptors.find((d) => d.model === model)!
-      expect(descriptor.capabilities?.structuredOutputWithTools).toBe(true)
+      expect(descriptor.capabilities?.structuredOutputWithTools).toBe(false)
 
-      const result = await adapter.run(
-        makeResolvedReq({
-          model,
-          modelDescriptor: descriptor,
-          outputJsonSchema: {
-            type: 'object',
-            properties: { winner: { type: 'string' } },
-            required: ['winner'],
-            additionalProperties: false,
-          },
-          config: {
-            serviceTier: 'flex',
-            providerOptions: { google: { tools: [{ googleSearch: {} }] } },
-          },
-        }),
-        FAKE_CTX,
-      )
+      const err = await adapter
+        .run(
+          makeResolvedReq({
+            model,
+            modelDescriptor: descriptor,
+            outputJsonSchema: {
+              type: 'object',
+              properties: { winner: { type: 'string' } },
+              required: ['winner'],
+              additionalProperties: false,
+            },
+            config: {
+              serviceTier: 'flex',
+              providerOptions: { google: { tools: [{ googleSearch: {} }] } },
+            },
+          }),
+          FAKE_CTX,
+        )
+        .catch((e: unknown) => e)
 
-      expect(result.rawStructured).toEqual({ winner: 'Spain' })
-      const call = client.calls[0] as {
-        config?: { responseMimeType?: string; tools?: unknown[] }
-      }
-      expect(call?.config?.responseMimeType).toBe('application/json')
-      expect(call?.config?.tools).toEqual([{ googleSearch: {} }])
+      expect(err).toBeInstanceOf(LlmError)
+      expect((err as LlmError).kind).toBe('bad_request')
+      expect((err as LlmError).retryable).toBe(false)
+      expect((err as LlmError).message).toContain('docs/grounded-structured.md')
+      expect((err as LlmError).message).toMatch(/two-call recipe/i)
+      expect(client.calls).toHaveLength(0)
     },
   )
+
+  it('still admits structured output + googleSearch for a descriptor that declares it', async () => {
+    const client = makeFakeGemini(
+      fakeGeminiResponse({ structuredJson: '{"winner":"Spain"}' }),
+    )
+    const adapter = geminiAdapter({ client })
+    const base = geminiModelDescriptors.find((d) => d.model === 'gemini-3.1-pro-preview')!
+    const descriptor: ModelDescriptor = {
+      ...base,
+      capabilities: { ...base.capabilities, structuredOutputWithTools: true },
+    }
+
+    const result = await adapter.run(
+      makeResolvedReq({
+        model: 'gemini-3.1-pro-preview',
+        modelDescriptor: descriptor,
+        outputJsonSchema: {
+          type: 'object',
+          properties: { winner: { type: 'string' } },
+          required: ['winner'],
+          additionalProperties: false,
+        },
+        config: {
+          serviceTier: 'flex',
+          providerOptions: { google: { tools: [{ googleSearch: {} }] } },
+        },
+      }),
+      FAKE_CTX,
+    )
+
+    expect(result.rawStructured).toEqual({ winner: 'Spain' })
+    const call = client.calls[0] as {
+      config?: { responseMimeType?: string; tools?: unknown[] }
+    }
+    expect(call?.config?.responseMimeType).toBe('application/json')
+    expect(call?.config?.tools).toEqual([{ googleSearch: {} }])
+  })
 
   it('rejects structured output + googleSearch when the descriptor does not admit it', async () => {
     const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))

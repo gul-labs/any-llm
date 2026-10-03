@@ -322,14 +322,14 @@ export interface GeminiCountTokensParams {
   model: string
   contents: GeminiContent[]
   config?: {
-    systemInstruction?: { parts: GeminiContentPart[] }
     /**
      * Real field: CountTokensConfig.abortSignal. countTokens has no
      * tier-timeout dance (no flex/standard default ceilings) — `ctx.signal`
      * is forwarded here directly, unlike `run()`'s combined timer signal.
+     * The adapter never sends `systemInstruction` or `tools`: the Developer
+     * API's `countTokens` cannot carry them, so it rejects such requests.
      */
     abortSignal?: AbortSignal
-    tools?: GeminiGenerateConfig['tools']
   }
 }
 

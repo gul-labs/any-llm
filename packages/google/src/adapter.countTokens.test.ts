@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
+import { LlmError } from '@gullabs/core'
 import type { AdapterCtx, TokenCountRequest, Message } from '@gullabs/core'
 import { makeFakeGemini } from '@gullabs/testing'
 import { geminiAdapter, mapMessagesToGeminiContents } from './adapter.js'
@@ -54,37 +55,49 @@ describe('geminiAdapter.countTokens — happy path', () => {
     expect(result.accuracy).toBe('exact')
     expect(result.details).toBeUndefined()
   })
+})
 
-  it('forwards tools as functionDeclarations and stays exact', async () => {
+describe('geminiAdapter.countTokens — system and tools are rejected before dispatch (R1.8)', () => {
+  const tool = {
+    name: 'get_temperature',
+    description: 'Get temperature',
+    inputJsonSchema: { type: 'object' as const },
+  }
+
+  it.each([
+    ['system', { system: 'Be brief.' }, ['system']],
+    ['tools', { tools: [tool] }, ['tools']],
+    ['system and tools', { system: 'Be brief.', tools: [tool] }, ['system', 'tools']],
+  ])('%s → bad_request naming the field, no SDK call', async (_name, extra, paths) => {
     const client = makeFakeGemini({ candidates: [] }, { totalTokens: 9 })
     const adapter = geminiAdapter({ client })
-    const result = await adapter.countTokens!(
-      makeCountReq({
-        tools: [
-          {
-            name: 'get_temperature',
-            description: 'Get temperature',
-            inputJsonSchema: { type: 'object' },
-          },
-        ],
-      }),
-      FAKE_CTX,
-    )
+
+    const err = (await adapter.countTokens!(makeCountReq(extra), FAKE_CTX).catch(
+      (e: unknown) => e,
+    )) as LlmError
+
+    expect(err).toBeInstanceOf(LlmError)
+    expect(err.kind).toBe('bad_request')
+    expect(err.retryable).toBe(false)
+    expect(err.provider).toBe('google')
+    expect(err.issues?.map((i) => i.path)).toEqual(paths)
+    expect(client.countTokensCalls).toHaveLength(0)
+  })
+
+  it('an empty tools array is not a tool declaration and is accepted', async () => {
+    const client = makeFakeGemini({ candidates: [] }, { totalTokens: 9 })
+    const adapter = geminiAdapter({ client })
+    const result = await adapter.countTokens!(makeCountReq({ tools: [] }), FAKE_CTX)
     expect(result.accuracy).toBe('exact')
-    const call = client.countTokensCalls[0] as {
-      config?: { tools?: unknown }
-    }
-    expect(call.config?.tools).toEqual([
-      {
-        functionDeclarations: [
-          {
-            name: 'get_temperature',
-            description: 'Get temperature',
-            parameters: { type: 'object' },
-          },
-        ],
-      },
-    ])
+    expect(client.countTokensCalls).toHaveLength(1)
+  })
+
+  it('messages alone send neither systemInstruction nor tools', async () => {
+    const client = makeFakeGemini({ candidates: [] }, { totalTokens: 9 })
+    const adapter = geminiAdapter({ client })
+    await adapter.countTokens!(makeCountReq(), FAKE_CTX)
+    const call = client.countTokensCalls[0] as { config?: unknown }
+    expect(call.config).toBeUndefined()
   })
 })
 
@@ -190,38 +203,5 @@ describe('geminiAdapter.countTokens — message-mapping parity with run()', () =
     const runCall = runClient.calls[0] as { contents: unknown }
     const countCall = countClient.countTokensCalls[0] as { contents: unknown }
     expect(countCall.contents).toEqual(runCall.contents)
-  })
-
-  it('run() and countTokens() send identical `systemInstruction` for the same system', async () => {
-    const system = 'You are a helpful assistant.'
-    const runClient = makeFakeGemini({
-      candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
-      usageMetadata: {},
-    })
-    const countClient = makeFakeGemini({ candidates: [] }, { totalTokens: 1 })
-
-    const runAdapter = geminiAdapter({ client: runClient })
-    const countAdapter = geminiAdapter({ client: countClient })
-
-    await runAdapter.run(
-      {
-        provider: 'google',
-        model: 'gemini-2.5-pro',
-        messages,
-        system,
-        config: {},
-        modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-pro')!,
-      },
-      FAKE_CTX,
-    )
-    await countAdapter.countTokens!(makeCountReq({ messages, system }), FAKE_CTX)
-
-    type SystemCarrier = {
-      config?: { systemInstruction?: { parts: Array<{ text: string }> } }
-    }
-    const runCall = runClient.calls[0] as SystemCarrier
-    const countCall = countClient.countTokensCalls[0] as SystemCarrier
-    expect(countCall.config?.systemInstruction).toEqual(runCall.config?.systemInstruction)
-    expect(countCall.config?.systemInstruction?.parts[0]?.text).toBe(system)
   })
 })

@@ -81,9 +81,18 @@ descriptor boundary:
   recording, and tests.
 
 The Developer API accepted structured JSON plus `googleSearch` on all registered
-Gemini 3.x models in the 2026-09-26 live probes. The structured responses did
-not include `groundingMetadata`, even when asked to search; callers must not
-assume that an accepted tool means Search ran or that citations are available.
+Gemini 3.x models in the 2026-09-26 live probes, but the structured responses did
+not include `groundingMetadata` even when asked to search, and Flash-Lite often
+skipped Search. An accepted request is not proof that Search ran, so
+`structuredOutputWithTools` is `false` on every descriptor: the combination fails
+with `bad_request` before dispatch. Make two calls instead (grounded research, then
+structured synthesis); see [`docs/grounded-structured.md`](../../docs/grounded-structured.md).
+A call that sends `googleSearch` reports `cost.confidence: 'estimated'` and a warning,
+because grounding fees are not included in the price.
+
+`countTokens` takes `messages` only on Google: `system` or `tools` fails with
+`bad_request`, because the Developer API's count cannot include them and a count
+without them would be a lower bound reported as exact.
 
 ## Registered models
 
@@ -92,12 +101,12 @@ assume that an accepted tool means Search ran or that citations are available.
 | `gemini-2.5-pro`         | `low`, `medium`, `high`         | no          | 2048              | flex, standard |
 | `gemini-2.5-flash`       | `none`, `low`, `medium`, `high` | no          | 2048              | flex, standard |
 | `gemini-2.5-flash-lite`  | `none`, `low`, `medium`, `high` | no          | 2048              | flex, standard |
-| `gemini-3.1-pro-preview` | `low`, `medium`, `high`         | yes         | 1024              | flex, standard |
-| `gemini-3.1-flash-lite`  | `none`, `low`, `medium`, `high` | yes         | 1024              | flex, standard |
-| `gemini-3.5-flash-lite`  | `none`, `low`, `medium`, `high` | yes         | 1024              | flex, standard |
-| `gemini-3.6-flash`       | `none`, `low`, `medium`, `high` | yes         | 1024              | flex, standard |
-| `gemini-3.7-flash`       | `low`, `medium`, `high`         | yes         | 1024              | flex, standard |
-| `gemini-3.8-flash`       | `low`, `medium`, `high`         | yes         | 1024              | flex, standard |
+| `gemini-3.1-pro-preview` | `low`, `medium`, `high`         | no          | 1024              | flex, standard |
+| `gemini-3.1-flash-lite`  | `none`, `low`, `medium`, `high` | no          | 1024              | flex, standard |
+| `gemini-3.5-flash-lite`  | `none`, `low`, `medium`, `high` | no          | 1024              | flex, standard |
+| `gemini-3.6-flash`       | `none`, `low`, `medium`, `high` | no          | 1024              | flex, standard |
+| `gemini-3.7-flash`       | `low`, `medium`, `high`         | no          | 1024              | flex, standard |
+| `gemini-3.8-flash`       | `low`, `medium`, `high`         | no          | 1024              | flex, standard |
 | `gemma-4-31b-it`         | `none`, `high`                  | no          | n/a               | none           |
 | `gemma-4-26b-a4b-it`     | `none`, `high`                  | no          | n/a               | none           |
 

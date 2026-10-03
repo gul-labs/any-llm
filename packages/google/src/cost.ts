@@ -17,6 +17,14 @@ import type { Cost, PricingSource, Usage } from '@gullabs/core'
 import { GEMINI_PRICING, pricingVersion, resolveGeminiRates } from './pricing.js'
 
 /**
+ * Synthetic `usage.details` key the adapter sets to `1` when the request sent
+ * `googleSearch`. It is adapter-owned, not a provider payload field. The pricing
+ * source cannot see the request and does not yet price grounding fees, so it
+ * reads this key to report such a cost as `'estimated'`, never `'exact'`.
+ */
+export const GOOGLE_SEARCH_REQUESTED_DETAIL = 'google_search_requested'
+
+/**
  * Factory that returns the **google-scoped** {@link PricingSource} port
  * implementation backed by the built-in Gemini pricing snapshot.
  *
@@ -39,7 +47,11 @@ export function geminiPricingSource(): PricingSource {
   return {
     version: pricingVersion,
     price(model: string, usage: Usage, tier?: string): Cost {
-      return computeCost(model, usage, tier, resolveGeminiRates, pricingVersion)
+      const cost = computeCost(model, usage, tier, resolveGeminiRates, pricingVersion)
+      return usage.details[GOOGLE_SEARCH_REQUESTED_DETAIL] === 1 &&
+        cost.confidence === 'exact'
+        ? { ...cost, confidence: 'estimated' }
+        : cost
     },
     hasModel(model: string): boolean {
       return resolveGeminiRates(model, undefined) !== undefined

@@ -55,22 +55,27 @@ describe('live Gemini model-refresh contracts', () => {
     'gemini-3.7-flash',
     'gemini-3.5-flash-lite',
     'gemini-3.1-flash-lite',
-  ])('admits structured JSON plus Search on %s', (model) => {
-    const probe = fixture.structuredSearch[model]!
-    expect(probe.status).toBe(200)
-    expect(probe.json?.answer).toEqual(expect.any(String))
-    expect(probe.searchPrompt).toMatchObject({
-      status: 200,
-      json: { source: expect.any(String) },
-    })
-    expect(
-      defaultGeminiRegistry.resolve('google', model)?.capabilities
-        ?.structuredOutputWithTools,
-    ).toBe(true)
-  })
+  ])(
+    'accepted structured JSON plus Search on %s but the descriptor keeps it off',
+    (model) => {
+      const probe = fixture.structuredSearch[model]!
+      expect(probe.status).toBe(200)
+      expect(probe.json?.answer).toEqual(expect.any(String))
+      expect(probe.searchPrompt).toMatchObject({
+        status: 200,
+        json: { source: expect.any(String) },
+      })
+      // The request was accepted, but a 200 is not evidence that Search ran
+      // (docs/grounded-structured.md), so the capability stays off.
+      expect(
+        defaultGeminiRegistry.resolve('google', model)?.capabilities
+          ?.structuredOutputWithTools,
+      ).toBe(false)
+    },
+  )
 
   it.each(['gemini-3.1-pro-preview', 'gemini-3.8-flash'])(
-    'returns structured JSON with Search configured on %s',
+    'returned structured JSON with Search configured on %s but the descriptor keeps it off',
     (model) => {
       expect(fixture.structuredSearch[model]).toMatchObject({
         status: 200,
@@ -79,7 +84,7 @@ describe('live Gemini model-refresh contracts', () => {
       expect(
         defaultGeminiRegistry.resolve('google', model)?.capabilities
           ?.structuredOutputWithTools,
-      ).toBe(true)
+      ).toBe(false)
     },
   )
 
