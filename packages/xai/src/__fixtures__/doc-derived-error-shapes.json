@@ -1,0 +1,53 @@
+{
+  "_note": "DOC-DERIVED, NOT CAPTURES (ADR-013). Probe P7 could not exhaust the account's credits, and no probe produced a failed response. creditsExhausted429/403 bodies are the sentence quoted in public bug reports of the live API (continuedev/continue#10373 reports HTTP 429, LCV-Ideas-Software/cross-review#270 reports HTTP 403), team id replaced by a placeholder; xAI's error reference (docs.x.ai/docs/key-information/debugging, read 2026-10-03) documents 403 and 429 with no body. The failed/cancelled/error responses follow the Responses API response object (status failed|cancelled, error object); xAI's reference does not show a sample. Replace each with a pinned capture when one exists.",
+  "creditsExhausted429": {
+    "status": 429,
+    "error": "Your team 00000000-0000-0000-0000-000000000000 has either used all available credits or reached its monthly spending limit. To continue making API requests, please purchase more credits or raise your spending limit."
+  },
+  "creditsExhausted403": {
+    "status": 403,
+    "error": "Your team 00000000-0000-0000-0000-000000000000 has either used all available credits or reached its monthly spending limit. To continue making API requests, please purchase more credits or raise your spending limit."
+  },
+  "failedResponse": {
+    "id": "resp_failed_doc",
+    "model": "grok-4.5",
+    "status": "failed",
+    "error": {
+      "code": "server_error",
+      "message": "The server had an error while processing your request."
+    },
+    "output": [],
+    "usage": {
+      "input_tokens": 1200,
+      "output_tokens": 40,
+      "total_tokens": 1240
+    }
+  },
+  "cancelledResponse": {
+    "id": "resp_cancelled_doc",
+    "model": "grok-4.5",
+    "status": "cancelled",
+    "error": null,
+    "output": [],
+    "usage": {
+      "input_tokens": 1200,
+      "output_tokens": 0,
+      "total_tokens": 1200
+    }
+  },
+  "errorOnCompleted": {
+    "id": "resp_error_doc",
+    "model": "grok-4.5",
+    "status": "completed",
+    "error": {
+      "code": "server_error",
+      "message": "A tool failed."
+    },
+    "output": [],
+    "usage": {
+      "input_tokens": 800,
+      "output_tokens": 10,
+      "total_tokens": 810
+    }
+  }
+}

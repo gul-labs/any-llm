@@ -220,11 +220,17 @@ export interface XaiResponseShape {
   id: string
   model: string
   /**
-   * Real field: `status`. Observed values: "completed", "incomplete" — kept
-   * as a plain `string` since xAI may add further status values over time.
+   * Real field: `status`. Observed values: "completed", "incomplete"; the API
+   * also documents "failed" and "cancelled" (never captured). Kept as a plain
+   * `string` since xAI may add further status values over time.
    */
   status: string
   incomplete_details?: { reason?: string } | null
+  /**
+   * Error object the Responses API puts on a response that failed after the
+   * HTTP 200 (documented shape, never captured).
+   */
+  error?: { code?: string; message?: string } | null
   output: XaiOutputItem[]
   usage: XaiUsageShape
   reasoning?: { effort?: string; summary?: string }

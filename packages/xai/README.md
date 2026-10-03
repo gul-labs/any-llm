@@ -404,11 +404,12 @@ xAI's own `/v1/models` listing surfaces `grok-4.5-latest` and `grok-build-latest
 ## What it maps
 
 - `providerOptions.xai.promptCacheKey` → `prompt_cache_key`
+- `providerOptions.xai.parallelToolCalls` → `parallel_tool_calls`; it needs function tools or `providerOptions.xai.tools`, and is `bad_request` without them
 - `reasoning.effort` → `reasoning.effort` (per-model admitted set)
 - `serviceTier: 'priority'` → `service_tier: 'priority'` (all three models)
 - `output.jsonSchema` → `text.format: { type: 'json_schema', name, schema, strict: true }`, and `tools[].inputJsonSchema` → function `parameters`; both are asserted against xAI's enforced keywords first
 - Usage: `usage.input_tokens` → `inputTokens`, `usage.output_tokens` → `outputTokens` (both already GROSS on xAI, unlike Gemini's sub-field summation); numeric extras (`num_sources_used`, `cost_in_usd_ticks`, etc.) surface into `usage.details` under their raw names, and the full raw payload is always in `usage.raw`
-- Errors: HTTP status is a hint. `classifyXaiError` inspects the STRUCTURED parsed body only — never free-form `Error.message`. Two recorded overlays: HTTP **400** whose body starts with `"Incorrect API key provided"` (prefix only; the SDK may drop `code`) → `invalid_auth`; HTTP **403** whose body starts with `"Content violates usage guidelines"` (e.g. `SAFETY_CHECK_TYPE_*`) → `content_filter`. A bare 403 without that body stays `invalid_auth`. Any other 400, `429`→`rate_limited`, `5xx`→`server`, and timeouts fall through to `@gullabs/core`'s generic `classifyError`.
+- Errors: HTTP status is a hint. `classifyXaiError` inspects the STRUCTURED parsed body only — never free-form `Error.message`. Two recorded overlays: HTTP **400** whose body starts with `"Incorrect API key provided"` (prefix only; the SDK may drop `code`) → `invalid_auth`; HTTP **403** whose body starts with `"Content violates usage guidelines"` (e.g. `SAFETY_CHECK_TYPE_*`) → `content_filter`. A bare 403 without that body stays `invalid_auth`. HTTP **429 or 403** whose body is `Your team <id> has either used all available credits or reached its monthly spending limit...` → `rate_limited`, `retryable: false`, `reason: 'credits_exhausted'` (top up or raise the limit; a retry cannot help). That body is **doc-derived, not captured**: xAI's error reference documents the status codes but no body, so the sentence comes from public reports of the live API. A 200 whose Responses object has `status` `failed` or `cancelled`, or an `error` object, is a retryable `server` error carrying its usage (also doc-derived). Any other 400, `429`→`rate_limited`, `5xx`→`server`, and timeouts fall through to `@gullabs/core`'s generic `classifyError`.
 
 ## Learn more
 

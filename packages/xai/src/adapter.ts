@@ -534,68 +534,46 @@ function isXaiSafetyCheckBody(rawErr: unknown): boolean {
 }
 
 /**
- * Message/errno signatures of a transport-level failure: the request never
- * reached xAI's servers (or the connection was severed mid-flight), so there
- * is no HTTP response for {@link classifyHttpStatus} to route by status.
- * Covers the `openai` SDK's own default message (`"Connection error."`,
- * thrown by `APIConnectionError`) plus the Node/undici errno codes that
- * surface when the underlying `fetch` rejects before a response arrives.
+ * Credits-exhausted / spending-limit signature. DOC-DERIVED, NOT A CAPTURE:
+ * the account could not be driven to its limit (probe P7 was not runnable), and
+ * xAI's own error reference (docs.x.ai/docs/key-information/debugging, read
+ * 2026-10-03) documents 403 and 429 without any body. The body text comes from
+ * public bug reports of the live API (continuedev/continue#10373, HTTP 429;
+ * LCV-Ideas-Software/cross-review#270, HTTP 403): `Your team <team-id> has
+ * either used all available credits or reached its monthly spending limit. To
+ * continue making API requests, please purchase more credits or raise your
+ * spending limit.` One report also names the code
+ * `personal-team-blocked:spending-limit`, which this adapter does not rely on.
+ *
+ * Only the structured body text is matched (same anti-echo rule as the other
+ * overlays), by the stable middle of the sentence, on a 429 or a 403. Replace
+ * this with a pinned capture when one exists.
  */
-const XAI_TRANSPORT_ERROR_PATTERN =
-  /connection error|econnreset|econnrefused|etimedout|eai_again|epipe|socket hang up|fetch failed/i
+const XAI_CREDITS_EXHAUSTED_BODY =
+  /^Your team \S+ has either used all available credits or reached its monthly spending limit/
 
-/** True iff `err.message` or `err.code` matches a known transport-failure signature. */
-function matchesXaiTransportSignature(err: unknown): boolean {
-  if (!(err instanceof Error)) return false
-  if (XAI_TRANSPORT_ERROR_PATTERN.test(err.message)) return true
-  const code = (err as { code?: unknown }).code
-  return typeof code === 'string' && XAI_TRANSPORT_ERROR_PATTERN.test(code)
+/** True iff the structured body matches the doc-derived credits-exhausted signature. */
+function isXaiCreditsExhaustedBody(rawErr: unknown): boolean {
+  const text = extractXaiErrorBodyText(rawErr)
+  return text !== undefined && XAI_CREDITS_EXHAUSTED_BODY.test(text)
 }
 
 /**
- * True iff `rawErr` is (or wraps) a transport-level connection failure —
- * observed live killing Temporal-orchestrated host runs when the `openai`
- * SDK's `APIConnectionError` ("Connection error.") fell through
- * `classifyError`'s generic HTTP-status classification to `kind: 'unknown',
- * retryable: false`.
- *
- * Detection order:
- * 1. `rawErr.constructor.name` matches the `openai` SDK's
- *    `APIConnectionError` / `APIConnectionTimeoutError` classes. Matched by
- *    constructor name rather than `instanceof` so this file does not need a
- *    runtime import of `openai` — per `client.ts`, that package is imported
- *    ONLY in `buildXaiClient`, keeping unit tests independent of the real
- *    SDK.
- * 2. `rawErr.message` / `rawErr.code` matches a known transport-failure
- *    signature (handles the SDK's default message text directly, without
- *    relying on the class name surviving minification).
- * 3. A wrapped `rawErr.cause` matches either of the above —
- *    `APIConnectionError` attaches the underlying fetch/socket error as
- *    `.cause`.
+ * True iff `rawErr` is the `openai` SDK's own connection error. The SDK's
+ * `APIConnectionError` carries a caller-chosen message in some paths, so it is
+ * also matched by class. Matched by constructor name rather than `instanceof`
+ * so this file does not need a runtime import of `openai` (per `client.ts`,
+ * that package is imported ONLY in `buildXaiClient`, keeping unit tests
+ * independent of the real SDK). Every other transport failure (an errno or
+ * undici code on the cause chain, `fetch failed`, `Connection error.`) is
+ * recognised by core's `classifyError` through `isTransportError`.
  */
-function isXaiTransportError(rawErr: unknown): boolean {
-  if (!(rawErr instanceof Error)) return false
-
-  const ctorName = rawErr.constructor.name
-  if (ctorName === 'APIConnectionError' || ctorName === 'APIConnectionTimeoutError') {
-    return true
-  }
-
-  if (matchesXaiTransportSignature(rawErr)) return true
-
-  const cause = (rawErr as { cause?: unknown }).cause
-  if (cause instanceof Error) {
-    const causeCtorName = cause.constructor.name
-    if (
-      causeCtorName === 'APIConnectionError' ||
-      causeCtorName === 'APIConnectionTimeoutError'
-    ) {
-      return true
-    }
-    if (matchesXaiTransportSignature(cause)) return true
-  }
-
-  return false
+function isOpenAiSdkConnectionError(rawErr: unknown): boolean {
+  return (
+    rawErr instanceof Error &&
+    (rawErr.constructor.name === 'APIConnectionError' ||
+      rawErr.constructor.name === 'APIConnectionTimeoutError')
+  )
 }
 
 /** undici error codes for Node's own header and body timers. */
@@ -702,13 +680,17 @@ function xaiTransportTimeoutKind(
  *    `"Content violates usage guidelines"` (fixture 15; `SAFETY_CHECK_TYPE_*`
  *    suffixes vary) → `content_filter`. A bare 403 without that body stays
  *    the core default, `invalid_auth`.
+ * 3b. HTTP 429 or 403 whose structured body is the credits-exhausted /
+ *    spending-limit sentence (doc-derived, see `XAI_CREDITS_EXHAUSTED_BODY`) →
+ *    `rate_limited`, `retryable: false`, `reason: 'credits_exhausted'`.
  * 4. A transport deadline (undici header or body timer, or the SDK's own
  *    deadline, which needs the `deadline` argument to be recognised; see
  *    {@link xaiTransportTimeoutKind}) → `timeout`,
  *    `retryable: false`, `reason: 'transport_timeout'`.
- * 5. `kind: 'unknown'` with a known transport-failure signature (see
- *    {@link isXaiTransportError}) → `server`, retryable. A connection that
- *    never reached xAI is not the caller's fault.
+ * 5. A transport failure (core's `classifyError` already makes it a retryable
+ *    `server` error; an `openai` SDK connection error that core left `unknown`
+ *    is made one here). A connection that never reached xAI is not the
+ *    caller's fault.
  * 6. Else rebuild the core classification tagged `provider: 'xai'`.
  */
 export function classifyXaiError(rawErr: unknown, deadline?: XaiSdkDeadline): LlmError {
@@ -752,7 +734,24 @@ export function classifyXaiError(rawErr: unknown, deadline?: XaiSdkDeadline): Ll
     })
   }
 
-  if (base.kind === 'unknown' && isXaiTransportError(rawErr)) {
+  if (
+    (base.httpStatus === 429 || base.httpStatus === 403) &&
+    isXaiCreditsExhaustedBody(rawErr)
+  ) {
+    // Out of credits or at the spending limit: neither a retry nor a key
+    // rotation helps, the team has to add credit or raise the limit. xAI sends
+    // it as a 429 in some reports and a 403 in others.
+    return new LlmError(extractXaiErrorBodyText(rawErr) ?? base.message, {
+      kind: 'rate_limited',
+      retryable: false,
+      reason: 'credits_exhausted',
+      httpStatus: base.httpStatus,
+      provider: 'xai',
+      cause: base.cause ?? rawErr,
+    })
+  }
+
+  if (base.kind === 'unknown' && isOpenAiSdkConnectionError(rawErr)) {
     return new LlmError(base.message, {
       kind: 'server',
       retryable: true,
@@ -1207,6 +1206,13 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
         }
       }
       if (xaiProviderConfig.parallelToolCalls !== undefined) {
+        // It only governs how a response orders its tool calls, so with no tool
+        // (function or server) on the request it has nothing to act on.
+        if (params.tools === undefined || params.tools.length === 0) {
+          throw badXaiRequest(
+            `providerOptions.xai.parallelToolCalls requires at least one tool (function tools or providerOptions.xai.tools) for model "${model}".`,
+          )
+        }
         params.parallel_tool_calls = xaiProviderConfig.parallelToolCalls
       }
 
@@ -1249,6 +1255,45 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
                 elapsedMs: performance.now() - sdkCallStart.startedAt,
               }
             : undefined,
+        )
+      }
+
+      // ------------------------------------------------------------------
+      // 6b. A 200 that reports failure. DOC-DERIVED, NOT A CAPTURE: the
+      //     Responses API documents `status` values beyond `completed` and
+      //     `incomplete` (`failed`, `cancelled`) and an `error` object on the
+      //     response, but no probe produced one. Such a response is a
+      //     provider-side failure, never a silent success: a retryable
+      //     `server` error that carries the usage the response billed.
+      // ------------------------------------------------------------------
+      const reportedError = isPlainRecord(response.error) ? response.error : undefined
+      if (
+        response.status === 'failed' ||
+        response.status === 'cancelled' ||
+        reportedError !== undefined
+      ) {
+        const detail =
+          typeof reportedError?.['message'] === 'string'
+            ? `: ${reportedError['message']}`
+            : ''
+        throw new LlmError(
+          `xAI response reported ${reportedError !== undefined ? 'an error' : `status "${response.status}"`}${detail}`,
+          {
+            kind: 'server',
+            retryable: true,
+            provider: 'xai',
+            // Usage is attached only when the failed response billed tokens.
+            ...(isPlainRecord(response.usage) &&
+            typeof response.usage.input_tokens === 'number' &&
+            typeof response.usage.output_tokens === 'number'
+              ? { usage: mapUsage(response.usage) }
+              : {}),
+            ...(typeof response.service_tier === 'string' &&
+            response.service_tier.length > 0
+              ? { servedServiceTier: response.service_tier }
+              : {}),
+            cause: response.error ?? { status: response.status },
+          },
         )
       }
 

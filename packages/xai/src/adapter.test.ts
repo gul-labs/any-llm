@@ -2731,6 +2731,13 @@ describe('xai Live Search tools', () => {
     await adapter.run(
       makeResolvedReq({
         modelDescriptor: grok45ModelDescriptor,
+        tools: [
+          {
+            name: 'get_temperature',
+            description: 'Get temperature',
+            inputJsonSchema: { type: 'object', properties: {} },
+          },
+        ],
         config: { providerOptions: { xai: { parallelToolCalls: false } } },
       }),
       FAKE_CTX,
