@@ -50,8 +50,9 @@ export type LlmErrorKind =
  * member is a core release. Hosts should keep a `default` branch when they
  * switch on it.
  *
- * - `'transport_timeout'`      — a transport-level timeout before response
- *   headers arrived.
+ * - `'transport_timeout'`      — a transport-level timeout (a header timer, a
+ *   body timer or the client's own deadline; it can fire before or after
+ *   response headers).
  * - `'quota_window'`           — a local quota window is exhausted for longer
  *   than the caller is willing to wait.
  * - `'daily_quota'`            — a provider daily quota is exhausted.

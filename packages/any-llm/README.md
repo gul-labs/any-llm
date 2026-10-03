@@ -16,7 +16,14 @@ pnpm add @gullabs/any-llm
 
 This installs the Gemini adapter and `@google/genai`, plus the `@gullabs/core` engine at the same
 version. Core is an exact-version peer dependency, which npm 7+ and pnpm install automatically.
-If you disabled automatic peer installation, add `@gullabs/core` at the same version yourself.
+Package managers that do not install peers (pnpm with `autoInstallPeers: false`, yarn, npm with
+`--legacy-peer-deps`) leave it out, and the import then fails with `Cannot find module '@gullabs/core'`.
+There, add it yourself at the same version:
+
+```bash
+pnpm add @gullabs/any-llm @gullabs/core   # or: yarn add ... / npm i ... --legacy-peer-deps
+```
+
 All `@gullabs/*` packages must be at one version; see
 [Versioning](../../RELEASING.md#versioning-one-version-for-every-package).
 

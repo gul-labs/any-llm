@@ -540,7 +540,11 @@ accepted request is not evidence the tool ran, so all six Gemini 3.x descriptors
 two-call recipe (grounded research without a schema, then structured synthesis). Separately, any call that
 sent `googleSearch` reports `cost.confidence: 'estimated'` plus a warning, because grounding fees are not
 part of the token price; the adapter signals this with the synthetic `usage.details.google_search_requested`
-key (the same pattern xAI uses for `server_tools_requested`). Hosts that need to turn the combination
+key (the same pattern xAI uses for `server_tools_requested`). The marker also goes on a grounded attempt
+that fails after billing (a candidate-less or blocked 200 with usage): the thrown `LlmError` carries the
+flagged `usage` and the warning in `LlmError.warnings`, which the engine writes to that attempt's row.
+`GOOGLE_SEARCH_REQUESTED_DETAIL` is exported so a host that re-prices from the ledger can read the key.
+Cost confidence itself is not persisted until a `cost_confidence` column ships (see `docs/ledger.md`). Hosts that need to turn the combination
 back on, or have it priced, need a new decision backed by probe evidence.
 
 **Consequences:**
@@ -2008,7 +2012,11 @@ out of credits are all `rate_limited, retryable: false`, and a host reacts to ea
 - Hosts branch on `error.reason` (or the `error_reason` column) instead of message text.
 - Existing rows keep `error_reason` NULL. Hosts using `@gullabs/drizzle` apply
   `sql/upgrades/0001-add-error-reason.sql` before upgrading the sink, or inserts fail on the missing
-  column.
+  column. The sink stays fail-open (ADR-002) and has no compatibility path for the old shape, so
+  the failure is made loud instead: every dropped row is logged at `error` as the stable event
+  `llm.call.sink.failed` (with `callId`, `attemptId`, `attemptNumber`, `provider`, `model`), and
+  `assertLlmCallsSchema(db)` lets a host check the table from a deploy step, readiness endpoint or
+  boot without a running client.
 - Some members are declared before every emitter ships; the changesets say which release emits which
   reason.
 

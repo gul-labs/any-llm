@@ -24,6 +24,22 @@ ledger shape unless you have a concrete reason to stop consuming the shared sink
 
 Rules that matter:
 
+- A call whose final error did not come out of a provider attempt (a middleware refusal, a quota deferral,
+  an exhausted retry budget) writes one zero-usage, unbilled row: `attempt_number` 0 when no attempt had
+  run, otherwise the number of the refused attempt. `error_kind` and `error_reason` of such a row are the
+  call's final outcome, so `error_reason = 'quota_window'` finds those calls too. A gap in a call's attempt
+  numbers means a middleware refused that attempt before dispatch.
+- Cost confidence is **not** a column today. `cost_micro_usd` is the token-priced amount in micro-USD, and
+  the library does not persist whether it is exact. The one case that is knowingly incomplete is a Google
+  call that sent `googleSearch`: Search is billed per grounded prompt or query, which a token price cannot
+  see, so `cost_micro_usd` on such a row **omits grounding fees** and undercounts. It is marked in two
+  places: `token_details->>'google_search_requested' = '1'` (set on every attempt that sent `googleSearch`,
+  including failures that were billed) and a warning in `warnings` whose message says grounding fees are
+  not included. The result's `cost.confidence` is `'estimated'` for these calls but is not stored. The key
+  lives in `token_details`, which is otherwise token counts, so do not sum its values. Query grounded rows
+  with `token_details->>'google_search_requested'` and treat their cost as a lower bound. A later release
+  (plan R7.1) adds a persisted `cost_confidence` column and prices Search; until then use the marker above.
+
 - `attemptId` is the durable row identity.
 - Every attempt is a billed row with its own `attemptId`. The library never deduplicates provider calls; a host retry is a new call and new rows. Tie retries together with a shared `externalId`.
 - `error_reason` is plain text with no CHECK constraint, so a reason added to core later needs no SQL. Match on the values in `LlmErrorReason`, and treat an unknown value as "some other reason".
@@ -92,9 +108,21 @@ also decide whether and how to clean dependent sidecar rows.
   order. Each is idempotent. `0001-add-error-reason.sql` takes the table published in 0.7.2 and adds
   `error_reason`.
 
-Apply the upgrade before deploying a sink that writes the new column: an insert that names a column the table
-lacks fails, and the engine swallows sink failures, so the rows would silently go missing. Both files assume
-the table is called `llm_calls`; substitute your name if it differs.
+Run the upgrade SQL **before** you deploy the new sink, and do it on every release that ships one: all
+`@gullabs/*` packages version in lockstep, so bumping core for an unrelated fix means bumping
+`@gullabs/drizzle` too. The sink writes every column on every row, so a table that missed an upgrade makes
+**every** insert fail, successes included. The engine swallows sink failures by design (a broken ledger must
+not fail LLM calls), so each dropped row is only logged: level `error`, event `llm.call.sink.failed`, with
+`callId`, `attemptId`, `attemptNumber`, `provider`, `model` and the redacted error. There is no
+compatibility path for the old table shape. Both files assume the table is called `llm_calls`; substitute
+your name if it differs.
+
+Two ways to find out before rows are lost:
+
+- Alert on the `llm.call.sink.failed` log event (it is stable).
+- Call `assertLlmCallsSchema(db)` from `@gullabs/drizzle`. It selects every column the schema names with
+  `LIMIT 0`, writes nothing, and rejects with an error that points at `sql/upgrades/`. It needs no client,
+  so run it from a deploy or CI step, a readiness endpoint, or at boot.
 
 ## Atomic sidecar writes (transaction composition)
 

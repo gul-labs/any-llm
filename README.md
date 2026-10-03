@@ -33,13 +33,16 @@ pnpm add @gullabs/any-llm
 ```
 
 That one package is the Gemini facade: `@gullabs/google` + `@google/genai` as dependencies, and
-`@gullabs/core` as its exact-version peer, which npm 7+ and pnpm install for you.
+`@gullabs/core` as its exact-version peer, which npm 7+ and pnpm install for you. A package manager
+that does not install peers (pnpm with `autoInstallPeers: false`, yarn, npm with
+`--legacy-peer-deps`) needs `pnpm add @gullabs/any-llm @gullabs/core` (or the yarn/npm equivalent) at the
+same version, or the import fails with `Cannot find module '@gullabs/core'`.
 
 Add other providers yourself. Auth stays host-injected on every call.
 
 ```bash
 pnpm add @gullabs/core @gullabs/google @gullabs/xai @google/genai openai
-# peers: @google/genai for Gemini; openai ^6 || ^7 for xAI Responses (baseURL api.x.ai)
+# peers: @google/genai for Gemini; openai ^7 for xAI Responses (baseURL api.x.ai)
 ```
 
 **One version for every package.** All `@gullabs/*` packages are released together under one
