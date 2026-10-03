@@ -69,7 +69,7 @@ describe('@gullabs/core package surface', () => {
     }>()
     expectTypeOf<TokenCount>().toEqualTypeOf<{
       totalTokens: number
-      accuracy: 'exact' | 'lower-bound'
+      accuracy: 'exact' | 'lower-bound' | 'estimated'
       details?: Record<string, number>
       raw: import('./types.js').JsonValue
     }>()

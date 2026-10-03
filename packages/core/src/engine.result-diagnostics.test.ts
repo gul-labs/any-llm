@@ -39,6 +39,7 @@ function usage(overrides: Partial<Usage> = {}): Usage {
 
 function adapterResult(overrides: Partial<AdapterResult> = {}): AdapterResult {
   return {
+    message: { role: 'assistant', parts: [] },
     model: 'm1',
     usage: usage(),
     warnings: [],

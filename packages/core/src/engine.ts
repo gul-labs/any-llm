@@ -53,8 +53,6 @@ import type {
   Usage,
   Warning,
   Cost,
-  Message,
-  Part,
 } from './types.js'
 import { isToolCallPart, isToolResultPart } from './types.js'
 import type { CallSite } from './callsite.js'
@@ -860,28 +858,6 @@ async function validateInputContract(contract: {
       issues: toErrorIssues(normalized),
     })
   }
-}
-
-/**
- * The ordered assistant message for a result. Adapters that can interleave text
- * and tool calls supply it; otherwise it is `[text, ...tool calls]`, which is
- * the provider order for adapters that return text and then calls.
- */
-function assistantMessageOf(adapterResult: AdapterResult): Message {
-  if (adapterResult.message !== undefined) return adapterResult.message
-  const parts: Part[] = []
-  if (adapterResult.text !== undefined && adapterResult.text.length > 0) {
-    parts.push({ kind: 'text', text: adapterResult.text })
-  }
-  for (const call of adapterResult.toolCalls ?? []) {
-    parts.push({
-      kind: 'tool-call',
-      toolCallId: call.toolCallId,
-      toolName: call.toolName,
-      args: call.args,
-    })
-  }
-  return { role: 'assistant', parts }
 }
 
 /**
@@ -1692,7 +1668,7 @@ export function createClient(config: ClientConfig): Client {
           attemptId,
           usage: normalizedResult.usage,
           model: adapterResult.model,
-          message: assistantMessageOf(adapterResult),
+          message: adapterResult.message,
           continuation: callDescriptor.capabilities?.continuation ?? 'history',
           latencyMs,
           queueDelayMs,
@@ -1719,8 +1695,10 @@ export function createClient(config: ClientConfig): Client {
           ...(adapterResult.citations !== undefined && adapterResult.citations.length > 0
             ? { citations: adapterResult.citations }
             : {}),
+          // A copy: a host that edits toolCalls[i].args must not change the
+          // arguments in `message`, which it replays (and a signature hashes).
           ...(adapterResult.toolCalls !== undefined && adapterResult.toolCalls.length > 0
-            ? { toolCalls: adapterResult.toolCalls }
+            ? { toolCalls: structuredClone(adapterResult.toolCalls) }
             : {}),
           ...(adapterResult.providerMetadata !== undefined
             ? { providerMetadata: adapterResult.providerMetadata }
@@ -2092,6 +2070,13 @@ export function createClient(config: ClientConfig): Client {
 
     const seenCallIds: string[] = []
     request.messages.forEach((message, mi) => {
+      if (message.role === 'assistant' && message.parts.length === 0) {
+        issues.push({
+          path: `messages.${mi}.parts`,
+          message:
+            'an assistant message must have at least one part; a result whose message has no parts (the provider returned only thoughts) is not appended to history.',
+        })
+      }
       message.parts.forEach((part, pi) => {
         if (isToolCallPart(part)) {
           if (message.role !== 'assistant') {
@@ -2125,7 +2110,7 @@ export function createClient(config: ClientConfig): Client {
     })
 
     if (issues.length > 0) {
-      throw new LlmError('Invalid function-calling request.', {
+      throw new LlmError('Invalid request messages or tools.', {
         kind: 'bad_request',
         retryable: false,
         issues,
@@ -2340,7 +2325,7 @@ export function createClient(config: ClientConfig): Client {
       const runtimeOpts = opts as GenerateOptions | undefined
       const callAuth = requireAuth(runtimeOpts?.auth)
 
-      checkDescriptor(
+      const descriptor = checkDescriptor(
         registry.resolve(request.provider, request.model),
         request.provider,
         request.model,
@@ -2373,6 +2358,7 @@ export function createClient(config: ClientConfig): Client {
         const result = await adapter.countTokens(request, {
           auth: callAuth,
           logger: safeLogger,
+          modelDescriptor: descriptor,
           ...(runtimeOpts?.signal !== undefined ? { signal: runtimeOpts.signal } : {}),
         })
         const latencyMs = clock.now() - startMs

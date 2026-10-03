@@ -535,6 +535,10 @@ export function claudeCliAdapter(opts?: ClaudeCliAdapterOptions): ProviderAdapte
 
       const adapterResult: AdapterResult = {
         model,
+        message: {
+          role: 'assistant',
+          parts: text.length > 0 ? [{ kind: 'text', text }] : [],
+        },
         usage,
         warnings,
         ...(text.length > 0 ? { text } : {}),

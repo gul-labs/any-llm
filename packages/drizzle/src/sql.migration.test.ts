@@ -274,6 +274,7 @@ describe('upgrades/0001-add-error-reason.sql (from the 0.7.2 shape)', () => {
 
 describe('a table that was not migrated is detectable, and the engine logs every dropped row loudly', () => {
   const OK = {
+    message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
     text: 'ok',
     usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
     model: 'm',

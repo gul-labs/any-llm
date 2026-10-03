@@ -944,7 +944,7 @@ describe('runToolLoop on a history-continuation provider', () => {
     const error = await expectRejectedBeforeDispatch(
       [toolResults(first)],
       first.transientProviderState as JsonValue,
-      /function-calling/,
+      /Invalid request messages or tools/,
     )
     expect(error.issues?.[0]?.message).toMatch(/does not match a prior tool-call/)
   })

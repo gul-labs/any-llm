@@ -110,6 +110,7 @@ describe('engine.countTokens — validation errors', () => {
 
   it('adapter without countTokens → bad_request naming the provider', async () => {
     const plainAdapter = new FakeAdapter('google', {
+      message: { role: 'assistant', parts: [{ kind: 'text', text: 'hi' }] },
       text: 'hi',
       usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
       model: 'gemini-2.5-pro',

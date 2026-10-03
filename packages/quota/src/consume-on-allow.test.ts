@@ -302,6 +302,7 @@ describe('maxDeferMs', () => {
     const redis = makeRedisEmulator()
     const store = upstashQuotaStore({ invoke: redis.invoke })
     const adapter = new FakeAdapter('google', {
+      message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
       text: 'ok',
       usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
       model: 'm',
@@ -448,6 +449,7 @@ describe('maxDeferMs', () => {
 
   it('the retry middleware does not sleep through a capped deferral', async () => {
     const adapter = new FakeAdapter('google', {
+      message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
       text: 'ok',
       usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
       model: 'm',
@@ -583,6 +585,7 @@ describe('quota limits are keyed by the canonical model id', () => {
     const client = createClient({
       adapters: [
         new FakeAdapter('google', {
+          message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
           text: 'ok',
           usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
           model: 'm',
@@ -745,6 +748,7 @@ describe('providerQuotaMiddleware role and placement', () => {
     makePermissiveTestDescriptor({ provider: 'google', model: 'm' }),
   ])
   const okResult: AdapterResult = {
+    message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
     text: 'ok',
     usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
     model: 'm',

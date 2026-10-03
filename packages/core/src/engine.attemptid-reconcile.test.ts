@@ -65,7 +65,13 @@ const MESSAGES = [
 ]
 
 function makeSuccessResult(): AdapterResult {
-  return { text: 'ok', usage: GOOD_USAGE, model: MODEL, warnings: [] }
+  return {
+    message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
+    text: 'ok',
+    usage: GOOD_USAGE,
+    model: MODEL,
+    warnings: [],
+  }
 }
 
 // ---------------------------------------------------------------------------

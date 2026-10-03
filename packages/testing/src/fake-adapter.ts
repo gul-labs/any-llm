@@ -44,9 +44,32 @@ type QueueEntry =
  * - `model` is a non-empty string, and
  * - `usage` is a non-null object.
  *
+ * Such an entry must also carry the required `message` (an assistant message,
+ * as every adapter returns); one without it is a mistake in the test and is
+ * rejected with a `TypeError` instead of being completed.
+ *
  * Everything else (including `Error` instances and plain HTTP-style objects
  * such as `{ status: 429, usage: null }`) is treated as a throw.
  */
+/**
+ * Throw when a result-shaped scripted entry lacks the required assistant
+ * `message`. Shared with the signal-aware fake; not part of the public surface.
+ */
+export function assertResultHasMessage(entry: Record<string, unknown>): void {
+  const message = entry['message'] as
+    { role?: unknown; parts?: unknown } | null | undefined
+  if (
+    typeof message !== 'object' ||
+    message === null ||
+    message.role !== 'assistant' ||
+    !Array.isArray(message.parts)
+  ) {
+    throw new TypeError(
+      'a scripted result entry needs `message` ({ role: "assistant", parts }); AdapterResult.message is required and is never rebuilt from text.',
+    )
+  }
+}
+
 function normalizeEntry(entry: FakeAdapterEntry): QueueEntry {
   if (entry instanceof Error) {
     return { kind: 'throw', error: entry }
@@ -57,6 +80,7 @@ function normalizeEntry(entry: FakeAdapterEntry): QueueEntry {
     typeof e['usage'] === 'object' &&
     e['usage'] !== null
   ) {
+    assertResultHasMessage(e)
     return { kind: 'result', result: entry as AdapterResult }
   }
   return { kind: 'throw', error: entry }

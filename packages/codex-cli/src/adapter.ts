@@ -644,6 +644,11 @@ export function codexCliAdapter(opts?: CodexCliAdapterOptions): ProviderAdapter 
 
           const adapterResult: AdapterResult = {
             model,
+            message: {
+              role: 'assistant',
+              parts:
+                preferredText.length > 0 ? [{ kind: 'text', text: preferredText }] : [],
+            },
             usage,
             warnings,
             // No explicit finish-reason signal is present in the captured

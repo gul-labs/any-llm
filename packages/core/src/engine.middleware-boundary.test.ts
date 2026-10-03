@@ -27,7 +27,13 @@ import { makePermissiveTestDescriptor } from './test-model-descriptor.js'
 const USAGE: Usage = { inputTokens: 1_000_000, outputTokens: 0, details: {}, raw: null }
 
 function result(model: string): AdapterResult {
-  return { text: 'ok', usage: USAGE, model, warnings: [] }
+  return {
+    message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
+    text: 'ok',
+    usage: USAGE,
+    model,
+    warnings: [],
+  }
 }
 
 // Per-model input rates differ so a wrong-descriptor price is detectable.

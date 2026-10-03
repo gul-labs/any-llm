@@ -34,6 +34,7 @@ const GOOD_USAGE: Usage = {
 
 function makeSuccessResult(overrides?: Partial<AdapterResult>): AdapterResult {
   return {
+    message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
     text: 'ok',
     usage: GOOD_USAGE,
     model: 'gemini-2.5-flash',

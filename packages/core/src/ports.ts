@@ -105,6 +105,12 @@ export interface AdapterCtx {
   signal?: AbortSignal
   /** Structured logger for adapter-internal diagnostics. */
   logger: Logger
+  /**
+   * Registry descriptor for the resolved model, set by the engine for
+   * `countTokens` (where the adapter has no {@link ResolvedRequest}). `run`
+   * reads it from {@link ResolvedRequest.modelDescriptor}.
+   */
+  modelDescriptor?: ModelDescriptor
 }
 
 /**
@@ -124,13 +130,15 @@ export interface AdapterResult {
   servedServiceTier?: string
   /**
    * The assistant's output as an ordered message, in provider order (see
-   * {@link LlmResult.message}). Adapters whose output can interleave text and
-   * tool calls must set it. When omitted the engine builds
-   * `[text part (if text), ...tool-call parts]` from {@link text} and
-   * {@link toolCalls}, which is exact for providers that return text and then
-   * calls.
+   * {@link LlmResult.message}). Required: the engine does not rebuild it from
+   * {@link text} and {@link toolCalls}, because only the adapter knows the
+   * provider's interleaving. Its `parts` is empty when the provider returned
+   * nothing representable (a thought-only response).
+   *
+   * The engine hands the host a copy of {@link toolCalls}, so adapters may let
+   * its argument objects and this message's tool-call parts be the same objects.
    */
-  message?: Message
+  message: Message
   /** Raw text content from the model. */
   text?: string
   /**
@@ -205,8 +213,12 @@ export interface TokenCount {
    * - `'exact'` — the provider counted the real request (e.g. Gemini).
    * - `'lower-bound'` — the provider counted a text-only projection that
    *   omits inference-added framing (e.g. xAI `/v1/tokenize-text`).
+   * - `'estimated'` — the provider counted the history, but the real call
+   *   sends parts the count cannot include, so the true count is higher by an
+   *   amount the count does not report (Gemini 3 thought signatures on replayed
+   *   function calls, roughly 110 prompt tokens each).
    */
-  accuracy: 'exact' | 'lower-bound'
+  accuracy: 'exact' | 'lower-bound' | 'estimated'
   /**
    * Open per-category breakdown (e.g. `{ cached: 128 }`).
    * Present only when the provider reports a breakdown.

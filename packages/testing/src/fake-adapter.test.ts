@@ -15,6 +15,7 @@ const STUB_USAGE: Usage = {
 
 function makeSuccessResult(): AdapterResult {
   return {
+    message: { role: 'assistant', parts: [] },
     model: 'fake-model',
     usage: STUB_USAGE,
     warnings: [],
@@ -50,6 +51,20 @@ describe('FakeAdapter', () => {
     const returned = await adapter.run(STUB_REQ, STUB_CTX)
 
     expect(returned).toBe(result)
+  })
+
+  it('rejects a result entry without the required assistant message, and never rebuilds one from text', () => {
+    const { message: _omitted, ...withoutMessage } = makeSuccessResult()
+    expect(() => new FakeAdapter('fake', { ...withoutMessage, text: 'hi' })).toThrow(
+      /needs `message`/,
+    )
+    expect(
+      () =>
+        new FakeAdapter('fake', { ...makeSuccessResult(), message: { role: 'user' } }),
+    ).toThrow(/needs `message`/)
+    // Errors and HTTP-style objects are still scripted throws.
+    expect(() => new FakeAdapter('fake', new Error('boom'))).not.toThrow()
+    expect(() => new FakeAdapter('fake', { status: 429 })).not.toThrow()
   })
 
   it('throws a scripted Error instance', async () => {

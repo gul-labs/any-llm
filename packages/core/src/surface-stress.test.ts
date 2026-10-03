@@ -135,6 +135,7 @@ const MESSAGES = [
 /** Build a minimal valid AdapterResult for happy-path use. */
 function makeOkResult(overrides?: Partial<AdapterResult>): AdapterResult {
   return {
+    message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
     text: 'ok',
     usage: { inputTokens: 100, outputTokens: 20, details: {}, raw: null },
     model: 'gemini-2.5-pro',

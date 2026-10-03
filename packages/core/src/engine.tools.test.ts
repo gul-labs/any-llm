@@ -19,6 +19,7 @@ function makeClient() {
   return createClient({
     adapters: [
       new FakeAdapter('google', {
+        message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
         text: 'ok',
         model: 'gemini-2.5-pro',
         usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
@@ -248,6 +249,7 @@ describe('engine function-calling validation', () => {
     const client = createClient({
       adapters: [
         new FakeAdapter('google', {
+          message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
           text: 'ok',
           model: 'gemini-2.5-pro',
           usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },

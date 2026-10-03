@@ -21,6 +21,8 @@ import type {
   AdapterResult,
 } from '@gullabs/core'
 
+import { assertResultHasMessage } from './fake-adapter.js'
+
 // ---------------------------------------------------------------------------
 // SignalAwareFakeAdapter
 // ---------------------------------------------------------------------------
@@ -102,6 +104,9 @@ export class SignalAwareFakeAdapter implements ProviderAdapter {
     opts?: SignalAwareFakeAdapterOptions,
   ) {
     this.id = id
+    if (!(entry instanceof Error) && 'usage' in entry) {
+      assertResultHasMessage(entry as Record<string, unknown>)
+    }
     this._entry = entry
     this._delayMs = opts?.delayMs ?? 200
     this._abortsSynchronouslyOnSignal = opts?.abortsSynchronouslyOnSignal ?? false

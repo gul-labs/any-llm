@@ -15,7 +15,13 @@ const AUTH = { apiKey: 'k' }
 const USER: Message = { role: 'user', parts: [{ kind: 'text', text: 'hi' }] }
 
 function adapterResult(overrides: Partial<AdapterResult> = {}): AdapterResult {
-  return { usage: USAGE, model: 'm', warnings: [], ...overrides }
+  return {
+    message: { role: 'assistant', parts: [] },
+    usage: USAGE,
+    model: 'm',
+    warnings: [],
+    ...overrides,
+  }
 }
 
 function makeClient(
@@ -31,10 +37,15 @@ function makeClient(
 }
 
 describe('LlmResult.message', () => {
-  it('is built as [text, ...tool calls] when the adapter does not supply one', async () => {
+  it('passes the adapter message through and does not rebuild it from text and toolCalls', async () => {
     const { client } = makeClient(
       { model: 'm', provider: 'p' },
       adapterResult({
+        // Deliberately disagrees with text/toolCalls: the engine must not "repair" it.
+        message: {
+          role: 'assistant',
+          parts: [{ kind: 'text', text: 'from the adapter' }],
+        },
         text: 'checking',
         toolCalls: [{ toolCallId: 'c1', toolName: 'get', args: { a: 1 } }],
         finishReason: 'tool_calls',
@@ -46,24 +57,56 @@ describe('LlmResult.message', () => {
     )
     expect(result.message).toEqual({
       role: 'assistant',
-      parts: [
-        { kind: 'text', text: 'checking' },
-        { kind: 'tool-call', toolCallId: 'c1', toolName: 'get', args: { a: 1 } },
-      ],
+      parts: [{ kind: 'text', text: 'from the adapter' }],
     })
     expect(result.text).toBe('checking')
-    expect(result.toolCalls).toEqual([
-      { toolCallId: 'c1', toolName: 'get', args: { a: 1 } },
-    ])
   })
 
-  it('is an empty assistant message when the model produced nothing representable', async () => {
-    const { client } = makeClient({ model: 'm', provider: 'p' }, adapterResult())
+  it('shares no argument objects between toolCalls and message, even when the adapter does', async () => {
+    const args = { city: 'Paris', nested: { n: 1 } }
+    const { client } = makeClient(
+      { model: 'm', provider: 'p' },
+      adapterResult({
+        message: {
+          role: 'assistant',
+          parts: [{ kind: 'tool-call', toolCallId: 'c1', toolName: 'get', args }],
+        },
+        toolCalls: [{ toolCallId: 'c1', toolName: 'get', args }],
+        finishReason: 'tool_calls',
+      }),
+    )
+    const result = await client.generate(
+      { provider: 'p', model: 'm', messages: [USER] },
+      { auth: AUTH },
+    )
+    const call = result.toolCalls?.[0]
+    expect(call?.args).toEqual(args)
+    expect(call?.args).not.toBe((result.message.parts[0] as { args: unknown }).args)
+    ;(call?.args as { city: string; nested: { n: number } }).city = 'Rome'
+    ;(call?.args as { city: string; nested: { n: number } }).nested.n = 2
+    expect(result.message.parts[0]).toMatchObject({
+      args: { city: 'Paris', nested: { n: 1 } },
+    })
+  })
+
+  it('has no parts when the model produced nothing representable, and that message is not accepted back as history', async () => {
+    const { adapter, client } = makeClient({ model: 'm', provider: 'p' }, adapterResult())
     const result = await client.generate(
       { provider: 'p', model: 'm', messages: [USER] },
       { auth: AUTH },
     )
     expect(result.message).toEqual({ role: 'assistant', parts: [] })
+    const calls = adapter.calls.length
+    await expect(
+      client.generate(
+        { provider: 'p', model: 'm', messages: [USER, result.message, USER] },
+        { auth: AUTH },
+      ),
+    ).rejects.toMatchObject({
+      kind: 'bad_request',
+      issues: [expect.objectContaining({ path: 'messages.1.parts' })],
+    })
+    expect(adapter.calls.length).toBe(calls)
   })
 
   it('passes an adapter-supplied interleaved message through unchanged', async () => {
@@ -181,6 +224,10 @@ describe("the host's model string is never rewritten", () => {
       [
         adapterResult({
           model: 'canonical-2026-10-01',
+          message: {
+            role: 'assistant',
+            parts: [{ kind: 'tool-call', toolCallId: 'c1', toolName: 'get', args: {} }],
+          },
           toolCalls: [{ toolCallId: 'c1', toolName: 'get', args: {} }],
           transientProviderState: { p: { boundTo: 'alias-latest' } },
         }),

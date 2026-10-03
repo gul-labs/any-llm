@@ -420,6 +420,7 @@ describe('engine + middleware — integration', () => {
 
   function makeSuccessResult() {
     return {
+      message: { role: 'assistant', parts: [{ kind: 'text', text: 'Hello!' }] },
       text: 'Hello!',
       usage: { inputTokens: 100, outputTokens: 20, details: {}, raw: null },
       model: 'gemini-2.5-pro',

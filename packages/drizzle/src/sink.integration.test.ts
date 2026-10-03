@@ -262,6 +262,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
     const client = createClient({
       adapters: [
         new FakeAdapter('google', {
+          message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
           text: 'ok',
           usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: {} },
           model: 'm1',
