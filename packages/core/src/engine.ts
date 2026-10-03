@@ -550,11 +550,14 @@ const EMPTY_USAGE: Usage = {
  * the rate limiter), when the failure is one providers do not bill (`bad_request`,
  * `invalid_auth`, `rate_limited`), or when the provider answered with an HTTP
  * error status that is not a timeout or abort. False for a timeout or abort after
- * dispatch, and for a failure that carried no status (a connection reset, an
- * unknown failure): the provider may have run, and billed, the request.
+ * dispatch, for a failure that carried no status (a connection reset, an
+ * unknown failure): the provider may have run, and billed, the request, and for
+ * an error that says the provider had started work (`mayHaveBilled`), whatever
+ * its kind.
  */
 function failedAttemptCostsNothing(err: LlmError, dispatched: boolean): boolean {
   if (!dispatched) return true
+  if (err.mayHaveBilled === true) return false
   switch (err.kind) {
     case 'bad_request':
     case 'invalid_auth':

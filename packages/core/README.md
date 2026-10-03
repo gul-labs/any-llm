@@ -393,7 +393,8 @@ billed failures included; `attempts` counts the attempts that began; `unpricedAt
 were dispatched but have no priced usage (a timeout, abort or connection failure that reported no usage, usage
 the pricing source could not price). The provider may have billed those, so **`unpricedAttempts > 0` means
 `microUsd` is a lower bound**. An attempt known to cost nothing (rejected before dispatch, a provider 400, 401
-or 429, any other HTTP error answer) is not counted. `CallSuccessEvent` and `CallErrorEvent` carry the same
+or 429, any other HTTP error answer) is not counted, unless the error says the provider had started work
+(`LlmError.mayHaveBilled`, set for an error event inside an open xAI stream). `CallSuccessEvent` and `CallErrorEvent` carry the same
 `callCost`, so an `onSuccess`-only metrics hook can read the total.
 
 ### Error reasons

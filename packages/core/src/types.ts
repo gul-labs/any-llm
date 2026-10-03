@@ -578,7 +578,8 @@ export interface Cost {
  *   the pricing source could not price, or an attempt still in flight when the
  *   call ended. The provider may have billed them. Attempts known to cost nothing
  *   (rejected before dispatch, a provider 400/401/429 or other HTTP error answer)
- *   are not counted.
+ *   are not counted, unless the error says the provider had started work
+ *   (`LlmError.mayHaveBilled`).
  *
  * `unpricedAttempts > 0` means `microUsd` is a **lower bound**; `0` means every
  * attempt is accounted for. The SQL sum of `cost_micro_usd` over the call's rows

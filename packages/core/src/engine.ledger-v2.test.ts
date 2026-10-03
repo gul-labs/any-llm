@@ -311,6 +311,25 @@ describe('R7.3 per-attempt telemetry and the cost of the whole call', () => {
     expect(result.callCost).toEqual({ microUsd: 200, attempts: 2, unpricedAttempts: 1 })
   })
 
+  it.each([
+    ['rate_limited', 'rate_limited'],
+    ['bad_request', 'bad_request'],
+    ['invalid_auth', 'invalid_auth'],
+  ] as const)(
+    'a %s error that says the provider had started work (mayHaveBilled) is an unpriced attempt',
+    async (_name, kind) => {
+      const { client } = makeClient(
+        [
+          new LlmError('mid-stream', { kind, retryable: true, mayHaveBilled: true }),
+          ok(),
+        ],
+        { retry: true },
+      )
+      const result = await client.generate(request(), { auth: AUTH })
+      expect(result.callCost).toEqual({ microUsd: 200, attempts: 2, unpricedAttempts: 1 })
+    },
+  )
+
   it('an abort after dispatch is unpriced on the error event', async () => {
     const { client, errors } = makeClient(
       new LlmError('cancelled', { kind: 'aborted', retryable: false }),

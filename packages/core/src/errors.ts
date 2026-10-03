@@ -128,6 +128,14 @@ export interface LlmErrorOptions {
   /** Provider-reported usage for a billed response that failed after HTTP success. */
   usage?: Usage
   /**
+   * `true` when the provider had already accepted the request and started work
+   * when this failure arrived (an error event inside an open stream, say), so
+   * even a kind that providers do not bill when they refuse a request
+   * (`rate_limited`, `bad_request`, `invalid_auth`) may have cost money. The
+   * engine then books the attempt as unpriced instead of known-free.
+   */
+  mayHaveBilled?: boolean
+  /**
    * Notes the adapter attaches to a failed attempt that carries `usage` (for
    * example "the cost omits grounding fees"). The engine writes them to that
    * attempt's record, as the success path does for `AdapterResult.warnings`.
@@ -184,6 +192,8 @@ export class LlmError extends Error {
   readonly servedServiceTier?: string
   /** Provider-reported usage for a billed response that failed after HTTP success. */
   readonly usage?: Usage
+  /** `true` when the provider had started work before this failure; see {@link LlmErrorOptions.mayHaveBilled}. */
+  readonly mayHaveBilled?: boolean
   /** Adapter notes for a failed attempt that carries `usage`; persisted on its record. */
   readonly warnings?: readonly Warning[]
   /** Structured validation failures, one entry per violation, when applicable. */
@@ -222,6 +232,9 @@ export class LlmError extends Error {
     }
     if (options.usage !== undefined) {
       this.usage = options.usage
+    }
+    if (options.mayHaveBilled === true) {
+      this.mayHaveBilled = true
     }
     if (options.warnings !== undefined) {
       this.warnings = options.warnings
