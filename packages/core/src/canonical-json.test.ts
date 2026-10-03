@@ -4,6 +4,7 @@
  * Vectors are copied from RFC 8785: the section 3.2.2/3.2.3 sample, the
  * property-sorting example, and Appendix B's number serialization table.
  */
+import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import { canonicalJson } from './canonical-json.js'
 import { LlmError } from './errors.js'
@@ -83,6 +84,7 @@ describe('canonicalJson: RFC 8785 vectors', () => {
 
   it.each([
     ['0000000000000000', '0'],
+    ['8000000000000000', '0'],
     ['0000000000000001', '5e-324'],
     ['8000000000000001', '-5e-324'],
     ['7fefffffffffffff', '1.7976931348623157e+308'],
@@ -159,12 +161,58 @@ describe('canonicalJson: key order independence', () => {
   })
 })
 
+describe('canonicalJson: negative zero, depth, realms, symbol keys', () => {
+  it('serializes -0 as 0 (RFC 8785 Appendix B row 8000...), at any depth', () => {
+    expect(canonicalJson(-0)).toBe('0')
+    expect(canonicalJson({ dx: -0, list: [-0, 0] })).toBe('{"dx":0,"list":[0,0]}')
+    // A value hashes the same before and after a JSON round trip.
+    const value = { dx: -0 }
+    expect(canonicalJson(JSON.parse(JSON.stringify(value)) as JsonValue)).toBe(
+      canonicalJson(value),
+    )
+  })
+
+  it('accepts nesting up to the limit and rejects deeper input with bad_request, not RangeError', () => {
+    const nest = (depth: number): unknown => {
+      let value: unknown = 1
+      for (let i = 0; i < depth; i++) value = [value]
+      return value
+    }
+    expect(canonicalJson(nest(1000) as JsonValue)).toBe(
+      '['.repeat(1000) + '1' + ']'.repeat(1000),
+    )
+    const error = expectBadRequest(() => canonicalJson(nest(1001) as JsonValue))
+    expect(error.message).toMatch(/nested deeper than 1000 levels/)
+    expectBadRequest(() => canonicalJson(nest(20_000) as JsonValue))
+    let object: Record<string, unknown> = {}
+    for (let i = 0; i < 20_000; i++) object = { a: object }
+    expectBadRequest(() => canonicalJson(object as JsonValue))
+  })
+
+  it("accepts plain objects and arrays from another realm and still rejects other realms' class instances", () => {
+    const foreign = runInNewContext('({ b: [1, { d: 4, c: 3 }], a: "x" })') as JsonValue
+    expect(Object.getPrototypeOf(foreign)).not.toBe(Object.prototype)
+    expect(canonicalJson(foreign)).toBe('{"a":"x","b":[1,{"c":3,"d":4}]}')
+    expectBadRequest(() => canonicalJson(runInNewContext('new Date(0)') as JsonValue))
+    expectBadRequest(() => canonicalJson(runInNewContext('new Map()') as JsonValue))
+    expectBadRequest(() =>
+      canonicalJson(runInNewContext('new (class Foo {})()') as JsonValue),
+    )
+  })
+
+  it('rejects an object with a symbol key instead of ignoring it', () => {
+    const error = expectBadRequest(() =>
+      canonicalJson({ a: 1, [Symbol('hidden')]: 2 } as unknown as JsonValue),
+    )
+    expect(error.message).toMatch(/symbol key/)
+  })
+})
+
 describe('canonicalJson: rejected input (bad_request, with the path)', () => {
   it.each([
     ['NaN', Number.NaN],
     ['Infinity', Number.POSITIVE_INFINITY],
     ['-Infinity', Number.NEGATIVE_INFINITY],
-    ['negative zero', -0],
   ])('rejects %s', (_label, value) => {
     expectBadRequest(() => canonicalJson(value))
   })
