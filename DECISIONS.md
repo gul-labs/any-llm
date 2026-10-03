@@ -3130,3 +3130,12 @@ so a clean record aliases its inputs as before and the caller's data is never mu
 tokens for it (billable input, cached input, output), not only lanes whose rounded amount is non-zero. A lane
 that rounds to 0 can still hold up to 0.5 µUSD, so four sub-µUSD lanes and a rounded provider total could
 differ by 2 against a tolerance of 1 and raise a false drift warning.
+
+**Item 11 (xAI response headers).** The claim that no capture of xAI's real header names exists was wrong:
+fixtures 02, 12 and 16 to 23 store the `headers` of real responses. They carry `x-request-id`,
+`x-ratelimit-remaining-requests` and `x-ratelimit-remaining-tokens` (and the `x-ratelimit-limit-*` ceilings,
+which are not kept). A test reads every such fixture through `readXaiResponseMeta` and pins the request id
+and exactly the remaining headers. The `ratelimit-remaining*` prefix match has no capture behind it and is
+kept only as a harmless alias match. A failed call has no `providerMetadata`, and `LlmError` has no request
+id field; the id of a failed call is `error.cause.requestID` (the SDK error keeps the response headers),
+which a stubbed-500 test pins. No new field is added.

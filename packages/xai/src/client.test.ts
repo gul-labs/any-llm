@@ -11,10 +11,12 @@
  * @module
  */
 
+import { readdirSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
 import { LlmError } from '@gullabs/core'
 import { classifyXaiError } from './adapter.js'
-import { buildXaiClient, requireApiKey } from './client.js'
+import { buildXaiClient, readXaiResponseMeta, requireApiKey } from './client.js'
 import type { XaiResponseCreateParams, XaiTransport } from './client.js'
 
 describe('requireApiKey', () => {
@@ -400,5 +402,80 @@ describe('buildXaiClient — response metadata (real SDK, stubbed fetch)', () =>
   it('create still works with no options', async () => {
     const client = await buildXaiClient(AUTH, withHeaders({}))
     await expect(client.responses.create(PARAMS)).resolves.toMatchObject({ id: 'resp_1' })
+  })
+})
+
+describe('response header names are pinned against real captures', () => {
+  const fixtureDir = fileURLToPath(new URL('./__fixtures__/', import.meta.url))
+  const captured = readdirSync(fixtureDir)
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => ({
+      name,
+      headers: (
+        JSON.parse(readFileSync(fixtureDir + name, 'utf8')) as {
+          headers?: Record<string, string>
+        }
+      ).headers,
+    }))
+    .filter(
+      (f): f is { name: string; headers: Record<string, string> } =>
+        f.headers !== undefined && 'x-request-id' in f.headers,
+    )
+
+  it('there are real response-header captures to pin against', () => {
+    expect(captured.length).toBeGreaterThanOrEqual(5)
+    // The captured names, as xAI sent them (fixtures 02, 12, 16-19, 20-23).
+    const names = new Set(captured.flatMap((f) => Object.keys(f.headers)))
+    expect(names).toContain('x-ratelimit-remaining-requests')
+    expect(names).toContain('x-ratelimit-remaining-tokens')
+    expect(names).toContain('x-ratelimit-limit-requests')
+  })
+
+  it.each(captured.map((f) => [f.name, f.headers] as const))(
+    '%s: the request id and exactly the remaining-quota headers are read',
+    (_name, headers) => {
+      const meta = readXaiResponseMeta(new Headers(headers))
+      expect(meta.requestId).toBe(headers['x-request-id'])
+      const remaining = Object.fromEntries(
+        Object.entries(headers).filter(([key]) =>
+          key.startsWith('x-ratelimit-remaining'),
+        ),
+      )
+      if (Object.keys(remaining).length === 0) {
+        expect(meta.rateLimitRemaining).toBeUndefined()
+      } else {
+        expect(meta.rateLimitRemaining).toEqual(remaining)
+      }
+      // The limit headers are quota ceilings, not remaining quota.
+      expect(Object.keys(meta.rateLimitRemaining ?? {})).not.toContainEqual(
+        expect.stringContaining('-limit-'),
+      )
+    },
+  )
+})
+
+describe('buildXaiClient — a failed call keeps xAI request id on the error cause', () => {
+  it('the thrown LlmError.cause is the SDK error, whose requestID is the x-request-id header', async () => {
+    const client = await buildXaiClient(
+      AUTH,
+      asTransport(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ code: 'internal', error: 'boom' }), {
+            status: 500,
+            headers: {
+              'content-type': 'application/json',
+              'x-request-id': 'req_failed_1',
+            },
+          }),
+        ),
+      ),
+    )
+    const err: unknown = await client.responses.create(PARAMS, { timeout: 5_000 }).then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    const classified = classifyXaiError(err)
+    expect(classified.kind).toBe('server')
+    expect(classified.cause).toMatchObject({ requestID: 'req_failed_1' })
   })
 })
