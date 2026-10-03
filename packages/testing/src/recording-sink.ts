@@ -47,6 +47,9 @@ export interface RecordingSinkOptions {
  * ```
  */
 export class RecordingSink implements UsageSink {
+  /** A `RecordingSink` keeps the payloads it is handed (see {@link RecordingSink.payloads}). */
+  readonly acceptsPayloads = true
+
   /** Every record received by this sink, in insertion order. */
   readonly records: LlmCallRecord[] = []
 

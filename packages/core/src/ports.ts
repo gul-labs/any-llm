@@ -402,13 +402,19 @@ export interface RateLimiter {
  */
 export interface UsageSink {
   /**
+   * `true` when this sink stores `ctx.payload` (ADR-038). `ClientConfig.payloads`
+   * only builds and passes payloads to a sink that sets it; with `payloads`
+   * configured and the flag absent, `createClient` logs one warning and no
+   * payload is built. Set it only if `record` reads its second argument.
+   */
+  readonly acceptsPayloads?: boolean
+  /**
    * Record a completed call.
    * Implementations should be idempotent on `attemptId` (e.g. `onConflictDoNothing`).
    *
    * `ctx.payload` is present only when the client opted into payload storage
-   * (`ClientConfig.payloads`, ADR-038) and storage applies to this attempt. It
-   * is already redacted and capped. A sink that has nowhere to put it ignores
-   * the second argument.
+   * (`ClientConfig.payloads`, ADR-038), storage applies to this attempt and the
+   * sink declares `acceptsPayloads: true`. It is already redacted and capped.
    */
   record(r: LlmCallRecord, ctx?: UsageSinkContext): Promise<void>
 }

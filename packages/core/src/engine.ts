@@ -24,8 +24,15 @@ import { assertMessagesShape, assertPartsShape } from './input-shapes.js'
 import { assertTimerMs } from './timer.js'
 import { estimateInputTokens } from './estimate.js'
 import { redactSecrets } from './redact.js'
-import { assertPayloadsConfig, buildPayload } from './payload.js'
-import type { LlmCallPayload, PayloadsConfig } from './payload.js'
+import {
+  buildPayload,
+  describePayloadError,
+  isThenable,
+  PayloadDropped,
+  resolvePayloadsConfig,
+  snapshotPayloadSource,
+} from './payload.js'
+import type { BuildControl, LlmCallPayload, PayloadsConfig } from './payload.js'
 import { boundedModelText, unknownModelMessage } from './registry.js'
 import type { ModelDescriptor, ModelRegistry } from './registry.js'
 import type {
@@ -138,11 +145,19 @@ export interface ClientConfig {
    * `generate` and `runStructured`). Requires {@link ClientConfig.sink}, else
    * `createClient` throws `bad_request`.
    *
-   * Payloads can contain customer data. Core's secret patterns, then
-   * `payloads.redact`, run on every string before the size caps; retention and
-   * deletion are the host's duty. A payload that cannot be built (a throwing
-   * redactor) is dropped with an `llm.call.payload.dropped` warning and never
-   * fails the call.
+   * Payloads can contain customer data. Every string is bounded and run
+   * through core's secret patterns, then `payloads.redact`, before the size
+   * caps; retention and deletion are the host's duty. The request is
+   * snapshotted at dispatch and the payload is built after the attempt's
+   * outcome is known, inside the `sinkTimeoutMs` budget. A payload that cannot
+   * be built (a throwing redactor, an over-long build) is dropped with an
+   * `llm.call.payload.dropped` warning and never fails the call. The sink must
+   * set `acceptsPayloads: true`; otherwise `createClient` warns once and no
+   * payload is built.
+   *
+   * These options govern the payload only. The `llm_calls` record separately
+   * carries the model's tool-call arguments, reasoning text, error message and
+   * your `metadata`, redacted by core's patterns (see the README table).
    */
   payloads?: PayloadsConfig
   /**
@@ -1402,6 +1417,14 @@ function buildErrorRecord(
 // ---------------------------------------------------------------------------
 
 /**
+ * Builds one attempt's payload inside the bounded sink write. Resolves to the
+ * payload, or `undefined` when it was dropped (already logged). Never rejects.
+ */
+type PayloadJob = (
+  control: Pick<BuildControl, 'cancelled'>,
+) => Promise<LlmCallPayload | undefined>
+
+/**
  * Writes `record` to `sink` if a sink is configured, waiting at most
  * `timeoutMs`, and at most {@link SINK_INTERRUPT_GRACE_MS} after any of
  * `interrupts` (the caller's abort, the call deadline) fires.
@@ -1421,7 +1444,7 @@ async function recordToSink(
   timeoutMs: number,
   interrupts: readonly (AbortSignal | undefined)[],
   scheduler: Scheduler,
-  payload?: LlmCallPayload,
+  buildPayloadFor?: PayloadJob,
 ): Promise<void> {
   if (sink === undefined) return
   const fields = {
@@ -1459,11 +1482,38 @@ async function recordToSink(
     // Started inside the try so a synchronous throw from `record` is a failure
     // like any other. `Promise.race` keeps handling the write, so a rejection
     // that arrives after the timeout is not an unhandled rejection.
-    const write = Promise.resolve(
-      payload === undefined
+    //
+    // The payload is built first, inside the same budget: the timeout and an
+    // abort end the wait for it (a payload still unbuilt then is dropped, with
+    // a warning) and the ledger row is written without it. The write itself is
+    // always started.
+    let cancelled = false
+    const write = (async () => {
+      let payload: LlmCallPayload | undefined
+      if (buildPayloadFor !== undefined) {
+        const built = buildPayloadFor({ cancelled: () => cancelled })
+        const first = await Promise.race([built, abandoned])
+        if (first === 'timeout' || first === 'interrupted') {
+          cancelled = true
+          payload = undefined
+          logger.warn(
+            {
+              callId,
+              attemptId: record.attemptId,
+              stage: 'timeout',
+              reason: 'the sink wait ended while the payload was being built',
+            },
+            'llm.call.payload.dropped',
+          )
+        } else {
+          payload = first
+        }
+      }
+      await (payload === undefined
         ? sink.record(record)
-        : sink.record(record, { payload, logger }),
-    ).then(() => 'done' as const)
+        : sink.record(record, { payload, logger }))
+      return 'done' as const
+    })()
     const outcome = await Promise.race([write, abandoned])
     if (outcome === 'timeout') {
       // A row that may be lost. The event name and fields are stable: alert on
@@ -1656,25 +1706,37 @@ export function createClient(config: ClientConfig): Client {
   const sink = config.sink
   const sinkTimeoutMs = config.sinkTimeoutMs ?? DEFAULT_SINK_TIMEOUT_MS
   assertTimerMs(sinkTimeoutMs, 'createClient: sinkTimeoutMs', 'sinkTimeoutMs')
-  const payloads: PayloadsConfig | undefined = config.payloads
-  if (payloads !== undefined) {
-    assertPayloadsConfig(payloads)
-    if (sink === undefined) {
-      throw new LlmError(
-        'createClient: payloads requires a sink; the payload is handed to sink.record(record, { payload }).',
-        {
-          kind: 'bad_request',
-          retryable: false,
-          issues: [{ path: 'payloads', message: 'requires ClientConfig.sink.' }],
-        },
-      )
-    }
+  const payloads: Readonly<PayloadsConfig> | undefined =
+    config.payloads !== undefined ? resolvePayloadsConfig(config.payloads) : undefined
+  if (payloads !== undefined && sink === undefined) {
+    throw new LlmError(
+      'createClient: payloads requires a sink; the payload is handed to sink.record(record, { payload }).',
+      {
+        kind: 'bad_request',
+        retryable: false,
+        issues: [{ path: 'payloads', message: 'requires ClientConfig.sink.' }],
+      },
+    )
   }
+  // A sink that does not say it takes payloads is not handed one: capture would
+  // cost CPU for text nothing stores.
+  const capturePayloads =
+    payloads !== undefined && sink !== undefined && sink.acceptsPayloads === true
   const clock: Clock = config.clock ?? DEFAULT_CLOCK
   const scheduler: Scheduler = config.scheduler ?? DEFAULT_SCHEDULER
   const ids: IdGenerator = config.ids ?? DEFAULT_IDS
   const logger: Logger = config.logger ?? NOOP_LOGGER
   const safeLogger: Logger = makeSafeLogger(logger)
+  if (payloads !== undefined && !capturePayloads) {
+    // Once, at construction: the host asked for payloads and the sink would drop them.
+    safeLogger.warn(
+      {
+        reason:
+          'ClientConfig.payloads is set but the sink does not declare acceptsPayloads: true, so no payload is built',
+      },
+      'llm.config.payloads.sink_ignores_payloads',
+    )
+  }
   const telemetry: Telemetry = config.telemetry ?? NOOP_TELEMETRY
   const rateLimiter: RateLimiter = config.rateLimiter ?? NOOP_RATE_LIMITER
   const libDefaults: GenConfig = config.defaults ?? {}
@@ -1960,39 +2022,64 @@ export function createClient(config: ClientConfig): Client {
       ...(deadline.deadlineAt !== undefined ? { deadlineAt: deadline.deadlineAt } : {}),
     }
 
-    // Payload for one dispatched attempt (ADR-038), or undefined when storage is
-    // off, the call opted out, `include` said no, or the payload could not be
-    // built. Never throws: a payload problem is a warning, not a failed call.
-    async function capturePayload(
+    // Payload plan for one attempt (ADR-038), made at dispatch: whether storage
+    // applies (client on, sink takes payloads, the call did not opt out, `include`
+    // says yes) and, if so, a snapshot of the request the adapter is about to
+    // receive. Returns a job that builds the payload for the attempt's outcome
+    // inside the bounded sink write, or undefined. Never throws and the job never
+    // rejects: a payload problem is a warning, not a failed call.
+    function planPayload(
       sent: ResolvedRequest,
-      response: LlmCallPayload['response'],
       attemptId: string,
       ctx: EngineCtx,
-    ): Promise<LlmCallPayload | undefined> {
-      if (payloads === undefined || !storePayload) return undefined
-      try {
-        if (payloads.include !== undefined && payloads.include(request) !== true) {
-          return undefined
-        }
-        return await buildPayload(
-          {
-            ...(sent.system !== undefined ? { system: sent.system } : {}),
-            messages: sent.messages,
-            ...(sent.tools !== undefined ? { tools: sent.tools } : {}),
-          },
-          response,
-          payloads,
-        )
-      } catch (payloadErr) {
+    ): ((response: LlmCallPayload['response']) => PayloadJob) | undefined {
+      if (payloads === undefined || !capturePayloads || !storePayload) return undefined
+      const dropped = (error: unknown): void => {
+        const { stage, errorName, reason } = describePayloadError(error)
         ctx.logger.warn(
-          {
-            callId: ctx.callId,
-            attemptId,
-            error: redactSecrets(String(payloadErr)).slice(0, 300),
-          },
+          { callId: ctx.callId, attemptId, stage, errorName, error: reason },
           'llm.call.payload.dropped',
         )
+      }
+      let snapshot
+      try {
+        if (payloads.include !== undefined) {
+          const included: unknown = payloads.include(request)
+          if (isThenable(included)) {
+            void Promise.resolve(included).catch(() => {})
+            throw new PayloadDropped(
+              'include',
+              'the include function must be synchronous',
+            )
+          }
+          if (included !== true) return undefined
+        }
+        snapshot = snapshotPayloadSource({
+          ...(sent.system !== undefined ? { system: sent.system } : {}),
+          messages: sent.messages,
+          ...(sent.tools !== undefined ? { tools: sent.tools } : {}),
+        })
+      } catch (planErr) {
+        dropped(
+          planErr instanceof PayloadDropped
+            ? planErr
+            : new PayloadDropped('include', 'the include function threw', planErr),
+        )
         return undefined
+      }
+      return (response) => async (control) => {
+        try {
+          return await buildPayload(snapshot, response, payloads, {
+            yieldNow: () =>
+              new Promise<void>((resolve) => {
+                scheduler.setTimeout(resolve, 0)
+              }),
+            cancelled: control.cancelled,
+          })
+        } catch (payloadErr) {
+          dropped(payloadErr)
+          return undefined
+        }
       }
     }
 
@@ -2046,6 +2133,7 @@ export function createClient(config: ClientConfig): Client {
       let release: Release | undefined
       let queueDelayMs: number | undefined
       let dispatchStartMs: number | undefined
+      let payloadPlan: ReturnType<typeof planPayload>
       // Cancellation cleanup — idempotent; safe to call on both paths.
       let cleanup: () => void = () => {}
       let effectiveReq: ResolvedRequest = req
@@ -2160,6 +2248,9 @@ export function createClient(config: ClientConfig): Client {
           scheduler,
           ...(combinedSignal !== undefined ? { signal: combinedSignal } : {}),
         }
+
+        // The payload plan (ADR-038) snapshots the request as it is dispatched.
+        payloadPlan = planPayload(effectiveReq, attemptId, ctx)
 
         // Step 7: Run adapter — raced against all cancellation promises.
         dispatchStartMs = ctx.clock.now()
@@ -2305,12 +2396,7 @@ export function createClient(config: ClientConfig): Client {
           sinkTimeoutMs,
           sinkInterrupts,
           scheduler,
-          await capturePayload(
-            effectiveReq,
-            rawText !== undefined ? { text: rawText } : {},
-            attemptId,
-            ctx,
-          ),
+          payloadPlan?.(rawText !== undefined ? { text: rawText } : {}),
         )
         noteAttemptCost(cost)
         emitAttempt({
@@ -2458,12 +2544,7 @@ export function createClient(config: ClientConfig): Client {
           sinkInterrupts,
           scheduler,
           dispatchStartMs !== undefined
-            ? await capturePayload(
-                effectiveReq,
-                { errorMessage: err.message },
-                attemptId,
-                ctx,
-              )
+            ? payloadPlan?.({ errorMessage: err.message })
             : undefined,
         )
         // A failure that reported no usage is known to cost nothing only when
