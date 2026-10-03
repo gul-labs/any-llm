@@ -327,7 +327,7 @@ describe('@gullabs/quota', () => {
     })
   })
 
-  it('propagates a backend store failure as a rejected promise and emits backend_error', async () => {
+  it('a backend store failure is a quota_store_unavailable rejection and emits backend_error', async () => {
     const backendError = new Error('upstash unreachable')
     const store: QuotaStore = {
       adjustTokens: async () => {},
@@ -351,7 +351,12 @@ describe('@gullabs/quota', () => {
       nowMs: Date.UTC(2026, 5, 30, 12, 0, 0),
     }).catch((err: unknown) => err)
 
-    expect(error).toBe(backendError)
+    expect(error).toMatchObject({
+      kind: 'server',
+      retryable: false,
+      reason: 'quota_store_unavailable',
+      cause: backendError,
+    })
     expect(events).toEqual([
       {
         type: 'backend_error',

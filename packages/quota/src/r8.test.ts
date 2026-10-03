@@ -148,8 +148,8 @@ describe('the policies', () => {
     expect(policy.getRule({ provider: 'google', model: 'grok-4.5' })).toBeUndefined()
   })
 
-  it('a rule with tpm that is not a positive integer is bad_request when it is used', async () => {
-    for (const tpm of [0, -1, 1.5, Number.NaN]) {
+  it('a rule with tpm that is not a non-negative integer is bad_request when it is used', async () => {
+    for (const tpm of [-1, 1.5, Number.NaN]) {
       await expect(
         enforceProviderQuota({
           provider: 'google',
@@ -426,7 +426,7 @@ describe('providerQuotaMiddleware without a store', () => {
     ])
   })
 
-  it('skips the windows, lets the call through, and warns once per middleware', async () => {
+  it('skips the windows, lets the call through, and warns once per scope', async () => {
     const mw = providerQuotaMiddleware({ policy })
     const clock = new FakeClock(T0)
     const logger = new RecordingLogger()
@@ -445,9 +445,7 @@ describe('providerQuotaMiddleware without a store', () => {
     }
 
     expect(nexts).toBe(3)
-    const warnings = logger.findAll(
-      'llm.quota.windows_skipped: providerQuotaMiddleware has no store, so rpm, rpd and tpm windows are not checked (rpd: 0 still denies)',
-    )
+    const warnings = logger.findAll('llm.quota.windows_skipped')
     expect(warnings).toHaveLength(1)
     expect(warnings[0]).toMatchObject({
       level: 'warn',

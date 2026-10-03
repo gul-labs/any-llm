@@ -1,6 +1,7 @@
 import {
   estimateInputTokens,
   LlmError,
+  redactSecrets,
   type Middleware,
   type RateLimiter,
   type Release,
@@ -75,19 +76,23 @@ export interface QuotaPolicyInput {
 
 export interface ProviderQuotaRule {
   scope?: string
-  /** Requests per minute (the UTC calendar minute). */
+  /**
+   * Requests per minute (the UTC calendar minute): a non-negative integer. `0`
+   * disables the provider for this scope, as `0` does for every window.
+   */
   rpm?: number
   /**
-   * Requests per day. `0` disables the provider for this scope: every call is
-   * denied with `provider_disabled`, with or without a store. The day is the
-   * UTC day unless {@link ProviderQuotaRule.dayBoundary} says otherwise.
+   * Requests per day: a non-negative integer. `0` disables the provider for
+   * this scope: every call is denied with `provider_disabled`, with or without
+   * a store. The day is the UTC day unless {@link ProviderQuotaRule.dayBoundary}
+   * says otherwise.
    */
   rpd?: number
   /**
-   * Input tokens per minute (the UTC calendar minute); a positive integer. A
-   * call reserves its estimated input tokens (`hint.estimatedInputTokens`,
-   * `estimateInputTokens` for the middleware) and the real usage corrects the
-   * reservation after the call.
+   * Input tokens per minute (the UTC calendar minute): a non-negative integer.
+   * `0` disables the provider for this scope. A call reserves its estimated
+   * input tokens (`hint.estimatedInputTokens`, `estimateInputTokens` for the
+   * middleware) and the real usage corrects the reservation after the call.
    */
   tpm?: number
   /** Where the `rpd` window rolls over. Default: UTC midnight. */
@@ -157,8 +162,12 @@ export interface QuotaStore {
   checkAndConsume(input: QuotaStoreCheckInput): Promise<QuotaStoreCheckResult>
   /**
    * Corrects a `tpm` reservation with the call's real usage. Called at most
-   * once per admitted call that reserved tokens, after the call. A store that
-   * enforces no `tpm` may do nothing.
+   * once per admitted call that reserved tokens, after the call, without the
+   * call waiting for it: the middleware and the rate limiter start it and move
+   * on, so it is at-most-once (a process that ends first loses it, and the
+   * reservation then stays, which only over-counts until the minute ends). The
+   * store bounds its own call (`upstashQuotaStore` does, with `timeoutMs`). A
+   * store that enforces no `tpm` may do nothing.
    */
   adjustTokens(input: QuotaStoreAdjustInput): Promise<void>
 }
@@ -167,8 +176,12 @@ export interface QuotaStore {
  * What to do when the store itself fails (a timeout, an HTTP error, a malformed
  * reply). There is no default: the choice is a policy of the host.
  *
- * - `'fail-closed'`: the call fails with the store's error, so no call can
- *   exceed a quota the store could not confirm.
+ * - `'fail-closed'`: the call fails with an `LlmError` of `kind: 'server'`,
+ *   `reason: 'quota_store_unavailable'`, `retryable: false` (the store's own
+ *   error is its `cause`), so no call can exceed a quota the store could not
+ *   confirm. It is not retried: a retry would repeat the failure against a
+ *   store that is already struggling. The call never reached the provider, and
+ *   its ledger row says so.
  * - `'fail-open'`: the call goes ahead unchecked, so a store outage does not
  *   stop traffic.
  *
@@ -202,10 +215,15 @@ export type EnforceProviderQuotaOptions = Omit<CheckProviderQuotaOptions, 'store
   QuotaStoreOptions & {
     onEvent?: QuotaEventHandler
     /**
-     * Called once for a call whose rule has windows the missing `store` could not
-     * check; the middleware turns it into its one-time warning.
+     * Called for a call whose rule has windows the missing `store` could not
+     * check; the middleware turns it into its once-per-scope warning.
      */
     onWindowChecksSkipped?: (scope: string) => void
+    /**
+     * Called when correcting the `tpm` reservation fails (after the
+     * `backend_error` event); the middleware logs it. It must not throw.
+     */
+    onReconcileError?: (scope: string, error: unknown) => void
     /**
      * Longest `retryAfterMs` a deferral may carry and still be thrown as a
      * retryable `rate_limited` error. A longer deferral is thrown as
@@ -344,8 +362,9 @@ interface ResolvedQuotaRule {
 export interface QuotaAdmission {
   /**
    * Corrects the call's `tpm` reservation with its real usage. Does nothing
-   * when the call reserved nothing or `usage` is absent. Never throws: a store
-   * failure is emitted as a `backend_error` event.
+   * when the call reserved nothing or `usage` is absent, and corrects at most
+   * once however often it is called. Never throws: a store failure is emitted
+   * as a `backend_error` event.
    */
   reconcile(usage?: Usage): Promise<void>
 }
@@ -397,6 +416,12 @@ function validateMaxDeferMs(value: number | undefined): number | undefined {
  * ```
  */
 export function quotaPolicy(opts: QuotaPolicyOptions): ProviderQuotaPolicy {
+  assertKnownKeys(
+    opts,
+    ['provider', 'models', 'defaults', 'dayBoundary', 'scope'],
+    'quotaPolicy',
+  )
+  assertKnownLimitKeys(opts, ['rpm', 'rpd', 'tpm'], 'quotaPolicy')
   const dayBoundary =
     opts.dayBoundary === undefined
       ? undefined
@@ -458,6 +483,11 @@ export function quotaPolicy(opts: QuotaPolicyOptions): ProviderQuotaPolicy {
 export function quotaPolicyForGemini(
   opts: GeminiQuotaPolicyOptions,
 ): ProviderQuotaPolicy {
+  assertKnownKeys(
+    opts,
+    ['provider', 'models', 'defaults', 'scope'],
+    'quotaPolicyForGemini',
+  )
   return quotaPolicy({
     provider: opts.provider ?? 'google',
     models: opts.models,
@@ -482,12 +512,45 @@ export function quotaPolicyForGemini(
  * has no `rpd` and no day boundary.
  */
 export function quotaPolicyForXai(opts: XaiQuotaPolicyOptions): ProviderQuotaPolicy {
+  assertKnownKeys(opts, ['provider', 'models', 'defaults', 'scope'], 'quotaPolicyForXai')
+  assertKnownLimitKeys(opts, ['rpm', 'tpm'], 'quotaPolicyForXai')
   return quotaPolicy({
     provider: opts.provider ?? 'xai',
     models: opts.models,
     ...(opts.defaults !== undefined ? { defaults: opts.defaults } : {}),
     ...(opts.scope !== undefined ? { scope: opts.scope } : {}),
   })
+}
+
+/** Throws `bad_request` for a key of `value` that is not in `allowed`: a misspelt option is never dropped. */
+function assertKnownKeys(
+  value: unknown,
+  allowed: readonly string[],
+  where: string,
+): void {
+  if (typeof value !== 'object' || value === null) return
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) {
+      throw new LlmError(
+        `${where}: unknown option "${key}". Known: ${allowed.join(', ')}.`,
+        { kind: 'bad_request', retryable: false },
+      )
+    }
+  }
+}
+
+/** Every limits object of a policy (`defaults` and each `models` entry) may carry only `allowed` keys. */
+function assertKnownLimitKeys(
+  opts: { models?: unknown; defaults?: unknown },
+  allowed: readonly string[],
+  where: string,
+): void {
+  assertKnownKeys(opts.defaults, allowed, `${where}: defaults`)
+  if (typeof opts.models === 'object' && opts.models !== null) {
+    for (const [model, limits] of Object.entries(opts.models)) {
+      assertKnownKeys(limits, allowed, `${where}: models["${model}"]`)
+    }
+  }
 }
 
 export async function checkProviderQuota(
@@ -510,10 +573,12 @@ export async function checkProviderQuota(
  * deferral or a denial. Resolves to a {@link QuotaAdmission} the caller uses to
  * correct a `tpm` reservation with the call's real usage.
  *
- * A store failure follows `onStoreError`: `'fail-closed'` rethrows it,
- * `'fail-open'` lets the call through with no reservation. Both emit
- * `backend_error`. Without a `store`, window checks are skipped (see
- * {@link ProviderQuotaMiddlewareOptions}).
+ * A store failure follows `onStoreError`: `'fail-closed'` throws an `LlmError`
+ * (`kind: 'server'`, `reason: 'quota_store_unavailable'`, not retryable, the
+ * store's error as `cause`), `'fail-open'` lets the call through with no
+ * reservation. Both emit `backend_error`. A caller abort that interrupts the
+ * store call is rethrown as it is. Without a `store`, window checks are skipped
+ * (see {@link ProviderQuotaMiddlewareOptions}).
  */
 export async function enforceProviderQuota(
   opts: EnforceProviderQuotaOptions,
@@ -525,109 +590,109 @@ export async function enforceProviderQuota(
     validateStoreErrorMode(opts.onStoreError)
   }
 
+  let evaluation: QuotaEvaluation
   try {
-    let evaluation: QuotaEvaluation
-    try {
-      evaluation = await evaluateQuotaDecision(
-        resolved,
-        opts.store,
-        nowMs,
-        opts.estimatedInputTokens,
-        opts.signal,
-        opts.onWindowChecksSkipped,
-      )
-    } catch (storeError) {
-      if (opts.onStoreError !== 'fail-open' || opts.signal?.aborted === true) {
-        throw storeError
-      }
-      emitEvent(opts.onEvent, {
-        type: 'backend_error',
-        provider: opts.provider,
-        model: opts.model,
-        scope: resolved.scope,
-        error: storeError,
-      })
-      return NO_ADMISSION
-    }
-    const decision = evaluation.decision
-
-    switch (decision.kind) {
-      case 'allow':
-        emitEvent(opts.onEvent, {
-          type: 'allow',
-          provider: opts.provider,
-          model: opts.model,
-          scope: resolved.scope,
-          decision,
-        })
-        return admissionFor(opts, resolved, nowMs, evaluation.reservedTokens)
-
-      case 'defer':
-        emitEvent(opts.onEvent, {
-          type: 'defer',
-          provider: opts.provider,
-          model: opts.model,
-          scope: resolved.scope,
-          decision,
-        })
-        throw new LlmError(
-          messageForDefer(decision.reason, decision.scope, decision.retryAfterMs),
-          maxDeferMs !== undefined && decision.retryAfterMs > maxDeferMs
-            ? {
-                kind: 'rate_limited',
-                retryable: false,
-                reason: 'quota_window',
-                retryAfterMs: decision.retryAfterMs,
-              }
-            : {
-                kind: 'rate_limited',
-                retryable: true,
-                retryAfterMs: decision.retryAfterMs,
-              },
-        )
-
-      case 'deny':
-        emitEvent(opts.onEvent, {
-          type: 'deny',
-          provider: opts.provider,
-          model: opts.model,
-          scope: resolved.scope,
-          decision,
-        })
-        {
-          const error = new LlmError(messageForDeny(decision.reason, decision.scope), {
-            kind: 'rate_limited',
-            retryable: false,
-          })
-          // LlmError declares `retryAfterMs` as a class field, so with
-          // useDefineForClassFields (implied by tsconfig's ES2022 target) every
-          // instance gets an own `retryAfterMs` property initialized to
-          // `undefined` — even though it's never passed in `options` here. This
-          // delete keeps `'retryAfterMs' in error` false for non-retryable
-          // deny errors, matching the `defer` case where it's genuinely absent.
-          delete (error as { retryAfterMs?: number }).retryAfterMs
-          throw error
-        }
-
-      default: {
-        const exhaustive: never = decision
-        return exhaustive
-      }
-    }
-  } catch (error) {
-    if (error instanceof LlmError && error.kind === 'rate_limited') {
-      throw error
-    }
-
+    evaluation = await evaluateQuotaDecision(
+      resolved,
+      opts.store,
+      nowMs,
+      opts.estimatedInputTokens,
+      opts.signal,
+      opts.onWindowChecksSkipped,
+    )
+  } catch (storeError) {
+    // Anything the store did wrong, whatever it threw (even an `LlmError`: a
+    // store's own `rate_limited` is not this library's quota decision).
+    if (opts.store === undefined) throw storeError
     emitEvent(opts.onEvent, {
       type: 'backend_error',
       provider: opts.provider,
       model: opts.model,
       scope: resolved.scope,
-      error,
+      error: storeError,
     })
-    throw error
+    if (opts.signal?.aborted === true) throw storeError
+    if (opts.onStoreError === 'fail-open') return NO_ADMISSION
+    throw storeUnavailableError(storeError)
   }
+  const decision = evaluation.decision
+
+  switch (decision.kind) {
+    case 'allow':
+      emitEvent(opts.onEvent, {
+        type: 'allow',
+        provider: opts.provider,
+        model: opts.model,
+        scope: resolved.scope,
+        decision,
+      })
+      return admissionFor(opts, resolved, nowMs, evaluation.reservedTokens)
+
+    case 'defer':
+      emitEvent(opts.onEvent, {
+        type: 'defer',
+        provider: opts.provider,
+        model: opts.model,
+        scope: resolved.scope,
+        decision,
+      })
+      throw new LlmError(
+        messageForDefer(decision.reason, decision.scope, decision.retryAfterMs),
+        maxDeferMs !== undefined && decision.retryAfterMs > maxDeferMs
+          ? {
+              kind: 'rate_limited',
+              retryable: false,
+              reason: 'quota_window',
+              retryAfterMs: decision.retryAfterMs,
+            }
+          : {
+              kind: 'rate_limited',
+              retryable: true,
+              retryAfterMs: decision.retryAfterMs,
+            },
+      )
+
+    case 'deny':
+      emitEvent(opts.onEvent, {
+        type: 'deny',
+        provider: opts.provider,
+        model: opts.model,
+        scope: resolved.scope,
+        decision,
+      })
+      {
+        const error = new LlmError(messageForDeny(decision.reason, decision.scope), {
+          kind: 'rate_limited',
+          retryable: false,
+        })
+        // LlmError declares `retryAfterMs` as a class field, so with
+        // useDefineForClassFields (implied by tsconfig's ES2022 target) every
+        // instance gets an own `retryAfterMs` property initialized to
+        // `undefined` — even though it's never passed in `options` here. This
+        // delete keeps `'retryAfterMs' in error` false for non-retryable
+        // deny errors, matching the `defer` case where it's genuinely absent.
+        delete (error as { retryAfterMs?: number }).retryAfterMs
+        throw error
+      }
+
+    default: {
+      const exhaustive: never = decision
+      return exhaustive
+    }
+  }
+}
+
+/**
+ * The one error a `'fail-closed'` store outage becomes: a timeout, an HTTP
+ * failure, a transport failure and a malformed reply all end the same way, so
+ * a host can tell "the quota store is down" from a provider failure.
+ */
+function storeUnavailableError(cause: unknown): LlmError {
+  const detail = cause instanceof Error ? cause.message : String(cause)
+  return new LlmError(
+    `Quota store unavailable (onStoreError: 'fail-closed'): ${detail}. The call was refused before it reached the provider.`,
+    { kind: 'server', retryable: false, reason: 'quota_store_unavailable', cause },
+  )
 }
 
 function admissionFor(
@@ -638,9 +703,11 @@ function admissionFor(
 ): QuotaAdmission {
   const store = opts.store
   if (store === undefined || reservedTokens === undefined) return NO_ADMISSION
+  let reconciled = false
   return {
     async reconcile(usage?: Usage): Promise<void> {
-      if (usage === undefined) return
+      if (usage === undefined || reconciled) return
+      reconciled = true
       const actual = Math.max(Math.round(usage.inputTokens), 0)
       const delta = actual - reservedTokens
       if (delta === 0) return
@@ -654,6 +721,11 @@ function admissionFor(
           scope: resolved.scope,
           error,
         })
+        try {
+          opts.onReconcileError?.(resolved.scope, error)
+        } catch {
+          // A logging hook must not turn a reconciliation failure into a throw.
+        }
       }
     },
   }
@@ -666,42 +738,71 @@ function admissionFor(
  * Tokens: when the rule has `tpm`, each attempt reserves
  * `estimateInputTokens(req)` and, once the attempt ends with usage (a result,
  * or a billed failure that carries it), the real input tokens correct the
- * reservation. An attempt that ends with no usage keeps its reservation.
+ * reservation. An attempt that ends with no usage keeps its reservation. The
+ * correction is started when the attempt ends and never awaited: it cannot
+ * delay the result, cannot mask the attempt's error, and is at-most-once (see
+ * {@link QuotaStore.adjustTokens}). A failure is a `backend_error` event and an
+ * `llm.quota.reconcile_failed` warning.
  *
- * **Without a `store`** the rules still evaluate: `rpd: 0` denies the call with
- * `provider_disabled` and a `deny` event. Windows (`rpm`, `rpd`, `tpm`) cannot
- * be checked and are skipped, with one `warn` log
- * (`llm.quota.windows_skipped`) per middleware instance.
+ * **Without a `store`** the rules still evaluate: any limit of `0` denies the
+ * call with `provider_disabled` and a `deny` event. Windows (`rpm`, `rpd`,
+ * `tpm`) cannot be checked and are skipped, with one `warn` log
+ * (`llm.quota.windows_skipped`) per middleware instance and scope.
+ *
+ * `onStoreError` is validated here, at construction.
  */
 export function providerQuotaMiddleware(
   opts: ProviderQuotaMiddlewareOptions,
 ): Middleware {
   const maxDeferMs = validateMaxDeferMs(opts.maxDeferMs) ?? DEFAULT_MAX_DEFER_MS
+  if (opts.store !== undefined) validateStoreErrorMode(opts.onStoreError)
   const storeOptions: QuotaStoreOptions =
     opts.store === undefined ? {} : { store: opts.store, onStoreError: opts.onStoreError }
-  let warnedWindowsSkipped = false
+  const warnedScopes = new Set<string>()
   return {
     id: opts.id ?? 'provider-quota',
     // Not configurable: `createClient` reads `role` (never `id`) to reject a
     // client that places quota outside retry.
     role: 'quota',
     async intercept(req, ctx, next) {
+      const model = req.modelDescriptor?.model ?? req.model
       const enforceOptions: EnforceProviderQuotaOptions = {
         provider: req.provider,
         // The canonical id, so a declared alias is limited like its model. The
         // engine pins `modelDescriptor` at every middleware boundary.
-        model: req.modelDescriptor?.model ?? req.model,
+        model,
         policy: opts.policy,
         ...storeOptions,
         nowMs: opts.now?.() ?? ctx.clock.now(),
         estimatedInputTokens: estimateInputTokens(req),
         maxDeferMs,
         onWindowChecksSkipped: (scope) => {
-          if (warnedWindowsSkipped) return
-          warnedWindowsSkipped = true
+          if (warnedScopes.has(scope)) return
+          warnedScopes.add(scope)
           ctx.logger.warn(
-            { callId: ctx.callId, provider: req.provider, scope },
-            'llm.quota.windows_skipped: providerQuotaMiddleware has no store, so rpm, rpd and tpm windows are not checked (rpd: 0 still denies)',
+            {
+              callId: ctx.callId,
+              provider: req.provider,
+              model,
+              scope,
+              detail:
+                'providerQuotaMiddleware has no store, so rpm, rpd and tpm windows are not checked (a limit of 0 still denies)',
+            },
+            'llm.quota.windows_skipped',
+          )
+        },
+        onReconcileError: (scope, error) => {
+          ctx.logger.warn(
+            {
+              callId: ctx.callId,
+              provider: req.provider,
+              model,
+              scope,
+              error: redactSecrets(
+                error instanceof Error ? error.message : String(error),
+              ),
+            },
+            'llm.quota.reconcile_failed',
           )
         },
       }
@@ -725,10 +826,10 @@ export function providerQuotaMiddleware(
       } catch (error) {
         // A billed failure carries its usage; any other failure keeps the
         // reservation (the provider may have counted the request).
-        await admission.reconcile(error instanceof LlmError ? error.usage : undefined)
+        void admission.reconcile(error instanceof LlmError ? error.usage : undefined)
         throw error
       }
-      await admission.reconcile(result.usage)
+      void admission.reconcile(result.usage)
       return result
     },
   }
@@ -738,12 +839,14 @@ export function providerQuotaMiddleware(
  * Quota as the client's `rateLimiter`. The engine passes
  * `hint.estimatedInputTokens` (see `estimateInputTokens`) to `acquire` and the
  * attempt's usage to the returned `Release`, which corrects the `tpm`
- * reservation without waiting for the store.
+ * reservation without waiting for the store, at most once however often the
+ * `Release` is called. `onStoreError` is validated here, at construction.
  */
 export function providerQuotaRateLimiter(
   opts: ProviderQuotaRateLimiterOptions,
 ): RateLimiter {
   const maxDeferMs = validateMaxDeferMs(opts.maxDeferMs) ?? DEFAULT_MAX_DEFER_MS
+  validateStoreErrorMode(opts.onStoreError)
   return {
     async acquire(
       key: string,
@@ -947,7 +1050,18 @@ function boundedInvoke(
       finish()
     }
     signal?.addEventListener('abort', onCallerAbort, { once: true })
-    invoke(commands, controller.signal).then(
+    // An `invoke` that throws before it returns a promise must still release the
+    // timer and the listener.
+    let pending: Promise<readonly unknown[]>
+    try {
+      pending = invoke(commands, controller.signal)
+    } catch (error) {
+      settle(() => {
+        reject(asError(error))
+      })
+      return
+    }
+    pending.then(
       (value) => {
         settle(() => {
           resolve(value)
@@ -989,26 +1103,11 @@ function resolveQuotaRule(
     scope,
   }
 
-  if (rule?.rpm !== undefined) {
-    const rpm = validateConfiguredLimit('rpm', rule.rpm)
-    if (rpm !== undefined) {
-      resolved.rpm = rpm
+  for (const name of ['rpm', 'rpd', 'tpm'] as const) {
+    const limit = validateConfiguredLimit(name, rule?.[name])
+    if (limit !== undefined) {
+      resolved[name] = limit
     }
-  }
-  if (rule?.rpd !== undefined) {
-    const rpd = validateConfiguredLimit('rpd', rule.rpd)
-    if (rpd !== undefined) {
-      resolved.rpd = rpd
-    }
-  }
-  if (rule?.tpm !== undefined) {
-    if (!Number.isInteger(rule.tpm) || rule.tpm < 1) {
-      throw new LlmError(
-        `Invalid provider quota rule: "tpm" must be a positive integer, got ${String(rule.tpm)}`,
-        { kind: 'bad_request', retryable: false },
-      )
-    }
-    resolved.tpm = rule.tpm
   }
   if (rule?.dayBoundary !== undefined) {
     resolved.dayBoundary = assertDayBoundary(rule.dayBoundary, 'dayBoundary')
@@ -1035,7 +1134,8 @@ async function evaluateQuotaDecision(
     return { decision: { kind: 'allow' } }
   }
 
-  if (resolved.rpd === 0) {
+  // A limit of 0, in any window, disables the provider for this scope.
+  if (resolved.rpm === 0 || resolved.rpd === 0 || resolved.tpm === 0) {
     return {
       decision: {
         kind: 'deny',
@@ -1045,9 +1145,7 @@ async function evaluateQuotaDecision(
     }
   }
 
-  const rpm = normalizeConfiguredLimit(resolved.rpm)
-  const rpd = normalizeConfiguredLimit(resolved.rpd)
-  const tpm = resolved.tpm
+  const { rpm, rpd, tpm } = resolved
   if (rpm === undefined && rpd === undefined && tpm === undefined) {
     return { decision: { kind: 'allow' } }
   }
@@ -1223,6 +1321,8 @@ function buildUpstashInvoker(opts: UpstashQuotaStoreOptions): UpstashPipelineInv
     const response = await fetchImpl(endpoint, requestInit)
 
     if (!response.ok) {
+      // Release the connection: an unread body keeps it open.
+      await response.body?.cancel().catch(() => undefined)
       throw new Error(`Upstash quota pipeline failed with HTTP ${response.status}`)
     }
 
@@ -1254,20 +1354,14 @@ function defaultScope(provider: string, model: string): string {
   return `${provider}:${model}`
 }
 
-function normalizeConfiguredLimit(limit: number | undefined): number | undefined {
-  if (limit === undefined) return undefined
-  if (limit <= 0) return undefined
-  return limit
-}
-
 function validateConfiguredLimit(
-  name: 'rpm' | 'rpd',
+  name: 'rpm' | 'rpd' | 'tpm',
   value: number | undefined,
 ): number | undefined {
   if (value === undefined) return undefined
   if (!Number.isInteger(value) || value < 0) {
     throw new LlmError(
-      `Invalid provider quota rule: "${name}" must be a non-negative integer, got ${value}`,
+      `Invalid provider quota rule: "${name}" must be a non-negative integer, got ${String(value)}`,
       { kind: 'bad_request', retryable: false },
     )
   }

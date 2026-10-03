@@ -55,7 +55,18 @@ jobs:
       - name: Audit dependencies
         run: pnpm audit:gate
 
+      # The quota package's Redis scripts are tested on a real Lua interpreter
+      # (Redis embeds Lua; the tests need 5.3 or newer for their driver). With
+      # REQUIRE_LUA=1 a missing interpreter fails the run instead of skipping the
+      # tests, so the scripts can never ship unexecuted.
+      - name: Install Lua
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lua5.4
+
       - run: pnpm quality
+        env:
+          REQUIRE_LUA: '1'
 
   # Packs every package and installs the tarballs with pnpm and npm: one core copy,
   # the example typechecks, and mixed versions are rejected (RELEASING.md,

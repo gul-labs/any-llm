@@ -26,6 +26,7 @@ import {
   upstashQuotaStore,
   type QuotaStore,
   type UpstashPipelineCommand,
+  type UpstashPipelineInvoker,
 } from './index.js'
 import { makePermissiveTestDescriptor } from '../../core/src/test-model-descriptor.js'
 import { makeRedisEmulator } from './redis-emulator.js'
@@ -705,13 +706,22 @@ describe('quota limits are keyed by the canonical model id', () => {
 })
 
 /**
- * The shipped Lua, run by a real Lua interpreter against a Redis shim. Opt-in:
- * skipped when no `lua` binary is on PATH (CI installs none; run locally with
- * `brew install lua`). The shim mirrors the Redis behaviours the script relies
- * on, including `PEXPIRE` refusing a non-integer TTL.
+ * The shipped Lua, run by a real Lua interpreter against a Redis shim. Skipped
+ * locally when no Lua binary is on PATH (`brew install lua`); CI installs
+ * `lua5.4` and sets `REQUIRE_LUA=1`, which turns a missing interpreter into a
+ * failure instead of a skip, so the scripts always run on a real interpreter
+ * there. The shim mirrors the Redis behaviours the script relies on, including
+ * `PEXPIRE` refusing a non-integer TTL.
  */
-const LUA = spawnSync('lua', ['-v'])
-const hasLua = LUA.status === 0
+const LUA_BINARY = ['lua', 'lua5.4', 'lua5.3'].find(
+  (name) => spawnSync(name, ['-v']).status === 0,
+)
+const hasLua = LUA_BINARY !== undefined
+const requireLua = process.env['REQUIRE_LUA'] === '1'
+
+it.runIf(requireLua)('REQUIRE_LUA=1: a Lua interpreter is installed', () => {
+  expect(LUA_BINARY, 'REQUIRE_LUA=1 but no lua/lua5.4/lua5.3 binary runs').toBeDefined()
+})
 
 function runLua(
   script: string,
@@ -722,6 +732,10 @@ function runLua(
   const driver = `
 local script, nkeys = ...
 local state = {}
+local function whole(v)
+  if v == math.floor(v) then return string.format('%d', v) end
+  return tostring(v)
+end
 for k, v in string.gmatch(os.getenv('QUOTA_STATE') or '', '([^=;]+)=([^;]+)') do state[k] = tonumber(v) end
 KEYS = {}
 ARGV = {}
@@ -744,19 +758,19 @@ function redis.call(cmd, key, arg)
   end
   error('unexpected command ' .. cmd)
 end
-local fn = assert(load(script))
+local fn = assert((loadstring or load)(script))
 local out = fn()
 if type(out) ~= 'table' then out = { out } end
 local parts = {}
-for i, v in ipairs(out) do parts[i] = tostring(math.tointeger(v) or v) end
+for i, v in ipairs(out) do parts[i] = whole(v) end
 local st = {}
-for k, v in pairs(state) do st[#st + 1] = k .. '=' .. tostring(math.tointeger(v) or v) end
+for k, v in pairs(state) do st[#st + 1] = k .. '=' .. whole(v) end
 io.write(table.concat(parts, ',') .. '\\n' .. table.concat(st, ';'))
 `
   const stateText = Object.entries(state)
     .map(([k, v]) => `${k}=${v}`)
     .join(';')
-  const proc = spawnSync('lua', ['-', script, String(keys.length)], {
+  const proc = spawnSync(LUA_BINARY ?? 'lua', ['-', script, String(keys.length)], {
     input: driver,
     env: {
       ...process.env,
@@ -871,6 +885,86 @@ describe.skipIf(!hasLua)('the shipped Lua script, on a real interpreter', () => 
       expect(runLua(lua, ['k'], [400], state)).toEqual([0])
       expect(state).toEqual({})
     })
+  })
+})
+
+describe.skipIf(!hasLua)('upstashQuotaStore end to end on a real interpreter', () => {
+  /** An invoker whose every EVAL runs the store's own script on the real interpreter. */
+  function luaRedis() {
+    const state: Record<string, number> = {}
+    const invoke: UpstashPipelineInvoker = (commands) =>
+      Promise.resolve(
+        commands.map((command) => {
+          const [name, script, numKeys, ...rest] = command
+          if (name !== 'EVAL') throw new Error(`unexpected command ${String(name)}`)
+          const n = Number(numKeys)
+          const reply = runLua(
+            String(script),
+            rest.slice(0, n).map(String),
+            rest.slice(n),
+            state,
+          )
+          return { result: String(script).includes('PEXPIRE') ? reply : (reply[0] ?? 0) }
+        }),
+      )
+    return { state, invoke }
+  }
+
+  const dayBoundary = { timeZone: 'US/Pacific' }
+
+  it('rpm, a time-zone rpd and tpm together: the denial consumes nothing, the day key names the canonical zone', async () => {
+    const redis = luaRedis()
+    const store = upstashQuotaStore({ invoke: redis.invoke })
+    const input = {
+      scope: 's',
+      nowMs: NOW + 0.5,
+      rpm: 2,
+      rpd: 5,
+      tpm: 1_000,
+      tokens: 400,
+      dayBoundary,
+    }
+
+    const first = await store.checkAndConsume(input)
+    const second = await store.checkAndConsume(input)
+    const third = await store.checkAndConsume(input)
+
+    expect(first).toMatchObject({
+      rpm: { allowed: true, used: 1 },
+      rpd: { allowed: true, used: 1 },
+      tpm: { allowed: true, used: 400 },
+    })
+    expect(second.tpm).toMatchObject({ allowed: true, used: 800 })
+    // rpm is at its limit: refused, and no counter moved.
+    expect(third.rpm).toMatchObject({ allowed: false })
+    expect(third.tpm).toMatchObject({ used: 800 })
+    const keys = Object.keys(redis.state).sort()
+    expect(keys.some((k) => k.includes(':rpd:s:America/Los_Angeles@'))).toBe(true)
+    expect(Object.values(redis.state).sort((a, b) => a - b)).toEqual([2, 2, 800])
+  })
+
+  it('adjustTokens corrects the minute counter, never below 0, and leaves a missing one alone', async () => {
+    const redis = luaRedis()
+    const store = upstashQuotaStore({ invoke: redis.invoke })
+    await store.checkAndConsume({ scope: 's', nowMs: NOW, tpm: 1_000, tokens: 600 })
+
+    await store.adjustTokens({ scope: 's', nowMs: NOW, tokens: -450 })
+    expect(Object.values(redis.state)).toEqual([150])
+    await store.adjustTokens({ scope: 's', nowMs: NOW, tokens: -10_000 })
+    expect(Object.values(redis.state)).toEqual([0])
+
+    await store.adjustTokens({ scope: 'other', nowMs: NOW, tokens: 500 })
+    expect(Object.keys(redis.state)).toHaveLength(1)
+  })
+
+  it('an oversize call passes into an empty token window and then blocks the window', async () => {
+    const redis = luaRedis()
+    const store = upstashQuotaStore({ invoke: redis.invoke })
+    const check = (tokens: number) =>
+      store.checkAndConsume({ scope: 's', nowMs: NOW, tpm: 1_000, tokens })
+
+    expect((await check(5_000)).tpm).toMatchObject({ allowed: true })
+    expect((await check(1)).tpm).toMatchObject({ allowed: false })
   })
 })
 

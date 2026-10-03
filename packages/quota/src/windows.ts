@@ -113,11 +113,25 @@ export function msUntilNextUtcDay(nowMs: number): number {
   return Math.max(Math.ceil(nextDay - nowMs), 1)
 }
 
-/** The day window's identity for a store key: the date, and the zone when one is set. */
+/**
+ * The runtime's canonical name for `timeZone` (`US/Pacific` is
+ * `America/Los_Angeles`), so aliases of one zone name one counter.
+ */
+function canonicalTimeZone(timeZone: string): string {
+  return formatterFor(timeZone).resolvedOptions().timeZone
+}
+
+/**
+ * The day window's identity for a store key: the date, and the canonical zone
+ * name when one is set. UTC, however it is spelled (`utc`, `Etc/UTC`), and no
+ * boundary at all are the same window and the same key.
+ */
 export function dayBucket(nowMs: number, boundary: DayBoundary | undefined): string {
-  return boundary === undefined
+  if (boundary === undefined) return utcDate(nowMs)
+  const zone = canonicalTimeZone(boundary.timeZone)
+  return zone === 'UTC'
     ? utcDate(nowMs)
-    : `${boundary.timeZone}@${localDate(nowMs, boundary.timeZone)}`
+    : `${zone}@${localDate(nowMs, boundary.timeZone)}`
 }
 
 /** Milliseconds left in the day window that contains `nowMs`. */
