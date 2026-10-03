@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest'
 import type { Content } from '@google/genai'
 import { LlmError } from '@gullabs/core'
 import { geminiContentToMessages } from './content-to-messages.js'
+import { partSha256 } from './thought-signatures.js'
 
 describe('geminiContentToMessages: role mapping', () => {
   it('maps role "user" → "user"', () => {
@@ -350,7 +351,6 @@ describe('geminiContentToMessages: unsupported part kinds', () => {
     ['toolCall', { toolCall: {} }],
     ['toolResponse', { toolResponse: {} }],
     ['thought', { text: 'reasoning...', thought: true }],
-    ['thoughtSignature', { text: 'x', thoughtSignature: 'sig' }],
     [
       'videoMetadata',
       {
@@ -461,7 +461,7 @@ describe('geminiContentToMessages: exhaustive key-set validation', () => {
     expectBadRequest(contents, 'mediaResolution')
   })
 
-  it('throws bad_request when text carries a thoughtSignature', () => {
+  it('throws bad_request when a user text part carries a thoughtSignature', () => {
     const contents = [
       { role: 'user', parts: [{ text: 'hi', thoughtSignature: 'sig' }] },
     ] as unknown as Content[]
@@ -785,5 +785,122 @@ describe('geminiContentToMessages: empty and multi-part inputs', () => {
     const inputPartCount = contents.reduce((sum, c) => sum + (c.parts?.length ?? 0), 0)
     const outputPartCount = messages.reduce((sum, m) => sum + m.parts.length, 0)
     expect(outputPartCount).toBe(inputPartCount)
+  })
+})
+
+describe('geminiContentToMessages: thoughtSignature import', () => {
+  const MODEL = 'gemini-3.1-flash-lite'
+  const expectBadRequest = (contents: Content[], naming: string): void => {
+    try {
+      geminiContentToMessages({ contents, model: MODEL })
+      expect.unreachable()
+    } catch (err) {
+      expect(err).toBeInstanceOf(LlmError)
+      expect((err as LlmError).kind).toBe('bad_request')
+      expect((err as LlmError).message).toContain(naming)
+    }
+  }
+  const history = (): Content[] =>
+    [
+      { role: 'user', parts: [{ text: 'Weather in Paris?' }] },
+      {
+        role: 'model',
+        parts: [
+          { text: 'Checking.', thoughtSignature: 'c2ln-text' },
+          {
+            functionCall: { name: 'get_weather', args: { city: 'Paris' } },
+            thoughtSignature: 'c2ln-call',
+          },
+          { functionCall: { name: 'get_weather', args: { city: 'Tokyo' } } },
+        ],
+      },
+      {
+        role: 'user',
+        parts: [
+          { functionResponse: { name: 'get_weather', response: { tempC: 18 } } },
+          { functionResponse: { name: 'get_weather', response: { tempC: 21 } } },
+        ],
+      },
+    ] as unknown as Content[]
+
+  it('imports signatures from model text and functionCall parts into the overlay', () => {
+    const { messages, transientProviderState } = geminiContentToMessages({
+      contents: history(),
+      model: MODEL,
+    })
+    const assistant = messages[1]?.parts ?? []
+    expect(assistant.map((p) => p.kind)).toEqual(['text', 'tool-call', 'tool-call'])
+    expect(transientProviderState).toEqual({
+      google: {
+        signatures: [
+          {
+            messageIndex: 1,
+            partIndex: 0,
+            model: MODEL,
+            partSha256: partSha256(assistant[0]!),
+            signature: 'c2ln-text',
+          },
+          {
+            messageIndex: 1,
+            partIndex: 1,
+            model: MODEL,
+            partSha256: partSha256(assistant[1]!),
+            signature: 'c2ln-call',
+          },
+        ],
+      },
+    })
+  })
+
+  it('omits transientProviderState when no part carries a signature', () => {
+    const result = geminiContentToMessages({
+      contents: [{ role: 'model', parts: [{ text: 'hi' }] }],
+      model: MODEL,
+    })
+    expect('transientProviderState' in result).toBe(false)
+  })
+
+  it('requires the model input when a signature is present', () => {
+    try {
+      geminiContentToMessages({ contents: history() })
+      expect.unreachable()
+    } catch (err) {
+      expect(err).toBeInstanceOf(LlmError)
+      expect((err as LlmError).kind).toBe('bad_request')
+      expect((err as LlmError).message).toContain('contents[1].parts[0]')
+      expect((err as LlmError).message).toContain('`model`')
+    }
+  })
+
+  it.each([
+    ['an inlineData part', { inlineData: { mimeType: 'image/png', data: 'AA==' } }],
+    ['a functionResponse part', { functionResponse: { name: 'f', response: {} } }],
+  ])('rejects a signature on %s', (_label, part) => {
+    expectBadRequest(
+      [
+        { role: 'model', parts: [{ ...part, thoughtSignature: 'sig' }] },
+      ] as unknown as Content[],
+      'thoughtSignature',
+    )
+  })
+
+  it('rejects an empty or non-string signature', () => {
+    for (const thoughtSignature of ['', 7]) {
+      expectBadRequest(
+        [
+          { role: 'model', parts: [{ text: 'x', thoughtSignature }] },
+        ] as unknown as Content[],
+        'thoughtSignature',
+      )
+    }
+  })
+
+  it('still rejects thought-flagged parts, signed or not', () => {
+    expectBadRequest(
+      [
+        { role: 'model', parts: [{ text: 'x', thought: true, thoughtSignature: 'sig' }] },
+      ] as unknown as Content[],
+      'thought',
+    )
   })
 })

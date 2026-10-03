@@ -24,6 +24,8 @@ export interface GeminiPartLike {
   /** Present and `true` on thought-summary parts. */
   thought?: boolean
   functionCall?: { id?: string; name?: string; args?: unknown }
+  /** Opaque signature Gemini 3.x attaches to the first function call of a turn. */
+  thoughtSignature?: string
 }
 
 /** The `content` object inside a Gemini candidate. */

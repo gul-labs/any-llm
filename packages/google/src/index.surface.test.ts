@@ -15,7 +15,11 @@ import {
   TRANSPORT_TIMEOUT_BUFFER_MS,
   googleProvider,
 } from './index.js'
-import type { GeminiCountTokensParams, GeminiCountTokensResponseShape } from './index.js'
+import type {
+  GeminiCountTokensParams,
+  GeminiCountTokensResponseShape,
+  GoogleSignatureState,
+} from './index.js'
 
 describe('@gullabs/google package surface: timeout constants', () => {
   it('FLEX_DEFAULT_TIMEOUT_MS is exported and equals 1_500_000', () => {
@@ -45,5 +49,13 @@ describe('@gullabs/google package surface: token counting', () => {
     const response: GeminiCountTokensResponseShape = { totalTokens: 1 }
     expect(params.model).toBe('gemini-2.5-pro')
     expect(response.totalTokens).toBe(1)
+  })
+})
+
+describe('@gullabs/google package surface: thought signatures', () => {
+  it('exports the overlay state type; the hashing helpers stay internal', () => {
+    const state: GoogleSignatureState = { google: { signatures: [] } }
+    expect(state.google.signatures).toEqual([])
+    expect('partSha256' in surface).toBe(false)
   })
 })

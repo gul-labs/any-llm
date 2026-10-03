@@ -21,7 +21,10 @@
 
 Everything else from DESIGN.md is OUT of scope for now (no streaming, no agent loop).
 The function-calling **seam** shipped (ADR-029): `LlmRequest.tools` / `toolChoice` in,
-`tool-call` / `tool-result` parts and `LlmResult.toolCalls` out — no tool execution.
+`tool-call` / `tool-result` parts and `LlmResult.toolCalls` out — no tool execution. Every result
+carries the ordered assistant `message` and `continuation` (`'history'` | `'state'`), so the host's own
+loop follows the provider's rule; Gemini 3.x thought signatures travel as an overlay in
+`transientProviderState` (ADR-029 addendum).
 Seams are present; machinery is intentionally small.
 
 ## Non-negotiable invariants
@@ -29,6 +32,10 @@ Seams are present; machinery is intentionally small.
 - **Neither engine nor adapters validate output.** The engine forwards `output.jsonSchema` to the
   provider as a generation hint, JSON.parses the response, and surfaces `output: unknown` +
   `outputParsed: boolean`. The caller owns all validation, retry, and acceptance policy.
+- **Continuation state is provider-scoped and model-bound.** `transientProviderState` is keyed by
+  provider (`google`, `xai`), bound to the exact `model` string the host sent (an alias is never
+  rewritten), and each adapter rejects another provider's state, stale history and another model's
+  state with `bad_request` before dispatch. An overlay is a view of the host's history, never a copy.
 - **GROSS token convention:** `cachedInputTokens` is a SUBSET of `inputTokens`;
   `thinkingTokens` is a SUBSET of `outputTokens`. Cost math must not double-count.
 - **Cost is frozen at write time:** integer micro-USD + `pricingVersion` on every record.
@@ -114,11 +121,15 @@ export interface ReasoningIntent {
 export interface LlmResult {
   output?: unknown // present iff request had output.jsonSchema and JSON.parse succeeded; ALWAYS unknown, never validated
   outputParsed?: boolean // present iff output.jsonSchema was requested; true iff JSON.parse succeeded (NOT validated)
+  message: Message // assistant output in provider order (thought parts omitted); indices are over message.parts
+  continuation: 'history' | 'state' // how the next tool-loop turn is sent (descriptor capabilities.continuation)
   text?: string
+  toolCalls?: Array<{ toolCallId: string; toolName: string; args: JsonValue }> // derived from message
+  transientProviderState?: JsonValue // provider-scoped, bound to the requested model string; never persisted
   reasoningText?: string // provider thought-summary, present iff includeThoughts requested
   usage: Usage
   cost?: Cost // null model-unpriced; tokens still captured
-  model: string
+  model: string // the id the provider returned; do not route on it
   modelVersion?: string
   finishReason?: FinishReason
   responseId?: string
@@ -217,6 +228,7 @@ export interface AdapterCtx {
 export interface AdapterResult {
   rawStructured?: unknown // engine JSON.parses this into LlmResult.output (unknown); never validated
   servedServiceTier?: string // service tier actually served by the provider
+  message?: Message // ordered assistant output; omitted → engine builds [text, ...toolCalls]
   text?: string
   reasoningText?: string // thought summary if includeThoughts requested
   usage: Usage

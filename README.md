@@ -229,7 +229,7 @@ Input contracts (`callSite.inputSchema`, `request.inputContract`, `requireInputC
 
 Pre-1.0. Breaking changes may land in minor versions. Read the [per-package changelogs](./CHANGELOG.md) before upgrading.
 
-Not in this release: streaming, an agent loop, Vertex AI, multimodal output. Tool-calling is a seam only (tools in, tool-call/tool-result parts out — ADR-029). See [`ROADMAP.md`](./ROADMAP.md).
+Not in this release: streaming, an agent loop, Vertex AI, multimodal output. Tool-calling is a seam only (tools in, tool-call/tool-result parts out — ADR-029); every result carries `message` and `continuation` so the host's loop follows the provider's rule (see [`packages/core`](./packages/core/README.md#tool-loops-message-continuation-transientproviderstate)). See [`ROADMAP.md`](./ROADMAP.md).
 
 ## Contributing
 

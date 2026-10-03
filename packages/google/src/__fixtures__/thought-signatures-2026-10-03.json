@@ -1,0 +1,762 @@
+{
+  "capturedOn": "2026-10-03",
+  "source": "Live Gemini Developer API calls with a paid development key: tools declared with parametersJsonSchema, thinkingLevel LOW, thinking summaries not requested. Each scenario is a real two- or three-turn function-calling exchange; the replayed turn sends the model parts exactly as returned unless the scenario says a signature was removed or replaced.",
+  "redaction": "thoughtSignature values are replaced by their length. Part order, kinds, statuses and error text are as captured.",
+  "models": {
+    "gemini-3.1-flash-lite": {
+      "singleCall": {
+        "turn1": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_weather",
+              "signed": true,
+              "signatureLength": 712
+            }
+          ]
+        },
+        "replayAsReturned": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 368
+            }
+          ]
+        },
+        "replayWithoutSignatures": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        }
+      },
+      "parallelCalls": {
+        "turn1": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_weather",
+              "signed": true,
+              "signatureLength": 704
+            },
+            {
+              "kind": "functionCall:get_weather",
+              "signed": false
+            },
+            {
+              "kind": "functionCall:get_weather",
+              "signed": false
+            }
+          ]
+        },
+        "replayAsReturned": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": false
+            }
+          ]
+        },
+        "replayWithoutSignatures": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        },
+        "replayWithoutFirstCallSignature": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        },
+        "replayWithDummySignatureOnEveryCall": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 652
+            }
+          ]
+        }
+      },
+      "sequentialTwoSteps": {
+        "step1": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_user_city",
+              "signed": true,
+              "signatureLength": 576
+            }
+          ]
+        },
+        "step2": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_weather",
+              "signed": true,
+              "signatureLength": 344
+            }
+          ]
+        },
+        "finalWithAllSignatures": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 328
+            }
+          ]
+        },
+        "finalWithoutStep2Signature": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 4. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        },
+        "finalWithoutStep1Signature": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_user_city` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        }
+      },
+      "finalTextPart": {
+        "signed": true,
+        "nextTurnWithSignature": 200,
+        "nextTurnWithoutSignature": 200
+      }
+    },
+    "gemini-3.1-pro-preview": {
+      "singleCall": {
+        "turn1": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_weather",
+              "signed": true,
+              "signatureLength": 644
+            }
+          ]
+        },
+        "replayAsReturned": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 296
+            }
+          ]
+        },
+        "replayWithoutSignatures": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        }
+      },
+      "parallelCalls": {
+        "turn1": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_weather",
+              "signed": true,
+              "signatureLength": 1396
+            },
+            {
+              "kind": "functionCall:get_weather",
+              "signed": false
+            },
+            {
+              "kind": "functionCall:get_weather",
+              "signed": false
+            }
+          ]
+        },
+        "replayAsReturned": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 376
+            }
+          ]
+        },
+        "replayWithoutSignatures": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        },
+        "replayWithoutFirstCallSignature": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        },
+        "replayWithDummySignatureOnEveryCall": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 528
+            }
+          ]
+        }
+      },
+      "sequentialTwoSteps": {
+        "step1": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_user_city",
+              "signed": true,
+              "signatureLength": 596
+            }
+          ]
+        },
+        "step2": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_weather",
+              "signed": true,
+              "signatureLength": 248
+            }
+          ]
+        },
+        "finalWithAllSignatures": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 272
+            }
+          ]
+        },
+        "finalWithoutStep2Signature": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 4. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        },
+        "finalWithoutStep1Signature": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_user_city` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        }
+      },
+      "finalTextPart": {
+        "signed": true,
+        "nextTurnWithSignature": 200,
+        "nextTurnWithoutSignature": 200
+      }
+    },
+    "gemini-3.8-flash": {
+      "singleCall": {
+        "turn1": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_weather",
+              "signed": true,
+              "signatureLength": 408
+            }
+          ]
+        },
+        "replayAsReturned": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 144
+            }
+          ]
+        },
+        "replayWithoutSignatures": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        }
+      },
+      "parallelCalls": {
+        "turn1": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_weather",
+              "signed": true,
+              "signatureLength": 144
+            },
+            {
+              "kind": "functionCall:get_weather",
+              "signed": false
+            },
+            {
+              "kind": "functionCall:get_weather",
+              "signed": false
+            }
+          ]
+        },
+        "replayAsReturned": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 144
+            }
+          ]
+        },
+        "replayWithoutSignatures": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        },
+        "replayWithoutFirstCallSignature": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        },
+        "replayWithDummySignatureOnEveryCall": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 144
+            }
+          ]
+        }
+      },
+      "sequentialTwoSteps": {
+        "step1": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_user_city",
+              "signed": true,
+              "signatureLength": 424
+            }
+          ]
+        },
+        "step2": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_weather",
+              "signed": true,
+              "signatureLength": 252
+            }
+          ]
+        },
+        "finalWithAllSignatures": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 232
+            }
+          ]
+        },
+        "finalWithoutStep2Signature": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 4. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        },
+        "finalWithoutStep1Signature": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_user_city` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        }
+      },
+      "finalTextPart": {
+        "signed": true,
+        "nextTurnWithSignature": 200,
+        "nextTurnWithoutSignature": 200
+      }
+    },
+    "gemini-3.7-flash": {
+      "singleCall": {
+        "turn1": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_weather",
+              "signed": true,
+              "signatureLength": 424
+            }
+          ]
+        },
+        "replayAsReturned": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 216
+            }
+          ]
+        },
+        "replayWithoutSignatures": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        }
+      },
+      "parallelCalls": {
+        "turn1": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_weather",
+              "signed": true,
+              "signatureLength": 472
+            },
+            {
+              "kind": "functionCall:get_weather",
+              "signed": false
+            },
+            {
+              "kind": "functionCall:get_weather",
+              "signed": false
+            }
+          ]
+        },
+        "replayAsReturned": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 136
+            }
+          ]
+        },
+        "replayWithoutSignatures": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        },
+        "replayWithoutFirstCallSignature": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        },
+        "replayWithDummySignatureOnEveryCall": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 136
+            }
+          ]
+        }
+      },
+      "sequentialTwoSteps": {
+        "step1": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_user_city",
+              "signed": true,
+              "signatureLength": 472
+            }
+          ]
+        },
+        "step2": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_weather",
+              "signed": true,
+              "signatureLength": 260
+            }
+          ]
+        },
+        "finalWithAllSignatures": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 240
+            }
+          ]
+        },
+        "finalWithoutStep2Signature": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 4. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        },
+        "finalWithoutStep1Signature": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_user_city` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        }
+      },
+      "finalTextPart": {
+        "signed": true,
+        "nextTurnWithSignature": 200,
+        "nextTurnWithoutSignature": 200
+      }
+    },
+    "gemini-3.6-flash": {
+      "singleCall": {
+        "turn1": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_weather",
+              "signed": true,
+              "signatureLength": 416
+            }
+          ]
+        },
+        "replayAsReturned": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 284
+            }
+          ]
+        },
+        "replayWithoutSignatures": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        }
+      },
+      "parallelCalls": {
+        "turn1": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_weather",
+              "signed": true,
+              "signatureLength": 640
+            },
+            {
+              "kind": "functionCall:get_weather",
+              "signed": false
+            },
+            {
+              "kind": "functionCall:get_weather",
+              "signed": false
+            }
+          ]
+        },
+        "replayAsReturned": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 232
+            }
+          ]
+        },
+        "replayWithoutSignatures": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        },
+        "replayWithoutFirstCallSignature": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        },
+        "replayWithDummySignatureOnEveryCall": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 144
+            }
+          ]
+        }
+      },
+      "sequentialTwoSteps": {
+        "step1": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_user_city",
+              "signed": true,
+              "signatureLength": 324
+            }
+          ]
+        },
+        "step2": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_weather",
+              "signed": true,
+              "signatureLength": 252
+            }
+          ]
+        },
+        "finalWithAllSignatures": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 224
+            }
+          ]
+        },
+        "finalWithoutStep2Signature": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 4. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        },
+        "finalWithoutStep1Signature": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_user_city` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        }
+      },
+      "finalTextPart": {
+        "signed": true,
+        "nextTurnWithSignature": 200,
+        "nextTurnWithoutSignature": 200
+      }
+    },
+    "gemini-3.5-flash-lite": {
+      "singleCall": {
+        "turn1": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_weather",
+              "signed": true,
+              "signatureLength": 132
+            }
+          ]
+        },
+        "replayAsReturned": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 132
+            }
+          ]
+        },
+        "replayWithoutSignatures": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        }
+      },
+      "parallelCalls": {
+        "turn1": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_weather",
+              "signed": true,
+              "signatureLength": 132
+            },
+            {
+              "kind": "functionCall:get_weather",
+              "signed": false
+            },
+            {
+              "kind": "functionCall:get_weather",
+              "signed": false
+            }
+          ]
+        },
+        "replayAsReturned": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 132
+            }
+          ]
+        },
+        "replayWithoutSignatures": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        },
+        "replayWithoutFirstCallSignature": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        },
+        "replayWithDummySignatureOnEveryCall": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 132
+            }
+          ]
+        }
+      },
+      "sequentialTwoSteps": {
+        "step1": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_user_city",
+              "signed": true,
+              "signatureLength": 132
+            }
+          ]
+        },
+        "step2": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "functionCall:get_weather",
+              "signed": true,
+              "signatureLength": 132
+            }
+          ]
+        },
+        "finalWithAllSignatures": {
+          "status": 200,
+          "parts": [
+            {
+              "kind": "text",
+              "signed": true,
+              "signatureLength": 132
+            }
+          ]
+        },
+        "finalWithoutStep2Signature": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_weather` , position 4. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        },
+        "finalWithoutStep1Signature": {
+          "status": 400,
+          "errorStatus": "INVALID_ARGUMENT",
+          "errorMessage": "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly, and missing thought_signature may lead to degraded model performance. Additional data, function call `default_api:get_user_city` , position 2. Please refer to https://ai.google.dev/gemini-api/docs/thought-signatures for more details."
+        }
+      },
+      "finalTextPart": {
+        "signed": true,
+        "nextTurnWithSignature": 200,
+        "nextTurnWithoutSignature": 200
+      }
+    }
+  }
+}

@@ -1678,6 +1678,85 @@ policy would be framework magic this library explicitly refuses.
 - DESIGN.md un-reserves `tool-call` / `tool-result`.
 - P0 no-legacy: `FinishReason` widens without an alias.
 
+### Addendum (2026-10-03): ordered assistant message, continuation rules, Gemini 3 thought signatures
+
+**Context.** The seam returned `text` and `toolCalls` separately, so a host could not rebuild the
+model turn in provider order, and it did not say how the next turn is sent. Gemini 3.x makes both
+matter. Live capture (2026-10-03, all six registered 3.x models, fixture
+`packages/google/src/__fixtures__/thought-signatures-2026-10-03.json`): the model returns an opaque
+`thoughtSignature` on the **first** `functionCall` of each model turn (the other calls of a parallel
+set carry none) and sometimes on the final text part; a replayed turn whose first call lost its
+signature is HTTP 400 `INVALID_ARGUMENT` ("Function call is missing a thought_signature"), for a
+single call, for a parallel set, and for either step of a two-step chain; a replay with the
+signature on a text part removed is accepted. Google's documented dummy signature
+(`skip_thought_signature_validator`) was accepted on every call, which proves only that it bypasses
+validation. xAI grok-4.7 already needs a different rule: its provider state holds the model's own
+output and the adapter rejects assistant messages sent beside it.
+
+**Decision.**
+
+11. **`LlmResult.message`.** Every successful result carries the assistant output as an ordered
+    `Message` (`role: 'assistant'`): the representable parts in provider order, text parts kept
+    separate, tool calls with id, name and arguments. Parts with no `Part` representation (thought
+    parts, xAI reasoning and server-tool items, superseded xAI message items) are omitted, and
+    indices are defined over `message.parts` after the omission. `text` and `toolCalls` remain as
+    conveniences derived from the same output. Adapters that can interleave text and calls (Google,
+    xAI) set `AdapterResult.message`; otherwise the engine builds `[text, ...tool calls]`.
+12. **`capabilities.continuation` and `LlmResult.continuation`.** The descriptor declares how the
+    next turn is sent, and every result repeats it so a host needs no registry lookup. `'history'`
+    (the default; Gemini, grok-4.5/4.6, every provider without replay state): append
+    `result.message`, send the full history, pass `result.transientProviderState` back when present.
+    `'state'` (grok-4.7): send **only the new messages** plus the state; `result.message` is for
+    display and storage and must not be replayed. `capabilities.providerState: true` is what lets
+    the engine forward `transientProviderState` at all; `continuation: 'state'` requires it
+    (`createModelRegistry` rejects the combination otherwise). `statelessReasoningReplay` is
+    deleted. With `'state'`, tool-result pairing is checked by the adapter against the state; with
+    `'history'` the engine still requires a prior tool call in the messages.
+13. **State is provider-scoped and bound to the host's model string.** `{ google: … }` and
+    `{ xai: … }`; each adapter rejects another provider's key. The xAI state becomes
+    `{ xai: { model, input } }` (it was the bare `{ model, input }`). The next turn goes to the same
+    `provider` and the same `model` string the host sent, an alias included: the engine never
+    rewrites an alias to the canonical id (ADR-033), state is bound to that string, and
+    `LlmResult.model` stays the id the provider returned and is not for routing.
+14. **Gemini 3.x signatures are an overlay on the host's history, not a copy.**
+    `transientProviderState` is `{ google: { signatures: [{ messageIndex, partIndex, model,
+partSha256, signature }] } }`. The adapter builds every part from `request.messages`; the
+    overlay only says which built part gets which signature. `partSha256` is the SHA-256 of the
+    part's RFC 8785 canonical JSON (text: `{kind, text}`; tool call: `{kind, toolCallId, toolName,
+args}`), so an edited text or argument is detected, and key order does not matter, which keeps
+    history stored in Postgres `jsonb` verifiable. `canonicalJson` is exported from core (about 60
+    lines, no dependency); its domain is `JsonValue` and anything else (non-finite numbers, `-0`,
+    lone surrogates, cycles, non-plain objects) is `bad_request`.
+    - Producing: the result's state is the incoming overlay plus one entry for each part of
+      `result.message` the model signed, with `messageIndex = request.messages.length` and the
+      model string the request named. Signatures on omitted parts are dropped with a warning; an
+      unsigned first function call also warns.
+    - Consuming: each entry must name an assistant message whose part at `partIndex` hashes to
+      `partSha256`, and its `model` must equal the request's model string. Mismatch, edit, reorder,
+      removal, out-of-range index, duplicate, another model or a malformed overlay is
+      `bad_request` before dispatch. An assistant message that replays tool calls must have an entry
+      for its **first** tool-call part (matching the capture: only that call is signed, and each
+      sequential step needs its own); history produced by another provider fails this check, naming
+      the first `toolCallId`. Other parts need an entry only if one was issued (the capture shows a
+      text signature is optional). Google's dummy signature is **not** offered (BACKLOG).
+    - `geminiContentToMessages({ contents, model })` imports signatures from model text and
+      `functionCall` parts into the same overlay instead of rejecting them; a signature on any other
+      part, or without `model`, is `bad_request`.
+15. **Tool results are objects on the Gemini wire.** `functionResponse.response` must be an object:
+    an error result is `{ error }`, a non-object result is `{ output }`, an object passes through.
+16. **`@gullabs/testing` `runToolLoop(client, req, tools, { auth })`** follows `result.continuation`
+    after every turn so host tests exercise the right contract. The library still runs no loop.
+
+**Consequences.**
+
+- Breaking, pre-1.0: `LlmResult` gains required `message` and `continuation`; the xAI state shape
+  changes; `capabilities.statelessReasoningReplay` is replaced by `continuation` + `providerState`;
+  Gemini 3.x requests that replay tool calls need the overlay (previously they failed at Google
+  with 400); non-object tool results are wrapped instead of sent bare.
+- `countTokens` sends no signatures: it counts the messages as built without the overlay.
+- The overlay is not secret prompt text but is opaque provider data; it is never written to the
+  ledger.
+
 ---
 
 ## ADR-030: xAI server-side search controls — `toolChoice`, `maxTurns`, zero-search accounting, strict-schema dialect

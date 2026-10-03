@@ -88,6 +88,11 @@ export interface GeminiPartShape {
    */
   thought?: boolean
   functionCall?: { id?: string; name?: string; args?: unknown }
+  /**
+   * Opaque signature Gemini 3.x attaches to the first function call of a turn
+   * (and sometimes to text parts). Real field: `Part.thoughtSignature`.
+   */
+  thoughtSignature?: string
 }
 
 /** A candidate returned by Gemini generateContent. */
@@ -167,6 +172,8 @@ export interface GeminiPartMediaResolution {
 /** A text part in a content object we construct. */
 export interface GeminiTextContentPart {
   text: string
+  /** Replayed signature for this part (real field: `Part.thoughtSignature`). */
+  thoughtSignature?: string
 }
 
 /**
@@ -206,6 +213,8 @@ export interface GeminiFileDataContentPart {
  */
 export interface GeminiFunctionCallPart {
   functionCall: { id?: string; name: string; args?: unknown }
+  /** Replayed signature for this call (real field: `Part.thoughtSignature`). */
+  thoughtSignature?: string
 }
 
 export interface GeminiFunctionResponsePart {

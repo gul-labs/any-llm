@@ -270,7 +270,10 @@ auditable citations must check it explicitly.
 canonical and is the only value persisted.
 
 **Function calling.** Shipped as a seam only (ADR-029). The `Part` union includes
-`tool-call` and `tool-result`. `LlmRequest.tools` / `toolChoice` in; no agent loop.
+`tool-call` and `tool-result`. `LlmRequest.tools` / `toolChoice` in; no agent loop. Each result
+carries the ordered assistant `message` and a `continuation` rule (`'history'`: append the message and
+resend history; `'state'`: send only new messages plus `transientProviderState`); Gemini 3.x thought
+signatures are an overlay on the host's history in that state (ADR-029 addendum).
 
 ## Planned Seams (not yet)
 

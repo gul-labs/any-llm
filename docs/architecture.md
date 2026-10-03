@@ -246,7 +246,8 @@ attempt. Steps:
     path and the error path (postmortem record with whatever usage was known).
 
 11. **Return `LlmResult`.** The result carries `usage`, `cost` (including derived `cost.usd`),
-    `text`, parsed `output` + `outputParsed` for structured-output calls, `reasoningText`,
+    `message` (ordered assistant output) and `continuation`, `text`, parsed `output` +
+    `outputParsed` for structured-output calls, `reasoningText`,
     `latencyMs`, `queueDelayMs`, `warnings`, `providerMetadata`, and provider metadata fields.
 
 ### Phase 4 — Epilogue (once per logical call)
@@ -646,7 +647,8 @@ matches `req.provider` against adapter ids directly, one adapter configured or t
 
 **Function calling / tool use.** Shipped as a seam only (ADR-029): `LlmRequest.tools` /
 `toolChoice` in, `tool-call` / `tool-result` parts and `LlmResult.toolCalls` out. No
-agent loop, no tool execution. `runStructured` + `tools` is `bad_request`.
+agent loop, no tool execution. `LlmResult.message` is the ordered assistant message and
+`LlmResult.continuation` says how the next turn is sent (ADR-029 addendum). `runStructured` + `tools` is `bad_request`.
 
 **Provider fallback.** Deliberately host-side (ADR-037). A middleware cannot change a call's
 provider or model; the host catches the error and makes a new `generate` call against the other

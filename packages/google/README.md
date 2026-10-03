@@ -55,6 +55,73 @@ const result = await client.generate(
 )
 ```
 
+## Function calling and Gemini 3 thought signatures
+
+Gemini 3.x returns an opaque `thoughtSignature` on the first function call of each model turn
+(and sometimes on a text part) and answers HTTP 400 if a replayed function call has lost it
+(live capture, 2026-10-03: all six registered 3.x models; Google signs only the **first** call of a
+parallel set, and every sequential step needs its own). The library handles this without keeping a
+copy of your history. Continuation is `'history'`: append `result.message`, send the full history,
+and pass `result.transientProviderState` back.
+
+```ts
+const tools = [
+  {
+    name: 'get_weather',
+    description: 'Current weather for a city',
+    inputJsonSchema: { type: 'object', properties: { city: { type: 'string' } } },
+  },
+]
+const base = { provider: 'google', model: 'gemini-3.6-flash', tools } as const
+let messages: Message[] = [
+  { role: 'user', parts: [{ kind: 'text', text: 'Weather in Paris?' }] },
+]
+let state: JsonValue | undefined
+
+for (;;) {
+  const result = await client.generate(
+    {
+      ...base,
+      messages,
+      ...(state !== undefined ? { transientProviderState: state } : {}),
+    },
+    { auth: { apiKey: 'YOUR_GEMINI_API_KEY' } },
+  )
+  if (result.toolCalls === undefined) break // result.text is the answer
+
+  const toolResults = {
+    role: 'user' as const,
+    parts: result.toolCalls.map((c) => ({
+      kind: 'tool-result' as const,
+      toolCallId: c.toolCallId,
+      toolName: c.toolName,
+      result: { tempC: 18 }, // run the tool; any JSON value (non-objects are wrapped as { output })
+    })),
+  }
+  messages = [...messages, result.message, toolResults] // unedited
+  state = result.transientProviderState // the signature overlay; carries every earlier entry
+}
+```
+
+`result.transientProviderState` is `{ google: { signatures: [{ messageIndex, partIndex, model,
+partSha256, signature }] } }`, an **overlay** that says which part of _your_ messages gets which
+signature. `partSha256` is the SHA-256 of the part's RFC 8785 canonical JSON, so an edited text or
+tool argument is detected and key order does not matter (history stored in Postgres `jsonb` still
+verifies). Persist it with the history it belongs to; it contains opaque provider tokens, not
+prompt text, and is never written to the ledger.
+
+The next request is `bad_request` before dispatch when the history was edited, reordered, truncated
+or produced by another model after a signature was issued; when an entry names a different model
+string than the request (signatures are not replayed across models, and a declared alias is a
+different string from its canonical id); or when an assistant message with tool calls has no entry
+for its first call (this is also what rejects history produced by another provider). The library
+does not offer Google's dummy signature that bypasses validation: it degrades quality and is a
+[BACKLOG](../../BACKLOG.md) item, not a default. Gemini 2.5 and Gemma need none of this.
+
+`geminiContentToMessages({ contents, model })` imports signatures from hand-authored
+`@google/genai` history into the same overlay, returned as `transientProviderState` beside `messages`; `model` is required
+when any part carries one.
+
 ## What it maps
 
 - `serviceTier: 'flex'` → Gemini Flex service tier when the model descriptor supports it

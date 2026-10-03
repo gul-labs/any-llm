@@ -67,6 +67,7 @@ export type {
   GeminiCachesClientLike,
 } from './cache-store.js'
 export { GoogleCacheStore } from './cache-store.js'
+export type { GoogleSignatureEntry, GoogleSignatureState } from './thought-signatures.js'
 export { geminiContentToMessages } from './content-to-messages.js'
 export type {
   GeminiContentToMessagesInput,

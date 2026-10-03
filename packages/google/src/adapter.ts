@@ -45,6 +45,12 @@ import type {
 import { isGeminiCapacityError } from './flex-fallback.js'
 import { classifyGoogleError } from './errors.js'
 import { GOOGLE_SEARCH_REQUESTED_DETAIL } from './cost.js'
+import {
+  parseSignatureState,
+  resolveSignatures,
+  signatureEntry,
+} from './thought-signatures.js'
+import type { GoogleSignatureEntry } from './thought-signatures.js'
 
 type GeminiGoogleSearchTool = { googleSearch: Record<string, never> }
 
@@ -469,10 +475,28 @@ function mapGoogleToolChoice(choice: ToolChoice): {
   return { mode: 'ANY', allowedFunctionNames: [choice.name] }
 }
 
-function mapPart(p: Part): GeminiContentPart {
+/**
+ * Gemini's `functionResponse.response` must be a JSON object. An error result
+ * is `{ error }`; a non-object result is wrapped as `{ output }`.
+ */
+function toFunctionResponseObject(p: {
+  result: JsonValue
+  isError?: boolean
+}): Record<string, unknown> {
+  if (p.isError === true) return { error: p.result }
+  if (typeof p.result === 'object' && p.result !== null && !Array.isArray(p.result)) {
+    return p.result
+  }
+  return { output: p.result }
+}
+
+function mapPart(p: Part, signature: string | undefined): GeminiContentPart {
   switch (p.kind) {
     case 'text':
-      return { text: p.text }
+      return {
+        text: p.text,
+        ...(signature !== undefined ? { thoughtSignature: signature } : {}),
+      }
 
     case 'inline-media': {
       return {
@@ -511,6 +535,7 @@ function mapPart(p: Part): GeminiContentPart {
           name: p.toolName,
           args: p.args,
         },
+        ...(signature !== undefined ? { thoughtSignature: signature } : {}),
       }
 
     case 'tool-result':
@@ -518,7 +543,7 @@ function mapPart(p: Part): GeminiContentPart {
         functionResponse: {
           id: p.toolCallId,
           name: p.toolName,
-          response: p.isError === true ? { error: p.result } : p.result,
+          response: toFunctionResponseObject(p),
         },
       }
 
@@ -534,10 +559,13 @@ function mapPart(p: Part): GeminiContentPart {
  * code paths map messages identically — a divergence here would make token
  * counts unrepresentative of the actual generation call.
  */
-export function mapMessagesToGeminiContents(messages: Message[]): GeminiContent[] {
-  return messages.map((msg) => ({
+export function mapMessagesToGeminiContents(
+  messages: Message[],
+  signatures?: ReadonlyMap<string, string>,
+): GeminiContent[] {
+  return messages.map((msg, mi) => ({
     role: msg.role === 'assistant' ? 'model' : 'user',
-    parts: msg.parts.map(mapPart),
+    parts: msg.parts.map((part, pi) => mapPart(part, signatures?.get(`${mi}:${pi}`))),
   }))
 }
 
@@ -588,7 +616,8 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       const model = req.model
       const descriptor = req.modelDescriptor
       assertModelMatchesDescriptor(req, descriptor, 'google')
-      if (req.transientProviderState !== undefined) {
+      const signsHistory = descriptor.capabilities?.providerState === true
+      if (req.transientProviderState !== undefined && !signsHistory) {
         throw new LlmError(`Model "${model}" does not admit transientProviderState.`, {
           kind: 'bad_request',
           retryable: false,
@@ -596,10 +625,21 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       }
 
       // ------------------------------------------------------------------
-      // 1. Map messages → contents
+      // 1. Map messages → contents. Gemini 3.x replays each turn's thought
+      //    signatures from the overlay in transientProviderState, checked
+      //    against the host's own messages (no copy of the history is kept).
       // ------------------------------------------------------------------
 
-      const contents: GeminiContent[] = mapMessagesToGeminiContents(req.messages)
+      const incomingSignatures: GoogleSignatureEntry[] = signsHistory
+        ? parseSignatureState(req.transientProviderState)
+        : []
+      const replaySignatures = signsHistory
+        ? resolveSignatures(incomingSignatures, req.messages, model)
+        : undefined
+      const contents: GeminiContent[] = mapMessagesToGeminiContents(
+        req.messages,
+        replaySignatures,
+      )
 
       // ------------------------------------------------------------------
       // 2. Build GenerateContentConfig
@@ -1081,22 +1121,32 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       }
       const parts = candidate.content?.parts ?? []
 
-      // Separate thought parts from text parts.
+      // Separate thought parts from text parts, and build the ordered assistant
+      // message (provider order, thought parts omitted) with the signatures the
+      // model issued for it.
       const textParts: string[] = []
       const thoughtParts: string[] = []
       const toolCalls: NonNullable<AdapterResult['toolCalls']> = []
+      const messageParts: Part[] = []
+      const issuedSignatures: Array<{ partIndex: number; signature: string }> = []
+      let droppedSignatures = 0
 
       const nameCounts = new Map<string, number>()
       const reservedIds = reserveProviderToolCallIds(
         parts.map((part) => part.functionCall?.id),
       )
       for (const part of parts) {
+        const signature =
+          typeof part.thoughtSignature === 'string' && part.thoughtSignature.length > 0
+            ? part.thoughtSignature
+            : undefined
+        let represented = false
         if (
           part.functionCall !== undefined &&
           typeof part.functionCall.name === 'string'
         ) {
           const toolName = part.functionCall.name
-          toolCalls.push({
+          const call = {
             toolCallId: resolveToolCallId(
               part.functionCall.id,
               toolName,
@@ -1105,19 +1155,70 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
             ),
             toolName,
             args: (part.functionCall.args ?? {}) as JsonValue,
-          })
+          }
+          toolCalls.push(call)
+          if (signature !== undefined) {
+            issuedSignatures.push({ partIndex: messageParts.length, signature })
+          }
+          messageParts.push({ kind: 'tool-call', ...call })
+          represented = true
         }
         if (part.text !== undefined) {
           if (part.thought === true) {
             thoughtParts.push(part.text)
           } else {
             textParts.push(part.text)
+            if (part.text.length > 0) {
+              if (signature !== undefined && !represented) {
+                issuedSignatures.push({ partIndex: messageParts.length, signature })
+              }
+              messageParts.push({ kind: 'text', text: part.text })
+              represented = true
+            }
           }
         }
+        if (signature !== undefined && !represented) droppedSignatures += 1
       }
 
       const text = textParts.join('')
       const reasoningText = thoughtParts.length > 0 ? thoughtParts.join('') : undefined
+
+      // The result's state is the incoming overlay plus one entry per part of
+      // this message the model signed, bound to the index the host will append
+      // the message at and to the model string this request named.
+      let transientProviderState: JsonValue | undefined
+      if (signsHistory) {
+        const issued = issuedSignatures.map(({ partIndex, signature }) =>
+          signatureEntry(
+            req.messages.length,
+            partIndex,
+            model,
+            messageParts[partIndex] as Part,
+            signature,
+          ),
+        )
+        const signatures = [...incomingSignatures, ...issued]
+        if (signatures.length > 0) {
+          transientProviderState = { google: { signatures } } as unknown as JsonValue
+        }
+        if (droppedSignatures > 0) {
+          warnings.push({
+            type: 'other',
+            message: `google: dropped ${droppedSignatures} thoughtSignature(s) on parts that have no message representation (thought or empty parts); Gemini requires only the function-call ones.`,
+          })
+        }
+        const firstCall = messageParts.findIndex((part) => part.kind === 'tool-call')
+        if (
+          firstCall !== -1 &&
+          !issuedSignatures.some((issued) => issued.partIndex === firstCall)
+        ) {
+          warnings.push({
+            type: 'other',
+            message:
+              'google: the first function call in this response carries no thoughtSignature; replaying it on the next turn will be rejected.',
+          })
+        }
+      }
 
       // Parse structured output (JSON text → rawStructured).
       let rawStructured: unknown
@@ -1153,8 +1254,10 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
 
       const result: AdapterResult = {
         model,
+        message: { role: 'assistant', parts: messageParts },
         usage,
         warnings,
+        ...(transientProviderState !== undefined ? { transientProviderState } : {}),
         ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
         ...(text.length > 0 ? { text } : {}),
         ...(reasoningText !== undefined ? { reasoningText } : {}),

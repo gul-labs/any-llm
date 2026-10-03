@@ -159,6 +159,23 @@ paths to other repos.
 - **xAI `max_turns` enforcement.** Exposed as `providerOptions.xai.maxTurns`; not enforced by xAI on 2026-10-02 (fixture 33, ADR-030). Re-probe when xAI changes the agentic loop, then update the README.
 - Not exposed on purpose (xAI docs mark them compatibility-only, unsupported, or silently ignored): `reasoning.summary`, function `strict`, `metadata`, `truncation`, `background`, `logprobs`, `search_parameters`, `service_tier: 'fast'`.
 
+## Follow-ups from Gemini 3 thought signatures (2026-10-03)
+
+- **Google dummy thought signature.** Google documents `skip_thought_signature_validator` as a value
+  that bypasses signature validation for a replayed function call. The 2026-10-03 capture
+  (`packages/google/src/__fixtures__/thought-signatures-2026-10-03.json`) shows all six Gemini 3.x
+  models accepting it (HTTP 200). The library does not offer it: Google warns a missing or dummy
+  signature degrades tool-use quality, and the overlay already covers every history the library
+  produced. It would be the only way to replay a hand-authored or other-provider function-call
+  history into Gemini 3, so build it only as an explicit per-call opt-in with a warning, never as a
+  fallback.
+- **`countTokens` with function-call history on Gemini 3.** The adapter sends no signatures to
+  `countTokens`. Whether the Developer API accepts an unsigned function call there is unprobed.
+- **Function-call ids on replay.** When Google returns no `functionCall.id`, the adapter assigns
+  `call_<name>_<n>` and replays it as `functionCall.id` / `functionResponse.id`. The 2026-10-03
+  capture replayed the provider's parts as returned. Confirm with a probe that the API accepts a
+  library-assigned id.
+
 ## Optional later (not ticketed)
 
 - Tool-invocation fee Cost lane for xAI server tools (`attachment_search`, etc.) once
