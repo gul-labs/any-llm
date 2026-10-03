@@ -83,6 +83,12 @@ envelope contained only its requested id as a `modelUsage` key. The sanitized
 responses are in `src/__fixtures__/model-refresh-p-a1.json`. The full installed CLI version and
 envelope shape are runtime dependencies; an absent `modelUsage` fails closed.
 
+Usage follows Anthropic's accounting, in which `input_tokens` excludes both cache lanes: `inputTokens` is
+`input_tokens + cache_read_input_tokens + cache_creation_input_tokens`, `cachedInputTokens` is the cache-read
+part, `details.cacheWrite` is the cache-creation part, and `thinkingTokens` is
+`output_tokens_details.thinking_tokens` (inside `outputTokens`). The adapter is unpriced, so none of this
+becomes a cost.
+
 `--model`, `--effort`, `--system-prompt`, and `--json-schema` are appended
 from the request when applicable; the prompt itself is always sent over
 stdin, never as a positional argv entry.

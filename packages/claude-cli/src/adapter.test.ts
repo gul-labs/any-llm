@@ -10,7 +10,7 @@
 import { tmpdir } from 'node:os'
 import { readFileSync } from 'node:fs'
 import { describe, it, expect, vi } from 'vitest'
-import { LlmError } from '@gullabs/core'
+import { LlmError, normalizeUsage } from '@gullabs/core'
 import type { AdapterCtx, ResolvedRequest } from '@gullabs/core'
 import { claudeCliAdapter } from './adapter.js'
 import { claudeCliRegistry } from './models.js'
@@ -173,6 +173,7 @@ describe('happy path: text', () => {
       input: 3605,
       output: 30,
       cached: 0,
+      cacheWrite: 0,
       total: 3635,
     })
     expect(result.usage.totalTokens).toBe(3635)
@@ -195,9 +196,11 @@ describe('happy path: structured output', () => {
     )
 
     expect(result.rawStructured).toEqual({ greeting: 'hi' })
-    expect(result.usage.inputTokens).toBe(10)
+    // input_tokens 10 + cache_creation 4,321 + cache_read 0.
+    expect(result.usage.inputTokens).toBe(4331)
     expect(result.usage.outputTokens).toBe(195)
     expect(result.usage.cachedInputTokens).toBe(0)
+    expect(result.usage.details['cacheWrite']).toBe(4321)
   })
 
   it('pushes a warning and leaves rawStructured undefined on parse failure', async () => {
@@ -857,5 +860,87 @@ describe('function-calling seam reject', () => {
       kind: 'bad_request',
       message: expect.stringContaining('tool-call'),
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// R7.7 — usage mapping: both cache lanes are input, thinking is reported
+// ---------------------------------------------------------------------------
+
+describe('usage mapping (both cache lanes are input)', () => {
+  function envelopeWith(usage: ClaudeCliEnvelope['usage']): ClaudeCliEnvelope {
+    return { ...PLAIN_ENVELOPE, ...(usage !== undefined ? { usage } : {}) }
+  }
+  async function map(usage: ClaudeCliEnvelope['usage']) {
+    const { runner } = makeFakeRunner(() => envelopeResult(envelopeWith(usage)))
+    return claudeCliAdapter({ runner }).run(makeResolvedReq(), CLI_SESSION_CTX)
+  }
+
+  it('the live P-A1 capture: input 2 + cache write 4,011 is 4,013 input tokens, no clamp warning', async () => {
+    const captured = pA1Fixture.responses['claude-fable-5-1'] as ClaudeCliEnvelope
+    const { runner } = makeFakeRunner(() => envelopeResult(captured))
+    const result = await claudeCliAdapter({ runner }).run(
+      makeResolvedReq({ model: 'claude-fable-5-1', outputJsonSchema: pA1Fixture.schema }),
+      CLI_SESSION_CTX,
+    )
+    expect(result.usage.inputTokens).toBe(4_013)
+    expect(result.usage.cachedInputTokens).toBe(0)
+    expect(result.usage.details['cacheWrite']).toBe(4_011)
+    expect(result.usage.thinkingTokens).toBe(0)
+    expect(result.usage.outputTokens).toBe(53)
+    expect(result.usage.totalTokens).toBe(4_013 + 53)
+    expect(result.warnings).toEqual([])
+  })
+
+  it('cachedInputTokens is cache_read; a cache read larger than input_tokens no longer needs clamping', async () => {
+    const result = await map({
+      input_tokens: 2,
+      cache_read_input_tokens: 5_000,
+      cache_creation_input_tokens: 300,
+      output_tokens: 40,
+    })
+    expect(result.usage.inputTokens).toBe(5_302)
+    expect(result.usage.cachedInputTokens).toBe(5_000)
+    expect(result.usage.details).toEqual({
+      input: 5_302,
+      output: 40,
+      cached: 5_000,
+      cacheWrite: 300,
+      total: 5_342,
+    })
+    // The engine's GROSS invariant holds with no clamp warning.
+    const { warnings } = normalizeUsage(result.usage)
+    expect(warnings).toEqual([])
+  })
+
+  it('thinkingTokens comes from output_tokens_details.thinking_tokens and stays inside output', async () => {
+    const result = await map({
+      input_tokens: 5,
+      output_tokens: 900,
+      output_tokens_details: { thinking_tokens: 700 },
+    })
+    expect(result.usage.thinkingTokens).toBe(700)
+    expect(result.usage.outputTokens).toBe(900)
+    expect(result.usage.details['thinking']).toBe(700)
+  })
+
+  it('absent lanes stay absent: no cached, cacheWrite or thinking keys invented', async () => {
+    const result = await map({ input_tokens: 7, output_tokens: 3 })
+    expect(result.usage.inputTokens).toBe(7)
+    expect(result.usage.cachedInputTokens).toBeUndefined()
+    expect(result.usage.thinkingTokens).toBeUndefined()
+    expect(Object.keys(result.usage.details).sort()).toEqual(['input', 'output', 'total'])
+  })
+
+  it('the raw usage object is kept verbatim', async () => {
+    const usage = {
+      input_tokens: 2,
+      cache_creation_input_tokens: 9,
+      cache_read_input_tokens: 1,
+      output_tokens: 4,
+      output_tokens_details: { thinking_tokens: 1 },
+      speed: 'standard',
+    }
+    expect((await map(usage)).usage.raw).toEqual(usage)
   })
 })

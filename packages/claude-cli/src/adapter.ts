@@ -47,6 +47,7 @@ export interface ClaudeCliUsageShape {
   output_tokens: number
   cache_read_input_tokens?: number
   cache_creation_input_tokens?: number
+  output_tokens_details?: { thinking_tokens?: number }
   [key: string]: unknown
 }
 
@@ -127,21 +128,35 @@ function mapFinishReason(stopReason: string | undefined): FinishReason | undefin
 // ---------------------------------------------------------------------------
 // Usage mapping — GROSS convention
 //
+// Anthropic's `input_tokens` counts only the tokens that are neither read from
+// nor written to the prompt cache. GROSS input is therefore
+// `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`
+// (live fixture `model-refresh-p-a1.json`: `input_tokens: 2` beside
+// `cache_creation_input_tokens: 4011`). `cachedInputTokens` is the cache-read
+// part, and the cache-write part is kept as `details.cacheWrite`.
+// `output_tokens` already includes thinking, whose own count
+// (`output_tokens_details.thinking_tokens`) is `thinkingTokens`.
+//
 // `totalTokens` is not reported by the claude-cli usage payload — it is
 // derived as `inputTokens + outputTokens` whenever a usage payload was
 // present; left undefined when there was no usage payload at all.
 // ---------------------------------------------------------------------------
 
 function mapUsage(usage: ClaudeCliUsageShape | undefined): Usage {
-  const inputTokens = usage?.input_tokens ?? 0
+  const cacheRead = usage?.cache_read_input_tokens
+  const cacheWrite = usage?.cache_creation_input_tokens
+  const inputTokens = (usage?.input_tokens ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0)
   const outputTokens = usage?.output_tokens ?? 0
-  const cachedInputTokens = usage?.cache_read_input_tokens
+  const cachedInputTokens = cacheRead
+  const thinkingTokens = usage?.output_tokens_details?.thinking_tokens
   const totalTokens = usage !== undefined ? inputTokens + outputTokens : undefined
 
   const details: Record<string, number> = {
     input: inputTokens,
     output: outputTokens,
     ...(cachedInputTokens !== undefined ? { cached: cachedInputTokens } : {}),
+    ...(cacheWrite !== undefined ? { cacheWrite } : {}),
+    ...(thinkingTokens !== undefined ? { thinking: thinkingTokens } : {}),
     ...(totalTokens !== undefined ? { total: totalTokens } : {}),
   }
 
@@ -153,6 +168,7 @@ function mapUsage(usage: ClaudeCliUsageShape | undefined): Usage {
     details,
     raw,
     ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(thinkingTokens !== undefined ? { thinkingTokens } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
   }
 }
