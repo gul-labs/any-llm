@@ -165,6 +165,8 @@ export interface Usage {
 //   web_search_requested  1 when the request enabled web search, else absent
 //   web_search_calls      observed number of searches; absent when the response does not say
 //   search_budget_exceeded  1 when an xAI `searchBudget` ceiling was exceeded (reported after the call), else absent
+//   usage_estimated       1 on the usage an xAI adapter ESTIMATED for a stream that failed after output began
+//                         (a lower bound, priced 'estimated'; ADR-040 Amendment A), else absent
 // `normalizeUsage` also warns, and the engine reports the cost as 'estimated', when totalTokens
 // is larger than inputTokens + outputTokens (the provider counted tokens the fields omit).
 
@@ -219,6 +221,7 @@ export class LlmError extends Error {
   retryAfterMs?: number
   provider?: string
   cause?: unknown
+  mayHaveBilled?: boolean // the provider had started work (an error event inside an open stream): even rate_limited / bad_request is an unpriced attempt, not known-free (ADR-040 Amendment A)
 }
 // adapters classify raw SDK errors → LlmError; engine surfaces it.
 ```
@@ -567,12 +570,19 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
   `stream: true`, reads the SSE events to the terminal one and returns one response object; public
   `stream()` stays on the ROADMAP. The final object's `output` is reconciled with the items rebuilt from
   the events (final object wins where both carry a field, the stream fills what it lacks, each correction
-  is a warning; an unreconcilable disagreement is a retryable `server` error). A stream that ends without
-  its terminal event is a retryable `server` error with no usage (an unpriced attempt); `error` events and
-  `response.failed` classify through the `error.code` table. Each call has a whole-call deadline of
+  is a warning; reconciliation is enrichment, never a gate: once the final event has a response object the
+  call is answered). A stream that fails BEFORE any output event (a dropped connection, an empty body) is a
+  retryable `server` error with no usage (an unpriced attempt); one that fails AFTER output began (a cut, an
+  early end, a malformed body, an `error` event) is never retried (`retryable: false`) and carries a
+  lower-bound usage ESTIMATE (`usage.details.usage_estimated`, priced `'estimated'`); an `error` event sets
+  `mayHaveBilled`, so even `rate_limited` / `bad_request` is an unpriced attempt, not known-free; `error`
+  events and `response.failed` classify through the `error.code` table (`rate_limit_exceeded` mid-stream is
+  not retried). `transport.fetch` must return the request's `text/event-stream` response (a buffered JSON
+  body is a non-retryable `bad_request`). Each call has a whole-call deadline of
   `timeoutMs + 5 000`, or one hour when `timeoutMs` is unset: the SDK `timeout` for the header wait and
   the client's own timer for the rest of the stream (the SDK `timeout` alone does not bound a stream).
-  A header, body or deadline timeout is `kind: 'timeout'`, `retryable: false`,
+  `transport.idleTimeoutMs` (off by default) ends a stream that sends no bytes, heartbeats included, for that
+  long. A header, body, idle or deadline timeout is `kind: 'timeout'`, `retryable: false`,
   `reason: 'transport_timeout'`. Streaming keeps Node's 300 s body timer from firing on long reasoning
   calls (live: 17 to 28 minute runs, maximum 15 s between events); a tool-using call that itself runs past
   300 s with no streamed event is untested and needs `xaiAdapter({ transport })` with an undici `fetch` and

@@ -709,8 +709,10 @@ event (ADR-040), so Node's 300 s body timer does not fire on a long reasoning ca
 `LlmClient` has no `stream()` method. The client rebuilds the output items from the events and reconciles
 them with the final response object (which a live capture showed can omit the `reasoning` item), and applies
 the request deadline (`timeoutMs + 5 000 ms`, or one hour) to the whole stream, because the SDK `timeout`
-alone covers only the wait for headers. A stream cut before its terminal event is a retryable `server`
-error with no usage (an unpriced attempt). Search budgets stay observed after the call.
+alone covers only the wait for headers; `transport.idleTimeoutMs` (off by default) ends a stream that sends
+no bytes at all. A stream that fails before any output event is a retryable `server` error with no usage (an
+unpriced attempt); one that fails after output began is never retried and carries a lower-bound usage
+estimate priced `'estimated'` (ADR-040 Amendment A). Search budgets stay observed after the call.
 
 ---
 

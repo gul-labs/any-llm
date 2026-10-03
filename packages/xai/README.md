@@ -347,25 +347,28 @@ The `gt200k` long-context tier is selected by **gross** `inputTokens` (including
 ## Long calls and timeouts
 
 Every call streams internally (ADR-040): `run()` sends `stream: true`, reads the server-sent events to the
-final one and returns the same result a non-streamed call would. The connection is never silent, so
-Node's `fetch` (undici) does not hit its 300 s header or body timer on a long reasoning call. Public
-`stream()` is still on the ROADMAP; nothing about the streaming is visible to the caller.
+final one and returns the same result a non-streamed call would. While events keep flowing, Node's `fetch`
+(undici) does not hit its 300 s header or body timer on a long reasoning call. Public `stream()` is still on
+the ROADMAP; nothing about the streaming is visible to the caller.
 
 What was measured (live, 2026-10-03, Node's default `fetch` with no custom `Agent`): five streamed
 reasoning runs of 17 to 28 minutes on grok-4.5, grok-4.6 and grok-4.7 all completed, the first event
 arrived in about 2 s, and the **longest gap between events was 15 s**. Node's body timer measures the
-gap between chunks, so a 15 s gap is 5% of its 300 s limit.
+gap between chunks, so a 15 s gap is 5% of its 300 s limit. That is a measurement of synthetic puzzles, not a
+guarantee: only 3 of the 6 captures recorded an SSE comment (one each, at a 15 s gap), so a server heartbeat is
+not established, and a reasoning gap is the model's.
 
 **Not measured: a tool-using call that itself runs past 300 s.** The longest streamed run with
 `web_search` ended at 99 s (also a 15 s worst gap). **If your calls use `tools` and can run past 300 s
 without ANY streamed event, keep an undici transport** (below). For reasoning-only calls you can drop it.
 
-Two timers still apply, and the adapter sets one of them:
+Three timers apply, and the adapter sets the first:
 
-| Timer                                     | Default    | What sets it                                                                       |
-| ----------------------------------------- | ---------- | ---------------------------------------------------------------------------------- |
-| Request deadline (whole call)             | none       | The adapter: `timeoutMs + 5000`, or one hour when `timeoutMs` is unset             |
-| Node `fetch` (undici) header + body timer | 300 s each | Only the host's `transport` raises them; a stream keeps the body timer from firing |
+| Timer                                     | Default    | What sets it                                                                              |
+| ----------------------------------------- | ---------- | ----------------------------------------------------------------------------------------- |
+| Request deadline (whole call)             | one hour   | The adapter: `timeoutMs + 5000`, or one hour when `timeoutMs` is unset                    |
+| Idle timer (no bytes at all)              | off        | `transport.idleTimeoutMs`, heartbeat comments included                                    |
+| Node `fetch` (undici) header + body timer | 300 s each | Only the host's `transport` raises them; while a stream sends, the body timer never fires |
 
 **What the deadline means for a stream.** The `openai` SDK's own `timeout` covers a stream only until the
 response headers arrive (checked in the SDK source and pinned by a test). The adapter's client therefore
@@ -374,16 +377,23 @@ hour) still bounds the **whole call**, not the time to first byte. It is not an 
 keeps sending is cut at the deadline too. The engine's own `timeoutMs` deadline sits 5 s ahead of it, so
 you see the engine's clean timeout. A caller `signal` aborts a stream in flight.
 
-The `transport` option stays for a proxy, mTLS or an egress policy (your own `fetch`), and for the
-tool-using case above. To raise undici's timers, pass its own `fetch` with an `Agent` whose timers are at
-least the request deadline:
+**Bounding a half-open connection.** A NAT drop with no reset leaves a stream silent, and the deadline would
+hold it for up to an hour. `transport.idleTimeoutMs` (an integer from 1; off by default) ends a stream that
+sends no bytes for that long, heartbeat comments counted as bytes, as a non-retryable `timeout` with
+`reason: 'transport_timeout'`. Set it above the longest quiet gap you expect (live reasoning runs showed
+15 s; a tool phase can be quieter). It needs a `transport.fetch`; pass `fetch` itself when you only want the
+idle timer.
+
+The `transport` option stays for a proxy, mTLS or an egress policy (your own `fetch`), for the idle timer,
+and for the tool-using case above. **`fetch` must return the request's own `text/event-stream` response**:
+a `fetch` that buffers the answer into a JSON body (a record/replay or caching wrapper, a proxy that rewrites
+the response) fails every call with a non-retryable `bad_request` naming the cause (the call may have
+been billed upstream). To raise undici's timers, pass its own `fetch` with an `Agent`:
 
 ```ts no-check
 import { Agent, fetch as undiciFetch } from 'undici' // pnpm add undici
 import { createClient, composeProviders } from '@gullabs/core'
 import { xaiProvider } from '@gullabs/xai'
-
-const LIMIT_MS = 3_605_000 // >= the longest request deadline you will use (default: 3_600_000 + slack)
 
 const client = createClient({
   ...composeProviders([
@@ -391,8 +401,11 @@ const client = createClient({
       transport: {
         fetch: undiciFetch as unknown as typeof fetch,
         fetchOptions: {
-          dispatcher: new Agent({ headersTimeout: LIMIT_MS, bodyTimeout: LIMIT_MS }),
+          // The body timer is the gap between chunks; with a stream it never fires while events
+          // flow. Raise it above the longest quiet gap of your tool phases, not to the deadline.
+          dispatcher: new Agent({ bodyTimeout: 600_000 }),
         },
+        idleTimeoutMs: 600_000, // ends a stream that goes completely silent
       },
     }),
   ]),
@@ -403,12 +416,14 @@ Notes:
 
 - Use `fetch` and `Agent` from the **same** `undici` package. Node's built-in `fetch` bundles its own
   undici, and a dispatcher from a different version is not guaranteed to work with it.
-- Size `headersTimeout` and `bodyTimeout` to at least the largest request deadline you use:
-  `timeoutMs + 5000` for calls that set `timeoutMs`, `XAI_DEFAULT_TIMEOUT_MS` (3 600 000) otherwise.
+- **With streaming the body timer is moot while events flow**, and `headersTimeout` is moot too (a stream
+  sends its headers at once). Do not raise either to the whole deadline: that removes the only protection a
+  tool-using host has against a silent connection. Keep `bodyTimeout` near the longest quiet gap you
+  measured and use `idleTimeoutMs` to bound half-open connections.
 - `transport` cannot be combined with an injected `client`, and `fetchOptions` cannot carry `headers`,
   `signal`, `body` or `method`. Both are `bad_request`, as is a `transport` whose `fetch` is not a
-  function or whose `fetchOptions` is not an object. The adapter copies the transport when it is
-  created, so changing your own object afterwards has no effect.
+  function, whose `fetchOptions` is not an object or whose `idleTimeoutMs` is not an integer from 1. The
+  adapter copies the transport when it is created, so changing your own object afterwards has no effect.
 - `transport` carries every request the adapter makes: `responses.create` **and** `countTokens`
   (`POST /v1/tokenize-text`), so a proxy, mTLS or egress policy in your `fetch` covers both.
   `XaiFileStore` is separate and takes its own `fetch` option.
@@ -419,12 +434,38 @@ Notes:
 
 xAI's final `response.completed` object can omit output items the stream carried (a live capture of two
 search runs lacked the `reasoning` item). The adapter rebuilds the item list from the events and reconciles
-it with the final object: the final object wins where both have a field, the stream fills what it lacks, and
-each correction is a `warnings` entry on the result. Events and final object that disagree in a way that
-cannot be reconciled (the same item id with two types, a malformed event) fail the call as a retryable
-`server` error. A stream that ends before its final event is a retryable `server` error with no usage, so
-the engine counts that attempt as unpriced (`callCost.unpricedAttempts`), not free. Mid-stream `error` and
-`response.failed` events classify through the same `error.code` table as any other failed response.
+it with the final object. **Reconciliation is enrichment, never a gate**: once the final event carries a
+response object the call is billed and answered, so the final object wins where both have a field, the
+stream fills what it lacks, an item only the stream completed is rebuilt, and each correction is a `warnings`
+entry on the result. What the stream cannot place (an event without an `output_index`) or disagrees on (an
+item id with two types) is skipped or yields to the final object, with a warning; it never throws the
+answer away. The only malformed shapes that fail a call are a final event with no response object and a body
+that is not event JSON. Frames that are not events (a bare `event: keepalive`, `data: [DONE]`) are skipped.
+
+**A stream that fails after output began is not retried.** A reasoning call burns tokens before its first
+visible event, a retry repeats that spend and cannot resume it, and whether xAI bills a cut call is unknown.
+So a connection cut, a body that ends before the final event, a malformed body or a mid-stream `error` event
+that arrives after the first output event is a `server` (or the `error` code's kind) with `retryable: false`
+and the transport error as `cause`; Node's own timers keep their `timeout` kind. A failure before any output
+event (the connection dropped, an empty body) stays retryable. A mid-stream `rate_limit_exceeded` is never
+retried, and a mid-stream `error` event is never booked as known-free: unlike an HTTP 429 it arrives inside
+a run that started, so even `rate_limited` and `bad_request` count as an unpriced attempt
+(`callCost.unpricedAttempts`).
+
+**The usage of a stream that failed after output began is an estimate.** The error carries a lower bound,
+not xAI's count: input is the request's length divided by 4, output is the characters of text, reasoning
+summary and arguments received divided by 4 (`usage.details.usage_estimated = 1`). The cost is priced
+`'estimated'`, never exact, and understates (hidden reasoning tokens, the provider's own prompt overhead and
+tool fees are not counted). Usage in a `response.created` / `response.in_progress` snapshot is never used (it
+was `null` in every capture). A failure before output carries no usage, so the engine counts that attempt as
+unpriced, not free. A failure after the final event carries the final usage, exact.
+
+### Testing streamed calls
+
+`makeFakeXai` replaces `client.responses.create`, the seam below which the stream, the reducer and the timers
+live, so a test through `{ client }` never exercises them (a parity test pins that a streamed run of the same
+response gives the same result). To test a streaming failure, stub `transport.fetch` with a `text/event-stream`
+`Response` (a body cut after some events, an `error` event, a silent open body) and run the real adapter.
 
 ### Search budgets are not enforced in flight
 

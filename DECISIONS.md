@@ -3334,7 +3334,9 @@ which a stubbed-500 test pins. No new field is added.
 ## ADR-040: xAI adapter streams internally
 
 **Status:** Accepted (2026-10-03). Amends ADR-032 (the transport and the SDK deadline) and ADR-036 (deletes
-`search_budget_exceeded`).
+`search_budget_exceeded`). Amended by Amendment A below (failure handling, usage estimates, the idle timer,
+real event captures), which supersedes decisions 2 (the failing disagreement), 3 (retry and usage of a
+failed stream) and 4 (no idle timer).
 
 **Context:**
 A non-streamed xAI call sends nothing until the answer is complete, so a reasoning or agentic call waits
@@ -3374,11 +3376,9 @@ past Node's 300 s header timer (ADR-032). Streaming keeps the connection busy. L
    - assembles an item the stream never completed and the final object lacks from the deltas, marks it
      finished (`incomplete` when the response is), and says so in a warning (a replayed `in_progress` item
      would not be valid);
-   - **fails with `server`, `retryable: true`** (the rule for a malformed response, as for `tokenize-text`)
-     when events and final object disagree in a way no rule reconciles: the same id with two types, a
-     malformed event (no `type`, no integer `output_index`, no `item`), a terminal event without a
-     response, or an `output` that is not an array of objects. A delta for an item the stream never opened
-     is ignored: a lost delta must not fail a billed call.
+   - ~~fails with `server`, `retryable: true` when events and final object disagree~~ **Superseded by
+     Amendment A:** reconciliation never fails a call once the final event carries a response object. A
+     delta for an item the stream never opened is ignored: a lost delta must not fail a billed call.
      The warnings are `{ type: 'other' }` entries on the result; a stream whose events and final object agree
      adds none. What the stream never announced cannot be rebuilt: when xAI emits no reasoning item at all
      (the P9a shape), the state replays without it; the library does not warn, because billed reasoning
@@ -3390,14 +3390,15 @@ past Node's 300 s header timer (ADR-032). Streaming keeps the connection busy. L
 error` frame goes through the same `error.code` table: `server_error` and `rate_limit_exceeded` are
    retryable, policy codes are `content_filter`, prompt and image codes are `bad_request`, anything else
    is `unknown` and not retryable. A stream that ends without a terminal event, or whose body is not
-   valid event JSON, is `server`, `retryable: true`. Usage on such a failure is whatever the latest
-   `response.created` / `response.in_progress` snapshot reported, almost always none: the attempt is
-   unpriced (ADR-039, `callCost.unpricedAttempts`), never zero.
+   valid event JSON, is `server`; **Amendment A** makes it retryable only while no output event arrived,
+   and replaces the snapshot usage by a lower-bound estimate after output began. An attempt with no usage
+   is unpriced (ADR-039, `callCost.unpricedAttempts`), never zero.
 4. **Deadlines and aborts.** The adapter still computes `timeoutMs + 5 000`, or one hour (ADR-032). The
    openai SDK `timeout` covers a stream only until the response headers arrive, so the client applies the
    same deadline to the rest of the stream with its own timer: a stream that outlives it ends as
    `kind: 'timeout'`, `retryable: false`, `reason: 'transport_timeout'` (the retry reaches the same limit
-   and repeats the spend). There is no idle timer: a stream that keeps sending is cut at the deadline too.
+   and repeats the spend). ~~There is no idle timer~~ (Amendment A adds the optional `idleTimeoutMs`); a
+   stream that keeps sending is cut at the deadline too.
    The SDK ends a stream quietly when its request is aborted, so the client checks the caller's signal
    afterwards and throws the abort (an `LlmError` abort reason, the engine's deadline, reaches the caller
    unchanged). A transport failure or Node's body timer mid-stream classifies as before (ADR-032).
@@ -3427,18 +3428,93 @@ never announced.
   types and timings, not event bodies. The real P9a usage objects and event types are pinned in
   `36-streamed-responses.json`. The event sequences in the tests are synthesised from the recorded
   non-streamed fixtures with the OpenAI Responses streaming grammar (`test-sse.ts`) and labelled synthetic;
-  a test pins the synthetic event types to the real ones. Not tested against a live stream: the exact
-  field-level equality of a streamed `done` item with its non-streamed twin, and any stream longer than
-  300 s that runs server tools.
+  a test pins the synthetic event types to the real ones. **Amendment A pins real event bodies** (fixture
+  `37-streamed-events.json`) and the field-level equality of a streamed `done` item with the final
+  object's. Not tested against a live stream: any stream longer than 300 s that runs server tools.
 - Re-probe when xAI changes streaming: P9b (aborted-stream billing), a tool run past 300 s, and whether
   the streamed final object keeps its reasoning item.
+
+### Amendment A (2026-10-03): failures, estimates, the idle timer and real captures
+
+An adversarial audit of the first implementation (every point reproduced against the real `openai` SDK
+with a stubbed `fetch`) and a live run of every streamed path through the built adapter (2026-10-03,
+about US$0.46 over two passes; fixture `37-streamed-events.json`, raw event text; the second pass reran
+every feature class through the rebuilt client of this amendment, plus an idle timer that tripped and one
+that did not) changed seven rules.
+
+**What the live bodies showed** (the earlier probes kept event types only). Every item event and delta
+carries an integer `output_index`. `output_item.done` equals the final object's item field for field, except
+a `web_search_call`: the final object reports `action.sources` cumulatively for the whole run on every
+search call. A function call streams its whole argument string in one `function_call_arguments.delta`; an
+X search streams as a `custom_tool_call` with `custom_tool_call_input.delta/.done`. `response.incomplete`
+(`max_output_tokens`) arrives with no `*.done` event at all. The snapshots carry `usage: null`. A strict
+schema came back as one message item. The `'state'` replay built from a real stream is, field for field, the
+input of the request xAI accepted. Nothing broke (no P0), but the first implementation warned about a
+disagreement on every web search because of the cumulative `sources`.
+
+1. **Reconciliation is enrichment, never a gate.** Once the terminal event carries a response object the
+   call is billed and answered. A type disagreement keeps the final object's item (warning); an event with
+   no integer `output_index` or typed item is skipped (warning); a final `output` that is not an array of
+   objects is replaced by the items the events built (warning); a frame with no `data`, `[DONE]` and a typeless
+   JSON frame are skipped. A divergence is reported only for the item types the adapter reads (`message`,
+   `reasoning`, `function_call`): server-tool items replay verbatim from the final object. Items are matched
+   by id and occurrence, aligned from the start or the end of a group, whichever pairs more identical
+   items; an unmatched item whose content (ignoring id and status) equals an unmatched final item is that item,
+   not a second one. `response.incomplete` is incomplete whatever its response object says, as
+   `response.failed` is failed. The only malformed shapes that fail a call are a terminal event without a
+   response object and a body that is not JSON.
+2. **A stream that fails after output began is not retried.** Retry is safe only while nothing was
+   generated: a reasoning call burns tokens before its first visible event, a retry repeats spend that
+   cannot be resumed, and whether xAI bills a cut call is unknown (P9b); this is ADR-032's reasoning for
+   timeouts. Before the first output event (or an HTTP status error, or a connect failure) a failure stays
+   retryable and unpriced. After it, a cut connection, an early end, a malformed body and an `error` event
+   are `retryable: false` with the transport error as `cause`; Node's own timers keep `kind: 'timeout'`.
+   A mid-stream `rate_limit_exceeded` is never retried, and `server_error` only before output.
+3. **Usage of a failed stream is an estimate, never exact.** After the terminal event it is the terminal
+   usage (exact, ticks included). After output began, before it, the error carries a lower bound: request
+   length over 4 for input (core's `estimateInputTokens`), received characters over 4 for output, marked
+   `usage.details.usage_estimated = 1`, which the xAI pricing source reports as `confidence: 'estimated'`.
+   No `cost_in_usd_ticks` is attached and snapshot usage is never used. It understates (hidden reasoning,
+   the provider's prompt overhead and tool fees are not counted); a failure before output has no usage and
+   stays an unpriced attempt.
+4. **A mid-stream `error` event is never known-free.** `LlmError.mayHaveBilled` (core, additive) says the
+   provider had started work; `failedAttemptCostsNothing` returns false for it whatever the kind, so
+   `rate_limited` and `bad_request` events count as an unpriced attempt (an HTTP 429 or 400 still does not).
+   The audit's alternative, a check on the cause's type, would have put an xAI class in core.
+5. **`transport.idleTimeoutMs`** (optional, off by default): bytes of any kind, heartbeat comments included,
+   reset it; silence for that long ends the stream as a non-retryable `timeout`, `reason: 'transport_timeout'`.
+   The client reads the response body itself (`asResponse()` plus a small SSE reader, `sse.ts`) because the
+   SDK's iterator hides comments from any idle timer and throws a `SyntaxError` on a bare `event:` frame.
+   The SDK still sends the request and turns an HTTP error status into its `APIError`. The advice to raise
+   undici's `bodyTimeout` and `headersTimeout` to the whole deadline is withdrawn: while events flow the
+   body timer is moot and a stream sends headers at once, so raising them only removed a tool-using host's
+   protection against a half-open connection.
+6. **`transport.fetch` must return the request's `text/event-stream` response.** A `Response` whose
+   content type is anything else (a record/replay or caching wrapper that buffers the answer) fails
+   non-retryably as `bad_request` naming the cause, and is booked as possibly billed.
+7. **A terminal response without token counts** is a typed non-retryable `server` error naming the response
+   id (it was a `TypeError`). Any other failure to map a complete response (a shape this version did not
+   expect) is the same kind of error and carries the response's exact usage, ticks included.
+
+`makeFakeXai` still replaces `responses.create`, below which the stream lives, so a test through `{ client }`
+does not exercise the reducer or the timers: `@gullabs/testing` has no dependency on `@gullabs/xai` to
+build a stream, and a fake that reimplements the SSE path would be a second implementation. A parity test pins
+that a streamed run of the same response gives the same result; a streaming failure is tested by stubbing
+`transport.fetch` with a `text/event-stream` body (documented in the package README).
+
+**Not built:** resuming a cut stream (nothing is resumable: `store: false`); billing a cut stream as free or
+as exact; a public `stream()`.
+
+**Evidence.** Real: the 10 raw streams of fixture 37 (event bodies, one per feature class), asserted
+through the reducer, the real SDK and the adapter, including the request body and `'state'` replay. Still
+synthetic: error events, cuts and the idle case (injected through a stubbed `fetch`). Not measured: a tool
+call past 300 s, billing of a cut or aborted stream (P9b), and an `error` event's real shape.
 
 ---
 
 ## ADR-041: Quota windows, token pacing, the scheduler port and the test package
 
-**Status:** Accepted (2026-10-03). Extends ADR-008 and ADR-036. (ADR-038 and ADR-040 are reserved by the
-release plan for other decisions; this is the next number free of both.)
+**Status:** Accepted (2026-10-03). Extends ADR-008 and ADR-036.
 
 **Context:**
 `@gullabs/quota` limited requests per minute and per UTC day only. Google resets its daily request quota at
