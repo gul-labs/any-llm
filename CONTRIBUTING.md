@@ -12,11 +12,12 @@ Node `>=24` for development (`.nvmrc` pins 24.20.0; pnpm 11 and the lint toolcha
 pnpm install
 pnpm lint           # ESLint flat config
 pnpm typecheck      # tsc --noEmit across the workspace, examples included
+pnpm test:runtime   # the built entries load with every Node built-in blocked
 pnpm check:docs     # typecheck the ts code fences in READMEs and docs against the built packages
 pnpm test           # vitest, no network
 pnpm -r build       # tsup: ESM + CJS + d.ts
 pnpm format:check   # Prettier
-pnpm quality        # build + format:check + lint + typecheck + check:docs + test (same gate CI runs)
+pnpm quality        # build + format:check + lint + typecheck + check:docs + check:packages + test:runtime + test:scripts + test (same gate CI runs)
 pnpm example        # network-free end-to-end demo
 ```
 
@@ -27,6 +28,7 @@ pnpm example        # network-free end-to-end demo
 - **Cost is frozen at write time** (integer micro-USD + `pricingVersion`). GROSS tokens: `cached ⊆ input`, `thinking ⊆ output`.
 - **Reject, do not map.** No aliases, shims, or compatibility fallbacks. See `Agents.md`.
 - **No ambient auth.** Do not read `process.env` for credentials inside the library.
+- **Scripts.** See [`scripts/README.md`](./scripts/README.md): the offline checks, and the manual live tools (`recapture-fixtures.mjs` refreshes the xAI fixtures and shows the drift; none runs in CI).
 - **Docs compile.** Every `ts` code fence in a README or live doc is typechecked by `pnpm check:docs`; a fence that is deliberately a fragment says ` ```ts no-check `. Design records (ADRs, plans, audits) are not checked.
 - Keep the public surface small. Breaking changes follow SemVer. Pre-1.0 minors may break; say so in the changeset.
 

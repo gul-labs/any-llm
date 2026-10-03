@@ -20,7 +20,7 @@
  */
 
 import { GoogleGenAI } from '@google/genai'
-import { geminiModelDescriptors, gemmaModelDescriptors } from '@gullabs/core'
+import { geminiModelDescriptors, gemmaModelDescriptors } from '@gullabs/google'
 
 // ---------------------------------------------------------------------------
 // Cost guard: models with NO free-tier quota
@@ -33,6 +33,11 @@ const FREE_TIER_UNAVAILABLE = new Set(['gemini-2.5-pro'])
 const TINY_PROMPT = 'Reply with: ok'
 const MAX_OUTPUT_TOKENS = 8
 const PACE_MS = 1500
+
+if (process.env['CI'] || process.env['GITHUB_ACTIONS']) {
+  console.error('ERROR: this script makes billed live calls and never runs in CI.')
+  process.exit(2)
+}
 
 const apiKey = process.env['GEMINI_API_KEY']
 if (!apiKey) {
@@ -171,7 +176,7 @@ async function probeNativeStructuredOutput(modelId) {
         call(modelId, {
           maxOutputTokens: MAX_OUTPUT_TOKENS,
           responseMimeType: 'application/json',
-          responseSchema: {
+          responseJsonSchema: {
             type: 'object',
             properties: { answer: { type: 'string' } },
             required: ['answer'],
@@ -238,8 +243,8 @@ const skipped = []
 const probeQueue = []
 
 for (const d of allDescriptors) {
-  if (FREE_TIER_UNAVAILABLE.has(d.id) && !includePaid) {
-    skipped.push(d.id)
+  if (FREE_TIER_UNAVAILABLE.has(d.model) && !includePaid) {
+    skipped.push(d.model)
   } else {
     probeQueue.push(d)
   }
@@ -254,20 +259,22 @@ const allResults = []
 
 for (const d of probeQueue) {
   console.log(`\n${'─'.repeat(60)}`)
-  console.log(`MODEL: ${d.id}`)
+  console.log(`MODEL: ${d.model}`)
   console.log(`${'─'.repeat(60)}`)
 
   const cap = d.capabilities ?? {}
 
   // Baseline
   console.log('  probe: baseline…')
-  const baseline = await withRetry(() => probeBaseline(d.id), 'baseline').catch((e) => ({
-    ok: false,
-    detail: String(e),
-  }))
+  const baseline = await withRetry(() => probeBaseline(d.model), 'baseline').catch(
+    (e) => ({
+      ok: false,
+      detail: String(e),
+    }),
+  )
   if (!baseline.ok) {
     console.log(`  BASELINE FAIL: ${baseline.detail ?? ''}`)
-    allResults.push({ id: d.id, skipped: false, baselineFailed: true })
+    allResults.push({ id: d.model, skipped: false, baselineFailed: true })
     await sleep(PACE_MS)
     continue
   }
@@ -275,11 +282,11 @@ for (const d of probeQueue) {
 
   await sleep(PACE_MS)
 
-  const modelResults = { id: d.id, skipped: false, baselineFailed: false, probes: {} }
+  const modelResults = { id: d.model, skipped: false, baselineFailed: false, probes: {} }
 
   // Temperature
   console.log('  probe: temperature…')
-  const tempResult = await probeTemperature(d.id, cap.sampling)
+  const tempResult = await probeTemperature(d.model, cap.sampling)
   modelResults.probes.temperature = tempResult
   console.log(
     `  temperature: ${tempResult.ok ? 'ok' : `skip/fail — ${tempResult.detail ?? ''}`}`,
@@ -289,13 +296,13 @@ for (const d of probeQueue) {
   // Reasoning
   if (cap.reasoningApi === 'budget') {
     console.log('  probe: reasoning (budget)…')
-    const rr = await probeReasoningBudget(d.id)
+    const rr = await probeReasoningBudget(d.model)
     modelResults.probes.reasoningBudget = rr
     console.log(`  reasoning-budget: ${rr.ok ? 'ok' : `fail — ${rr.detail ?? ''}`}`)
     await sleep(PACE_MS)
   } else if (cap.reasoningApi === 'level') {
     console.log('  probe: reasoning (level)…')
-    const rr = await probeReasoningLevel(d.id)
+    const rr = await probeReasoningLevel(d.model)
     modelResults.probes.reasoningLevel = rr
     console.log(`  reasoning-level: ${rr.detail ?? ''}`)
     await sleep(PACE_MS)
@@ -304,7 +311,7 @@ for (const d of probeQueue) {
   // Flex tier
   if (cap.serviceTiers?.includes('flex')) {
     console.log('  probe: flex tier…')
-    const fr = await probeServiceTierFlex(d.id)
+    const fr = await probeServiceTierFlex(d.model)
     modelResults.probes.flexTier = fr
     console.log(`  flex-tier: ${fr.ok ? 'ok' : `fail — ${fr.detail ?? ''}`}`)
     await sleep(PACE_MS)
@@ -312,21 +319,21 @@ for (const d of probeQueue) {
 
   // Native structured output
   console.log('  probe: native structured output…')
-  const nso = await probeNativeStructuredOutput(d.id)
+  const nso = await probeNativeStructuredOutput(d.model)
   modelResults.probes.nativeStructuredOutput = nso
   console.log(`  native-json: ${nso.ok ? 'ok' : `fail — ${nso.detail ?? ''}`}`)
   await sleep(PACE_MS)
 
   // Grounding
   console.log('  probe: grounding…')
-  const gr = await probeGrounding(d.id)
+  const gr = await probeGrounding(d.model)
   modelResults.probes.grounding = gr
   console.log(`  grounding: ${gr.ok ? 'ok' : `fail — ${gr.detail ?? ''}`}`)
   await sleep(PACE_MS)
 
   // Vision
   console.log('  probe: vision…')
-  const vis = await probeVision(d.id)
+  const vis = await probeVision(d.model)
   modelResults.probes.vision = vis
   console.log(`  vision: ${vis.ok ? 'ok' : `fail — ${vis.detail ?? ''}`}`)
 
@@ -350,7 +357,7 @@ for (const r of allResults) {
     continue
   }
 
-  const d = allDescriptors.find((x) => x.id === r.id)
+  const d = allDescriptors.find((x) => x.model === r.id)
   const cap = d?.capabilities ?? {}
   const p = r.probes ?? {}
 
@@ -421,19 +428,25 @@ for (const r of allResults) {
       console.log('  MISMATCH: grounding succeeded but not declared in descriptor')
   }
 
-  // Vision
-  if (cap.vision) {
+  // Vision: `capabilities.inputMimeTypes` is the one statement of media support
+  // (there is no `vision` flag).
+  const declaresImages = (cap.inputMimeTypes ?? []).some(
+    (t) => t === 'image/*' || t === 'image/png',
+  )
+  if (declaresImages) {
     const got = p.vision?.ok ?? false
     if (!got)
       console.log(
-        `  MISMATCH: declared vision=true but vision probe failed — ${
+        `  MISMATCH: inputMimeTypes admits image/png but the vision probe failed — ${
           p.vision?.detail ?? ''
         }`,
       )
     else console.log('  vision: ok')
   } else {
     if (p.vision?.ok)
-      console.log('  MISMATCH: vision succeeded but not declared in descriptor')
+      console.log(
+        '  MISMATCH: vision succeeded but inputMimeTypes does not admit image/png',
+      )
   }
 }
 

@@ -48,6 +48,7 @@ export default defineConfig(
       '.remember/**',
       '.claude/**',
       '.private/**',
+      '.recapture/**',
     ],
   },
   {

@@ -116,21 +116,22 @@ paths to other repos.
 ## B-008 — xAI fixture re-capture script
 
 - **Priority:** P2
-- **Status:** open, plan not yet written.
-- **Origin:** `packages/xai/src/__fixtures__/*.json` are live captures (grok-4.5 on
-  2026-07-09, grok-4.6 on 2026-08-12) backing 63 contract tests, including the only
-  external check on cost math — `pricing.test.ts` reconciles `XAI_PRICING` against xAI's
-  own `/v1/models` prices and against `cost_in_usd_ticks` from a real billed call. They
-  were captured by hand and there is no way to refresh them, so they prove the adapter
-  handled the API _as of the capture date_, not as of today. Silent provider drift stays
-  green.
-- **Scope:** a manual, key-gated dev script in the shape of `scripts/probe-capabilities.mjs`
-  (not in CI, documented cost warning): replay each recorded request against the live
-  Responses API, strip Authorization/Bearer/API-key-shaped strings, write the response
-  back to `__fixtures__/`, and diff so drift shows up as a reviewable change. Fixtures are
-  Prettier-ignored so a re-capture produces no formatting noise.
-- **Next step:** write the plan; decide whether the diff runs on a release cadence or
-  ad hoc.
+- **Status:** shipped: `scripts/recapture-fixtures.mjs` (see `scripts/README.md`).
+- **Origin:** `packages/xai/src/__fixtures__/*.json` are live captures that back the contract
+  tests, including the only external check on cost math (`pricing.test.ts` reconciles
+  `XAI_PRICING` against xAI's own `/v1/models` prices and against `cost_in_usd_ticks` from a
+  real billed call). They prove the adapter handled the API _as of the capture date_, not as
+  of today; silent provider drift stays green.
+- **Shipped:** a manual, key-gated script (`XAI_API_KEY`; it refuses to run in CI or without
+  the key) that repeats the probes listed in it (fixtures 02, 09, 13 and 14), redacts the
+  result, writes it to `.recapture/` and prints the drift against the recorded fixture
+  (shape, status and stable values; ids, times, text and token counts are ignored).
+  `--write` overwrites the fixture so `git diff` carries the change. Offline tests cover the
+  refusals, the redaction and the diff.
+- **Left open:** most older fixtures do not record their request and cannot be replayed. A
+  new fixture should record its request and get a probe; the existing ones can gain probes
+  as their requests are rebuilt. A Google counterpart is not written. Whether the diff runs
+  on a release cadence or ad hoc is the maintainer's call (it spends real money, so not CI).
 
 ---
 

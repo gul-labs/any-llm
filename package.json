@@ -14,7 +14,7 @@
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "quality": "pnpm -r build && pnpm format:check && pnpm lint && pnpm typecheck && pnpm check:docs && pnpm check:packages && pnpm test:runtime && pnpm test:audit-gate && pnpm test",
+    "quality": "pnpm -r build && pnpm format:check && pnpm lint && pnpm typecheck && pnpm check:docs && pnpm check:packages && pnpm test:runtime && pnpm test:scripts && pnpm test:audit-gate && pnpm test",
     "check:packages": "pnpm -r exec publint --strict && pnpm -r exec attw --pack .",
     "test:runtime": "node --import ./scripts/runtime-smoke/register.mjs scripts/runtime-smoke/entry.mjs",
     "check:docs": "node scripts/check-doc-snippets.test.mjs && node scripts/check-doc-snippets.mjs",
@@ -24,6 +24,7 @@
     "version-packages": "changeset version",
     "release": "pnpm -r build && changeset publish",
     "audit:gate": "node scripts/audit.mjs --audit-level=high",
+    "test:scripts": "node scripts/recapture-fixtures.test.mjs",
     "test:audit-gate": "node scripts/audit.test.mjs",
     "test:packed-install": "pnpm -r build && node scripts/packed-install.mjs"
   },
