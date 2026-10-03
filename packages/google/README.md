@@ -255,8 +255,35 @@ skipped Search. An accepted request is not proof that Search ran, so
 `structuredOutputWithTools` is `false` on every descriptor: the combination fails
 with `bad_request` before dispatch. Make two calls instead (grounded research, then
 structured synthesis); see [`docs/grounded-structured.md`](../../docs/grounded-structured.md).
-A call that sends `googleSearch` reports `cost.confidence: 'estimated'` and a warning,
-because grounding fees are not included in the price.
+To send both in one call anyway, set `providerOptions.google.allowSchemaWithSearch: true`.
+That also turns on `requireGrounding` (override with `requireGrounding: false`), because a
+schema'd call can skip Search without saying so.
+
+### Search facts, grounding price and `requireGrounding`
+
+A call that sends `googleSearch` reports two facts in `usage.details`:
+`web_search_requested` (`1`) and `web_search_calls`, the number of queries in
+`groundingMetadata.webSearchQueries` counted as occurrences (a repeated query counts each
+time; absent when the response has no metadata or no query list). `tool_use_prompt` records
+`toolUsePromptTokenCount` when Google reports it (Gemini 2.5), unpriced.
+
+The pricing source puts the grounding fee on `cost.details.tools`: Gemini 3 bills per query
+(`web_search_calls × $0.014`), Gemini 2.5 per grounded prompt (`$0.035`, once however many
+queries ran), from Google's pricing page read 2026-10-03. A call that ran Search is always
+`cost.confidence: 'estimated'`: Google's daily free allowance is shared across a project, so
+no single call can know it was free, and every fee is charged in full. When Search was
+requested but the count is unknown, the tools lane is `0`, the cost is estimated and a warning
+says so. Google's billing of repeated queries and of tool-use tokens is not established.
+
+`providerOptions.google.requireGrounding: true` fails the call unless the response proves Search
+ran (`groundingMetadata` with at least one query): a retryable `server` error with
+`reason: 'grounding_missing'` and the attempt's usage attached, so the billed tokens reach the
+ledger. It needs `googleSearch` in the same request.
+
+`result.citations` entries carry `cited` (a `groundingSupports` segment points at the source) and
+`textRange` (the first supported span of `result.text`, UTF-16 offsets). Google requires a grounded
+answer to display its Search Suggestions: the widget is at
+`result.providerMetadata.google.searchEntryPoint`.
 
 `countTokens` takes `messages` only on Google: `system` or `tools` fails with
 `bad_request`, because the Developer API's count cannot include them and a count

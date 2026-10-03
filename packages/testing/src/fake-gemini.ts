@@ -56,6 +56,8 @@ export interface GeminiUsageMetadataLike {
   candidatesTokenCount?: number
   cachedContentTokenCount?: number
   thoughtsTokenCount?: number
+  /** Search-result tokens fed back to the model (Gemini 2.5 grounding). */
+  toolUsePromptTokenCount?: number
   totalTokenCount?: number
   serviceTier?: string
 }
@@ -123,6 +125,7 @@ export interface FakeGeminiResponseOpts {
   candidatesTokenCount?: number
   cachedContentTokenCount?: number
   thoughtsTokenCount?: number
+  toolUsePromptTokenCount?: number
   totalTokenCount?: number
   /** e.g. `'STOP'` | `'MAX_TOKENS'` | `'SAFETY'` */
   finishReason?: string
@@ -186,6 +189,9 @@ export function fakeGeminiResponse(
       : {}),
     ...(opts.thoughtsTokenCount !== undefined
       ? { thoughtsTokenCount: opts.thoughtsTokenCount }
+      : {}),
+    ...(opts.toolUsePromptTokenCount !== undefined
+      ? { toolUsePromptTokenCount: opts.toolUsePromptTokenCount }
       : {}),
     ...(opts.totalTokenCount !== undefined
       ? { totalTokenCount: opts.totalTokenCount }

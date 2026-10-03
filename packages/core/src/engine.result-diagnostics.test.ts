@@ -232,3 +232,63 @@ describe('typed error reasons (R1.10)', () => {
     expect('errorReason' in (sink.last() ?? {})).toBe(false)
   })
 })
+
+describe('tokens the usage fields do not carry (R2.3)', () => {
+  const GREATER = 'greater than inputTokens + outputTokens'
+
+  it('totalTokens above input + output: a warning once on the result and the row, cost estimated', async () => {
+    const { client, sink } = makeClient(
+      adapterResult({
+        text: 'answer',
+        finishReason: 'stop',
+        usage: usage({
+          inputTokens: 44,
+          outputTokens: 102,
+          thinkingTokens: 0,
+          totalTokens: 223,
+        }),
+      }),
+    )
+    const result = await client.generate(REQUEST, { auth: AUTH })
+
+    expect(result.cost?.confidence).toBe('estimated')
+    expect(result.cost?.microUsd).toEqual(expect.any(Number))
+    expect(result.warnings.filter((w) => w.message.includes(GREATER))).toHaveLength(1)
+    expect(JSON.stringify(sink.last()?.warnings).split(GREATER)).toHaveLength(2)
+  })
+
+  it('a consistent total stays exact with no warning', async () => {
+    const { client } = makeClient(
+      adapterResult({
+        text: 'answer',
+        finishReason: 'stop',
+        usage: usage({
+          inputTokens: 44,
+          outputTokens: 102,
+          thinkingTokens: 0,
+          totalTokens: 146,
+        }),
+      }),
+    )
+    const result = await client.generate(REQUEST, { auth: AUTH })
+    expect(result.cost?.confidence).toBe('exact')
+    expect(result.warnings).toEqual([])
+  })
+
+  it('a failed billed attempt carries the warning on its row', async () => {
+    const { client, sink } = makeClient(
+      new LlmError('no usable candidate', {
+        kind: 'server',
+        retryable: false,
+        usage: usage({
+          inputTokens: 44,
+          outputTokens: 102,
+          thinkingTokens: 0,
+          totalTokens: 223,
+        }),
+      }),
+    )
+    await expect(client.generate(REQUEST, { auth: AUTH })).rejects.toBeDefined()
+    expect(JSON.stringify(sink.last()?.warnings)).toContain(GREATER)
+  })
+})

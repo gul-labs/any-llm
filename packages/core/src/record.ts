@@ -325,9 +325,16 @@ export { errorKindToStatus }
 export function normalizeUsage(usage: Usage): {
   usage: Usage
   warnings: Warning[]
+  /**
+   * `true` when the provider's `totalTokens` is larger than `inputTokens +
+   * outputTokens`: it counted tokens the usage fields do not carry (tool-use
+   * prompt tokens, say), so a cost computed from the fields can undercount and
+   * the engine reports it as `'estimated'`.
+   */
+  estimated: boolean
 } {
-  const { usage: normalized, clampWarnings } = sanitizeUsage(usage)
-  return { usage: normalized, warnings: clampWarnings }
+  const { usage: normalized, clampWarnings, estimated } = sanitizeUsage(usage)
+  return { usage: normalized, warnings: clampWarnings, estimated }
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +453,8 @@ interface SanitizeUsageResult {
   usage: Usage
   /** Warnings emitted for each violation that was corrected. */
   clampWarnings: Warning[]
+  /** `totalTokens` exceeds `inputTokens + outputTokens`: some billed tokens are uncounted. */
+  estimated: boolean
 }
 
 /**
@@ -530,6 +539,7 @@ function sanitizeUsage(usage: Usage): SanitizeUsageResult {
     needsRebuild = true
   }
 
+  let estimated = false
   if (usage.totalTokens !== undefined) {
     const expected = inputTokens + outputTokens
     if (usage.totalTokens < expected) {
@@ -538,6 +548,17 @@ function sanitizeUsage(usage: Usage): SanitizeUsageResult {
         message:
           `totalTokens (${usage.totalTokens}) is less than ` +
           `inputTokens + outputTokens (${expected}); recorded as-is`,
+      })
+    } else if (usage.totalTokens > expected) {
+      // The provider counted tokens the usage fields do not carry, for example
+      // tool-use prompt tokens. A cost built from the fields can undercount.
+      estimated = true
+      warnings.push({
+        type: 'other',
+        message:
+          `totalTokens (${usage.totalTokens}) is greater than ` +
+          `inputTokens + outputTokens (${expected}); the provider counted tokens the ` +
+          `usage fields do not include, so cost.confidence is "estimated"`,
       })
     }
   }
@@ -560,7 +581,7 @@ function sanitizeUsage(usage: Usage): SanitizeUsageResult {
   }
 
   if (!needsRebuild) {
-    return { usage, clampWarnings: warnings }
+    return { usage, clampWarnings: warnings, estimated }
   }
 
   // Rebuild Usage with clamped values — exactOptionalPropertyTypes-safe.
@@ -574,7 +595,7 @@ function sanitizeUsage(usage: Usage): SanitizeUsageResult {
     ...(usage.totalTokens !== undefined ? { totalTokens: usage.totalTokens } : {}),
   }
 
-  return { usage: clampedUsage, clampWarnings: warnings }
+  return { usage: clampedUsage, clampWarnings: warnings, estimated }
 }
 
 // ---------------------------------------------------------------------------
@@ -608,8 +629,16 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
   // Validate and clamp usage subset invariants (fail-open: clamp + warn).
   const { usage, clampWarnings } = sanitizeUsage(input.usage)
 
-  // Merge caller warnings with any clamp warnings.
-  const allWarnings: Warning[] = [...(input.warnings ?? []), ...clampWarnings]
+  // Merge caller warnings with any clamp warnings. The engine normalises usage
+  // once and passes its warnings in; re-sanitising the same usage must not
+  // repeat them.
+  const callerWarnings = input.warnings ?? []
+  const allWarnings: Warning[] = [
+    ...callerWarnings,
+    ...clampWarnings.filter(
+      (w) => !callerWarnings.some((known) => known.message === w.message),
+    ),
+  ]
 
   // C1: Scoped provider extension redaction.
   // Only secret-bearing provider lanes are redacted; all standard generation knobs

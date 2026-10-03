@@ -3,7 +3,8 @@
  *
  * - R1.9: reasoning that uses up `maxOutputTokens` is reported, on a normal
  *   200 (engine warning) and on a candidate-less 200 (hint in the `server` error).
- * - R1.11: a call that sent `googleSearch` never reports an exact cost.
+ * - R2.3: a call that sent `googleSearch` never reports an exact cost unless the
+ *   response proves Search did not run; failed-but-billed attempts carry the facts.
  * - R1.10: a typed reason survives the Google error overlay.
  *
  * All tests use fakes from @gullabs/testing — no network.
@@ -20,7 +21,7 @@ import {
   makeFakeGemini,
 } from '@gullabs/testing'
 import { geminiAdapter } from './adapter.js'
-import { GOOGLE_SEARCH_REQUESTED_DETAIL, geminiPricingSource } from './cost.js'
+import { geminiPricingSource } from './cost.js'
 import { classifyGoogleError } from './errors.js'
 import { defaultGeminiRegistry } from './models.js'
 
@@ -138,7 +139,7 @@ describe('reasoning used up the output cap (R1.9)', () => {
   })
 })
 
-describe('grounded calls are not priced as exact (R1.11)', () => {
+describe('grounded calls are not priced as exact (R2.3)', () => {
   const generate = (googleSearch: boolean) => {
     const sink = new RecordingSink()
     const client = makeClient(
@@ -164,7 +165,7 @@ describe('grounded calls are not priced as exact (R1.11)', () => {
     )
   }
 
-  it('googleSearch sent: cost is estimated and a warning says grounding fees are missing', async () => {
+  it('googleSearch sent, no metadata: cost is estimated and a warning says grounding fees are missing', async () => {
     const result = await generate(true)
     expect(result.cost?.microUsd).toEqual(expect.any(Number))
     expect(result.cost?.confidence).toBe('estimated')
@@ -181,13 +182,14 @@ describe('grounded calls are not priced as exact (R1.11)', () => {
     ).toBe(false)
   })
 
-  it('the token amount is the same either way (only the confidence changes)', async () => {
+  it('with the search count unknown the token amount is the same either way', async () => {
     const [grounded, plain] = await Promise.all([generate(true), generate(false)])
     expect(grounded.cost?.microUsd).toBe(plain.cost?.microUsd)
+    expect(grounded.cost?.details.tools).toBe(0)
   })
 })
 
-describe('grounded attempts that fail after billing are marked too (R1.11)', () => {
+describe('grounded attempts that fail after billing carry the search facts (R2.3)', () => {
   const GROUNDING_WARNING = 'grounding fees are not included'
   const grounded = { providerOptions: { google: { tools: [{ googleSearch: {} }] } } }
 
@@ -209,7 +211,7 @@ describe('grounded attempts that fail after billing are marked too (R1.11)', () 
   ]
 
   it.each(failures)(
-    '%s: the thrown error, the row and its cost carry the grounding marker',
+    '%s: the thrown error, the row and its cost carry the search request',
     async (_name, response, kind) => {
       const sink = new RecordingSink()
       const client = makeClient(makeFakeGemini(response), sink)
@@ -221,15 +223,17 @@ describe('grounded attempts that fail after billing are marked too (R1.11)', () 
         .catch((e: unknown) => e)) as LlmError
 
       expect(err.kind).toBe(kind)
-      expect(err.usage?.details[GOOGLE_SEARCH_REQUESTED_DETAIL]).toBe(1)
+      expect(err.usage?.details['web_search_requested']).toBe(1)
+      // No candidate, so no metadata: the number of searches is unknown.
+      expect(err.usage?.details).not.toHaveProperty('web_search_calls')
       const row = sink.records[0]!
       expect(row.costMicroUsd).toBeGreaterThan(0)
-      expect(row.tokenDetails).toMatchObject({ [GOOGLE_SEARCH_REQUESTED_DETAIL]: 1 })
+      expect(row.tokenDetails).toMatchObject({ web_search_requested: 1 })
       expect(JSON.stringify(row.warnings)).toContain(GROUNDING_WARNING)
     },
   )
 
-  it('an ungrounded billed failure carries neither marker nor warning', async () => {
+  it('an ungrounded billed failure carries neither fact nor warning', async () => {
     const sink = new RecordingSink()
     const client = makeClient(
       makeFakeGemini({ candidates: [], usageMetadata: { promptTokenCount: 5000 } }),
@@ -240,49 +244,8 @@ describe('grounded attempts that fail after billing are marked too (R1.11)', () 
       .catch(() => undefined)
     const row = sink.records[0]!
     expect(row.costMicroUsd).toBeGreaterThan(0)
-    expect(row.tokenDetails).not.toHaveProperty(GOOGLE_SEARCH_REQUESTED_DETAIL)
+    expect(row.tokenDetails).not.toHaveProperty('web_search_requested')
     expect(row.warnings).toBeUndefined()
-  })
-})
-
-describe('geminiPricingSource and the googleSearch flag (R1.11)', () => {
-  const usage = (details: Record<string, number>) => ({
-    inputTokens: 1000,
-    outputTokens: 100,
-    details,
-    raw: null,
-  })
-
-  it('reports estimated when the adapter flagged googleSearch, with the same amount', () => {
-    const source = geminiPricingSource()
-    const plain = source.price(MODEL, usage({}))
-    const flagged = source.price(MODEL, usage({ [GOOGLE_SEARCH_REQUESTED_DETAIL]: 1 }))
-    expect(plain.confidence).toBe('exact')
-    expect(flagged.confidence).toBe('estimated')
-    expect(flagged.microUsd).toBe(plain.microUsd)
-    expect(flagged.details).toEqual(plain.details)
-  })
-
-  it('the adapter writes the flag into usage.details only when googleSearch was sent', async () => {
-    const run = async (googleSearch: boolean) => {
-      const adapter = geminiAdapter({
-        client: makeFakeGemini(fakeGeminiResponse({ text: 'ok' })),
-      })
-      return adapter.run(
-        {
-          provider: 'google',
-          model: MODEL,
-          messages,
-          config: googleSearch
-            ? { providerOptions: { google: { tools: [{ googleSearch: {} }] } } }
-            : {},
-          modelDescriptor: defaultGeminiRegistry.resolve('google', MODEL)!,
-        },
-        FAKE_CTX,
-      )
-    }
-    expect((await run(true)).usage.details[GOOGLE_SEARCH_REQUESTED_DETAIL]).toBe(1)
-    expect(GOOGLE_SEARCH_REQUESTED_DETAIL in (await run(false)).usage.details).toBe(false)
   })
 })
 

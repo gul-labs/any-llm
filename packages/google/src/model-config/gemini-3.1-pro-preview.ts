@@ -48,6 +48,16 @@ export const Gemini31ProPreviewConfigSchema = z
         .strictObject({
           google: z
             .strictObject({
+              allowSchemaWithSearch: z.boolean().optional().meta({
+                title: 'Allow Schema With Search',
+                description:
+                  'Admit googleSearch together with a response schema. Turns requireGrounding on unless it is false.',
+              }),
+              requireGrounding: z.boolean().optional().meta({
+                title: 'Require Grounding',
+                description:
+                  'Fail the call unless the response proves Google Search ran (grounding metadata with at least one query).',
+              }),
               cachedContent: z.string().min(1).optional().meta({
                 title: 'Cached Content',
                 description: 'Google cached content resource name.',
@@ -162,6 +172,16 @@ export const Gemini31ProPreviewConfigSchema = z
         .strictObject({
           google: z
             .strictObject({
+              allowSchemaWithSearch: z.boolean().optional().meta({
+                title: 'Allow Schema With Search',
+                description:
+                  'Admit googleSearch together with a response schema. Turns requireGrounding on unless it is false.',
+              }),
+              requireGrounding: z.boolean().optional().meta({
+                title: 'Require Grounding',
+                description:
+                  'Fail the call unless the response proves Google Search ran (grounding metadata with at least one query).',
+              }),
               cachedContent: z.string().min(1).optional().meta({
                 title: 'Cached Content',
                 description: 'Google cached content resource name.',

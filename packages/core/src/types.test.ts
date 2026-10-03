@@ -137,6 +137,8 @@ describe('Citation type shape', () => {
       url: string
       title?: string
       sourceName?: string
+      cited?: boolean
+      textRange?: { start: number; end: number }
     }>()
   })
 })

@@ -1356,6 +1356,16 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       const noServerToolRan =
         response.usage['num_server_side_tools_used'] === 0 &&
         response.usage['server_side_tool_usage_details'] === undefined
+      // Normalised search facts (ADR-035), the same names on every provider:
+      // `web_search_requested` is 1 when the request enabled web search, and
+      // `web_search_calls` is the observed count. The count comes from the
+      // provider's counters; an explicit "no server tool ran" is a known zero.
+      if (
+        xaiProviderConfig.tools?.some((tool) => tool['type'] === 'web_search') === true
+      ) {
+        usage.details['web_search_requested'] = 1
+        if (noServerToolRan) usage.details[WEB_SEARCH_COUNTER] = 0
+      }
       if ((expectedToolCounters.length > 0 || hasFileRef) && !noServerToolRan) {
         usage.details['server_tools_requested'] = 1
         if (
@@ -1530,59 +1540,98 @@ function expectedServerToolCounters(
   return keys
 }
 
+/**
+ * Citations from the response: the top-level source list first, then the last
+ * message's `url_citation` annotations, deduplicated by URL.
+ *
+ * - A numeric-only title (xAI numbers its inline markers, `title: "1"`) names
+ *   nothing, so it is dropped; so is a title equal to the URL.
+ * - An annotation with a non-empty `start_index`/`end_index` range is an
+ *   inline citation: `cited: true` and `textRange` (UTF-16 offsets into the
+ *   joined answer text; xAI indexes each `output_text` part, so the part's
+ *   offset in the join is added). The range covers xAI's inline marker.
+ *   Fixtures 17, 26, 30 and 32 pin the offsets.
+ * - An annotation with a zero-width range (`0`/`0`) attaches a source without
+ *   citing it inline: `cited: false`.
+ * - A source from the top-level list alone says nothing about citing.
+ */
 function collectXaiCitations(
   response: XaiResponseShape,
   messageItems: XaiMessageOutputItem[],
 ): Citation[] {
-  const seen = new Set<string>()
-  const citations: Citation[] = []
+  const byUrl = new Map<string, Citation>()
 
-  const push = (url: unknown, title: unknown) => {
-    if (typeof url !== 'string' || url.length === 0) return
-    if (seen.has(url)) return
-    seen.add(url)
-    const citation: Citation = { url }
-    if (typeof title === 'string' && title.length > 0 && title !== url) {
+  const upsert = (url: unknown, title: unknown): Citation | undefined => {
+    if (typeof url !== 'string' || url.length === 0) return undefined
+    let citation = byUrl.get(url)
+    if (citation === undefined) {
+      citation = { url }
+      try {
+        const parsed = new URL(url)
+        if (parsed.hostname.length > 0) {
+          citation.sourceName = parsed.hostname.startsWith('www.')
+            ? parsed.hostname.slice(4)
+            : parsed.hostname
+        }
+      } catch {
+        /* keep url-only */
+      }
+      byUrl.set(url, citation)
+    }
+    if (
+      citation.title === undefined &&
+      typeof title === 'string' &&
+      title.length > 0 &&
+      title !== url &&
+      !/^\d+$/.test(title)
+    ) {
       citation.title = title
     }
-    try {
-      const parsed = new URL(url)
-      if (parsed.hostname.length > 0) {
-        citation.sourceName = parsed.hostname.startsWith('www.')
-          ? parsed.hostname.slice(4)
-          : parsed.hostname
-      }
-    } catch {
-      /* keep url-only */
-    }
-    citations.push(citation)
+    return citation
   }
 
   if (Array.isArray(response.citations)) {
     for (const item of response.citations) {
       if (typeof item === 'string') {
-        push(item, undefined)
+        upsert(item, undefined)
       } else if (isPlainRecord(item)) {
-        push(item['url'] ?? item['uri'], item['title'])
+        upsert(item['url'] ?? item['uri'], item['title'])
       }
     }
   }
 
   const lastMessage = messageItems.at(-1)
-  const citationMessages = lastMessage === undefined ? [] : [lastMessage]
-  for (const item of citationMessages) {
-    for (const part of item.content) {
+  if (lastMessage !== undefined) {
+    let partOffset = 0
+    for (const part of lastMessage.content) {
       const annotations = part.annotations
-      if (!Array.isArray(annotations)) continue
-      for (const ann of annotations) {
-        if (!isPlainRecord(ann)) continue
-        if (ann['type'] !== undefined && ann['type'] !== 'url_citation') continue
-        push(ann['url'], ann['title'])
+      if (Array.isArray(annotations)) {
+        for (const ann of annotations) {
+          if (!isPlainRecord(ann)) continue
+          if (ann['type'] !== undefined && ann['type'] !== 'url_citation') continue
+          const citation = upsert(ann['url'], ann['title'])
+          if (citation === undefined) continue
+          const start = ann['start_index']
+          const end = ann['end_index']
+          if (typeof start !== 'number' || typeof end !== 'number') continue
+          if (
+            Number.isInteger(start) &&
+            Number.isInteger(end) &&
+            start >= 0 &&
+            end > start
+          ) {
+            citation.cited = true
+            citation.textRange ??= { start: partOffset + start, end: partOffset + end }
+          } else if (citation.cited === undefined) {
+            citation.cited = false
+          }
+        }
       }
+      partOffset += part.text.length
     }
   }
 
-  return citations
+  return [...byUrl.values()]
 }
 
 function concatenateTokenizeText(req: TokenCountRequest): string {

@@ -415,6 +415,23 @@ export interface Citation {
   url: string
   title?: string
   sourceName?: string
+  /**
+   * Whether the answer text itself cites this source: `true` when the provider
+   * ties the source to a span of the text, `false` when the provider reports
+   * citing information and this source is not part of it (it was returned but
+   * no span points at it). Absent when the provider does not say.
+   */
+  cited?: boolean
+  /**
+   * The span of `LlmResult.text` the provider ties this source to, as UTF-16
+   * code unit offsets (`start` inclusive, `end` exclusive, so
+   * `text.slice(start, end)` is the span). When a source backs several spans
+   * this is the first one; the provider's full mapping stays in
+   * `providerMetadata`. What the span covers is the provider's choice: Gemini
+   * gives the supported sentence, xAI gives its inline citation marker. Absent
+   * when the provider gives no usable span.
+   */
+  textRange?: { start: number; end: number }
 }
 
 /**

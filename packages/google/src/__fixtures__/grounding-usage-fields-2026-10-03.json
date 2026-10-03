@@ -1,0 +1,452 @@
+{
+  "capturedOn": "2026-10-03",
+  "description": "Grounded Gemini 2.5 and 3.x calls whose prompt asked for the identical search query three times. Usage metadata and webSearchQueries kept; model answer text and call cost removed. Redacted per ADR-013.",
+  "gemini25and3": [
+    {
+      "model": "gemini-3.8-flash",
+      "attempt": 0,
+      "status": 200,
+      "usage": {
+        "promptTokenCount": 44,
+        "candidatesTokenCount": 66,
+        "totalTokenCount": 110,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 44
+          }
+        ],
+        "serviceTier": "standard"
+      },
+      "webSearchQueries": [
+        "node.js latest stable release"
+      ],
+      "queryOccurrences": 1,
+      "uniqueQueries": 1,
+      "duplicatedQueries": [],
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ]
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "attempt": 1,
+      "status": 200,
+      "usage": {
+        "promptTokenCount": 44,
+        "candidatesTokenCount": 68,
+        "totalTokenCount": 112,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 44
+          }
+        ],
+        "serviceTier": "standard"
+      },
+      "webSearchQueries": [
+        "node.js latest stable release"
+      ],
+      "queryOccurrences": 1,
+      "uniqueQueries": 1,
+      "duplicatedQueries": [],
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ]
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "attempt": 2,
+      "status": 200,
+      "usage": {
+        "promptTokenCount": 44,
+        "candidatesTokenCount": 65,
+        "totalTokenCount": 109,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 44
+          }
+        ],
+        "serviceTier": "standard"
+      },
+      "webSearchQueries": [
+        "node.js latest stable release"
+      ],
+      "queryOccurrences": 1,
+      "uniqueQueries": 1,
+      "duplicatedQueries": [],
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ]
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "attempt": 0,
+      "status": 200,
+      "usage": {
+        "promptTokenCount": 150,
+        "candidatesTokenCount": 89,
+        "totalTokenCount": 438,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 150
+          }
+        ],
+        "thoughtsTokenCount": 199,
+        "serviceTier": "standard"
+      },
+      "webSearchQueries": [
+        "node.js latest stable release"
+      ],
+      "queryOccurrences": 1,
+      "uniqueQueries": 1,
+      "duplicatedQueries": [],
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ]
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "attempt": 1,
+      "status": 200,
+      "usage": {
+        "promptTokenCount": 153,
+        "candidatesTokenCount": 146,
+        "totalTokenCount": 554,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 153
+          }
+        ],
+        "thoughtsTokenCount": 255,
+        "serviceTier": "standard"
+      },
+      "webSearchQueries": [
+        "node.js latest stable release"
+      ],
+      "queryOccurrences": 1,
+      "uniqueQueries": 1,
+      "duplicatedQueries": [],
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ]
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "attempt": 2,
+      "status": 200,
+      "usage": {
+        "promptTokenCount": 150,
+        "candidatesTokenCount": 129,
+        "totalTokenCount": 526,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 150
+          }
+        ],
+        "thoughtsTokenCount": 247,
+        "serviceTier": "standard"
+      },
+      "webSearchQueries": [
+        "node.js latest stable release"
+      ],
+      "queryOccurrences": 1,
+      "uniqueQueries": 1,
+      "duplicatedQueries": [],
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ]
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "attempt": 0,
+      "status": 200,
+      "usage": {
+        "promptTokenCount": 44,
+        "candidatesTokenCount": 102,
+        "totalTokenCount": 223,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 44
+          }
+        ],
+        "toolUsePromptTokenCount": 77,
+        "toolUsePromptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 77
+          }
+        ],
+        "serviceTier": "standard"
+      },
+      "webSearchQueries": [
+        "node.js latest stable release",
+        "node.js latest stable release",
+        "node.js latest stable release"
+      ],
+      "queryOccurrences": 3,
+      "uniqueQueries": 1,
+      "duplicatedQueries": [
+        {
+          "query": "node.js latest stable release",
+          "n": 3
+        }
+      ],
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ]
+    },
+    {
+      "model": "gemini-2.5-pro",
+      "attempt": 0,
+      "status": 200,
+      "usage": {
+        "promptTokenCount": 44,
+        "candidatesTokenCount": 155,
+        "totalTokenCount": 767,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 44
+          }
+        ],
+        "toolUsePromptTokenCount": 141,
+        "toolUsePromptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 141
+          }
+        ],
+        "thoughtsTokenCount": 427,
+        "serviceTier": "standard"
+      },
+      "webSearchQueries": [
+        "node.js latest stable release",
+        "node.js latest stable release",
+        "node.js latest stable release"
+      ],
+      "queryOccurrences": 3,
+      "uniqueQueries": 1,
+      "duplicatedQueries": [
+        {
+          "query": "node.js latest stable release",
+          "n": 3
+        }
+      ],
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ]
+    }
+  ],
+  "gemini3Repeat": [
+    {
+      "model": "gemini-3.6-flash",
+      "prompt": 0,
+      "status": 200,
+      "webSearchQueries": [
+        "postgresql latest stable release"
+      ],
+      "occurrences": 1,
+      "unique": 1,
+      "usage": {
+        "promptTokenCount": 329,
+        "candidatesTokenCount": 37,
+        "totalTokenCount": 693,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 329
+          }
+        ],
+        "thoughtsTokenCount": 327,
+        "serviceTier": "standard"
+      }
+    },
+    {
+      "model": "gemini-3.6-flash",
+      "prompt": 1,
+      "status": 200,
+      "webSearchQueries": [
+        "node.js latest stable release"
+      ],
+      "occurrences": 1,
+      "unique": 1,
+      "usage": {
+        "promptTokenCount": 86,
+        "candidatesTokenCount": 114,
+        "totalTokenCount": 244,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 86
+          }
+        ],
+        "thoughtsTokenCount": 44,
+        "serviceTier": "standard"
+      }
+    },
+    {
+      "model": "gemini-3.7-flash",
+      "prompt": 0,
+      "status": 200,
+      "webSearchQueries": [
+        "postgresql latest stable release"
+      ],
+      "occurrences": 1,
+      "unique": 1,
+      "usage": {
+        "promptTokenCount": 43,
+        "candidatesTokenCount": 45,
+        "totalTokenCount": 88,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 43
+          }
+        ],
+        "serviceTier": "standard"
+      }
+    },
+    {
+      "model": "gemini-3.7-flash",
+      "prompt": 1,
+      "status": 200,
+      "webSearchQueries": [
+        "node.js latest stable release"
+      ],
+      "occurrences": 1,
+      "unique": 1,
+      "usage": {
+        "promptTokenCount": 42,
+        "candidatesTokenCount": 65,
+        "totalTokenCount": 107,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 42
+          }
+        ],
+        "serviceTier": "standard"
+      }
+    },
+    {
+      "model": "gemini-3.1-pro-preview",
+      "prompt": 0,
+      "status": 200,
+      "webSearchQueries": [
+        "postgresql latest stable release"
+      ],
+      "occurrences": 1,
+      "unique": 1,
+      "usage": {
+        "promptTokenCount": 309,
+        "candidatesTokenCount": 72,
+        "totalTokenCount": 729,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 309
+          }
+        ],
+        "thoughtsTokenCount": 348,
+        "serviceTier": "standard"
+      }
+    },
+    {
+      "model": "gemini-3.1-pro-preview",
+      "prompt": 1,
+      "status": 200,
+      "webSearchQueries": [
+        "node.js latest stable release"
+      ],
+      "occurrences": 1,
+      "unique": 1,
+      "usage": {
+        "promptTokenCount": 193,
+        "candidatesTokenCount": 102,
+        "totalTokenCount": 553,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 193
+          }
+        ],
+        "thoughtsTokenCount": 258,
+        "serviceTier": "standard"
+      }
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "prompt": 0,
+      "status": 200,
+      "webSearchQueries": [
+        "postgresql latest stable release"
+      ],
+      "occurrences": 1,
+      "unique": 1,
+      "usage": {
+        "promptTokenCount": 43,
+        "candidatesTokenCount": 38,
+        "totalTokenCount": 81,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 43
+          }
+        ],
+        "serviceTier": "standard"
+      }
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "prompt": 1,
+      "status": 200,
+      "webSearchQueries": [
+        "node.js latest stable release"
+      ],
+      "occurrences": 1,
+      "unique": 1,
+      "usage": {
+        "promptTokenCount": 42,
+        "candidatesTokenCount": 85,
+        "totalTokenCount": 127,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 42
+          }
+        ],
+        "serviceTier": "standard"
+      }
+    }
+  ]
+}

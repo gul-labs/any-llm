@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { buildRecord, errorKindToStatus } from './record.js'
+import { buildRecord, errorKindToStatus, normalizeUsage } from './record.js'
 import { LlmError } from './errors.js'
 import type { BuildRecordInput } from './record.js'
 import type { Usage, Cost, GenConfig } from './types.js'
@@ -540,5 +540,43 @@ describe('buildRecord — usage invariant clamping (fail-open)', () => {
 
     const warnings = r.warnings as Array<{ type: string; message: string }>
     expect(warnings.length).toBeGreaterThanOrEqual(2)
+  })
+})
+
+describe('normalizeUsage — totalTokens above input + output (R2.3)', () => {
+  const base = { details: {}, raw: null }
+
+  it('warns and reports estimated when the provider counted tokens the fields omit', () => {
+    const r = normalizeUsage({
+      ...base,
+      inputTokens: 44,
+      outputTokens: 102,
+      totalTokens: 223,
+    })
+    expect(r.estimated).toBe(true)
+    expect(r.warnings).toHaveLength(1)
+    expect(r.warnings[0]?.message).toContain('greater than inputTokens + outputTokens')
+    expect(r.usage.totalTokens).toBe(223)
+  })
+
+  it.each([
+    ['equal', 146],
+    ['below (warned, not estimated)', 100],
+    ['absent', undefined],
+  ])('is not estimated when the total is %s', (_name, totalTokens) => {
+    const r = normalizeUsage({
+      ...base,
+      inputTokens: 44,
+      outputTokens: 102,
+      ...(totalTokens !== undefined ? { totalTokens } : {}),
+    })
+    expect(r.estimated).toBe(false)
+  })
+
+  it('buildRecord does not repeat a warning the caller already carries', () => {
+    const usage = { ...base, inputTokens: 44, outputTokens: 102, totalTokens: 223 }
+    const { warnings } = normalizeUsage(usage)
+    const record = buildRecord(makeBaseInput({ usage, warnings }))
+    expect(record.warnings).toEqual(warnings)
   })
 })

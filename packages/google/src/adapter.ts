@@ -37,7 +37,12 @@ import {
 } from './client.js'
 import { GOOGLE_REASONING_EFFORT_BUDGET } from './reasoning-budget.js'
 import { googleJsonSchemaProfile } from './json-schema.js'
-import { normalizeGroundingCitations } from './grounding.js'
+import {
+  countWebSearchQueries,
+  normalizeGroundingCitations,
+  readSearchEntryPoint,
+} from './grounding.js'
+import type { AnswerTextPart } from './grounding.js'
 import {
   isSynthesizedToolCallId,
   reserveProviderToolCallIds,
@@ -54,7 +59,6 @@ import type {
 } from './client.js'
 import { isGeminiCapacityError } from './flex-fallback.js'
 import { classifyGoogleError } from './errors.js'
-import { GOOGLE_SEARCH_REQUESTED_DETAIL } from './cost.js'
 import {
   parseSignatureState,
   resolveSignatures,
@@ -79,9 +83,11 @@ type GeminiDispatchConfig = GeminiGenerateConfig & {
 }
 
 const ALLOWED_GOOGLE_PROVIDER_OPTION_KEYS = new Set([
+  'allowSchemaWithSearch',
   'cachedContent',
   'flexFallback',
   'httpOptions',
+  'requireGrounding',
   'safetySettings',
   'tools',
 ])
@@ -191,6 +197,12 @@ function parseGoogleSafetySetting(
   }
 }
 
+type MappedGoogleProviderOptions = Partial<GeminiDispatchConfig> & {
+  flexFallback?: boolean
+  /** Effective `requireGrounding`: the explicit value, else on when the host opted into schema + search. */
+  requireGrounding?: boolean
+}
+
 function mapGoogleProviderOptions({
   googleOpts,
   model,
@@ -203,7 +215,7 @@ function mapGoogleProviderOptions({
   structuredOutputRequested: boolean
   descriptorGrounding: boolean | undefined
   structuredOutputWithTools: boolean | undefined
-}): Partial<GeminiDispatchConfig> & { flexFallback?: boolean } {
+}): MappedGoogleProviderOptions {
   if (googleOpts === undefined) {
     return {}
   }
@@ -234,11 +246,11 @@ function mapGoogleProviderOptions({
     throw badGoogleProviderOptions(
       `providerOptions.google contains unsupported keys [${unknownKeys.join(
         ', ',
-      )}] for model "${model}". Allowed keys: cachedContent, flexFallback, httpOptions, safetySettings, tools.`,
+      )}] for model "${model}". Allowed keys: allowSchemaWithSearch, cachedContent, flexFallback, httpOptions, requireGrounding, safetySettings, tools.`,
     )
   }
 
-  const mapped: Partial<GeminiDispatchConfig> & { flexFallback?: boolean } = {}
+  const mapped: MappedGoogleProviderOptions = {}
 
   if (googleOpts['cachedContent'] !== undefined) {
     if (
@@ -318,14 +330,56 @@ function mapGoogleProviderOptions({
       )
     }
 
-    if (structuredOutputRequested && structuredOutputWithTools !== true) {
+    if (
+      structuredOutputRequested &&
+      structuredOutputWithTools !== true &&
+      googleOpts['allowSchemaWithSearch'] !== true
+    ) {
       throw badGoogleProviderOptions(
-        `Structured output with googleSearch is not enabled for model "${model}": the provider accepts the request but Search does not reliably run when a response schema is attached. Make two calls instead: grounded research without a schema, then structured synthesis (the two-call recipe in docs/grounded-structured.md).`,
+        `Structured output with googleSearch is not enabled for model "${model}": the provider accepts the request but Search does not reliably run when a response schema is attached. Make two calls instead: grounded research without a schema, then structured synthesis (the two-call recipe in docs/grounded-structured.md). To send both in one call anyway, set providerOptions.google.allowSchemaWithSearch: true; the call then fails unless the response proves Search ran (requireGrounding).`,
       )
     }
 
     mapped.tools = tools
   }
+
+  const searchSent = mapped.tools?.some((tool) => 'googleSearch' in tool) === true
+  const allowSchemaWithSearch = googleOpts['allowSchemaWithSearch']
+  if (allowSchemaWithSearch !== undefined) {
+    if (typeof allowSchemaWithSearch !== 'boolean') {
+      throw badGoogleProviderOptions(
+        `providerOptions.google.allowSchemaWithSearch must be a boolean for model "${model}".`,
+      )
+    }
+    if (allowSchemaWithSearch) {
+      if (descriptorGrounding !== true) {
+        throw badGoogleProviderOptions(
+          `providerOptions.google.allowSchemaWithSearch is not supported for model "${model}": the model does not support grounding.`,
+        )
+      }
+      if (!searchSent || !structuredOutputRequested) {
+        throw badGoogleProviderOptions(
+          `providerOptions.google.allowSchemaWithSearch requires both providerOptions.google.tools: [{ googleSearch: {} }] and output.jsonSchema for model "${model}".`,
+        )
+      }
+    }
+  }
+
+  const requireGrounding = googleOpts['requireGrounding']
+  if (requireGrounding !== undefined) {
+    if (typeof requireGrounding !== 'boolean') {
+      throw badGoogleProviderOptions(
+        `providerOptions.google.requireGrounding must be a boolean for model "${model}".`,
+      )
+    }
+    if (requireGrounding && !searchSent) {
+      throw badGoogleProviderOptions(
+        `providerOptions.google.requireGrounding requires providerOptions.google.tools: [{ googleSearch: {} }] for model "${model}".`,
+      )
+    }
+  }
+  const effectiveRequireGrounding = requireGrounding ?? allowSchemaWithSearch === true
+  if (effectiveRequireGrounding) mapped.requireGrounding = true
 
   return mapped
 }
@@ -426,6 +480,7 @@ function mapUsage(meta: GeminiUsageMetadataShape | undefined): Usage {
   const candidatesTokenCount = meta?.candidatesTokenCount ?? 0
   const cachedContentTokenCount = meta?.cachedContentTokenCount
   const thoughtsTokenCount = meta?.thoughtsTokenCount
+  const toolUsePromptTokenCount = meta?.toolUsePromptTokenCount
 
   // #1 RULE: outputTokens = candidates + thoughts (GROSS; thinking ⊆ output)
   const outputTokens = candidatesTokenCount + (thoughtsTokenCount ?? 0)
@@ -438,6 +493,12 @@ function mapUsage(meta: GeminiUsageMetadataShape | undefined): Usage {
     output: outputTokens,
     ...(cachedContentTokenCount !== undefined ? { cached: cachedContentTokenCount } : {}),
     ...(thoughtsTokenCount !== undefined ? { thinking: thoughtsTokenCount } : {}),
+    // Tokens of Search results fed back to the model. They sit in
+    // `totalTokenCount` but outside `promptTokenCount`; whether Google bills
+    // them as input is not established, so they are recorded and not priced.
+    ...(toolUsePromptTokenCount !== undefined
+      ? { tool_use_prompt: toolUsePromptTokenCount }
+      : {}),
   }
 
   // Raw: the full usageMetadata object verbatim (as JsonValue).
@@ -841,34 +902,61 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         descriptorGrounding: descriptor.capabilities?.grounding,
         structuredOutputWithTools: descriptor.capabilities?.structuredOutputWithTools,
       })
-      // Grounding is billed per grounded prompt or query, which the token-only
-      // price cannot see. A call that sent `googleSearch` therefore never reports
-      // an exact cost, whether it succeeds or fails after billing: the synthetic,
-      // adapter-owned flag below (the `details` lane is open and this key is not
-      // a provider payload field) tells the pricing source to mark the cost
-      // estimated, and the warning says why.
+      // Search facts, normalised across providers (ADR-035): `web_search_requested`
+      // is 1 when the request sent `googleSearch`; `web_search_calls` is the
+      // number of queries the response reports (occurrences, not unique
+      // strings), absent when the response does not say. The pricing source
+      // reads both, because it sees only `(model, usage, tier)`.
       const googleSearchSent =
         googleProviderConfig.tools?.some((tool) => 'googleSearch' in tool) === true
-      const groundingWarning: Warning = {
-        type: 'other',
-        message:
-          'google: googleSearch was sent; grounding fees are not included in cost, so cost.confidence is "estimated".',
-      }
-      const usageFor = (meta: GeminiUsageMetadataShape | undefined): Usage => {
+      const requireGrounding = googleProviderConfig.requireGrounding === true
+      const usageFor = (
+        meta: GeminiUsageMetadataShape | undefined,
+        groundingMetadata?: unknown,
+      ): Usage => {
         const mapped = mapUsage(meta)
-        if (googleSearchSent) mapped.details[GOOGLE_SEARCH_REQUESTED_DETAIL] = 1
+        if (googleSearchSent) {
+          mapped.details['web_search_requested'] = 1
+          const calls = countWebSearchQueries(groundingMetadata)
+          if (calls !== undefined) mapped.details['web_search_calls'] = calls
+        }
         return mapped
+      }
+      /** Warnings about a grounded call whose response does not show what Search did. */
+      const groundingWarnings = (groundingMetadata: unknown): Warning[] => {
+        if (!googleSearchSent) return []
+        if (groundingMetadata === undefined) {
+          return [
+            {
+              type: 'other',
+              message:
+                'google: googleSearch was sent but the response carries no groundingMetadata, so Search may not have run, or may have run without being reported; grounding fees are not included in cost, so cost.confidence is "estimated".',
+            },
+          ]
+        }
+        if (countWebSearchQueries(groundingMetadata) === undefined) {
+          return [
+            {
+              type: 'other',
+              message:
+                'google: groundingMetadata has no webSearchQueries, so the number of searches is unknown; grounding fees are not included in cost, so cost.confidence is "estimated".',
+            },
+          ]
+        }
+        return []
       }
       /** `usage` (and the grounding note) a failed-but-billed attempt carries. */
       const billedFailure = (
         meta: GeminiUsageMetadataShape | undefined,
-      ): { usage?: Usage; warnings?: Warning[] } =>
-        meta === undefined
-          ? {}
-          : {
-              usage: usageFor(meta),
-              ...(googleSearchSent ? { warnings: [groundingWarning] } : {}),
-            }
+        groundingMetadata?: unknown,
+      ): { usage?: Usage; warnings?: Warning[] } => {
+        if (meta === undefined) return {}
+        const failureWarnings = groundingWarnings(groundingMetadata)
+        return {
+          usage: usageFor(meta, groundingMetadata),
+          ...(failureWarnings.length > 0 ? { warnings: failureWarnings } : {}),
+        }
+      }
 
       if (googleProviderConfig.cachedContent !== undefined) {
         config.cachedContent = googleProviderConfig.cachedContent
@@ -1175,6 +1263,35 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
           ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
         })
       }
+      const groundingMetadata = candidate.groundingMetadata
+
+      // requireGrounding fails closed: only a response that reports at least one
+      // search query proves Search ran. Anything else was billed for tokens (and
+      // possibly for a Search the response did not report), so the attempt's
+      // usage rides on the error and a retry may succeed.
+      if (requireGrounding) {
+        const queries = countWebSearchQueries(groundingMetadata)
+        if (groundingMetadata === undefined || queries === undefined || queries < 1) {
+          const why =
+            groundingMetadata === undefined
+              ? 'the response has no groundingMetadata'
+              : queries === undefined
+                ? 'groundingMetadata has no webSearchQueries'
+                : 'groundingMetadata reports zero webSearchQueries'
+          throw new LlmError(
+            `google: requireGrounding is set but there is no evidence that Search ran: ${why}. The attempt was billed for its tokens; a retry may ground.`,
+            {
+              kind: 'server',
+              retryable: true,
+              reason: 'grounding_missing',
+              provider: 'google',
+              ...billedFailure(response.usageMetadata, groundingMetadata),
+              ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
+            },
+          )
+        }
+      }
+
       const parts = candidate.content?.parts ?? []
 
       // Separate thought parts from text parts, and build the ordered assistant
@@ -1311,9 +1428,22 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       // ------------------------------------------------------------------
       // 10. Build AdapterResult
       // ------------------------------------------------------------------
-      const usage = usageFor(response.usageMetadata)
+      const usage = usageFor(response.usageMetadata, groundingMetadata)
       const finishReason = mapFinishReason(candidate.finishReason)
-      if (googleSearchSent) warnings.push(groundingWarning)
+      warnings.push(...groundingWarnings(groundingMetadata))
+
+      // Where each answer-text part sits in `text`, so a grounding segment
+      // (UTF-8 byte offsets into one part) becomes a range of `text`.
+      const answerParts: Array<AnswerTextPart | undefined> = []
+      let answerOffset = 0
+      for (const part of parts) {
+        if (typeof part.text === 'string' && part.thought !== true) {
+          answerParts.push({ text: part.text, offset: answerOffset })
+          answerOffset += part.text.length
+        } else {
+          answerParts.push(undefined)
+        }
+      }
 
       const result: AdapterResult = {
         model,
@@ -1334,10 +1464,12 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
           ? { modelVersion: response.modelVersion }
           : {}),
         ...(response.responseId !== undefined ? { responseId: response.responseId } : {}),
-        // Build providerMetadata — merge promptFeedback + groundingMetadata when present.
+        // Build providerMetadata — merge promptFeedback + groundingMetadata when
+        // present. `google.searchEntryPoint` is the Search Suggestions widget
+        // Google requires a grounded answer to display.
         ...((): { providerMetadata: JsonValue } | Record<string, never> => {
           const pf = response.promptFeedback
-          const gm = candidate.groundingMetadata
+          const gm = groundingMetadata
           if (pf === undefined && gm === undefined) return {}
           const meta: { [k: string]: JsonValue } = {}
           if (pf !== undefined) {
@@ -1345,13 +1477,14 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
           }
           if (gm !== undefined) {
             meta['groundingMetadata'] = gm as unknown as JsonValue
+            const searchEntryPoint = readSearchEntryPoint(gm)
+            if (searchEntryPoint !== undefined) meta['google'] = { searchEntryPoint }
           }
           return { providerMetadata: meta as JsonValue }
         })(),
         ...(() => {
-          const gm = candidate.groundingMetadata
-          if (gm === undefined) return {}
-          const citations = normalizeGroundingCitations(gm)
+          if (groundingMetadata === undefined) return {}
+          const citations = normalizeGroundingCitations(groundingMetadata, answerParts)
           return citations.length > 0 ? { citations } : {}
         })(),
       }

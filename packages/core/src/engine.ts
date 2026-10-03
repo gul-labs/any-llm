@@ -299,6 +299,11 @@ const NOOP_LOGGER: Logger = {
   debug() {},
 }
 
+/** The same cost, reported as `'estimated'`. */
+function markEstimated(cost: Cost): Cost {
+  return cost.confidence === 'estimated' ? cost : { ...cost, confidence: 'estimated' }
+}
+
 /**
  * Wraps a {@link Logger} so that any thrown error from a log method is silently
  * swallowed.  A host logger that throws must NEVER break or mask an LLM call.
@@ -1444,7 +1449,8 @@ export function createClient(config: ClientConfig): Client {
       // The call's provider is authoritative from the start; routing/post-route
       // checks below never change it (they may only reject the call).
       const provider = callProvider
-      let normalizedResult: { usage: Usage; warnings: Warning[] } | undefined
+      let normalizedResult:
+        { usage: Usage; warnings: Warning[]; estimated: boolean } | undefined
       let cost: Cost | undefined
       // Release function returned by rateLimiter.acquire — called on every exit path.
       let release: Release | undefined
@@ -1588,6 +1594,9 @@ export function createClient(config: ClientConfig): Client {
               normalizedResult.usage,
               adapterResult.servedServiceTier ?? effectiveReq.config.serviceTier,
             )
+            // The provider billed tokens its usage fields do not carry: the
+            // amount can undercount, so it is never reported as exact.
+            if (normalizedResult.estimated) cost = markEstimated(cost)
             if (cost.microUsd === null) {
               const reason =
                 cost.unpricedReason !== undefined ? ` Reason: ${cost.unpricedReason}` : ''
@@ -1723,9 +1732,11 @@ export function createClient(config: ClientConfig): Client {
 
         // Some providers return a billed HTTP 200 with no usable output. Keep
         // that attempt's usage and snapshot cost even though it is retryable.
+        const failureNormalized =
+          err.usage !== undefined ? normalizeUsage(err.usage) : undefined
         const failureUsage =
-          err.usage !== undefined
-            ? normalizeUsage(err.usage).usage
+          failureNormalized !== undefined
+            ? failureNormalized.usage
             : (normalizedResult?.usage ?? EMPTY_USAGE)
         let failureCost = cost
         if (err.usage !== undefined) {
@@ -1736,6 +1747,9 @@ export function createClient(config: ClientConfig): Client {
               failureUsage,
               err.servedServiceTier ?? effectiveReq.config.serviceTier,
             )
+            if (failureCost !== undefined && failureNormalized?.estimated === true) {
+              failureCost = markEstimated(failureCost)
+            }
           } catch (costErr) {
             ctx.logger.warn(
               { callId: ctx.callId, error: String(costErr) },

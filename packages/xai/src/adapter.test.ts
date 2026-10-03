@@ -2348,12 +2348,158 @@ describe('xai Live Search tools', () => {
       }),
       FAKE_CTX,
     )
+    // A numeric-only title is xAI's inline marker number, not a title.
     expect(result.citations).toEqual([
-      { url: 'https://docs.x.ai', title: '1', sourceName: 'docs.x.ai' },
+      { url: 'https://docs.x.ai', sourceName: 'docs.x.ai' },
     ])
     expect(result.usage.details.web_search_calls).toBe(1)
+    expect(result.usage.details.web_search_requested).toBe(1)
     expect(result.usage.details.server_tools_requested).toBe(1)
     expect(result.warnings).toEqual([])
+  })
+
+  describe('citation cited / textRange / titles', () => {
+    const run = async (
+      content: Array<{ type: 'output_text'; text: string; annotations?: unknown[] }>,
+      topLevel?: unknown[],
+    ) => {
+      const response = fakeXaiResponse({
+        text: 'x',
+        inputTokens: 10,
+        outputTokens: 4,
+        usageExtras: { num_server_side_tools_used: 1 },
+      })
+      response.usage['server_side_tool_usage_details'] = { web_search_calls: 1 }
+      const message = response.output.find((item) => item.type === 'message') as {
+        content: unknown[]
+      }
+      message.content = content
+      if (topLevel !== undefined) {
+        ;(response as unknown as Record<string, unknown>)['citations'] = topLevel
+      }
+      return xaiAdapter({ client: makeFakeXai(response) }).run(
+        makeResolvedReq({
+          modelDescriptor: grok45ModelDescriptor,
+          config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
+        }),
+        FAKE_CTX,
+      )
+    }
+
+    it('adds the earlier parts of the message to a later part annotation offset', async () => {
+      const result = await run([
+        { type: 'output_text', text: 'First part. ' },
+        {
+          type: 'output_text',
+          text: 'See [[1]](https://a.example/x).',
+          annotations: [
+            {
+              type: 'url_citation',
+              url: 'https://a.example/x',
+              title: '1',
+              start_index: 4,
+              end_index: 30,
+            },
+          ],
+        },
+      ])
+      const range = result.citations?.[0]?.textRange
+      expect(range).toEqual({ start: 16, end: 42 })
+      expect(result.text?.slice(range!.start, range!.end)).toBe(
+        '[[1]](https://a.example/x)',
+      )
+    })
+
+    it('a zero-width annotation is a source that is not cited inline', async () => {
+      const result = await run([
+        {
+          type: 'output_text',
+          text: 'answer',
+          annotations: [
+            {
+              type: 'url_citation',
+              url: 'https://a.example/x',
+              start_index: 0,
+              end_index: 0,
+              title: 'https://a.example/x',
+            },
+          ],
+        },
+      ])
+      expect(result.citations).toEqual([
+        { url: 'https://a.example/x', sourceName: 'a.example', cited: false },
+      ])
+    })
+
+    it('a source seen twice keeps one entry: first range, cited if any annotation is', async () => {
+      const result = await run(
+        [
+          {
+            type: 'output_text',
+            text: 'aa [[1]](https://a.example/x) bb [[2]](https://a.example/x)',
+            annotations: [
+              {
+                type: 'url_citation',
+                url: 'https://a.example/x',
+                start_index: 0,
+                end_index: 0,
+              },
+              {
+                type: 'url_citation',
+                url: 'https://a.example/x',
+                title: 'Real title',
+                start_index: 3,
+                end_index: 26,
+              },
+              {
+                type: 'url_citation',
+                url: 'https://a.example/x',
+                start_index: 33,
+                end_index: 56,
+              },
+            ],
+          },
+        ],
+        [{ url: 'https://a.example/x', title: '7' }],
+      )
+      expect(result.citations).toEqual([
+        {
+          url: 'https://a.example/x',
+          title: 'Real title',
+          sourceName: 'a.example',
+          cited: true,
+          textRange: { start: 3, end: 26 },
+        },
+      ])
+    })
+
+    it('leaves cited and textRange absent when the provider gives no indices', async () => {
+      const result = await run(
+        [{ type: 'output_text', text: 'answer' }],
+        ['https://a.example/x', { url: 'https://b.example/y', title: '12' }],
+      )
+      expect(result.citations).toEqual([
+        { url: 'https://a.example/x', sourceName: 'a.example' },
+        { url: 'https://b.example/y', sourceName: 'b.example' },
+      ])
+    })
+  })
+
+  it('does not report web_search_requested when only x_search was requested', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 8, outputTokens: 2 })
+    response.usage['server_side_tool_usage_details'] = {
+      x_posts_fetched: 4,
+      x_users_fetched: 0,
+    }
+    const result = await xaiAdapter({ client: makeFakeXai(response) }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'x_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.usage.details).not.toHaveProperty('web_search_requested')
+    expect(result.usage.details).not.toHaveProperty('web_search_calls')
   })
 
   it('expects x_posts_fetched and x_users_fetched when x_search is requested', async () => {

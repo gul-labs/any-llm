@@ -126,6 +126,8 @@ export interface GeminiUsageMetadataShape {
   candidatesTokenCount?: number
   cachedContentTokenCount?: number
   thoughtsTokenCount?: number
+  /** Tokens of tool results fed back to the model (Search results on Gemini 2.5). */
+  toolUsePromptTokenCount?: number
   totalTokenCount?: number
   /** Provider-echoed actual tier; can differ from the requested tier. */
   serviceTier?: string

@@ -109,6 +109,8 @@ describe('@gullabs/core package surface', () => {
       url: string
       title?: string
       sourceName?: string
+      cited?: boolean
+      textRange?: { start: number; end: number }
     }>()
   })
 

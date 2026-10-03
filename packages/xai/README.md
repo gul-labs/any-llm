@@ -281,7 +281,7 @@ xAI caching is automatic — there is no explicit cache-create/cache-store API c
 | `x_posts_fetched`                 | $5 / 1,000 posts     |
 | `x_users_fetched`                 | $10 / 1,000 profiles |
 
-Enable Live Search with `providerOptions.xai.tools` (`web_search` / `x_search`). Citations land on `result.citations`.
+Enable Live Search with `providerOptions.xai.tools` (`web_search` / `x_search`). Citations land on `result.citations`. A source cited inline has `cited: true` and a `textRange` (UTF-16 offsets into `result.text`) that covers xAI's inline `[[N]](url)` marker; an annotation with a zero-width range is a source xAI attached without citing it inline (`cited: false`). xAI's numeric marker title (`"1"`) is dropped, so `title` is absent unless xAI sends a real one.
 
 ### Controlling the search tools
 
@@ -299,7 +299,7 @@ config: {
 
 - **`toolChoice`** maps to the Responses `tool_choice` for the search tools. Left on `auto`, a model can answer without searching; `required` forces at least one search and `none` disables the declared tools. Live on 2026-10-02 (fixture 32), `required` ran 3 / 2 / 2 searches on grok-4.5 / 4.6 / 4.7 and `none` ran 0. It needs a non-empty `tools`, and the adapter rejects it together with function tools, file attachments or the request-level `toolChoice`: xAI takes one `tool_choice` per request and `required` means "at least one tool", which a function call or the implicit `attachment_search` would satisfy. Send it on every request; nothing carries over between calls.
 - **`maxTurns`** maps to the Responses `max_turns` (integer ≥ 1, needs `tools`). xAI documents it as the cap on agentic tool-calling turns. A turn can run several searches, so it is not a search count. **xAI did not enforce it as of 2026-10-02** (fixture 33): with `max_turns: 1` the three models still ran 10 to 17 searches over several rounds. The option is forwarded verbatim so hosts get the cap when xAI enforces it. Until then, state the search budget in the prompt and assert on the observed count.
-- **Observed count.** `result.usage.details.web_search_calls` is the number of web searches billed; `x_posts_fetched` and `x_users_fetched` are the X Search billing counters (items, not calls). All three persist to the ledger's token details. When no server tool ran, xAI reports `num_server_side_tools_used: 0` and omits the counters; the adapter prices that call exactly with no tool fee.
+- **Observed count.** `result.usage.details.web_search_requested` is `1` when the request enabled `web_search`, and `result.usage.details.web_search_calls` is the number of web searches billed (the same two names Google reports, ADR-035; an explicit "no server tool ran" reports `0`); `x_posts_fetched` and `x_users_fetched` are the X Search billing counters (items, not calls). All three persist to the ledger's token details. When no server tool ran, xAI reports `num_server_side_tools_used: 0` and omits the counters; the adapter reports `web_search_calls: 0` for a request that enabled `web_search` and prices that call exactly with no tool fee.
 - **Cost.** There is no enforceable search cap, and every search result is fed back as input. One uncapped grok-4.7 research call used 362k input tokens, which crosses the 200k long-context threshold, and cost about $1.07.
   `countTokens` uses `POST /v1/tokenize-text` and returns `accuracy: 'lower-bound'` (text parts only; media / file parts are `bad_request`).
 

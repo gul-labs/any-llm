@@ -12,7 +12,6 @@ import { describe, it, expect } from 'vitest'
 import * as surface from './index.js'
 import {
   FLEX_DEFAULT_TIMEOUT_MS,
-  GOOGLE_SEARCH_REQUESTED_DETAIL,
   TRANSPORT_TIMEOUT_BUFFER_MS,
   googleProvider,
 } from './index.js'
@@ -32,9 +31,20 @@ describe('@gullabs/google package surface: timeout constants', () => {
   })
 })
 
-describe('@gullabs/google package surface: grounding marker', () => {
-  it('exports the token_details key that marks a call that sent googleSearch', () => {
-    expect(GOOGLE_SEARCH_REQUESTED_DETAIL).toBe('google_search_requested')
+describe('@gullabs/google package surface: grounding facts', () => {
+  it('has no Google-specific search marker: the normalised web_search_* facts replace it', () => {
+    expect('GOOGLE_SEARCH_REQUESTED_DETAIL' in surface).toBe(false)
+  })
+
+  it('exports the grounding price table', () => {
+    expect(surface.GEMINI_GROUNDING_PRICING['gemini-3.6-flash']).toEqual({
+      unit: 'query',
+      microUsdPerUnit: 14_000,
+    })
+    expect(surface.GEMINI_GROUNDING_PRICING['gemini-2.5-flash']).toEqual({
+      unit: 'prompt',
+      microUsdPerUnit: 35_000,
+    })
   })
 })
 

@@ -541,7 +541,38 @@ describe('fixture: 17-web-search', () => {
     )
     expect(result.citations?.some((c) => c.url.includes('docs.x.ai'))).toBe(true)
     expect(result.usage.details.web_search_calls).toBe(1)
+    expect(result.usage.details.web_search_requested).toBe(1)
     expect(result.usage.details.server_tools_requested).toBe(1)
+  })
+
+  it('drops the numeric marker title and gives the inline marker as the text range', async () => {
+    const fixture = loadFixture<FixtureCall>('17-web-search.json')
+    const result = await xaiAdapter({
+      client: makeFakeXai(fixture.body as never),
+    }).run(
+      {
+        provider: 'xai',
+        model: 'grok-4.6',
+        messages: [{ role: 'user', parts: [{ kind: 'text', text: 'search' }] }],
+        config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
+        modelDescriptor: grok46ModelDescriptor,
+      },
+      {
+        auth: { apiKey: 'test-key' },
+        logger: { info() {}, warn() {}, error() {}, debug() {} },
+      },
+    )
+    // The live annotation is `title: "1"`, start 92, end 116: the title names
+    // nothing, and the range is the inline `[[1]](url)` marker.
+    expect(result.citations).toEqual([
+      {
+        url: 'https://docs.x.ai',
+        sourceName: 'docs.x.ai',
+        cited: true,
+        textRange: { start: 92, end: 116 },
+      },
+    ])
+    expect(result.text?.slice(92, 116)).toBe('[[1]](https://docs.x.ai)')
   })
 })
 
@@ -1221,7 +1252,10 @@ describe('fixture: 32-server-tool-choice (live 2026-10-02)', () => {
         FAKE_CTX,
       )
       expect(result.warnings).toEqual([])
-      expect(result.usage.details.web_search_calls).toBeUndefined()
+      // The normalised facts: search was requested and the explicit "no server
+      // tool ran" is a known zero, not a missing counter.
+      expect(result.usage.details.web_search_requested).toBe(1)
+      expect(result.usage.details.web_search_calls).toBe(0)
       expect(result.usage.details.server_tools_missing).toBeUndefined()
       const cost = computeXaiCost(
         modelDescriptor.model,

@@ -5,7 +5,11 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { normalizeGroundingCitations } from './grounding.js'
+import {
+  countWebSearchQueries,
+  normalizeGroundingCitations,
+  readSearchEntryPoint,
+} from './grounding.js'
 
 describe('normalizeGroundingCitations', () => {
   it('dedupes chunks with duplicate URLs, keeping first-seen order', () => {
@@ -142,5 +146,78 @@ describe('normalizeGroundingCitations', () => {
     expect(citations).toEqual([
       { url: 'https://good.example.com/', title: 'Good', sourceName: 'Good' },
     ])
+  })
+})
+
+describe('countWebSearchQueries', () => {
+  it('counts occurrences, treats an empty list as a known zero, and a missing list as unknown', () => {
+    expect(countWebSearchQueries({ webSearchQueries: ['a', 'a', 'b'] })).toBe(3)
+    expect(countWebSearchQueries({ webSearchQueries: [] })).toBe(0)
+    expect(countWebSearchQueries({})).toBeUndefined()
+    expect(countWebSearchQueries({ webSearchQueries: 'a' })).toBeUndefined()
+    expect(countWebSearchQueries(undefined)).toBeUndefined()
+    expect(countWebSearchQueries(null)).toBeUndefined()
+  })
+})
+
+describe('readSearchEntryPoint', () => {
+  it('returns a non-empty object and nothing else', () => {
+    const entry = { renderedContent: '<div/>' }
+    expect(readSearchEntryPoint({ searchEntryPoint: entry })).toEqual(entry)
+    expect(readSearchEntryPoint({ searchEntryPoint: {} })).toBeUndefined()
+    expect(readSearchEntryPoint({ searchEntryPoint: 'x' })).toBeUndefined()
+    expect(readSearchEntryPoint({ searchEntryPoint: [1] })).toBeUndefined()
+    expect(readSearchEntryPoint({})).toBeUndefined()
+    expect(readSearchEntryPoint(null)).toBeUndefined()
+  })
+})
+
+describe('normalizeGroundingCitations — groundingSupports', () => {
+  const chunks = [
+    { web: { uri: 'https://a.example/x', title: 'A' } },
+    { web: { uri: 'https://b.example/y', title: 'B' } },
+  ]
+
+  it('ignores malformed supports without throwing', () => {
+    const out = normalizeGroundingCitations({
+      groundingChunks: chunks,
+      groundingSupports: [
+        null,
+        { groundingChunkIndices: 'x' },
+        { segment: 'x', groundingChunkIndices: [0, 'y'] },
+      ],
+    })
+    expect(out.map((c) => c.cited)).toEqual([true, false])
+    expect(out.every((c) => c.textRange === undefined)).toBe(true)
+  })
+
+  it('takes the first usable range for a chunk even if an earlier support had none', () => {
+    const out = normalizeGroundingCitations(
+      {
+        groundingChunks: chunks,
+        groundingSupports: [
+          { segment: { partIndex: 3, endIndex: 5 }, groundingChunkIndices: [0] },
+          { segment: { startIndex: 1, endIndex: 4 }, groundingChunkIndices: [0] },
+          { segment: { startIndex: 0, endIndex: 2 }, groundingChunkIndices: [0] },
+        ],
+      },
+      [{ text: 'abcdef', offset: 10 }],
+    )
+    expect(out[0]?.textRange).toEqual({ start: 11, end: 14 })
+  })
+
+  it('a zero-length or inverted segment has no range', () => {
+    const out = normalizeGroundingCitations(
+      {
+        groundingChunks: chunks,
+        groundingSupports: [
+          { segment: { startIndex: 2, endIndex: 2 }, groundingChunkIndices: [0] },
+          { segment: { startIndex: 4, endIndex: 2 }, groundingChunkIndices: [1] },
+        ],
+      },
+      [{ text: 'abcdef', offset: 0 }],
+    )
+    expect(out.map((c) => c.textRange)).toEqual([undefined, undefined])
+    expect(out.map((c) => c.cited)).toEqual([true, true])
   })
 })

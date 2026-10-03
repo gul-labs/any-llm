@@ -27,6 +27,10 @@
  * 2026-09-25. Standard token rates for already-registered models were
  * unchanged from the 2026-08-12 snapshot; flex/batch cached rates were not.
  *
+ * **Grounding with Google Search** is a tool lane, not a token rate; see
+ * {@link GEMINI_GROUNDING_PRICING}. It was added from the same pricing page
+ * on 2026-10-03; the token rates above were not re-read that day.
+ *
  * @module
  */
 
@@ -39,7 +43,7 @@ import type { ModelRates } from '@gullabs/core'
  * core concept — it lives here (not `@gullabs/core`) alongside the rates it
  * dates.
  */
-export const pricingVersion = 'gemini-2026-09-25' as const
+export const pricingVersion = 'gemini-2026-10-03' as const
 
 /** Tiers this snapshot prices. Anything else is unpriced. */
 export const GEMINI_PRICED_TIERS = ['standard', 'flex', 'batch'] as const
@@ -160,6 +164,63 @@ export const GEMINI_PRICING: Readonly<Record<string, GeminiTierRates>> = Object.
     },
   ),
 })
+
+/**
+ * How a model bills grounding with Google Search, in µUSD per unit.
+ *
+ * - `'query'`: Gemini 3 bills each search query the model performed. The unit
+ *   count is `usage.details.web_search_calls`, counted as occurrences in
+ *   `webSearchQueries` (a repeated query counts each time; whether Google bills
+ *   a repeat is not established, so the count is the conservative one).
+ * - `'prompt'`: Gemini 2.5 bills each prompt that was grounded, once however
+ *   many queries it ran. A grounded prompt is one whose response reports at
+ *   least one query.
+ *
+ * Transcribed from https://ai.google.dev/gemini-api/docs/pricing, grounding
+ * with Google Search, read 2026-10-03 (Gemini 3: $14 per 1,000 queries;
+ * Gemini 2.5: $35 per 1,000 grounded prompts). The page also publishes a daily
+ * free allowance. It is shared across a project's calls, so no single call can
+ * know whether it was free: every grounding fee is charged in full here, which
+ * is why a call that ran Search is never reported as exact.
+ *
+ * Keys are exact priced model identifiers. Gemma has no token price in this
+ * snapshot, so it has no grounding price either.
+ */
+export interface GeminiGroundingRate {
+  readonly unit: 'query' | 'prompt'
+  readonly microUsdPerUnit: number
+}
+
+const PER_QUERY: GeminiGroundingRate = Object.freeze({
+  unit: 'query',
+  microUsdPerUnit: 14_000,
+})
+const PER_GROUNDED_PROMPT: GeminiGroundingRate = Object.freeze({
+  unit: 'prompt',
+  microUsdPerUnit: 35_000,
+})
+
+export const GEMINI_GROUNDING_PRICING: Readonly<Record<string, GeminiGroundingRate>> =
+  Object.freeze({
+    'gemini-2.5-pro': PER_GROUNDED_PROMPT,
+    'gemini-2.5-flash': PER_GROUNDED_PROMPT,
+    'gemini-2.5-flash-lite': PER_GROUNDED_PROMPT,
+    'gemini-3.1-flash-lite': PER_QUERY,
+    'gemini-3.8-flash': PER_QUERY,
+    'gemini-3.7-flash': PER_QUERY,
+    'gemini-3.6-flash': PER_QUERY,
+    'gemini-3.5-flash-lite': PER_QUERY,
+    'gemini-3.1-pro-preview': PER_QUERY,
+  })
+
+/** The grounding rate for an exact priced model id, or `undefined`. */
+export function resolveGeminiGroundingRate(
+  model: string,
+): GeminiGroundingRate | undefined {
+  return Object.hasOwn(GEMINI_GROUNDING_PRICING, model)
+    ? GEMINI_GROUNDING_PRICING[model]
+    : undefined
+}
 
 /**
  * Concrete rates for `(model, tier)`. `undefined` tier is standard. A defined
