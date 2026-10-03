@@ -125,9 +125,16 @@ also decide whether and how to clean dependent sidecar rows.
   order. Each is idempotent. `0001-add-error-reason.sql` takes the table published in 0.7.2 and adds
   `error_reason`. `0002-ledger-v2.sql` adds `cost_confidence`, `cost_details` and `cost_unpriced_reason`,
   the `created_at` and `(call_site_id, created_at)` indexes, and CHECK constraints on `status` and
-  `error_kind` (not on `error_reason`). It validates every existing row against the CHECKs and builds the
-  indexes without `CONCURRENTLY`, so run it in a maintenance window on a very large table, or create the
-  two indexes concurrently under the same names first.
+  `error_kind` (not on `error_reason`). The CHECKs are added `NOT VALID`, so they apply to new rows at once
+  and never scan the table inside the upgrade; `0002-validate-checks.sql` validates the existing rows
+  afterwards. The file sets `lock_timeout` so a blocked statement fails rather than stalling sink writes, and
+  every statement is idempotent on its own (re-run it after a failure). Rows written by `@gullabs/core`
+  0.2.0 (`status` / `error_kind` = `parse_error`) block validation until you fix them; the validate file
+  documents the query that finds them and a suggested `UPDATE`, and the library does not rewrite your
+  history. The two indexes are built without `CONCURRENTLY` (a SHARE lock, so writes wait): on a very large
+  table create them first with `CREATE INDEX CONCURRENTLY IF NOT EXISTS` under the same names, outside a
+  transaction (`CONCURRENTLY` cannot run inside one). The `drizzle-orm` peer floor (0.36) is declared, not
+  tested.
 
 Run the upgrade SQL **before** you deploy the new sink, and do it on every release that ships one: all
 `@gullabs/*` packages version in lockstep, so bumping core for an unrelated fix means bumping

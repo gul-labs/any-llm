@@ -53,11 +53,12 @@ The `llm_calls` table mirrors `LlmCallRecord` from `@gullabs/core`: typed column
 
 The package ships plain SQL in `sql/` (resolvable as `@gullabs/drizzle/sql/install.sql` and so on):
 
-| File                                     | Use                                                                                                 |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `sql/install.sql`                        | Fresh install of the current `llm_calls` table and its indexes.                                     |
-| `sql/upgrades/0001-add-error-reason.sql` | Adds the `error_reason` column to a table created by 0.7.2 or earlier. Idempotent.                  |
-| `sql/upgrades/0002-ledger-v2.sql`        | Adds the cost columns, the `created_at` indexes and the `status` / `error_kind` CHECKs. Idempotent. |
+| File                                     | Use                                                                                                                           |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `sql/install.sql`                        | Fresh install of the current `llm_calls` table and its indexes.                                                               |
+| `sql/upgrades/0001-add-error-reason.sql` | Adds the `error_reason` column to a table created by 0.7.2 or earlier. Idempotent.                                            |
+| `sql/upgrades/0002-ledger-v2.sql`        | Adds the cost columns, the `created_at` indexes and the `status` / `error_kind` CHECKs (NOT VALID). Idempotent per statement. |
+| `sql/upgrades/0002-validate-checks.sql`  | Validates those CHECKs against existing rows, after you clean legacy rows. Run separately.                                    |
 
 Apply every upgrade you have not run yet, in order, **before** deploying the new sink, on every release that
 ships one (the packages version in lockstep, so a core bump for an unrelated fix is a drizzle bump too). The
@@ -71,11 +72,36 @@ endpoint, or at boot: it selects every column with `LIMIT 0` and rejects with a 
 
 `error_reason` is plain text with no CHECK constraint: new reasons arrive as core releases (see ADR-036)
 and never need SQL. `status` and `error_kind` are closed vocabularies and carry CHECKs; a new member of
-either ships with SQL. `0002-ledger-v2.sql` validates every existing row against those CHECKs and builds its
-indexes without `CONCURRENTLY`; on a very large table run it in a maintenance window, or create
-`llm_calls_created_at_idx` and `llm_calls_call_site_created_at_idx` concurrently first. The table stores
-`cost_confidence`, `cost_details` and `cost_unpriced_reason` beside `cost_micro_usd` (ADR-039), and caps
-`reasoning_text` and `error_message` at 16 KiB.
+either ships with SQL. The table stores `cost_confidence`, `cost_details` and `cost_unpriced_reason` beside
+`cost_micro_usd` (ADR-039), and caps `reasoning_text` and `error_message` at 16 KiB.
+
+### Running `0002-ledger-v2.sql` safely
+
+- **Run it with `psql -v ON_ERROR_STOP=1 -f`.** The file sets `lock_timeout = '3s'` first, so a statement
+  that cannot get its table lock fails instead of queueing behind a long query and blocking every sink
+  insert (the sink gives up after `sinkTimeoutMs` and drops the row). Every statement is idempotent on its
+  own: after a failure, re-run the whole file. This holds whether the file runs in one transaction or one
+  statement at a time.
+- **The CHECKs are added `NOT VALID`.** They reject bad `status` / `error_kind` values on every new or
+  updated row immediately, without scanning the table. Rows written earlier are not checked until you run
+  `0002-validate-checks.sql` (`VALIDATE CONSTRAINT`, which lets writes continue).
+- **Legacy rows can block validation.** `@gullabs/core` 0.2.0 wrote `status = 'parse_error'` and
+  `error_kind = 'parse_error'`; no other release wrote a value outside the vocabularies. The validate file
+  documents the query that finds such rows and one reasonable `UPDATE` (it keeps the original values in
+  `metadata`). The library never rewrites your history for you: run the `UPDATE` you choose, then the validate
+  file. If you skip validation the constraints stay `NOT VALID`, which is safe.
+- **Index builds lock writes.** The two `CREATE INDEX` statements take a SHARE lock while they build. On a
+  large table create them first with `CREATE INDEX CONCURRENTLY IF NOT EXISTS` under the same names (the
+  statements are in the file's header); the file then skips them. `CONCURRENTLY` cannot run inside a
+  transaction block, so run it from a psql session or a migration step that does not wrap in a transaction. A
+  failed concurrent build leaves an `INVALID` index that `IF NOT EXISTS` would accept: drop it and build
+  again (the header has the query that finds it).
+
+### Tested `drizzle-orm` versions
+
+The peer range is `>=0.36 <1`. The test suite installs and runs only the version in the package's dev
+dependencies (0.45.x); the 0.36 floor is declared, not tested. The `check()` helper in the table's extra-config
+array and `getTableConfig` are the surface the schema relies on. Report a break on an older version as a bug.
 
 ## Sink fail-open guarantee
 

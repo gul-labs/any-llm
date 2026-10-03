@@ -3063,3 +3063,26 @@ understanding token-only. The last two are not in the table because no counter f
 captured (xAI's tools docs name `SERVER_SIDE_TOOL_VIEW_IMAGE` in another usage field). Unknown counters are
 found in the nested counters object, because `usage.details` also flattens unrelated numeric usage fields.
 No fixture has a non-zero MCP counter; the tests for it are synthetic and say so.
+
+**Item 4 (migration 0002).** The upgrade is hardened for a table that cannot be locked for a scan:
+
+- It starts with `SET lock_timeout = '3s'` (reset at the end), so a statement that cannot get its lock fails
+  instead of queueing behind an analytics query and blocking every sink insert behind it. The sink is
+  fail-open, so a stalled migration would otherwise drop billed rows.
+- The `status` / `error_kind` CHECKs are added `NOT VALID`, guarded by a `pg_catalog.pg_constraint` check in a
+  `DO` block: new and updated rows are enforced at once, no table scan runs under ACCESS EXCLUSIVE, and a
+  re-run neither drops nor re-adds a constraint. Every statement in the file is idempotent on its own, so a
+  run that stops partway is finished by running the file again, in one transaction or statement by statement
+  (the previous drop-and-add left a window with no constraint and re-scanned the table on each run).
+- Validation is a separate file, `sql/upgrades/0002-validate-checks.sql` (`VALIDATE CONSTRAINT`, SHARE UPDATE
+  EXCLUSIVE, writes continue). Rows that `@gullabs/core` 0.2.0 wrote (`status` and `error_kind` =
+  `parse_error`; no later release wrote a value outside the vocabularies) make validation fail. The file
+  documents the query that finds them and one suggested `UPDATE` that keeps the original values in
+  `metadata`. The library never rewrites history; the constraints may stay `NOT VALID` indefinitely.
+- Index creation keeps plain `CREATE INDEX IF NOT EXISTS` (SHARE lock for the build) and documents the
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS` alternative for large tables, which cannot run in a transaction,
+  and how to find and drop an INVALID index a failed concurrent build leaves.
+- Migration tests compare column, index (`pg_get_indexdef`) and CHECK (`pg_get_constraintdef`) definitions of
+  the upgraded table with a fresh install, and `schema.ts` with `install.sql`, instead of names; they run the
+  file statement by statement twice, with violating rows present. The `drizzle-orm` peer floor (0.36) is
+  declared and not tested (only the dev-dependency version can be installed).
