@@ -186,7 +186,7 @@ The key is redacted from persisted records and logs. Vertex AI is not in this tr
 - **Descriptor-owned config.** `descriptor.configSchema` is the runtime boundary; `descriptor.configJsonSchema` is derived from it for forms.
 - **GROSS tokens.** `cachedInputTokens ⊆ inputTokens`, `thinkingTokens ⊆ outputTokens`. Cost must not double-count.
 - **Cost is frozen.** Integer micro-USD + `pricingVersion` on every record. Unpriced models stay `null`.
-- **Callers own output validation.** The engine JSON-parses structured output and returns `output: unknown` plus `outputParsed`.
+- **Callers own output validation.** The adapter JSON-parses structured output; the engine returns it as `output: unknown` plus `outputParsed` and never validates it.
 - **Side effects fail-open.** A broken sink, logger, or pricing source cannot fail the LLM call. Rate-limiter rejection is the one exception — backpressure is real.
 - **No network in tests.** Use [`@gullabs/testing`](./packages/testing).
 
@@ -212,6 +212,23 @@ Dev-only CLI ids: `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`; `claude-fable-5-1`, 
 
 Published on npm under `@gullabs`, Apache-2.0, Node `>=22.12.0`.
 
+## Runtimes
+
+**Node `>=22.12.0`** is what every package declares in `engines` and what CI runs (22.12.0 and 24; the repository's own tooling needs Node 24). Nothing in the code needs a newer Node.
+
+| Packages                                                                                                     | Runtime                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@gullabs/core`, `@gullabs/google`, `@gullabs/xai`, `@gullabs/quota`, `@gullabs/drizzle`, `@gullabs/any-llm` | **Runtime-agnostic code.** No `node:` import, no `Buffer`, no `process`. They use only web-standard globals: `fetch`, `AbortSignal`, `TextEncoder`, `atob`, `Blob` and `FormData` (the file stores), timers, and `globalThis.crypto.randomUUID()` for ids. Hashes (ADR-038 payloads, Gemini signature state) use a dependency-free SHA-256 (`sha256Hex`), not `node:crypto`. |
+| `@gullabs/claude-cli`, `@gullabs/codex-cli`                                                                  | **Node only.** They spawn the local CLI (`node:child_process`).                                                                                                                                                                                                                                                                                                              |
+| `@gullabs/testing`                                                                                           | **Node only** (a dev dependency): it imports `node:os` and `node:module`.                                                                                                                                                                                                                                                                                                    |
+
+What is verified, and what is not:
+
+- **Node 22.12.0 and 24**: the whole test suite, in CI.
+- **No Node built-ins**: `pnpm test:runtime` (also in CI) loads the built ESM entry of each runtime-agnostic package with every `node:` import blocked, then runs a complete `generate()` with a payload and an inline media part after removing `Buffer` and `process`. It proves the library code needs neither; it does not run another engine.
+- **Deno 2.4.1**: the same script passes when run by hand. Not part of CI.
+- **Not tested**: Bun, Cloudflare Workers, Vercel Edge, browsers. The library code has no known blocker there, but the provider SDKs it wraps (`@google/genai`, `openai`) set their own runtime support, and a host that needs one of these runtimes should run its own smoke test. The CJS builds are for Node `require`; the built-ins check covers the ESM entries.
+
 ## Pipeline
 
 ```
@@ -223,7 +240,7 @@ generate() / runStructured()
   → rateLimiter.acquire()
   → adapter.run()
   → normalizeUsage()           GROSS token convention
-  → JSON.parse structured      outputParsed; caller validates
+  → structured output          adapter's parse → output, outputParsed; caller validates
   → pricing.price()            µUSD; fail-open
   → sink.record()              fail-open
   → LlmResult

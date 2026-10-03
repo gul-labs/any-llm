@@ -90,6 +90,13 @@ function badXaiRequest(message: string): LlmError {
 /** 20 MiB, xAI's documented inline-image size ceiling. */
 const MAX_XAI_INLINE_IMAGE_BYTES = 20 * 1024 * 1024
 
+/** Decoded size of a base64 string, from its length and padding (no `Buffer`). */
+function decodedBase64Length(data: string): number {
+  let padding = 0
+  while (padding < 2 && data.charCodeAt(data.length - 1 - padding) === 0x3d) padding += 1
+  return Math.floor(((data.length - padding) * 3) / 4)
+}
+
 /**
  * Map a single {@link Part} to its xAI Responses API input-content-part
  * equivalent.
@@ -121,7 +128,7 @@ function mapPart(p: Part): XaiInputContentPart {
       return { type: 'input_text', text: p.text }
 
     case 'inline-media': {
-      const byteLength = Buffer.from(p.data, 'base64').length
+      const byteLength = decodedBase64Length(p.data)
       if (byteLength > MAX_XAI_INLINE_IMAGE_BYTES) {
         throw badXaiRequest(
           `xAI inline images must be at most 20 MiB; got ${byteLength} bytes.`,
@@ -1263,8 +1270,9 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       // 3. Reasoning → { effort }
       //
       // Admitted efforts are descriptor-owned. grok-4.5: `'low' | 'medium' | 'high'`
-      // (live-verified 2026-08-24). grok-4.6: `'low' | 'medium' | 'high' | 'xhigh'`
-      // (live-verified 2026-08-12). `'none'` is rejected by both. budgetTokens
+      // (live-verified 2026-08-24). grok-4.6 and grok-4.7: `'low' | 'medium' | 'high' |
+      // 'xhigh'` (grok-4.6 live-verified 2026-08-12; grok-4.7 shares its
+      // Responses-API surface). `'none'` is rejected by all three. budgetTokens
       // is not supported (level-style reasoning). includeThoughts is a no-op
       // for xAI — reasoning summaries come back unconditionally whenever
       // reasoning ran, so reasoningText is always surfaced below regardless

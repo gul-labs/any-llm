@@ -19,11 +19,11 @@
  * @module
  */
 
-import { createHash } from 'node:crypto'
 import { canonicalJson } from './canonical-json.js'
 import { LlmError } from './errors.js'
 import { cleanText, redactJsonValue, redactSecrets, setOwn } from './redact.js'
 import { cleanDeep } from './record.js'
+import { Sha256, sha256Hex } from './sha256.js'
 import type { Logger } from './ports.js'
 import type { JsonValue, LlmRequest, Message, Part, ToolDefinition } from './types.js'
 
@@ -415,6 +415,14 @@ class Meter {
 
 const BASE64_BODY_RE = /^[A-Za-z0-9+/]*$/
 
+/** Decode base64 (padding optional, alphabet already checked) without `Buffer`. */
+function decodeBase64(chunk: string): Uint8Array {
+  const binary = atob(chunk)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
+  return bytes
+}
+
 /**
  * Hashes inline media in {@link MEDIA_CHUNK_CHARS} steps with a yield between
  * steps, so a large part never holds the event loop. Memory: the base64 string
@@ -447,18 +455,18 @@ async function mediaPart(
       skipped: 'too_large',
     }
   }
-  const hash = createHash('sha256')
+  const hash = new Sha256()
   for (let from = 0; from < body; from += MEDIA_CHUNK_CHARS) {
     const chunk = data.slice(from, Math.min(from + MEDIA_CHUNK_CHARS, body))
     if (!BASE64_BODY_RE.test(chunk)) return invalid
-    hash.update(Buffer.from(chunk, 'base64'))
+    hash.update(decodeBase64(chunk))
     await meter.spend(chunk.length)
   }
   return {
     kind: 'inline-media',
     mimeType: part.mimeType,
     bytes,
-    sha256: hash.digest('hex'),
+    sha256: hash.hex(),
   }
 }
 
@@ -531,7 +539,7 @@ async function capture(
   }
   const tools: StoredTool[] | undefined = snapshot.tools?.map((tool) => ({
     name: tool.name,
-    schemaSha256: createHash('sha256').update(tool.schemaJson).digest('hex'),
+    schemaSha256: sha256Hex(tool.schemaJson),
   }))
   return {
     request: {

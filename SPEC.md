@@ -30,8 +30,8 @@ Seams are present; machinery is intentionally small.
 ## Non-negotiable invariants
 
 - **Neither engine nor adapters validate output.** The engine forwards `output.jsonSchema` to the
-  provider as a generation hint, JSON.parses the response, and surfaces `output: unknown` +
-  `outputParsed: boolean`. The caller owns all validation, retry, and acceptance policy.
+  adapter as a generation hint; the adapter JSON.parses the response into `rawStructured`; the engine
+  surfaces it as `output: unknown` + `outputParsed: boolean`. The caller owns all validation, retry, and acceptance policy.
 - **Continuation state is provider-scoped and model-bound.** `transientProviderState` is keyed by
   provider (`google`, `xai`), bound to the exact `model` string the host sent (an alias is never
   rewritten), and each adapter rejects another provider's state, stale history and another model's
@@ -73,7 +73,8 @@ strict per-model Zod config schemas + pricing source + typed provider options, w
 `composeProviders([...])` with zero `@gullabs/core` edits.
 
 Tooling: TypeScript (strict, `exactOptionalPropertyTypes`), **vitest**, **tsup** (ESM+CJS+d.ts),
-Node ≥20. Provider SDKs are **peerDependencies** (a host that only uses Gemini never pulls others).
+Node ≥22.12 (every package's `engines`; CI runs 22.12.0 and 24). Provider SDKs are **peerDependencies** (a host that only uses Gemini never pulls others). The provider-neutral and
+provider packages (`core`, `google`, `xai`, `quota`, `drizzle`, `any-llm`) import no Node built-in, `Buffer` or `process` (README, "Runtimes"); the CLI providers and `@gullabs/testing` are Node only.
 
 > Naming note (decide before publish): "any-llm" collides with mozilla-ai/any-llm on npm; the
 > `@gullabs/*` scope is a working placeholder. Not a blocker for local build.
@@ -229,8 +230,8 @@ export class LlmError extends Error {
 ```ts
 export interface ProviderAdapter {
   id: string // 'google'
-  // returns RAW result; engine JSON.parses it, computes cost, persists. Nobody validates it —
-  // the caller owns validation.
+  // returns the RAW result (the adapter JSON.parses structured output into rawStructured); the engine
+  // computes cost and persists. Nobody validates it — the caller owns validation.
   run(req: ResolvedRequest, ctx: AdapterCtx): Promise<AdapterResult>
 }
 export interface ResolvedRequest {
@@ -249,7 +250,7 @@ export interface AdapterCtx {
   logger: Logger
 }
 export interface AdapterResult {
-  rawStructured?: unknown // engine JSON.parses this into LlmResult.output (unknown); never validated
+  rawStructured?: unknown // the adapter's JSON.parse of the structured response; the engine passes it to LlmResult.output (unknown); never validated
   servedServiceTier?: string // service tier actually served by the provider
   message?: Message // ordered assistant output; omitted → engine builds [text, ...toolCalls]
   text?: string
@@ -344,7 +345,7 @@ runStructured(callSite, vars?, opts?)  /  generate(request)
   7. rateLimiter.acquire("${provider}:${model}")  [once per attempt; queueDelayMs measured separately]
   8. adapter.run(resolved, ctx)   with timeout + AbortSignal
   9. normalize usage  (GROSS convention enforced; details map + raw populated by adapter)
- 10. parse structured output  (JSON.parse result → output + outputParsed; caller validates)
+ 10. surface structured output  (adapter's rawStructured → output + outputParsed; caller validates)
  11. pricing.price()  → Cost (micro-USD, frozen)   [fail-open → cost absent on pricing error]
  12. build LlmCallRecord  + sink.record()           [fail-open: swallow+log sink errors; bounded by sinkTimeoutMs]
      (ClientConfig.payloads on: snapshot the request at dispatch; inside this bounded write build the redacted,
@@ -619,7 +620,7 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
   `@google/genai` client returning scripted responses incl. usageMetadata with thoughtsTokenCount),
   `makeFakeXai` (a structural `XaiClientLike` stub replaying Responses API payloads).
 - **Unit:** cost math (GROSS/net, >200k tier, cached discount, unknown-model→null); error
-  classification; config resolution/merge; usage normalization; record building; JSON parse→outputParsed.
+  classification; config resolution/merge; usage normalization; record building; rawStructured→output/outputParsed.
 - **The highest-risk test (codex-mandated, no network):** drive the engine with a fake adapter
   result of `inputTokens=250_000, cachedInputTokens=100_000, outputTokens=5_000, thinkingTokens=2_000`
   and assert in ONE test: gross/subset invariant preserved; `>200k` tier chosen on gross input;

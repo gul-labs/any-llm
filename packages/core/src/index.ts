@@ -175,6 +175,7 @@ export {
 
 // Utilities
 export { canonicalJson } from './canonical-json.js'
+export { sha256Hex } from './sha256.js'
 
 export { assertNever } from './assert.js'
 
@@ -190,6 +191,3 @@ export {
 
 // Secret redaction (best-effort; for persisted/logged error text)
 export { redactSecrets } from './redact.js'
-
-/** Library version — kept in sync with `package.json`. */
-export const VERSION = '0.0.0'

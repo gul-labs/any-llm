@@ -476,10 +476,11 @@ function assertInlinePayloadWithinLimits(
   contents: readonly GeminiContent[],
   system: string | undefined,
 ): void {
-  let total = system === undefined ? 0 : Buffer.byteLength(system, 'utf8')
+  const utf8 = new TextEncoder()
+  let total = system === undefined ? 0 : utf8.encode(system).length
   contents.forEach((content, mi) => {
     content.parts.forEach((part, pi) => {
-      if ('text' in part) total += Buffer.byteLength(part.text, 'utf8')
+      if ('text' in part) total += utf8.encode(part.text).length
       if (!('inlineData' in part)) return
       const { mimeType, data } = part.inlineData
       total += data.length
@@ -1367,7 +1368,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       // maps the resulting LlmError to kind:'timeout' (retryable:true), matching
       // how the rest of the codebase surfaces timeout errors.
       //
-      // AbortSignal.any requires Node ≥ 20.3; our engine floor is Node ≥ 20,
+      // AbortSignal.any requires Node ≥ 20.3; our engine floor is Node ≥ 22.12,
       // so this is always available in supported environments.
       //
       // Real SDK: GenerateContentConfig.abortSignal (in config, NOT in params)

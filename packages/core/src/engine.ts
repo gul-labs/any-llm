@@ -10,7 +10,6 @@
  * @module
  */
 
-import { randomUUID } from 'node:crypto'
 import {
   LlmError,
   classifyError,
@@ -186,7 +185,7 @@ export interface ClientConfig {
    */
   scheduler?: Scheduler
   /**
-   * Unique ID generator.  Defaults to `crypto.randomUUID()`.
+   * Unique ID generator.  Defaults to `globalThis.crypto.randomUUID()` (Node, Deno, Bun, browsers and edge runtimes all have it).
    * Inject {@link FakeIds} in tests for deterministic record assertions.
    */
   ids?: IdGenerator
@@ -517,8 +516,8 @@ const NOOP_RATE_LIMITER: RateLimiter = {
 }
 
 const DEFAULT_IDS: IdGenerator = {
-  callId: () => randomUUID(),
-  attemptId: () => randomUUID(),
+  callId: () => globalThis.crypto.randomUUID(),
+  attemptId: () => globalThis.crypto.randomUUID(),
 }
 
 const DEFAULT_CLOCK: Clock = {
@@ -2275,7 +2274,7 @@ export function createClient(config: ClientConfig): Client {
         }
         release = undefined
 
-        // Step 8: JSON.parse structured output — caller owns validation.
+        // Step 8: surface the adapter's parsed structured output — caller owns validation.
         let output: unknown
         let outputParsed: boolean | undefined
         if (req.outputJsonSchema !== undefined) {

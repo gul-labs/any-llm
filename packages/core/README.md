@@ -81,7 +81,7 @@ const result = await client.runStructured(
 //                        stays the caller's job (reject, don't map: any
 //                        shape mismatch is the caller's to reject).
 // result.usage    — { inputTokens, outputTokens, thinkingTokens, cachedInputTokens }
-// result.cost     — { microUsd, pricingVersion, details: { input, cached, output } }
+// result.cost     — { microUsd, usd, pricingVersion, confidence, details: { input, cached, output, tools } }
 // result.reasoningText — thought summary if includeThoughts was set
 // result.queueDelayMs — wait inside RateLimiter.acquire, separate from latencyMs
 ```
@@ -195,6 +195,7 @@ use it to hash history parts so a hash does not depend on key order (a history s
 surrogates, cycles, nesting deeper than 1000 levels, symbol keys and non-plain objects (class
 instances, `Date`, `Map`) are `bad_request`; plain objects from another realm are accepted. `-0` is
 serialised as `0`, as RFC 8785 requires, so a value hashes the same after a JSON round trip.
+`sha256Hex(input)` is the SHA-256 of a string (as UTF-8) or a `Uint8Array`, as 64 lowercase hex characters: synchronous, with no `node:crypto`, `Buffer` or WebCrypto, so the package loads on every runtime (README, "Runtimes"). Adapters pair it with `canonicalJson`.
 
 A custom `ProviderAdapter` must set `AdapterResult.message` (the engine does not rebuild it from
 `text` and `toolCalls`, because only the adapter knows the provider's interleaving). `countTokens`
@@ -274,7 +275,7 @@ Model-specific reminders:
   modeled and tested.
 
 `output.jsonSchema` constrains the model; the engine does not enforce it on the result. It is
-forwarded to the provider and used only to gate JSON parsing. Always check `outputParsed` before
+forwarded to the provider, and the adapter JSON-parses the response when it is set. Always check `outputParsed` before
 trusting `output`, then validate its shape yourself — see
 [`docs/structured-output-validation.md`](../../docs/structured-output-validation.md) for a
 Standard-Schema-based helper.

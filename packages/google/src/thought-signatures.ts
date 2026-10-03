@@ -27,9 +27,7 @@
  * @module
  */
 
-import { createHash } from 'node:crypto'
-
-import { LlmError, canonicalJson } from '@gullabs/core'
+import { LlmError, canonicalJson, sha256Hex } from '@gullabs/core'
 import type { JsonValue, Message, Part } from '@gullabs/core'
 
 /** The part kinds Google signs. */
@@ -73,10 +71,6 @@ function badState(path: string, why: string): LlmError {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function sha256Hex(text: string): string {
-  return createHash('sha256').update(text, 'utf8').digest('hex')
 }
 
 /**

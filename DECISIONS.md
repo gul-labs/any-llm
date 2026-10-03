@@ -951,7 +951,7 @@ The library ships three observability primitives:
 The following are **explicitly deferred as consumer concerns**:
 
 - First-party OTel package (the `Telemetry` port is the seam; publish an integration example).
-- W3C `traceparent` propagation (hosts inject headers today via `providerOptions`).
+- W3C `traceparent` propagation (needs a per-call header option no adapter has; see ROADMAP.md).
 - In-library metrics runtime, `/metrics` endpoint, cache-hit gauges (derive from records +
   `Telemetry`).
 - Error sampling/dedup, persisted stack traces, typed provider-error schema.
@@ -973,8 +973,9 @@ handle) so a one-file wrapper is all a host needs to bridge it to any APM system
   infrastructure dependency from the library.
 - `LlmCallRecord` fields are sufficient to derive dashboards, cost aggregations, retry rates, and
   error-kind breakdowns at the sink level.
-- Hosts that need `traceparent` propagation pass it today via
-  `providerOptions.google.httpOptions.headers` — no library change required.
+- Hosts that need `traceparent` propagation have no per-call header option today:
+  `providerOptions.google.httpOptions` admits only `timeout`. xAI's `transport.fetch` is per client, so a
+  host can wrap `fetch` there. Per-call headers are listed in ROADMAP.md.
 - The `metadata` field is the caller's domain anchor (tenantId, runId, traceId, etc.) and is
   stored verbatim; it must not contain secrets.
 - Items listed as deferred are tracked in ROADMAP.md under "Deferred observability."
@@ -3597,3 +3598,59 @@ error in ESM and CommonJS under pnpm and npm.
 relied on `rpm: 0` as "unlimited" omits `rpm` instead; a test that threw a `fakeProviderError` through a
 `FakeAdapter` now sees the real classification; `@gullabs/testing` peers on the provider packages at the
 release version.
+
+---
+
+## ADR-042: Runtimes, the Node floor and the release checks
+
+**Status:** Accepted (2026-10-03).
+
+**Context:**
+The audit found four gaps in what the packages promise. CI ran one Node version while `engines` said
+`>=22.12.0` and the SPEC said "Node ≥20". Every `exports` map served the ESM `.d.ts` to `require`
+(are-the-types-wrong: "masquerading as ESM"), and nothing linted the packed manifests. `@gullabs/core`
+imported `node:crypto`, so the entry failed to load on any runtime without Node built-ins, and the
+supported runtimes were not written down. The README and doc examples were not compiled, and
+`examples/basic.ts` no longer ran.
+
+**Decision:**
+
+1. **One Node floor, `>=22.12.0`, tested.** It is the `engines.node` of every published package, the
+   README and SPEC figure, and the CI matrix floor. The code needs no newer Node: no API later than 22
+   is used, and the dependencies' floors are lower (`openai` `>=22.0.0`, `@google/genai` `>=20`). The
+   repository's own tooling needs Node 24 (pnpm 11 requires `>=22.13`, ESLint 10 `^22.13`), so the root
+   `engines` stays `>=24` and the `node-matrix` CI job installs and builds with the `.nvmrc` Node, then
+   switches to 22.12.0 and 24.x and runs the tests, the doc snippets and the built-ins check with `node`
+   directly. A test pins `engines`, the README, the SPEC and the CI matrix to the same figure.
+2. **Nested `exports` conditions.** `import` carries `{ types: index.d.ts, default: index.js }` and
+   `require` carries `{ types: index.d.cts, default: index.cjs }`. `publint --strict` and
+   `attw --pack` (pinned dev dependencies) run for every package in `pnpm quality` (`check:packages`);
+   attw was red for `require` before and is green for node10, node16 from CJS, node16 from ESM and
+   bundler now.
+3. **No Node built-in in the runtime-agnostic packages.** `core`, `google`, `xai`, `quota`, `drizzle` and
+   `any-llm` import no `node:` module and use neither `Buffer` nor `process`. Ids come from
+   `globalThis.crypto.randomUUID()`. The two synchronous hashes (a history part's canonical JSON for the
+   Gemini signature overlay, ADR-029; inline media and tool schemas in a payload, ADR-038) use
+   `sha256Hex` / `Sha256` in core, a dependency-free SHA-256 tested against `node:crypto` at every
+   padding boundary and on large inputs. `sha256Hex` is exported next to `canonicalJson`. WebCrypto was
+   rejected because it is asynchronous and one-shot, and the signature hash sits in synchronous code.
+   `claude-cli` and `codex-cli` spawn processes and `testing` imports `node:os` and `node:module`, so
+   those three are Node only.
+4. **The claim is tested, and bounded.** `pnpm test:runtime` loads the built ESM entry of each
+   runtime-agnostic package under a module-resolution hook that fails any built-in import, then removes
+   `Buffer` and `process` and runs a full `generate()` with a payload and an inline media part. It is in
+   `pnpm quality` and in the Node matrix. It was also run once by hand under Deno 2.4.1 and passed. No
+   Bun, Cloudflare Workers, Vercel Edge or browser runtime was available, so those are documented as not
+   tested, not as supported; the wrapped SDKs (`@google/genai`, `openai`) set their own runtime support.
+   `@edge-runtime/vm` is not installed, so the hook test stands in for it.
+5. **Docs compile.** `pnpm check:docs` extracts every `ts` fence in the READMEs, `CONTRIBUTING.md` and
+   the live docs and typechecks it against the built packages (the workspace packages symlinked as
+   `node_modules`, so the real `exports` maps resolve). A fence that is deliberately a fragment says
+   `ts no-check`. ADRs, plans and audits are history and are not checked. `examples/**` is part of
+   `pnpm typecheck`. The script has its own test (extraction, and a bad fence fails with `file:line`).
+6. **`VERSION` is deleted.** `export const VERSION = '0.0.0'` read `0.0.0` while core was at 0.15 and was
+   re-exported by the facade; a version constant that nothing keeps current is removed, not sourced.
+
+**Consequences:** hosts that imported `VERSION` read their own `package.json`. A host on a runtime other
+than Node and Deno must run its own smoke test, and must not rely on this repository for it.
+`pnpm quality` needs a Node with `node --import` (22.12 has it) and the built packages.

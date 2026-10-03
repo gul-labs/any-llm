@@ -22,6 +22,8 @@ const hostedUrl = `https://github.com/${repoPath}`
 type Manifest = {
   name?: string
   private?: boolean
+  engines?: { node?: string }
+  exports?: Record<string, unknown>
   repository?: { type?: string; url?: string; directory?: string }
   homepage?: string
   bugs?: string
@@ -61,6 +63,34 @@ describe('published package metadata', () => {
       )
       expect(pkg.homepage).toBe(`${hostedUrl}/tree/main/packages/${dir}#readme`)
       expect(pkg.bugs).toBe(`${hostedUrl}/issues`)
+    },
+  )
+})
+
+describe('published package runtime contract', () => {
+  /** The one Node floor: every `engines.node`, the README, the SPEC and the CI matrix. */
+  const floor = '22.12.0'
+
+  it.each(publishedManifests())('$dir declares the Node floor', ({ pkg }) => {
+    expect(pkg.engines?.node).toBe(`>=${floor}`)
+  })
+
+  it('README, SPEC and the CI matrix state the same floor', () => {
+    const readme = readFileSync(join(workspaceRoot, 'README.md'), 'utf8')
+    const spec = readFileSync(join(workspaceRoot, 'SPEC.md'), 'utf8')
+    const ci = readFileSync(join(workspaceRoot, '.github/workflows/ci.yml'), 'utf8')
+    expect(readme).toContain(`Node \`>=${floor}\``)
+    expect(spec).toContain('Node ≥22.12')
+    expect(ci).toContain(`'${floor}'`)
+  })
+
+  it.each(publishedManifests())(
+    '$dir serves .d.ts to import and .d.cts to require',
+    ({ pkg }) => {
+      expect(pkg.exports?.['.']).toEqual({
+        import: { types: './dist/index.d.ts', default: './dist/index.js' },
+        require: { types: './dist/index.d.cts', default: './dist/index.cjs' },
+      })
     },
   )
 })
