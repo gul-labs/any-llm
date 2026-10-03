@@ -9,7 +9,7 @@
  */
 
 import type { StandardSchemaV1 } from './standard-schema.js'
-import type { Usage } from './types.js'
+import type { Usage, Warning } from './types.js'
 
 // ---------------------------------------------------------------------------
 // Error kind
@@ -120,6 +120,12 @@ export interface LlmErrorOptions {
   /** Provider-reported usage for a billed response that failed after HTTP success. */
   usage?: Usage
   /**
+   * Notes the adapter attaches to a failed attempt that carries `usage` (for
+   * example "the cost omits grounding fees"). The engine writes them to that
+   * attempt's record, as the success path does for `AdapterResult.warnings`.
+   */
+  warnings?: readonly Warning[]
+  /**
    * Structured validation failures, one entry per violation. Populated by
    * every caller-fault validation path — model-config validation, strict
    * template interpolation, callsite `inputSchema`, request `inputContract`.
@@ -170,6 +176,8 @@ export class LlmError extends Error {
   readonly servedServiceTier?: string
   /** Provider-reported usage for a billed response that failed after HTTP success. */
   readonly usage?: Usage
+  /** Adapter notes for a failed attempt that carries `usage`; persisted on its record. */
+  readonly warnings?: readonly Warning[]
   /** Structured validation failures, one entry per violation, when applicable. */
   readonly issues?: readonly LlmErrorIssue[]
 
@@ -206,6 +214,9 @@ export class LlmError extends Error {
     }
     if (options.usage !== undefined) {
       this.usage = options.usage
+    }
+    if (options.warnings !== undefined) {
+      this.warnings = options.warnings
     }
     if (options.issues !== undefined) {
       this.issues = options.issues

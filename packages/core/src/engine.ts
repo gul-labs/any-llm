@@ -998,6 +998,9 @@ function buildErrorRecord(
     ...(err.servedServiceTier !== undefined
       ? { servedServiceTier: err.servedServiceTier }
       : {}),
+    ...(err.warnings !== undefined && err.warnings.length > 0
+      ? { warnings: [...err.warnings] }
+      : {}),
     generationConfig: resolvedConfig,
     metadata: metadata ?? {},
     createdAt: new Date(startMs).toISOString(),
@@ -1012,8 +1015,8 @@ function buildErrorRecord(
 
 /**
  * Writes `record` to `sink` if a sink is configured.
- * Failures are logged and swallowed (fail-open) — a broken sink must never
- * fail the LLM call.
+ * Failures are logged at `error` as `llm.call.sink.failed` and swallowed
+ * (fail-open) — a broken sink must never fail the LLM call.
  */
 async function recordToSink(
   sink: UsageSink | undefined,
@@ -1026,8 +1029,17 @@ async function recordToSink(
       await sink.record(record)
       logger.debug({ callId }, 'llm.call.sink.success')
     } catch (sinkErr) {
+      // A dropped ledger row. The event name and fields are stable: alert on
+      // `llm.call.sink.failed`, and use `attemptId` to find the lost row.
       logger.error(
-        { callId, error: redactSecrets(String(sinkErr)) },
+        {
+          callId,
+          attemptId: record.attemptId,
+          attemptNumber: record.attemptNumber,
+          provider: record.provider,
+          model: record.model,
+          error: redactSecrets(String(sinkErr)),
+        },
         'llm.call.sink.failed',
       )
     }

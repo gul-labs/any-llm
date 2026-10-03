@@ -70,6 +70,33 @@ const REQUEST = {
   config: { maxOutputTokens: 500 },
 }
 
+describe('adapter warnings on a billed failure reach the attempt row', () => {
+  it('LlmError.warnings are written to the record of the failed attempt', async () => {
+    const { client, sink } = makeClient(
+      new LlmError('no usable candidate', {
+        kind: 'server',
+        retryable: false,
+        usage: usage({ thinkingTokens: 0 }),
+        warnings: [{ type: 'other', message: 'grounding fees are not included' }],
+      }),
+    )
+    await expect(client.generate(REQUEST, { auth: AUTH })).rejects.toMatchObject({
+      kind: 'server',
+    })
+    expect(sink.last()?.warnings).toEqual([
+      { type: 'other', message: 'grounding fees are not included' },
+    ])
+  })
+
+  it('an error without warnings leaves the row without them', async () => {
+    const { client, sink } = makeClient(
+      new LlmError('x', { kind: 'server', retryable: false }),
+    )
+    await expect(client.generate(REQUEST, { auth: AUTH })).rejects.toBeDefined()
+    expect(sink.last()?.warnings).toBeUndefined()
+  })
+})
+
 describe('reasoning used up the output cap (R1.9)', () => {
   it('warns when length ended the call with no answer and reasoning tokens', async () => {
     const { client, sink } = makeClient(adapterResult())
