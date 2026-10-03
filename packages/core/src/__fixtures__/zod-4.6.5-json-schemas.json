@@ -1,0 +1,966 @@
+{
+  "zodVersion": "4.6.5",
+  "source": "z.toJSONSchema() of the schemas in packages/core/src/zod-schema-cases.ts, generated with the installed Zod (default options unless a case sets them). Verdicts are the expected outcome of each provider profile and of the portable subset on that output.",
+  "cases": [
+    {
+      "name": "object_optional_nullable",
+      "description": "optional and nullable fields, bounded integer",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string"
+          },
+          "b": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "c": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
+          "d": {
+            "type": "boolean"
+          },
+          "e": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "b",
+          "c",
+          "d",
+          "e"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "accept"
+        }
+      }
+    },
+    {
+      "name": "nullable_object_and_array",
+      "description": "nullable object and array (anyOf with a null branch)",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "a": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "n": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "n"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "l": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "n": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "n"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "a",
+          "l"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "accept"
+        }
+      }
+    },
+    {
+      "name": "string_enum",
+      "description": "z.enum",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "e": {
+            "type": "string",
+            "enum": [
+              "a",
+              "b"
+            ]
+          }
+        },
+        "required": [
+          "e"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "accept"
+        }
+      }
+    },
+    {
+      "name": "literal_union_enum",
+      "description": "z.literal with several values emits enum",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "k": {
+            "type": "string",
+            "enum": [
+              "a",
+              "b"
+            ]
+          }
+        },
+        "required": [
+          "k"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "accept"
+        }
+      }
+    },
+    {
+      "name": "array_of_objects",
+      "description": "bounded array of objects",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "l": {
+            "minItems": 1,
+            "maxItems": 3,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "n": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "n"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "l"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "accept"
+        }
+      }
+    },
+    {
+      "name": "string_bounds_and_pattern",
+      "description": "minLength, maxLength and a simple pattern",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "s": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10,
+            "pattern": "^a+$"
+          }
+        },
+        "required": [
+          "s"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "accept"
+        }
+      }
+    },
+    {
+      "name": "string_formats_portable",
+      "description": "email, date-time and date formats (each with a Zod-generated pattern)",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "e": {
+            "type": "string",
+            "format": "email",
+            "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+          },
+          "d": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          },
+          "dd": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
+          }
+        },
+        "required": [
+          "e",
+          "d",
+          "dd"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "accept"
+        }
+      }
+    },
+    {
+      "name": "string_formats_uuid_uri",
+      "description": "uuid and uri formats: xAI enforces them, Google does not",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "u": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          }
+        },
+        "required": [
+          "u",
+          "url"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "reject",
+          "reason": "\"uuid\""
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "reject",
+          "reason": "\"uuid\""
+        }
+      }
+    },
+    {
+      "name": "literal",
+      "description": "z.literal emits const, which Google ignores",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "k": {
+            "type": "string",
+            "const": "x"
+          }
+        },
+        "required": [
+          "k"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "reject",
+          "reason": "`const`"
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "reject",
+          "reason": "`const`"
+        }
+      }
+    },
+    {
+      "name": "discriminated_union",
+      "description": "z.discriminatedUnion emits oneOf (with const discriminators)",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "u": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "t": {
+                    "type": "string",
+                    "const": "a"
+                  },
+                  "x": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "t",
+                  "x"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "t": {
+                    "type": "string",
+                    "const": "b"
+                  },
+                  "y": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "t",
+                  "y"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "u"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "reject",
+          "reason": "`oneOf`"
+        },
+        "xai": {
+          "verdict": "reject",
+          "reason": "`oneOf`"
+        },
+        "portable": {
+          "verdict": "reject",
+          "reason": "`oneOf`"
+        }
+      }
+    },
+    {
+      "name": "discriminated_union_enum_discriminator",
+      "description": "a discriminated union still emits oneOf even without literals to blame",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "u": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "t": {
+                    "type": "string",
+                    "enum": [
+                      "a"
+                    ]
+                  },
+                  "x": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "t",
+                  "x"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "t": {
+                    "type": "string",
+                    "enum": [
+                      "b"
+                    ]
+                  },
+                  "y": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "t",
+                  "y"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "u"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "reject",
+          "reason": "`oneOf`"
+        },
+        "xai": {
+          "verdict": "reject",
+          "reason": "`oneOf`"
+        },
+        "portable": {
+          "verdict": "reject",
+          "reason": "`oneOf`"
+        }
+      }
+    },
+    {
+      "name": "union_of_objects",
+      "description": "z.union of objects emits anyOf",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "u": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "a": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "b": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "b"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "u"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "accept"
+        }
+      }
+    },
+    {
+      "name": "union_of_primitives",
+      "description": "z.union of primitives emits a multi-type array",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "u": {
+            "type": [
+              "string",
+              "number"
+            ]
+          }
+        },
+        "required": [
+          "u"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "reject",
+          "reason": "anyOf"
+        },
+        "xai": {
+          "verdict": "reject",
+          "reason": "anyOf"
+        },
+        "portable": {
+          "verdict": "reject",
+          "reason": "anyOf"
+        }
+      }
+    },
+    {
+      "name": "root_anyof_intersection",
+      "description": "an intersection with a union distributes into a root anyOf",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "a": {
+                "type": "string"
+              },
+              "b": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "a",
+              "b"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "a": {
+                "type": "string"
+              },
+              "c": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "a",
+              "c"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "accept"
+        }
+      }
+    },
+    {
+      "name": "reused_default",
+      "description": "a type used twice, default reuse mode (inlined)",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "object",
+            "properties": {
+              "n": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "n"
+            ],
+            "additionalProperties": false
+          },
+          "b": {
+            "type": "object",
+            "properties": {
+              "n": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "n"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "a",
+          "b"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "accept"
+        }
+      }
+    },
+    {
+      "name": "reused_inline",
+      "description": "a type used twice, reused: 'inline'",
+      "options": {
+        "reused": "inline"
+      },
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "object",
+            "properties": {
+              "n": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "n"
+            ],
+            "additionalProperties": false
+          },
+          "b": {
+            "type": "object",
+            "properties": {
+              "n": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "n"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "a",
+          "b"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "accept"
+        }
+      }
+    },
+    {
+      "name": "reused_ref",
+      "description": "a type used twice, reused: 'ref' emits $defs and $ref",
+      "options": {
+        "reused": "ref"
+      },
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "a": {
+            "$ref": "#/$defs/__schema0"
+          },
+          "b": {
+            "$ref": "#/$defs/__schema0"
+          }
+        },
+        "required": [
+          "a",
+          "b"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "__schema0": {
+            "type": "object",
+            "properties": {
+              "n": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "n"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "accept"
+        }
+      }
+    },
+    {
+      "name": "recursive",
+      "description": "a recursive type emits a root $ref: Google honours it, xAI does not",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "kids": {
+            "type": "array",
+            "items": {
+              "$ref": "#"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "kids"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "reject",
+          "reason": "circular"
+        },
+        "portable": {
+          "verdict": "reject",
+          "reason": "circular"
+        }
+      }
+    },
+    {
+      "name": "tuple",
+      "description": "z.tuple emits prefixItems with items: false",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "t": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "items": false,
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "required": [
+          "t"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "reject",
+          "reason": "closed tuple"
+        },
+        "portable": {
+          "verdict": "reject",
+          "reason": "closed tuple"
+        }
+      }
+    },
+    {
+      "name": "record",
+      "description": "z.record emits propertyNames",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "r": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "number"
+            }
+          }
+        },
+        "required": [
+          "r"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "reject",
+          "reason": "`propertyNames`"
+        },
+        "xai": {
+          "verdict": "reject",
+          "reason": "`propertyNames`"
+        },
+        "portable": {
+          "verdict": "reject",
+          "reason": "`propertyNames`"
+        }
+      }
+    },
+    {
+      "name": "annotations",
+      "description": "default and describe emit annotations only",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "a": {
+            "default": "x",
+            "description": "a field",
+            "type": "string"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "accept"
+        }
+      }
+    },
+    {
+      "name": "any",
+      "description": "z.any emits an empty schema",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "a": {}
+        },
+        "required": [
+          "a"
+        ],
+        "additionalProperties": false
+      },
+      "verdicts": {
+        "google": {
+          "verdict": "accept"
+        },
+        "xai": {
+          "verdict": "accept"
+        },
+        "portable": {
+          "verdict": "accept"
+        }
+      }
+    }
+  ]
+}

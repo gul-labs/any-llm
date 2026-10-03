@@ -18,12 +18,12 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
-import { createClient } from '@gullabs/core'
+import { assertJsonSchemaProfile, createClient } from '@gullabs/core'
 import type { AdapterCtx, JsonValue, ResolvedRequest } from '@gullabs/core'
 import { makeFakeXai, RecordingSink } from '@gullabs/testing'
 import { xaiAdapter, classifyXaiError } from './adapter.js'
 import type { XaiReplayState } from './client.js'
-import { assertXaiOutputJsonSchema } from './output-schema.js'
+import { XAI_JSON_SCHEMA_PROFILE } from './json-schema.js'
 import { computeXaiCost, xaiPricingSource } from './pricing.js'
 import {
   grok45ModelDescriptor,
@@ -1310,6 +1310,10 @@ describe('fixture: 33-max-turns-not-enforced (live 2026-10-02)', () => {
   })
 })
 
+function assertXaiSchema(schema: JsonValue): void {
+  assertJsonSchemaProfile(schema, 'output.jsonSchema', XAI_JSON_SCHEMA_PROFILE)
+}
+
 describe('fixture: 34-strict-schema-dialect (live 2026-10-02)', () => {
   interface SchemaCall extends FixtureCall {
     requestSchema: JsonValue
@@ -1333,7 +1337,7 @@ describe('fixture: 34-strict-schema-dialect (live 2026-10-02)', () => {
       const answer = lastMessageJson(call)
       expect(answer['employeeCount']).not.toBeNull()
       expect(answer['foundedYear']).not.toBeNull()
-      expect(() => assertXaiOutputJsonSchema(call.requestSchema)).toThrow(
+      expect(() => assertXaiSchema(call.requestSchema)).toThrow(
         /properties\.employeeCount/,
       )
     },
@@ -1341,7 +1345,7 @@ describe('fixture: 34-strict-schema-dialect (live 2026-10-02)', () => {
 
   it('a null type union passes the preflight and returns real nulls', () => {
     const call = fixture['null_type_union_grok_4_5'] as SchemaCall
-    expect(() => assertXaiOutputJsonSchema(call.requestSchema)).not.toThrow()
+    expect(() => assertXaiSchema(call.requestSchema)).not.toThrow()
     expect(lastMessageJson(call)).toMatchObject({
       employeeCount: null,
       foundedYear: null,
@@ -1352,6 +1356,6 @@ describe('fixture: 34-strict-schema-dialect (live 2026-10-02)', () => {
     const call = fixture['uppercase_types_grok_4_5'] as SchemaCall
     expect(call.status).toBe(400)
     expect(JSON.stringify(call.body)).toContain('STRING')
-    expect(() => assertXaiOutputJsonSchema(call.requestSchema)).toThrow(/"OBJECT"/)
+    expect(() => assertXaiSchema(call.requestSchema)).toThrow(/"OBJECT"/)
   })
 })

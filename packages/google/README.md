@@ -199,10 +199,41 @@ when any part carries one.
 - `reasoning.includeThoughts` → `thinkingConfig.includeThoughts`; thought parts become `reasoningText`
 - `reasoning.effort` → `thinkingBudget` (Gemini 2.5) or `thinkingLevel` (Gemini 3 / Gemma 4)
 - `reasoning.budgetTokens` → admitted only on Gemini 2.5 budget-api models; strict descriptors reject it on level-api models
-- `output.jsonSchema` → `responseMimeType: 'application/json'` + verbatim `responseSchema` when native structured output is enabled; the engine returns parsed output and `outputParsed` without validating shape
+- `output.jsonSchema` → `responseMimeType: 'application/json'` + verbatim `responseJsonSchema` when native structured output is enabled, and `tools[].inputJsonSchema` → `parametersJsonSchema` (both standard JSON Schema, in your key order; see "JSON Schema" below); the engine returns parsed output and `outputParsed` without validating shape
 - `providerOptions.google.*` → typed provider-extension lane for admitted keys such as `cachedContent`, `safetySettings`, and exact tool declarations
 - Usage: `promptTokenCount`→`inputTokens`, `candidatesTokenCount`+`thoughtsTokenCount`→`outputTokens` (GROSS)
 - Errors: `401` and a bare `403` default to `invalid_auth`; `429`→`rate_limited`; `5xx`→`server`; timeouts; Gemini safety blocks are a 200-path `content_filter` when `promptFeedback.blockReason` is set. A candidate-less 200 without a block reason is retryable `server`.
+
+## JSON Schema
+
+`output.jsonSchema` and `tools[].inputJsonSchema` are standard JSON Schema, sent as
+`responseJsonSchema` and `parametersJsonSchema` exactly as you wrote them, key order included (put
+`reasoning` before `answer` and the model generates in that order). There is no OpenAPI
+`responseSchema` / `parameters` path, and `nullable` and uppercase type names are rejected.
+
+Google accepts every keyword and silently ignores the ones it does not support, so the adapter
+only lets through the ones it enforces and rejects the rest with `bad_request` and the JSON path
+before dispatch (ADR-034; live probe on every Gemini and Gemma model, 2026-10-03, and Google's
+structured-output guide read the same day):
+
+- **Enforced:** `type` (a type array only as one type plus `'null'`), `properties`, `required`,
+  `additionalProperties` (boolean or schema), `enum`, `anyOf`, `$ref` / `$defs` (recursive
+  schemas too), `items`, `prefixItems` (and `items: false` to close a tuple), `minItems` /
+  `maxItems`, `minimum` / `maximum`, and `format` for `date-time`, `date`, `time` and `email`.
+- **Accepted, but soft:** `pattern`, `minLength` and `maxLength` are supported by Google yet obeyed
+  only probabilistically (the probe saw violations on several models). They are not guarantees:
+  validate `output` yourself. The library never validates the result.
+- **Rejected, because Google ignores them:** `const`, `allOf`, `exclusiveMinimum` /
+  `exclusiveMaximum`, `multipleOf`, `uniqueItems`, and `oneOf`, which Google reads as `anyOf`.
+  `propertyNames`, `not`, `if`/`then`/`else`, `minProperties` and other `format` values are
+  outside the enforced set too.
+- **Annotations** (`$schema`, `$id`, `$comment`, `title`, `description`, `examples`, `default`,
+  `deprecated`, `readOnly`, `writeOnly`) are always accepted.
+
+Zod: `z.literal('x')` emits `const`, which Google ignores. Write `z.enum(['x'])` instead; the
+library does not rewrite it for you. `z.discriminatedUnion` emits `oneOf`; use `z.union`, which
+emits `anyOf`. To lint a schema against what every provider enforces, call
+`assertPortableJsonSchema` from `@gullabs/core`.
 
 ## Strict model-config expectations
 
@@ -268,8 +299,9 @@ its reported usage and snapshot cost are saved on that failed attempt.
 The default registry includes two API-verified Gemma 4 models: `gemma-4-31b-it`
 and `gemma-4-26b-a4b-it`. Both route through this adapter and support:
 
-- **Native structured output** — `responseMimeType` + verbatim `responseSchema` are sent
-  automatically when `output.jsonSchema` is set.
+- **Native structured output** — `responseMimeType` + verbatim `responseJsonSchema` are sent
+  automatically when `output.jsonSchema` is set. Gemma ignored `format`, `minLength` and
+  `maxLength` in live probes, so those three keywords are rejected for Gemma models.
 - **Grounding** — `tools:[{googleSearch:{}}]` via `providerOptions.google`.
 - **Vision** — `inline-media` and `file-uri` multimodal message parts.
 - **Thinking** — `reasoning.effort` maps to `thinkingLevel` (`reasoningApi: 'level'`).

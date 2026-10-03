@@ -26,6 +26,9 @@ Every other `@gullabs/*` package declares this one as an exact-version peer depe
 | `computeCost(...)`           | Pure, provider-agnostic cost function (providers supply their own rates)                           |
 | `LlmError`                   | Typed error class — always thrown on call failure                                                  |
 | `canonicalJson(value)`       | RFC 8785 JSON Canonicalization Scheme (dependency-free), for hashing JSON independent of key order |
+| `assertPortableJsonSchema`   | Build-time lint: is this schema inside what every provider enforces? (see "JSON Schema")           |
+| `assertStandardJsonSchema`   | Rejects OpenAPI-dialect schemas (`nullable`, uppercase types, boolean subschemas)                  |
+| `assertJsonSchemaProfile`    | What provider adapters call: checks a schema against the keywords a provider enforces              |
 | `buildRecord(input)`         | Assembles an `LlmCallRecord` from engine state (used internally)                                   |
 
 Core carries **no provider knowledge** — no Gemini/Google types, model descriptors, or pricing
@@ -206,11 +209,41 @@ Model-specific reminders:
 - `priority` remains rejected by the library until the contract is fully
   modeled and tested.
 
-`output.jsonSchema` is a provider hint, not an engine-enforced contract: it is forwarded to the
-provider and used only to gate JSON parsing. Always check `outputParsed` before trusting `output`,
-then validate its shape yourself — see
+`output.jsonSchema` constrains the model; the engine does not enforce it on the result. It is
+forwarded to the provider and used only to gate JSON parsing. Always check `outputParsed` before
+trusting `output`, then validate its shape yourself — see
 [`docs/structured-output-validation.md`](../../docs/structured-output-validation.md) for a
 Standard-Schema-based helper.
+
+## JSON Schema
+
+`output.jsonSchema` and `tools[].inputJsonSchema` are **standard JSON Schema (2020-12 subset)** on
+every provider (ADR-034). Providers accept every keyword and silently ignore the ones they do not
+enforce, so each adapter rejects a keyword it would ignore with `bad_request` and the path
+(`output.jsonSchema.properties.kind`, `tools[1].inputJsonSchema...`) before dispatch. Nothing is
+rewritten, and annotations (`$schema`, `$id`, `$comment`, `title`, `description`, `examples`,
+`default`, `deprecated`, `readOnly`, `writeOnly`) are accepted everywhere.
+
+The **portable subset** is what both Google and xAI enforce: `type` (a type array only as one type
+plus `'null'`), `properties`, `required`, `additionalProperties`, `enum`, `anyOf`, `$ref` / `$defs`
+(local and non-circular), `items`, `prefixItems`, `minItems` / `maxItems`, `minimum` / `maximum`,
+`pattern`, `minLength` / `maxLength`, and `format` for `date-time`, `date`, `time`, `email`. Lint
+every call site in a host test:
+
+```ts
+import { assertPortableJsonSchema } from '@gullabs/core'
+import { z } from 'zod'
+
+assertPortableJsonSchema(z.toJSONSchema(Report), 'call:report') // throws LlmError('bad_request') with the path
+```
+
+What Zod emits that is outside the subset: `z.literal('x')` emits `const` (write
+`z.enum(['x'])`); `z.discriminatedUnion` emits `oneOf`, which providers read as `anyOf` (write
+`z.union`, which emits `anyOf`); `z.record` emits `propertyNames`; `z.tuple` emits `items: false`;
+`z.union` of primitives emits a multi-type array (use `z.enum` for strings, or give the union object variants); a recursive type
+emits a recursive `$ref`, which xAI does not support. `z.toJSONSchema(schema, { reused: 'ref' })`
+emits `$defs` / `$ref`, which both providers accept. `pattern`, `minLength` and `maxLength` are
+accepted but Gemini obeys them only probabilistically; validate `output` yourself.
 
 ## Input contracts
 

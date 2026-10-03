@@ -1,0 +1,1996 @@
+{
+  "source": "Live 2026-10-03, Gemini API v1beta generateContent with generationConfig.responseJsonSchema + responseMimeType application/json, no tools. Each prompt asks the model to violate the keyword, so \"conforming\" means the keyword was enforced or obeyed and \"violating\" means it was accepted but ignored. 2 samples per cell (7 for the probabilistic keywords).",
+  "sanitization": "Per-cell counts only. No API keys, headers, prompts or model text are stored; schemas are the synthetic probe schemas verbatim.",
+  "unavailable": {
+    "gemini-2.5-flash-lite": "HTTP 404 on the probing key (\"no longer available to new users\"); not probed."
+  },
+  "keyOrder": {
+    "preserved": 20,
+    "samples": 20
+  },
+  "cases": {
+    "baseline_key_order": {
+      "keyword": "properties (key order)",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "zeta": {
+            "type": "string"
+          },
+          "alpha": {
+            "type": "integer"
+          },
+          "mid": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "zeta",
+          "alpha",
+          "mid"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        }
+      }
+    },
+    "schema_annotation": {
+      "keyword": "$schema/title/description annotations",
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Person",
+        "description": "A person",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "full name"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        }
+      }
+    },
+    "ref_defs": {
+      "keyword": "$ref/$defs",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "sensor_a": {
+            "$ref": "#/$defs/Sensor"
+          },
+          "sensor_b": {
+            "$ref": "#/$defs/Sensor"
+          }
+        },
+        "required": [
+          "sensor_a",
+          "sensor_b"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "Sensor": {
+            "type": "object",
+            "properties": {
+              "level": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "high"
+                ]
+              },
+              "unit": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "level",
+              "unit"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        }
+      }
+    },
+    "ref_recursive": {
+      "keyword": "$ref recursive ($defs self reference)",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "root": {
+            "$ref": "#/$defs/Node"
+          }
+        },
+        "required": [
+          "root"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "Node": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "children": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/Node"
+                }
+              }
+            },
+            "required": [
+              "name",
+              "children"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        }
+      }
+    },
+    "anyOf": {
+      "keyword": "anyOf",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "n/a"
+                ]
+              }
+            ]
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        }
+      }
+    },
+    "oneOf_discriminated": {
+      "keyword": "oneOf (disjoint branches)",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "shape": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "circle"
+                  },
+                  "radius": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "radius"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "square"
+                  },
+                  "side": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "side"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "shape"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        }
+      }
+    },
+    "oneOf_overlapping_probe": {
+      "keyword": "oneOf exclusivity (treated as anyOf?)",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        }
+      }
+    },
+    "const": {
+      "keyword": "const",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "alpha"
+          },
+          "version": {
+            "const": 2
+          }
+        },
+        "required": [
+          "kind",
+          "version"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        }
+      }
+    },
+    "additionalProperties_false": {
+      "keyword": "additionalProperties:false",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        }
+      }
+    },
+    "additionalProperties_schema": {
+      "keyword": "additionalProperties:{schema} (map)",
+      "schema": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "integer"
+        }
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        }
+      }
+    },
+    "minimum_maximum": {
+      "keyword": "minimum/maximum",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "score": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
+          "ratio": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "required": [
+          "score",
+          "ratio"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        }
+      }
+    },
+    "exclusiveMinimum_multipleOf": {
+      "keyword": "exclusiveMinimum/multipleOf",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "qty": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "step": {
+            "type": "integer",
+            "multipleOf": 5
+          }
+        },
+        "required": [
+          "qty",
+          "step"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        }
+      }
+    },
+    "enum": {
+      "keyword": "enum",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "red",
+              "green"
+            ]
+          }
+        },
+        "required": [
+          "category"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        }
+      }
+    },
+    "format": {
+      "keyword": "format (date-time/email/date)",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "when": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "contact": {
+            "type": "string",
+            "format": "email"
+          },
+          "day": {
+            "type": "string",
+            "format": "date"
+          }
+        },
+        "required": [
+          "when",
+          "contact",
+          "day"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 7,
+          "conforming": 0,
+          "violating": 7,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 7,
+          "conforming": 0,
+          "violating": 7,
+          "nonJson": 0
+        }
+      }
+    },
+    "pattern": {
+      "keyword": "pattern",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}-[0-9]{4}$"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 7,
+          "conforming": 5,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 7,
+          "conforming": 5,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 7,
+          "conforming": 6,
+          "violating": 1,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 7,
+          "conforming": 3,
+          "violating": 4,
+          "nonJson": 0
+        }
+      }
+    },
+    "minLength_maxLength": {
+      "keyword": "minLength/maxLength",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "short": {
+            "type": "string",
+            "minLength": 5
+          },
+          "long": {
+            "type": "string",
+            "maxLength": 10
+          }
+        },
+        "required": [
+          "short",
+          "long"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 7,
+          "conforming": 3,
+          "violating": 4,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 7,
+          "conforming": 6,
+          "violating": 1,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 7,
+          "conforming": 6,
+          "violating": 1,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 7,
+          "conforming": 0,
+          "violating": 7,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 7,
+          "conforming": 1,
+          "violating": 6,
+          "nonJson": 0
+        }
+      }
+    },
+    "minItems_maxItems": {
+      "keyword": "minItems/maxItems",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "few": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 3
+          },
+          "many": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 2
+          }
+        },
+        "required": [
+          "few",
+          "many"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 7,
+          "conforming": 7,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 7,
+          "conforming": 0,
+          "violating": 0,
+          "nonJson": 7
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 7,
+          "conforming": 6,
+          "violating": 0,
+          "nonJson": 1
+        }
+      }
+    },
+    "uniqueItems": {
+      "keyword": "uniqueItems",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "nums": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "nums"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        }
+      }
+    },
+    "prefixItems": {
+      "keyword": "prefixItems (tuple)",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "pair": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "minItems": 3,
+            "maxItems": 3
+          }
+        },
+        "required": [
+          "pair"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        }
+      }
+    },
+    "prefixItems_items_false": {
+      "keyword": "prefixItems + items:false (boolean schema)",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "t": {
+            "type": "array",
+            "prefixItems": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "items": false
+          }
+        },
+        "required": [
+          "t"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        }
+      }
+    },
+    "type_array_null": {
+      "keyword": "type: [x,\"null\"]",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "nickname": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "age": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "nickname",
+          "age"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        }
+      }
+    },
+    "allOf": {
+      "keyword": "allOf",
+      "schema": {
+        "type": "object",
+        "allOf": [
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        ]
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 1,
+          "nonJson": 1
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 2,
+          "conforming": 0,
+          "violating": 2,
+          "nonJson": 0
+        }
+      }
+    },
+    "required_optional": {
+      "keyword": "required (optional fields omitted?)",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "nickname": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "models": {
+        "gemini-2.5-pro": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-2.5-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.1-pro-preview": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.8-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.7-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.6-flash": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemini-3.5-flash-lite": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-31b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        },
+        "gemma-4-26b-a4b-it": {
+          "samples": 2,
+          "conforming": 2,
+          "violating": 0,
+          "nonJson": 0
+        }
+      }
+    }
+  }
+}

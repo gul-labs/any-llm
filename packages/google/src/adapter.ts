@@ -7,7 +7,12 @@
  * @module
  */
 
-import { LlmError, assertNever, assertModelMatchesDescriptor } from '@gullabs/core'
+import {
+  LlmError,
+  assertNever,
+  assertJsonSchemaProfile,
+  assertModelMatchesDescriptor,
+} from '@gullabs/core'
 import type {
   ProviderAdapter,
   ResolvedRequest,
@@ -31,6 +36,7 @@ import {
   TRANSPORT_TIMEOUT_BUFFER_MS,
 } from './client.js'
 import { GOOGLE_REASONING_EFFORT_BUDGET } from './reasoning-budget.js'
+import { googleJsonSchemaProfile } from './json-schema.js'
 import { normalizeGroundingCitations } from './grounding.js'
 import {
   isSynthesizedToolCallId,
@@ -805,7 +811,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       }
 
       // ------------------------------------------------------------------
-      // 4. Structured output → responseMimeType + responseSchema
+      // 4. Structured output → responseMimeType + responseJsonSchema
       // ------------------------------------------------------------------
       const structuredOutputRequested = req.outputJsonSchema !== undefined
       if (structuredOutputRequested) {
@@ -813,10 +819,15 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
           descriptor.capabilities?.nativeStructuredOutput !== false
 
         if (nativeStructuredOutput) {
+          // Standard JSON Schema, verbatim and in the host's key order. A
+          // keyword Google would silently ignore is rejected here, not sent.
+          assertJsonSchemaProfile(
+            req.outputJsonSchema as JsonValue,
+            'output.jsonSchema',
+            googleJsonSchemaProfile(model),
+          )
           config.responseMimeType = 'application/json'
-          config.responseSchema = req.outputJsonSchema as NonNullable<
-            GeminiGenerateConfig['responseSchema']
-          >
+          config.responseJsonSchema = req.outputJsonSchema
         }
       }
 
@@ -885,12 +896,20 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
             { kind: 'bad_request', retryable: false, provider: 'google' },
           )
         }
+        const toolProfile = googleJsonSchemaProfile(model)
+        req.tools.forEach((tool, index) => {
+          assertJsonSchemaProfile(
+            tool.inputJsonSchema,
+            `tools[${index}].inputJsonSchema`,
+            toolProfile,
+          )
+        })
         config.tools = [
           {
             functionDeclarations: req.tools.map((tool) => ({
               name: tool.name,
               description: tool.description,
-              parameters: tool.inputJsonSchema,
+              parametersJsonSchema: tool.inputJsonSchema,
             })),
           },
         ]

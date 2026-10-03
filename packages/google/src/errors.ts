@@ -78,6 +78,19 @@ function isGoogleModelNotFound(rawErr: unknown): boolean {
   }
 }
 
+/**
+ * Errors the SDK throws locally while converting a schema, before any request
+ * leaves the process (`processJsonSchema` in `@google/genai`). The adapter
+ * sends standard JSON Schema, which skips that conversion, so these are
+ * residual; when one still surfaces it is the caller's schema, not a fault.
+ */
+const GOOGLE_SDK_SCHEMA_ERROR_PATTERN =
+  /type and anyOf cannot be both populated|type: null can not be the only possible type/
+
+function isGoogleSdkSchemaError(rawErr: unknown): boolean {
+  return rawErr instanceof Error && GOOGLE_SDK_SCHEMA_ERROR_PATTERN.test(rawErr.message)
+}
+
 /** Optional extra fields threaded onto the returned {@link LlmError}. */
 export interface ClassifyGoogleErrorExtra {
   /** Service tier actually attempted by the provider when known. */
@@ -106,7 +119,9 @@ export function classifyGoogleError(
 ): LlmError {
   const base = classifyError(rawErr)
   const reclassifyAsTransport = base.kind === 'unknown' && isGoogleTransportError(rawErr)
-  const reclassifyAsBadRequest = base.kind === 'unknown' && isGoogleModelNotFound(rawErr)
+  const reclassifyAsBadRequest =
+    base.kind === 'unknown' &&
+    (isGoogleModelNotFound(rawErr) || isGoogleSdkSchemaError(rawErr))
 
   return new LlmError(base.message, {
     kind: reclassifyAsTransport

@@ -129,7 +129,18 @@ export { retryMiddleware, computeBackoffMs } from './retry.js'
 
 // Utilities
 export { canonicalJson } from './canonical-json.js'
+
 export { assertNever } from './assert.js'
+
+// JSON Schema contract (ADR-034)
+export type { JsonSchemaProfile } from './json-schema.js'
+export {
+  assertStandardJsonSchema,
+  assertJsonSchemaProfile,
+  assertPortableJsonSchema,
+  PORTABLE_JSON_SCHEMA_KEYWORDS,
+  PORTABLE_JSON_SCHEMA_FORMATS,
+} from './json-schema.js'
 
 // Secret redaction (best-effort; for persisted/logged error text)
 export { redactSecrets } from './redact.js'

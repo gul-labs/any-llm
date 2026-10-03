@@ -11,6 +11,7 @@ import {
   LlmError,
   classifyError,
   assertNever,
+  assertJsonSchemaProfile,
   assertModelMatchesDescriptor,
 } from '@gullabs/core'
 import type {
@@ -36,7 +37,7 @@ import {
   XAI_TIMEOUT_BUFFER_MS,
 } from './client.js'
 import { xaiRegistry } from './models.js'
-import { assertXaiOutputJsonSchema } from './output-schema.js'
+import { XAI_JSON_SCHEMA_PROFILE } from './json-schema.js'
 import { X_SEARCH_ITEM_COUNTERS } from './pricing.js'
 import type {
   XaiClientLike,
@@ -1098,7 +1099,11 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       const structuredOutputRequested = req.outputJsonSchema !== undefined
       if (structuredOutputRequested) {
         const schema = req.outputJsonSchema
-        assertXaiOutputJsonSchema(schema as JsonValue)
+        assertJsonSchemaProfile(
+          schema as JsonValue,
+          'output.jsonSchema',
+          XAI_JSON_SCHEMA_PROFILE,
+        )
         const name =
           isPlainRecord(schema) &&
           typeof schema['title'] === 'string' &&
@@ -1180,6 +1185,13 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
             `tools is not supported for xai model "${model}" (capabilities.functionCalling is not true).`,
           )
         }
+        req.tools.forEach((tool, index) => {
+          assertJsonSchemaProfile(
+            tool.inputJsonSchema,
+            `tools[${index}].inputJsonSchema`,
+            XAI_JSON_SCHEMA_PROFILE,
+          )
+        })
         const functionTools = req.tools.map((tool) => ({
           type: 'function',
           name: tool.name,

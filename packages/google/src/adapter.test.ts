@@ -849,7 +849,7 @@ describe('structured output', () => {
     expect(call?.config?.responseMimeType).toBe('application/json')
   })
 
-  it('forwards JSON Schema directly as responseSchema', async () => {
+  it('forwards JSON Schema directly as responseJsonSchema', async () => {
     const jsonSchema = {
       type: 'object',
       properties: { name: { type: 'string' }, age: { type: 'number' } },
@@ -862,16 +862,13 @@ describe('structured output', () => {
     await adapter.run(makeResolvedReq({ outputJsonSchema: jsonSchema }), FAKE_CTX)
 
     const call = client.calls[0] as {
-      config?: {
-        responseSchema?: { type?: string; properties?: Record<string, { type?: string }> }
-      }
+      config?: { responseJsonSchema?: unknown; responseSchema?: unknown }
     }
-    expect(call?.config?.responseSchema?.type).toBe('object')
-    expect(call?.config?.responseSchema?.properties?.['name']?.type).toBe('string')
-    expect(call?.config?.responseSchema?.properties?.['age']?.type).toBe('number')
+    expect(call?.config?.responseJsonSchema).toEqual(jsonSchema)
+    expect(call?.config?.responseSchema).toBeUndefined()
   })
 
-  it('skips responseMimeType and responseSchema when native structured output is disabled', async () => {
+  it('skips responseMimeType and responseJsonSchema when native structured output is disabled', async () => {
     const client = makeFakeGemini(fakeGeminiResponse({ structuredJson: '{"pass":true}' }))
     const adapter = geminiAdapter({ client })
     // Use a synthetic descriptor with nativeStructuredOutput: false to test the
@@ -898,10 +895,10 @@ describe('structured output', () => {
     )
 
     const call = client.calls[0] as {
-      config?: { responseMimeType?: string; responseSchema?: unknown }
+      config?: { responseMimeType?: string; responseJsonSchema?: unknown }
     }
     expect(call?.config?.responseMimeType).toBeUndefined()
-    expect(call?.config?.responseSchema).toBeUndefined()
+    expect(call?.config?.responseJsonSchema).toBeUndefined()
     expect(result.rawStructured).toEqual({ pass: true })
   })
 

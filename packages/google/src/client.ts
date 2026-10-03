@@ -235,21 +235,6 @@ export interface GeminiContent {
 }
 
 /**
- * Schema shape we pass as responseSchema.
- * Structurally compatible with @google/genai Schema.
- */
-export interface GeminiSchema {
-  type?: string
-  description?: string
-  properties?: Record<string, GeminiSchema>
-  required?: string[]
-  items?: GeminiSchema
-  enum?: string[]
-  nullable?: boolean
-  format?: string
-}
-
-/**
  * Thinking configuration.
  * Real type: ThinkingConfig in @google/genai.
  * - thinkingBudget: 0 = DISABLED, -1 = AUTOMATIC
@@ -278,7 +263,12 @@ export interface GeminiGenerateConfig {
   maxOutputTokens?: number
   stopSequences?: string[]
   responseMimeType?: string
-  responseSchema?: GeminiSchema
+  /**
+   * Standard JSON Schema for the response, sent verbatim (real field:
+   * `GenerateContentConfig.responseJsonSchema`). Never `responseSchema`, the
+   * OpenAPI-dialect field (ADR-034).
+   */
+  responseJsonSchema?: unknown
   thinkingConfig?: GeminiThinkingConfig
   /** Real type: ServiceTier enum. Values: "flex" | "standard". */
   serviceTier?: string
@@ -301,7 +291,8 @@ export interface GeminiGenerateConfig {
     functionDeclarations?: Array<{
       name: string
       description: string
-      parameters?: unknown
+      /** Standard JSON Schema, verbatim (real field: `parametersJsonSchema`). */
+      parametersJsonSchema?: unknown
     }>
     googleSearch?: Record<string, never>
   }>
