@@ -465,7 +465,10 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
   Google `RetryInfo` → `retryAfterMs`, per-day quota → `daily_quota` (not retryable), `API_KEY_*`
   → `invalid_auth`, stale `cachedContent` → `bad_request` / `cache_not_found`, an output filter stop
   with no text and no tool call → `content_filter`; xAI credits exhausted → `credits_exhausted`
-  (not retryable), a failed or cancelled 200 → retryable `server`.
+  (not retryable, the message omits the team id), a failed 200 by its `error.code` (`server_error` →
+  retryable `server`, `rate_limit_exceeded` → retryable `rate_limited`, policy codes →
+  `content_filter`, `invalid_*` → `bad_request`, anything else → `unknown`, none of those retried) and
+  a cancelled 200 → `unknown`, not retryable.
 - **Never executes tools, never loops, never persists.** Pure request⇄response mapping.
 
 ---

@@ -726,14 +726,22 @@ export function classifyXaiError(rawErr: unknown, deadline?: XaiSdkDeadline): Ll
     // Out of credits or at the spending limit: neither a retry nor a key
     // rotation helps, the team has to add credit or raise the limit. xAI sends
     // it as a 429 in some reports and a 403 in others.
-    return new LlmError(extractXaiErrorBodyText(rawErr) ?? base.message, {
-      kind: 'rate_limited',
-      retryable: false,
-      reason: 'credits_exhausted',
-      httpStatus: base.httpStatus,
-      provider: 'xai',
-      cause: base.cause ?? rawErr,
-    })
+    // The team id in the sentence is an account identifier: it would land in
+    // logs and ledger rows, so the message omits it (it stays on `cause`).
+    return new LlmError(
+      (extractXaiErrorBodyText(rawErr) ?? base.message).replace(
+        /^Your team \S+ /,
+        'Your team ',
+      ),
+      {
+        kind: 'rate_limited',
+        retryable: false,
+        reason: 'credits_exhausted',
+        httpStatus: base.httpStatus,
+        provider: 'xai',
+        cause: base.cause ?? rawErr,
+      },
+    )
   }
 
   if (base.kind === 'unknown' && isOpenAiSdkConnectionError(rawErr)) {
@@ -753,6 +761,77 @@ export function classifyXaiError(rawErr: unknown, deadline?: XaiSdkDeadline): Ll
     provider: 'xai',
     cause: base.cause ?? rawErr,
   })
+}
+
+/**
+ * How a failed response's `error.code` is classified. A retry is allowed only
+ * for a code that names a transient condition (`server_error`,
+ * `rate_limit_exceeded`): a deterministic failure is refused again and billed
+ * again, and an unrecognised code is not assumed to be transient.
+ */
+function classifyFailedResponseCode(
+  code: string | undefined,
+): Pick<LlmError, 'kind' | 'retryable'> {
+  switch (code) {
+    case 'server_error':
+      return { kind: 'server', retryable: true }
+    case 'rate_limit_exceeded':
+      return { kind: 'rate_limited', retryable: true }
+    case 'bio_policy':
+    case 'misalignment_policy_violation':
+    case 'image_content_policy_violation':
+      return { kind: 'content_filter', retryable: false }
+    case 'invalid_prompt':
+    case 'data_residency_mismatch':
+    case 'invalid_image':
+    case 'invalid_image_format':
+    case 'invalid_base64_image':
+    case 'invalid_image_url':
+    case 'image_too_large':
+    case 'image_too_small':
+    case 'image_parse_error':
+    case 'invalid_image_mode':
+    case 'image_file_too_large':
+    case 'unsupported_image_media_type':
+    case 'empty_image_file':
+    case 'failed_to_download_image':
+    case 'image_file_not_found':
+      return { kind: 'bad_request', retryable: false }
+    default:
+      return { kind: 'unknown', retryable: false }
+  }
+}
+
+/** The error for a response with `status` `failed` or `cancelled` (see step 6b). */
+function failedResponseError(response: XaiResponseShape): LlmError {
+  const reported = isPlainRecord(response.error) ? response.error : undefined
+  const code = typeof reported?.['code'] === 'string' ? reported['code'] : undefined
+  const detail =
+    typeof reported?.['message'] === 'string' ? `: ${reported['message']}` : ''
+  const { kind, retryable } =
+    response.status === 'cancelled'
+      ? ({ kind: 'unknown', retryable: false } as const)
+      : classifyFailedResponseCode(code)
+  return new LlmError(
+    response.status === 'cancelled'
+      ? `xAI response reported status "cancelled"${detail}`
+      : `xAI response failed${code !== undefined ? ` (error.code "${code}")` : ''}${detail}`,
+    {
+      kind,
+      retryable,
+      provider: 'xai',
+      // Usage is attached only when the failed response billed tokens.
+      ...(isPlainRecord(response.usage) &&
+      typeof response.usage.input_tokens === 'number' &&
+      typeof response.usage.output_tokens === 'number'
+        ? { usage: mapUsage(response.usage) }
+        : {}),
+      ...(typeof response.service_tier === 'string' && response.service_tier.length > 0
+        ? { servedServiceTier: response.service_tier }
+        : {}),
+      cause: response.error ?? { status: response.status },
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -1244,42 +1323,17 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       }
 
       // ------------------------------------------------------------------
-      // 6b. A 200 that reports failure. DOC-DERIVED, NOT A CAPTURE: the
-      //     Responses API documents `status` values beyond `completed` and
-      //     `incomplete` (`failed`, `cancelled`) and an `error` object on the
-      //     response, but no probe produced one. Such a response is a
-      //     provider-side failure, never a silent success: a retryable
-      //     `server` error that carries the usage the response billed.
+      // 6b. A 200 that reports failure. DOC-DERIVED, NOT A CAPTURE: xAI's
+      //     reference lists `status` completed|in_progress|incomplete and names
+      //     an `error` object without its shape. `failed` and `cancelled`, and
+      //     the `error.code` values, come from OpenAI's Responses object (the
+      //     API xAI is compatible with), where `error` is set only when the
+      //     response failed. Only those two statuses are failures: an `error`
+      //     object beside a completed response is not a documented shape, and
+      //     a billed, usable answer is never thrown away for it.
       // ------------------------------------------------------------------
-      const reportedError = isPlainRecord(response.error) ? response.error : undefined
-      if (
-        response.status === 'failed' ||
-        response.status === 'cancelled' ||
-        reportedError !== undefined
-      ) {
-        const detail =
-          typeof reportedError?.['message'] === 'string'
-            ? `: ${reportedError['message']}`
-            : ''
-        throw new LlmError(
-          `xAI response reported ${reportedError !== undefined ? 'an error' : `status "${response.status}"`}${detail}`,
-          {
-            kind: 'server',
-            retryable: true,
-            provider: 'xai',
-            // Usage is attached only when the failed response billed tokens.
-            ...(isPlainRecord(response.usage) &&
-            typeof response.usage.input_tokens === 'number' &&
-            typeof response.usage.output_tokens === 'number'
-              ? { usage: mapUsage(response.usage) }
-              : {}),
-            ...(typeof response.service_tier === 'string' &&
-            response.service_tier.length > 0
-              ? { servedServiceTier: response.service_tier }
-              : {}),
-            cause: response.error ?? { status: response.status },
-          },
-        )
+      if (response.status === 'failed' || response.status === 'cancelled') {
+        throw failedResponseError(response)
       }
 
       // ------------------------------------------------------------------

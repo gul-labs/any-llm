@@ -74,6 +74,9 @@ describe('R4.13 credits exhausted / spending limit (doc-derived body)', () => {
         provider: 'xai',
       })
       expect(err.message).toContain('used all available credits')
+      // The team id is an identifier that would land in logs and ledger rows.
+      expect(err.message).not.toContain('00000000-0000-0000-0000-000000000000')
+      expect(err.message).toMatch(/^Your team has either used all available credits/)
     },
   )
 
@@ -152,36 +155,92 @@ describe('R4.13 credits exhausted / spending limit (doc-derived body)', () => {
 })
 
 describe('R4.14 a 200 that reports failure (doc-derived shapes)', () => {
-  it.each(['failedResponse', 'cancelledResponse', 'errorOnCompleted'])(
-    '%s → retryable server error carrying the billed usage',
-    async (name) => {
-      const response = fixtures[name]!
-      const fake = makeFakeXai(response as never)
-      const err = await failure(xaiAdapter({ client: fake }).run(makeReq(), FAKE_CTX))
-      expect(err).toMatchObject({ kind: 'server', retryable: true, provider: 'xai' })
-      const usage = response['usage'] as { input_tokens: number; output_tokens: number }
+  const run = async (name: string): Promise<LlmError> =>
+    failure(
+      xaiAdapter({ client: makeFakeXai(fixtures[name] as never) }).run(
+        makeReq(),
+        FAKE_CTX,
+      ),
+    )
+  const usageOf = (name: string): { input_tokens: number; output_tokens: number } =>
+    fixtures[name]!['usage'] as { input_tokens: number; output_tokens: number }
+
+  it.each([
+    // [fixture, kind, retryable, reason fragment in the message]
+    ['failedResponse', 'server', true],
+    ['failedRateLimit', 'rate_limited', true],
+    ['failedInvalidPrompt', 'bad_request', false],
+    ['failedPolicy', 'content_filter', false],
+    ['failedUnknownCode', 'unknown', false],
+    ['failedNoError', 'unknown', false],
+    ['cancelledResponse', 'unknown', false],
+  ] as const)(
+    '%s → %s, retryable %s, billed usage attached',
+    async (name, kind, retryable) => {
+      const err = await run(name)
+      expect(err).toMatchObject({ kind, retryable, provider: 'xai' })
       expect(err.usage).toMatchObject({
-        inputTokens: usage.input_tokens,
-        outputTokens: usage.output_tokens,
+        inputTokens: usageOf(name).input_tokens,
+        outputTokens: usageOf(name).output_tokens,
       })
     },
   )
 
-  it('names the provider message and the status', async () => {
-    const failed = await failure(
-      xaiAdapter({ client: makeFakeXai(fixtures['failedResponse'] as never) }).run(
-        makeReq(),
-        FAKE_CTX,
+  it('names the provider code and message for a failed response, and the status for a cancel', async () => {
+    const invalid = await run('failedInvalidPrompt')
+    expect(invalid.message).toContain('invalid_prompt')
+    expect(invalid.message).toContain('placeholder message for invalid_prompt')
+    expect((await run('cancelledResponse')).message).toContain('"cancelled"')
+    expect((await run('failedUnknownCode')).message).toContain('some_future_code')
+  })
+
+  it('a completed response is a success even when it carries an error object: the billed answer is kept', async () => {
+    // Not a documented shape (`error` is set only on a failed response), so
+    // no fixture: the adapter must not throw a billed, usable answer away.
+    const result = await xaiAdapter({
+      client: makeFakeXai({
+        ...fakeXaiResponse({ text: 'the answer', inputTokens: 10, outputTokens: 4 }),
+        error: { code: 'server_error', message: 'stray' },
+      } as never),
+    }).run(makeReq(), FAKE_CTX)
+    expect(result.text).toBe('the answer')
+    expect(result.usage.outputTokens).toBe(4)
+  })
+
+  it('deterministic failures are not retried or re-billed: an invalid_prompt is one dispatch and one row', async () => {
+    let calls = 0
+    const fake = makeFakeXai(() => {
+      calls += 1
+      return fixtures['failedInvalidPrompt'] as never
+    })
+    const sink = new RecordingSink()
+    const client = createClient({
+      adapters: [xaiAdapter({ client: fake })],
+      pricingSources: { xai: xaiPricingSource() },
+      modelRegistry: xaiRegistry,
+      sink,
+      clock: new FakeClock(),
+      ids: new FakeIds(),
+      middleware: [
+        retryMiddleware(
+          { maxAttempts: 3, baseDelayMs: 0 },
+          { sleep: async () => {}, random: () => 0 },
+        ),
+      ],
+    })
+    const err = await failure(
+      client.generate(
+        {
+          provider: 'xai',
+          model: 'grok-4.5',
+          messages: [{ role: 'user', parts: [{ kind: 'text', text: 'x' }] }],
+        },
+        { auth: { apiKey: 'k' } },
       ),
     )
-    expect(failed.message).toContain('The server had an error while processing')
-    const cancelled = await failure(
-      xaiAdapter({ client: makeFakeXai(fixtures['cancelledResponse'] as never) }).run(
-        makeReq(),
-        FAKE_CTX,
-      ),
-    )
-    expect(cancelled.message).toContain('"cancelled"')
+    expect(err.kind).toBe('bad_request')
+    expect(calls).toBe(1)
+    expect(sink.records).toHaveLength(1)
   })
 
   it('a failed response with no usable usage carries none', async () => {
