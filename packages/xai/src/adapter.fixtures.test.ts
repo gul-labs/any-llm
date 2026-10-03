@@ -1393,3 +1393,79 @@ describe('fixture: 34-strict-schema-dialect (live 2026-10-02)', () => {
     expect(() => assertXaiSchema(call.requestSchema)).toThrow(/"OBJECT"/)
   })
 })
+
+describe('fixtures: citation ranges and cited on every captured annotation shape', () => {
+  const cases: Array<[string, (f: unknown) => unknown, 'ranged' | 'zero-width']> = [
+    ['17-web-search.json', (f) => (f as FixtureCall).body, 'ranged'],
+    ['26-x-posts.json', (f) => (f as FixtureCall).body, 'ranged'],
+    ['30-grok-4-7-search-replay.json', (f) => (f as { first: unknown }).first, 'ranged'],
+    [
+      '32-server-tool-choice.json',
+      (f) => (f as Record<string, FixtureCall>)['required_grok_4_5']!.body,
+      'ranged',
+    ],
+    [
+      '32-server-tool-choice.json',
+      (f) => (f as Record<string, FixtureCall>)['required_grok_4_7']!.body,
+      'ranged',
+    ],
+    // 19: the answer text carries inline `render_inline_citation` markup, yet
+    // every annotation is 0/0. 18, 27 and the 4.6 variant of 32: only 0/0.
+    ['19-x-search.json', (f) => (f as FixtureCall).body, 'zero-width'],
+    ['18-structured-search.json', (f) => (f as FixtureCall).body, 'zero-width'],
+    ['27-x-users.json', (f) => (f as FixtureCall).body, 'zero-width'],
+    [
+      '32-server-tool-choice.json',
+      (f) => (f as Record<string, FixtureCall>)['required_grok_4_6']!.body,
+      'zero-width',
+    ],
+  ]
+
+  it.each(cases)(
+    '%s: a range is the [[N]](url) marker of its own source; 0/0 leaves cited absent',
+    async (name, pick, kind) => {
+      const body = pick(loadFixture(name))
+      const result = await xaiAdapter({ client: makeFakeXai(body as never) }).run(
+        makeResolvedReq({
+          model: 'grok-4.6',
+          modelDescriptor: grok46ModelDescriptor,
+          config: {
+            providerOptions: {
+              xai: { tools: [{ type: 'web_search' }, { type: 'x_search' }] },
+            },
+          },
+          ...(name.startsWith('18-')
+            ? {
+                outputJsonSchema: {
+                  type: 'object',
+                  properties: { window: { type: 'string' } },
+                  required: ['window'],
+                },
+              }
+            : {}),
+        }),
+        FAKE_CTX,
+      )
+      const citations = result.citations ?? []
+      expect(citations.length).toBeGreaterThan(0)
+      expect(citations.every((c) => c.cited !== false)).toBe(true)
+      expect(result.warnings.some((w) => w.message.includes('textRange'))).toBe(false)
+      if (kind === 'zero-width') {
+        for (const c of citations) {
+          expect(c).not.toHaveProperty('cited')
+          expect(c).not.toHaveProperty('textRange')
+        }
+        return
+      }
+      const ranged = citations.filter((c) => c.textRange !== undefined)
+      expect(ranged.length).toBeGreaterThan(0)
+      for (const c of ranged) {
+        expect(c.cited).toBe(true)
+        const slice = result.text!.slice(c.textRange!.start, c.textRange!.end)
+        expect(slice).toMatch(/^\[\[\d+\]\]\(/)
+        expect(slice.endsWith(`](${c.url})`)).toBe(true)
+        expect(c).not.toHaveProperty('title')
+      }
+    },
+  )
+})

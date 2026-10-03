@@ -1395,7 +1395,9 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
         }
       }
 
-      const citations = collectXaiCitations(response, messageItems)
+      const citations = collectXaiCitations(response, messageItems, (message) =>
+        warnings.push({ type: 'other', message }),
+      )
 
       // Response-level metadata → providerMetadata: usage.context_details
       // (non-numeric usage extra) and response.metadata (e.g.
@@ -1544,24 +1546,51 @@ function expectedServerToolCounters(
  * Citations from the response: the top-level source list first, then the last
  * message's `url_citation` annotations, deduplicated by URL.
  *
- * - A numeric-only title (xAI numbers its inline markers, `title: "1"`) names
- *   nothing, so it is dropped; so is a title equal to the URL.
- * - An annotation with a non-empty `start_index`/`end_index` range is an
- *   inline citation: `cited: true` and `textRange` (UTF-16 offsets into the
- *   joined answer text; xAI indexes each `output_text` part, so the part's
- *   offset in the join is added). The range covers xAI's inline marker.
- *   Fixtures 17, 26, 30 and 32 pin the offsets.
- * - An annotation with a zero-width range (`0`/`0`) attaches a source without
- *   citing it inline: `cited: false`.
- * - A source from the top-level list alone says nothing about citing.
+ * An annotation with a non-empty `start_index`/`end_index` range marks an
+ * inline citation. xAI writes the marker into the answer as `[[N]](url)` and
+ * the range covers exactly that marker, indexed from the start of the
+ * `output_text` part that carries it (fixtures 17, 26, 30 and 32; every
+ * captured message has one part). The adapter treats the indices as UTF-16
+ * code units and adds the part's offset in the joined answer text, and it
+ * checks the result: the slice must be `[[label]](<the annotation's url>)`.
+ * When it is, the source is `cited: true` with that `textRange`, and a title
+ * equal to `label` (xAI numbers its markers: `title: "1"`) is dropped, so a
+ * real title that happens to be numeric survives. When it is not (a base
+ * other than UTF-16 or part-relative, an answer with emoji or several parts
+ * that xAI indexes differently), the range is dropped, the source stays
+ * `cited: true` because xAI did report an inline range, and `onDropped` says
+ * why: never a range that points at the wrong span.
+ *
+ * `cited` is never `false`. A zero-width (`0`/`0`) or missing range means xAI
+ * reported no inline marker range for the source; it does not mean the answer
+ * does not cite it (fixture 19: the answer text carries inline
+ * `render_inline_citation` markup while its three annotations are `0`/`0`;
+ * structured answers, fixtures 18 and 32, have only `0`/`0` annotations), so
+ * `cited` stays absent. A source from the top-level list alone says nothing
+ * about citing either.
  */
+/** `label` when `marker` is exactly `[[label]](url)`, else `undefined`. */
+function inlineMarkerLabel(marker: string, url: string): string | undefined {
+  const tail = `]](${url})`
+  return marker.startsWith('[[') &&
+    marker.endsWith(tail) &&
+    marker.length >= 2 + tail.length
+    ? marker.slice(2, marker.length - tail.length)
+    : undefined
+}
+
 function collectXaiCitations(
   response: XaiResponseShape,
   messageItems: XaiMessageOutputItem[],
+  onDropped: (message: string) => void,
 ): Citation[] {
   const byUrl = new Map<string, Citation>()
 
-  const upsert = (url: unknown, title: unknown): Citation | undefined => {
+  const upsert = (
+    url: unknown,
+    title: unknown,
+    markerLabel?: string,
+  ): Citation | undefined => {
     if (typeof url !== 'string' || url.length === 0) return undefined
     let citation = byUrl.get(url)
     if (citation === undefined) {
@@ -1583,7 +1612,7 @@ function collectXaiCitations(
       typeof title === 'string' &&
       title.length > 0 &&
       title !== url &&
-      !/^\d+$/.test(title)
+      title !== markerLabel
     ) {
       citation.title = title
     }
@@ -1602,6 +1631,7 @@ function collectXaiCitations(
 
   const lastMessage = messageItems.at(-1)
   if (lastMessage !== undefined) {
+    const joined = lastMessage.content.map((part) => part.text).join('')
     let partOffset = 0
     for (const part of lastMessage.content) {
       const annotations = part.annotations
@@ -1609,21 +1639,29 @@ function collectXaiCitations(
         for (const ann of annotations) {
           if (!isPlainRecord(ann)) continue
           if (ann['type'] !== undefined && ann['type'] !== 'url_citation') continue
-          const citation = upsert(ann['url'], ann['title'])
-          if (citation === undefined) continue
           const start = ann['start_index']
           const end = ann['end_index']
-          if (typeof start !== 'number' || typeof end !== 'number') continue
-          if (
+          const hasRange =
+            typeof start === 'number' &&
+            typeof end === 'number' &&
             Number.isInteger(start) &&
             Number.isInteger(end) &&
             start >= 0 &&
             end > start
-          ) {
-            citation.cited = true
+          const url = ann['url']
+          const label =
+            hasRange && typeof url === 'string'
+              ? inlineMarkerLabel(joined.slice(partOffset + start, partOffset + end), url)
+              : undefined
+          const citation = upsert(url, ann['title'], label)
+          if (citation === undefined || !hasRange) continue
+          citation.cited = true
+          if (label === undefined) {
+            onDropped(
+              `xai: dropped a textRange for a citation of ${citation.url}: the answer at start_index ${start}, end_index ${end} is not the inline [[N]](url) marker. The source stays cited without a range.`,
+            )
+          } else {
             citation.textRange ??= { start: partOffset + start, end: partOffset + end }
-          } else if (citation.cited === undefined) {
-            citation.cited = false
           }
         }
       }

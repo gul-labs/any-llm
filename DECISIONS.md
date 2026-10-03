@@ -2297,8 +2297,8 @@ Live evidence (2026-10-03):
 
 ### Amendment A (2026-10-03, grounding audit)
 
-An adversarial audit of the grounding release found money and correctness defects. Item 5 and item 6
-above are replaced by the rules here; everything else stands.
+An adversarial audit of the grounding release found money and correctness defects. Item 5, item 6 and the xAI
+`cited: false` half of item 8 above are replaced by the rules here; everything else stands.
 
 1. **`grounding_missing` retryability depends on the schema.** With an output schema attached the error
    is `retryable: false`: the capture shows the same schema + Search request missing on every call of
@@ -2326,18 +2326,27 @@ above are replaced by the rules here; everything else stands.
    Gemini 2.5 grounded call is therefore understated by those tokens at the input rate (about 176 uUSD on
    the P5 Pro sample). Whether Google bills them is the open billing question above; no upper bound is
    guessed into the price.
-6. **Gemini `textRange` is verified, not assumed.** A live capture (Japanese answer with emoji, two thought
+6. **xAI `cited` and ranges.** `cited` is never `false` on xAI: a `0`/`0` annotation means no marker range
+   was reported, and a captured X Search answer (fixture 19) shows inline citation markup in its text with
+   only `0`/`0` annotations, as do the structured answers (fixtures 18, 27, 32), so `cited` stays absent
+   there. A non-empty range is `cited: true` and is checked: the slice of the joined text must be exactly
+   `[[label]](<the annotation's url>)`, indexed UTF-16 from the start of its `output_text` part; otherwise
+   the range is dropped with a warning and the source stays `cited: true`. A title is dropped only when it
+   equals that marker's label, so a numeric real title survives. Whether xAI counts code points or UTF-16
+   around emoji, and how it indexes a multi-part message, is not in any capture; the check makes a wrong
+   assumption lose a range instead of emitting a wrong one.
+7. **Gemini `textRange` is verified, not assumed.** A live capture (Japanese answer with emoji, two thought
    parts before the answer; fixture `grounding-supports-2026-10-03.json`) showed that `startIndex` and
    `endIndex` are UTF-8 bytes into the answer part, and that `partIndex` does not count thought parts (the
    answer sat at parts index 2 and its segments omitted `partIndex`). The adapter indexes non-thought parts
    and checks every range against `segment.text`: when the answer at the converted range is not exactly
    that text the range is dropped, the source stays `cited: true`, and the result carries a warning. A
    segment without `text` is accepted on the offsets alone.
-7. **`searchEntryPoint` is stored once,** at `providerMetadata.google.searchEntryPoint`; the raw
+8. **`searchEntryPoint` is stored once,** at `providerMetadata.google.searchEntryPoint`; the raw
    `providerMetadata.groundingMetadata` omits it. The HTML is kilobytes and persisted on every grounded row.
    It is untrusted markup (Google's CSS plus model-chosen query strings): the README says to render it in
    a sandboxed iframe.
-8. **`pricingVersion` `gemini-2026-10-03` marks the new grounding lane,** not a token re-read: token rates
+9. **`pricingVersion` `gemini-2026-10-03` marks the new grounding lane,** not a token re-read: token rates
    were last verified 2026-09-25. A row priced under the older version has no `tools` lane.
 
 ---

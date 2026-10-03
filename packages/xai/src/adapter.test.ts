@@ -2335,10 +2335,17 @@ describe('xai Live Search tools', () => {
       document_search_calls: 0,
     }
     const message = response.output.find((item) => item.type === 'message') as {
-      content: Array<{ annotations?: unknown[] }>
+      content: Array<{ text?: string; annotations?: unknown[] }>
     }
+    message.content[0]!.text = 'see docs [[1]](https://docs.x.ai)'
     message.content[0]!.annotations = [
-      { type: 'url_citation', url: 'https://docs.x.ai', title: '1' },
+      {
+        type: 'url_citation',
+        url: 'https://docs.x.ai',
+        title: '1',
+        start_index: 9,
+        end_index: 33,
+      },
     ]
     const adapter = xaiAdapter({ client: makeFakeXai(response) })
     const result = await adapter.run(
@@ -2348,9 +2355,14 @@ describe('xai Live Search tools', () => {
       }),
       FAKE_CTX,
     )
-    // A numeric-only title is xAI's inline marker number, not a title.
+    // The title equals the label of the inline marker xAI numbered: not a title.
     expect(result.citations).toEqual([
-      { url: 'https://docs.x.ai', sourceName: 'docs.x.ai' },
+      {
+        url: 'https://docs.x.ai',
+        sourceName: 'docs.x.ai',
+        cited: true,
+        textRange: { start: 9, end: 33 },
+      },
     ])
     expect(result.usage.details.web_search_calls).toBe(1)
     expect(result.usage.details.web_search_requested).toBe(1)
@@ -2410,7 +2422,7 @@ describe('xai Live Search tools', () => {
       )
     })
 
-    it('a zero-width annotation is a source that is not cited inline', async () => {
+    it('a zero-width annotation reports no marker range: cited stays absent, not false', async () => {
       const result = await run([
         {
           type: 'output_text',
@@ -2427,7 +2439,7 @@ describe('xai Live Search tools', () => {
         },
       ])
       expect(result.citations).toEqual([
-        { url: 'https://a.example/x', sourceName: 'a.example', cited: false },
+        { url: 'https://a.example/x', sourceName: 'a.example' },
       ])
     })
 
@@ -2449,18 +2461,18 @@ describe('xai Live Search tools', () => {
                 url: 'https://a.example/x',
                 title: 'Real title',
                 start_index: 3,
-                end_index: 26,
+                end_index: 29,
               },
               {
                 type: 'url_citation',
                 url: 'https://a.example/x',
                 start_index: 33,
-                end_index: 56,
+                end_index: 59,
               },
             ],
           },
         ],
-        [{ url: 'https://a.example/x', title: '7' }],
+        ['https://a.example/x'],
       )
       expect(result.citations).toEqual([
         {
@@ -2468,7 +2480,7 @@ describe('xai Live Search tools', () => {
           title: 'Real title',
           sourceName: 'a.example',
           cited: true,
-          textRange: { start: 3, end: 26 },
+          textRange: { start: 3, end: 29 },
         },
       ])
     })
@@ -2480,8 +2492,107 @@ describe('xai Live Search tools', () => {
       )
       expect(result.citations).toEqual([
         { url: 'https://a.example/x', sourceName: 'a.example' },
-        { url: 'https://b.example/y', sourceName: 'b.example' },
+        { url: 'https://b.example/y', title: '12', sourceName: 'b.example' },
       ])
+    })
+
+    it('a real title that is numeric survives: only the inline marker label is dropped', async () => {
+      const text = 'In 2024 [[1]](https://a.example/x)'
+      const result = await run([
+        {
+          type: 'output_text',
+          text,
+          annotations: [
+            {
+              type: 'url_citation',
+              url: 'https://a.example/x',
+              title: '2024',
+              start_index: 8,
+              end_index: 34,
+            },
+          ],
+        },
+      ])
+      expect(result.citations).toEqual([
+        {
+          url: 'https://a.example/x',
+          title: '2024',
+          sourceName: 'a.example',
+          cited: true,
+          textRange: { start: 8, end: 34 },
+        },
+      ])
+    })
+
+    it('a range that is not the inline marker (emoji shifted a code-point base) is dropped with a warning, the source stays cited', async () => {
+      // Synthetic: the same range as a UTF-16 reading of a text whose indices
+      // were counted in code points. Not a capture; it pins the safety net.
+      const marker = '[[1]](https://a.example/x)'
+      const text = `😀😀 ${marker}`
+      const start = 3 // code points before the marker; UTF-16 offset is 5
+      const result = await run([
+        {
+          type: 'output_text',
+          text,
+          annotations: [
+            {
+              type: 'url_citation',
+              url: 'https://a.example/x',
+              title: '1',
+              start_index: start,
+              end_index: start + marker.length,
+            },
+          ],
+        },
+      ])
+      const citation = result.citations![0]!
+      expect(citation.cited).toBe(true)
+      expect(citation).not.toHaveProperty('textRange')
+      const warning = result.warnings.find((w) => w.message.includes('textRange'))
+      expect(warning?.message).toContain('https://a.example/x')
+    })
+
+    it('a correct range after an emoji (UTF-16 indices) is kept', async () => {
+      const marker = '[[1]](https://a.example/x)'
+      const text = `😀😀 ${marker}`
+      const result = await run([
+        {
+          type: 'output_text',
+          text,
+          annotations: [
+            {
+              type: 'url_citation',
+              url: 'https://a.example/x',
+              start_index: 5,
+              end_index: 5 + marker.length,
+            },
+          ],
+        },
+      ])
+      const range = result.citations![0]!.textRange!
+      expect(text.slice(range.start, range.end)).toBe(marker)
+      expect(result.warnings).toEqual([])
+    })
+
+    it('a multi-part range indexed from the whole message instead of its part is dropped, not misplaced', async () => {
+      const marker = '[[1]](https://a.example/x)'
+      const result = await run([
+        { type: 'output_text', text: 'First part. ' },
+        {
+          type: 'output_text',
+          text: `See ${marker}`,
+          annotations: [
+            {
+              type: 'url_citation',
+              url: 'https://a.example/x',
+              start_index: 12 + 4,
+              end_index: 12 + 4 + marker.length,
+            },
+          ],
+        },
+      ])
+      expect(result.citations![0]).not.toHaveProperty('textRange')
+      expect(result.citations![0]!.cited).toBe(true)
     })
   })
 

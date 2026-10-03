@@ -419,7 +419,9 @@ export interface Citation {
    * Whether the answer text itself cites this source: `true` when the provider
    * ties the source to a span of the text, `false` when the provider reports
    * citing information and this source is not part of it (it was returned but
-   * no span points at it). Absent when the provider does not say.
+   * no span points at it; Gemini with `groundingSupports`). Absent when the
+   * provider does not say: xAI never sets `false`, because a `0`/`0` annotation
+   * means "no inline marker range reported", not "not cited".
    */
   cited?: boolean
   /**

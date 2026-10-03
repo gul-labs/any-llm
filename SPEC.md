@@ -167,7 +167,7 @@ export interface Citation {
   url: string
   title?: string
   sourceName?: string
-  cited?: boolean // the answer text cites this source (a span points at it); absent when the provider does not say
+  cited?: boolean // the answer text cites this source (a span points at it); absent when the provider does not say (xAI never reports false)
   textRange?: { start: number; end: number } // first span of LlmResult.text tied to this source, UTF-16 offsets
 }
 
