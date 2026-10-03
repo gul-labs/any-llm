@@ -430,7 +430,8 @@ Each descriptor carries:
 - `capabilities.caching` — `{ explicit: boolean; minTokens: number }`.
 - `capabilities.grounding` — whether the model supports Google Search grounding.
 - `capabilities.nativeStructuredOutput` — whether the adapter may send provider-native
-  `responseMimeType` / `responseSchema` hints for `output.jsonSchema`.
+  `responseMimeType` / `responseJsonSchema` for `output.jsonSchema` (standard JSON Schema,
+  checked against the keywords Google enforces; ADR-034).
 - `capabilities.vision` / `capabilities.audioInput` — declarative multimodal support flags.
 - `capabilities.serviceTiers` — provider service tiers safe to send to the SDK for this model.
 

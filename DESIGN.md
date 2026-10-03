@@ -157,8 +157,12 @@ When both `effort` and `budgetTokens` are set for a `'budget'` model, `budgetTok
 `LlmRequest.output` is `{ jsonSchema: JsonValue }` — already a plain JSON Schema value, not a Zod
 schema. When the resolved model's `capabilities.nativeStructuredOutput` is not explicitly `false`,
 the adapter sets `responseMimeType: 'application/json'` and forwards `req.outputJsonSchema`
-straight through as the Gemini `responseSchema` (a cast, not a conversion — there is no
-schema-conversion step).
+straight through as the Gemini `responseJsonSchema` (a cast, not a conversion — there is no
+schema-conversion step). The schema is standard JSON Schema (ADR-034): before it is sent the
+adapter checks it against the keywords Google enforces and rejects any other (`const`, `oneOf`,
+`allOf`, …) with `bad_request` and the path, because Google would accept and silently ignore
+them. Tools are the same: `inputJsonSchema` becomes `parametersJsonSchema`, checked the same way.
+There is no `responseSchema` / `parameters` (OpenAPI dialect) path.
 
 On the response side, the adapter `JSON.parse`s the model's text output into
 `AdapterResult.rawStructured` when structured output was requested and parsing succeeds. The

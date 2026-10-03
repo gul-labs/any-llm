@@ -26,10 +26,10 @@ Live re-probe on 2026-10-02 (Developer API, one grounded question per model, wit
 | `gemini-3.1-flash-lite`  | no on 3 of 4 calls                               | no                             |
 
 The same question without a schema returned `groundingMetadata` with four or five search
-queries. The adapter sends `responseSchema` for structured output. The table is the evidence
-for keeping the capability off: on the Flash-Lite models an accepted request with a schema
-usually means Search did not run at all, and no model returned `groundingMetadata` with
-`responseSchema`.
+queries. The adapter now sends `responseJsonSchema` for structured output (ADR-034); the table was
+recorded with both fields. The table is the evidence for keeping the capability off: on the
+Flash-Lite models an accepted request with a schema usually means Search did not run at all, and
+only one model returned `groundingMetadata` with a schema (and only with `responseJsonSchema`).
 
 If you send a grounded call without a schema and want JSON back, say so in the prompt
 ("respond with JSON only, no code fences"). The adapter returns the model's text unchanged;

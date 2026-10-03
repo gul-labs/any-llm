@@ -1,8 +1,17 @@
 # Caller-owned structured-output validation
 
-`@gullabs/core` intentionally treats `output.jsonSchema` as a **provider hint** and not a contract that
-the engine enforces. It parses JSON when possible, sets `outputParsed`, and leaves business-level shape
-validation to callers.
+`output.jsonSchema` is standard JSON Schema that the adapter **checks and forwards** (ADR-034): it
+rejects dialect mistakes and keywords the provider would silently ignore (`const`, `oneOf`, `allOf`,
+…) before dispatch, then sends the schema verbatim. It is still not a contract the engine enforces on
+the _result_: the engine parses JSON when possible, sets `outputParsed`, and leaves shape validation
+to callers. A schema constrains the model; some keywords (`pattern`, `minLength`, `maxLength` on
+Gemini) are only obeyed probabilistically, so validate what you rely on.
+
+To keep a schema inside what every provider enforces, lint it at build time with
+`assertPortableJsonSchema` from `@gullabs/core`, for example from Zod:
+`assertPortableJsonSchema(z.toJSONSchema(schema))`. Zod's `z.literal('x')` emits `const` (use
+`z.enum(['x'])`), `z.discriminatedUnion` emits `oneOf` (use `z.union`), and `z.record` emits
+`propertyNames`; the portable check names each one.
 
 Use this helper after any structured-output call:
 

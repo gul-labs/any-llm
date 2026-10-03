@@ -88,7 +88,7 @@ export interface LlmRequest {
   model: string // bare provider-native string; identity is the (provider, model) pair
   system?: string
   messages: Message[] // multimodal parts; adapters reject media kinds/constraints they can't honor
-  output?: { jsonSchema: JsonValue } // forward-only hint; adapter forwards it, engine never validates
+  output?: { jsonSchema: JsonValue } // standard JSON Schema (ADR-034); adapter checks and forwards it, engine never validates the result
   config?: GenConfig
   metadata?: CallMetadata // host anchors: tenantId, runId, callSiteId, traceId…
 }
@@ -219,7 +219,7 @@ export interface ResolvedRequest {
   model: string
   system?: string
   messages: Message[]
-  outputJsonSchema?: JsonValue // adapter uses it to set provider responseSchema only
+  outputJsonSchema?: JsonValue // standard JSON Schema; adapter asserts its profile, then sends it verbatim (responseJsonSchema / text.format)
   config: GenConfig // serviceTier optional; when omitted, adapters preserve provider-default behavior
   signal?: AbortSignal
 }
@@ -410,8 +410,11 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
   passed per call; no Vertex support in v1 — see DESIGN.md).
 - Maps: `serviceTier:'flex'` → Gemini Flex only when the model descriptor supports it; `reasoning`
   → `thinkingConfig` (budget for 2.5, level for 3.x); throws `LlmError('bad_request')` when the mapping cannot be applied;
-  `output.jsonSchema` → `responseSchema` (`responseMimeType:'application/json'`) only when native
-  structured output is enabled; `providerOptions.google.*` is a strict per-model allowlist mapped
+  `output.jsonSchema` → `responseJsonSchema` (`responseMimeType:'application/json'`) only when native
+  structured output is enabled, and a tool's `inputJsonSchema` → `parametersJsonSchema`, both
+  verbatim and in the host's key order, never the OpenAPI `responseSchema` / `parameters`
+  (ADR-034). A keyword Google does not enforce (`const`, `oneOf`, `allOf`, `exclusiveMinimum`,
+  `multipleOf`, `uniqueItems`, …) is `bad_request` with its path before dispatch; `providerOptions.google.*` is a strict per-model allowlist mapped
   field-by-field onto the SDK call, not forwarded verbatim.
 - Routes Gemini 2.5 (`gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`),
   Gemini 3.x (`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
@@ -454,9 +457,12 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
   | `toolChoice`        | `tool_choice`         | `'auto' \| 'required' \| 'none'` for the search tools only; needs non-empty `tools`; rejected with function tools, file attachments or the request-level `toolChoice` |
   | `maxTurns`          | `max_turns`           | integer ≥ 1; needs non-empty `tools`; caps agentic turns, not searches; xAI did not enforce it as of 2026-10-02                                                       |
 
-- xAI structured output takes standard JSON Schema. A nullable field lists `'null'` in `type`
-  (`type: ['string', 'null']`). The OpenAPI `nullable` keyword and uppercase type names
-  (`STRING`, `OBJECT`) are `bad_request` before dispatch; the adapter never rewrites a schema.
+- xAI structured output and tool parameters take standard JSON Schema (ADR-034). A nullable
+  field lists `'null'` in `type` (`type: ['string', 'null']`). The OpenAPI `nullable` keyword,
+  uppercase type names (`STRING`, `OBJECT`) and any keyword xAI does not enforce (`oneOf`,
+  `allOf`, `multipleOf`, `uniqueItems`, recursive `$ref`, an unlisted `format`, a limit above
+  xAI's, …) are `bad_request` before dispatch, naming the path; the adapter never rewrites a
+  schema.
 - Search tools plus `output.jsonSchema` is admitted on all three models
   (`structuredOutputWithTools`). A response reporting `num_server_side_tools_used: 0` and no
   `server_side_tool_usage_details` prices exactly with no tool fee. See ADR-030.
