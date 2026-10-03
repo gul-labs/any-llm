@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { LlmError } from '@gullabs/core'
+import { createClient, LlmError } from '@gullabs/core'
 import type { AdapterCtx, TokenCountRequest, Message } from '@gullabs/core'
 import { makeFakeGemini } from '@gullabs/testing'
 import { geminiAdapter, mapMessagesToGeminiContents } from './adapter.js'
@@ -213,5 +213,85 @@ describe('geminiAdapter.countTokens — message-mapping parity with run()', () =
     const runCall = runClient.calls[0] as { contents: unknown }
     const countCall = countClient.countTokensCalls[0] as { contents: unknown }
     expect(countCall.contents).toEqual(runCall.contents)
+  })
+})
+
+describe('geminiAdapter.countTokens — accuracy when function calls are in the history', () => {
+  const withCall: Message[] = [
+    { role: 'user', parts: [{ kind: 'text', text: 'Weather?' }] },
+    {
+      role: 'assistant',
+      parts: [
+        { kind: 'tool-call', toolCallId: 'call_1', toolName: 'get_weather', args: {} },
+      ],
+    },
+    {
+      role: 'user',
+      parts: [
+        {
+          kind: 'tool-result',
+          toolCallId: 'call_1',
+          toolName: 'get_weather',
+          result: { tempC: 18 },
+        },
+      ],
+    },
+  ]
+  const textOnly: Message[] = [
+    { role: 'user', parts: [{ kind: 'text', text: 'Hi' }] },
+    { role: 'assistant', parts: [{ kind: 'text', text: 'Hello' }] },
+  ]
+  const ctxFor = (model: string): AdapterCtx => ({
+    ...FAKE_CTX,
+    modelDescriptor: defaultGeminiRegistry.resolve('google', model)!,
+  })
+
+  it('is estimated on a Gemini 3 model: countTokens sends no signatures, so generate() bills more', async () => {
+    const client = makeFakeGemini({ candidates: [] }, { totalTokens: 50 })
+    const result = await geminiAdapter({ client }).countTokens!(
+      makeCountReq({ model: 'gemini-3.1-pro-preview', messages: withCall }),
+      ctxFor('gemini-3.1-pro-preview'),
+    )
+    expect(result.totalTokens).toBe(50)
+    expect(result.accuracy).toBe('estimated')
+    // The call is sent without a signature (the live endpoint accepts that).
+    const sent = (client.countTokensCalls[0] as { contents: Array<{ parts: unknown[] }> })
+      .contents[1]?.parts[0] as Record<string, unknown>
+    expect(sent['functionCall']).toMatchObject({ name: 'get_weather' })
+    expect(sent['thoughtSignature']).toBeUndefined()
+  })
+
+  it.each([
+    ['a Gemini 3 model without function calls', 'gemini-3.1-pro-preview', textOnly],
+    [
+      'Gemini 2.5, which has no signatures, with function calls',
+      'gemini-2.5-pro',
+      withCall,
+    ],
+  ])('stays exact for %s', async (_label, model, messages) => {
+    const client = makeFakeGemini({ candidates: [] }, { totalTokens: 7 })
+    const result = await geminiAdapter({ client }).countTokens!(
+      makeCountReq({ model, messages }),
+      ctxFor(model),
+    )
+    expect(result.accuracy).toBe('exact')
+  })
+
+  it('the engine hands the adapter the resolved descriptor, so the client reports estimated', async () => {
+    const client = makeFakeGemini({ candidates: [] }, { totalTokens: 50 })
+    const engine = createClient({
+      adapters: [geminiAdapter({ client })],
+      modelRegistry: defaultGeminiRegistry,
+    })
+    const estimated = await engine.countTokens(
+      makeCountReq({ model: 'gemini-3.1-pro-preview', messages: withCall }),
+      { auth: { apiKey: 'k' } },
+    )
+    expect(estimated.accuracy).toBe('estimated')
+    const exact = await engine.countTokens(
+      makeCountReq({ model: 'gemini-3.1-pro-preview', messages: textOnly }),
+      { auth: { apiKey: 'k' } },
+    )
+    expect(exact.accuracy).toBe('exact')
   })
 })

@@ -1,0 +1,156 @@
+{
+  "capturedAt": "2026-10-03",
+  "source": "live Gemini Developer API, raw REST, thinkingLevel LOW, tools as parametersJsonSchema; ids are the values Gemini returned",
+  "models": {
+    "gemini-3.1-pro-preview": {
+      "singleCall": {
+        "turn1Calls": [
+          {
+            "id": "call_1586212",
+            "signed": true
+          }
+        ],
+        "replayWithoutIds": {
+          "status": 200
+        },
+        "replayWithSynthesizedIds": {
+          "status": 200
+        },
+        "replayWithIdOnResponseOnly": {
+          "status": 200
+        }
+      },
+      "parallelCalls": {
+        "turn1Calls": [
+          {
+            "id": "call_735003",
+            "signed": true
+          },
+          {
+            "id": "call_735004",
+            "signed": false
+          },
+          {
+            "id": "call_735005",
+            "signed": false
+          }
+        ],
+        "replayWithoutIds": {
+          "status": 200
+        },
+        "replayWithSynthesizedIds": {
+          "status": 200
+        }
+      },
+      "sequentialSameTool": {
+        "step1Calls": [
+          {
+            "id": "call_1869037",
+            "signed": true
+          }
+        ],
+        "step2Calls": [
+          {
+            "id": "call_1308779",
+            "signed": true
+          }
+        ],
+        "finalWithoutIds": {
+          "status": 200
+        },
+        "finalWithDuplicateSynthesizedIds": {
+          "status": 200
+        }
+      },
+      "countTokens": {
+        "withSignatures": {
+          "status": 200,
+          "totalTokens": 50
+        },
+        "withoutSignatures": {
+          "status": 200,
+          "totalTokens": 50
+        },
+        "withDummySignatures": {
+          "status": 200,
+          "totalTokens": 50
+        }
+      }
+    },
+    "gemini-3.8-flash": {
+      "singleCall": {
+        "turn1Calls": [
+          {
+            "id": "call_1720212",
+            "signed": true
+          }
+        ],
+        "replayWithoutIds": {
+          "status": 200
+        },
+        "replayWithSynthesizedIds": {
+          "status": 200
+        },
+        "replayWithIdOnResponseOnly": {
+          "status": 200
+        }
+      },
+      "parallelCalls": {
+        "turn1Calls": [
+          {
+            "id": "call_948273",
+            "signed": true
+          },
+          {
+            "id": "call_948274",
+            "signed": false
+          },
+          {
+            "id": "call_948275",
+            "signed": false
+          }
+        ],
+        "replayWithoutIds": {
+          "status": 200
+        },
+        "replayWithSynthesizedIds": {
+          "status": 200
+        }
+      },
+      "sequentialSameTool": {
+        "step1Calls": [
+          {
+            "id": "call_1729560",
+            "signed": true
+          }
+        ],
+        "step2Calls": [
+          {
+            "id": "call_817671",
+            "signed": true
+          }
+        ],
+        "finalWithoutIds": {
+          "status": 200
+        },
+        "finalWithDuplicateSynthesizedIds": {
+          "status": 200
+        }
+      },
+      "countTokens": {
+        "withSignatures": {
+          "status": 200,
+          "totalTokens": 50
+        },
+        "withoutSignatures": {
+          "status": 200,
+          "totalTokens": 50
+        },
+        "withDummySignatures": {
+          "status": 200,
+          "totalTokens": 50
+        }
+      }
+    }
+  }
+}

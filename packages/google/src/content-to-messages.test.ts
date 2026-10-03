@@ -231,7 +231,7 @@ describe('geminiContentToMessages: function calling parts', () => {
     })
     expect(result.messages[0]?.parts[0]).toEqual({
       kind: 'tool-call',
-      toolCallId: 'call_get_temp_1',
+      toolCallId: 'anyllm_call_get_temp_1',
       toolName: 'get_temp',
       args: { city: 'SF' },
     })
@@ -251,7 +251,7 @@ describe('geminiContentToMessages: function calling parts', () => {
     })
     expect(
       result.messages[0]?.parts.map((p) => (p as { toolCallId?: string }).toolCallId),
-    ).toEqual(['call_lookup_1', 'call_lookup_2'])
+    ).toEqual(['anyllm_call_lookup_1', 'anyllm_call_lookup_2'])
   })
 
   it('does not collide fallback with a reserved provider id', () => {
@@ -260,7 +260,13 @@ describe('geminiContentToMessages: function calling parts', () => {
         {
           role: 'model',
           parts: [
-            { functionCall: { id: 'call_lookup_1', name: 'lookup', args: { q: '1' } } },
+            {
+              functionCall: {
+                id: 'anyllm_call_lookup_1',
+                name: 'lookup',
+                args: { q: '1' },
+              },
+            },
             { functionCall: { name: 'lookup', args: { q: '2' } } },
           ],
         },
@@ -268,7 +274,7 @@ describe('geminiContentToMessages: function calling parts', () => {
     })
     expect(
       result.messages[0]?.parts.map((p) => (p as { toolCallId?: string }).toolCallId),
-    ).toEqual(['call_lookup_1', 'call_lookup_2'])
+    ).toEqual(['anyllm_call_lookup_1', 'anyllm_call_lookup_2'])
   })
 
   it('reserves a later provider id before allocating an earlier fallback', () => {
@@ -278,14 +284,20 @@ describe('geminiContentToMessages: function calling parts', () => {
           role: 'model',
           parts: [
             { functionCall: { name: 'lookup', args: { q: '1' } } },
-            { functionCall: { id: 'call_lookup_1', name: 'lookup', args: { q: '2' } } },
+            {
+              functionCall: {
+                id: 'anyllm_call_lookup_1',
+                name: 'lookup',
+                args: { q: '2' },
+              },
+            },
           ],
         },
       ],
     })
     expect(
       result.messages[0]?.parts.map((p) => (p as { toolCallId?: string }).toolCallId),
-    ).toEqual(['call_lookup_2', 'call_lookup_1'])
+    ).toEqual(['anyllm_call_lookup_2', 'anyllm_call_lookup_1'])
   })
 
   it('prefers functionCall.id as toolCallId when present', () => {
@@ -334,7 +346,7 @@ describe('geminiContentToMessages: function calling parts', () => {
     })
     expect(result.messages[0]?.parts[0]).toEqual({
       kind: 'tool-result',
-      toolCallId: 'call_get_temp_1',
+      toolCallId: 'anyllm_call_get_temp_1',
       toolName: 'get_temp',
       result: { temp: 59 },
     })
@@ -836,6 +848,7 @@ describe('geminiContentToMessages: thoughtSignature import', () => {
           {
             messageIndex: 1,
             partIndex: 0,
+            kind: 'text',
             model: MODEL,
             partSha256: partSha256(assistant[0]!),
             signature: 'c2ln-text',
@@ -843,6 +856,7 @@ describe('geminiContentToMessages: thoughtSignature import', () => {
           {
             messageIndex: 1,
             partIndex: 1,
+            kind: 'tool-call',
             model: MODEL,
             partSha256: partSha256(assistant[1]!),
             signature: 'c2ln-call',

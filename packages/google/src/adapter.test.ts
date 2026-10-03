@@ -2400,7 +2400,7 @@ describe('google function calling', () => {
     )
     expect(result.finishReason).toBe('tool_calls')
     expect(result.toolCalls?.[0]?.toolName).toBe('get_temperature')
-    expect(result.toolCalls?.[0]?.toolCallId).toBe('call_get_temperature_1')
+    expect(result.toolCalls?.[0]?.toolCallId).toBe('anyllm_call_get_temperature_1')
   })
 
   it('uses provider functionCall.id and keeps two same-name calls distinct', async () => {
@@ -2431,7 +2431,13 @@ describe('google function calling', () => {
       fakeGeminiResponse({
         text: '',
         parts: [
-          { functionCall: { id: 'call_lookup_1', name: 'lookup', args: { q: '1' } } },
+          {
+            functionCall: {
+              id: 'anyllm_call_lookup_1',
+              name: 'lookup',
+              args: { q: '1' },
+            },
+          },
           { functionCall: { name: 'lookup', args: { q: '2' } } },
         ],
       }),
@@ -2447,8 +2453,8 @@ describe('google function calling', () => {
       FAKE_CTX,
     )
     expect(result.toolCalls?.map((c) => c.toolCallId)).toEqual([
-      'call_lookup_1',
-      'call_lookup_2',
+      'anyllm_call_lookup_1',
+      'anyllm_call_lookup_2',
     ])
   })
 
@@ -2458,7 +2464,13 @@ describe('google function calling', () => {
         text: '',
         parts: [
           { functionCall: { name: 'lookup', args: { q: '1' } } },
-          { functionCall: { id: 'call_lookup_1', name: 'lookup', args: { q: '2' } } },
+          {
+            functionCall: {
+              id: 'anyllm_call_lookup_1',
+              name: 'lookup',
+              args: { q: '2' },
+            },
+          },
         ],
       }),
     )
@@ -2473,8 +2485,8 @@ describe('google function calling', () => {
       FAKE_CTX,
     )
     expect(result.toolCalls?.map((c) => c.toolCallId)).toEqual([
-      'call_lookup_2',
-      'call_lookup_1',
+      'anyllm_call_lookup_2',
+      'anyllm_call_lookup_1',
     ])
   })
 

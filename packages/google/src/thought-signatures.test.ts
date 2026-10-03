@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { LlmError } from '@gullabs/core'
 import type { Message, Part } from '@gullabs/core'
 import {
+  dropMessagesFromSignatureState,
   parseSignatureState,
   partSha256,
   resolveSignatures,
@@ -97,36 +98,42 @@ describe('resolveSignatures', () => {
     },
   ]
 
-  it('maps "messageIndex:partIndex" to the signature', () => {
+  it('maps "messageIndex:partIndex" to the signature and keeps the verified entries', () => {
     const entry = signatureEntry(1, 0, 'm', messages[1]!.parts[0]!, 'c2ln')
-    expect(resolveSignatures([entry], messages, 'm').get('1:0')).toBe('c2ln')
+    const resolved = resolveSignatures([entry], messages, 'm')
+    expect(resolved.bySlot.get('1:0')).toBe('c2ln')
+    expect(resolved.kept).toEqual([entry])
+    expect(resolved.dropped).toEqual([])
   })
 
-  it('rejects an entry on a part kind Google does not sign', () => {
+  it('rejects a function-call entry whose part is now a kind Google does not sign', () => {
     const withMedia: Message[] = [
       {
         role: 'assistant',
         parts: [{ kind: 'inline-media', mimeType: 'image/png', data: 'AA==' }],
       },
     ]
-    expect(() =>
-      resolveSignatures(
-        [
-          {
-            messageIndex: 0,
-            partIndex: 0,
-            model: 'm',
-            partSha256: 'a'.repeat(64),
-            signature: 's',
-          },
-        ],
-        withMedia,
-        'm',
-      ),
-    ).toThrow(/cannot be attached/)
+    for (const kind of ['tool-call', 'text'] as const) {
+      const entry = {
+        messageIndex: 0,
+        partIndex: 0,
+        kind,
+        model: 'm',
+        partSha256: 'a'.repeat(64),
+        signature: 's',
+      }
+      if (kind === 'tool-call') {
+        expect(() => resolveSignatures([entry], withMedia, 'm')).toThrow(
+          /is for a "tool-call" part but messages.0.parts.0 is a "inline-media" part/,
+        )
+      } else {
+        // A stale text entry is dropped, never fatal.
+        expect(resolveSignatures([entry], withMedia, 'm').dropped).toHaveLength(1)
+      }
+    }
   })
 
-  it('reports the offending state path on every failure', () => {
+  it('reports the offending state path on every function-call failure', () => {
     const entry = signatureEntry(1, 0, 'other', messages[1]!.parts[0]!, 'c2ln')
     try {
       resolveSignatures([entry], messages, 'm')
@@ -137,4 +144,170 @@ describe('resolveSignatures', () => {
       )
     }
   })
+
+  describe('a stale text entry is dropped, a stale function-call entry is fatal', () => {
+    const history: Message[] = [
+      { role: 'user', parts: [{ kind: 'text', text: 'q' }] },
+      {
+        role: 'assistant',
+        parts: [
+          { kind: 'text', text: 'checking' },
+          { kind: 'tool-call', toolCallId: 'c1', toolName: 'get', args: { a: 1 } },
+        ],
+      },
+    ]
+    const textEntry = signatureEntry(1, 0, 'm', history[1]!.parts[0]!, 'text-sig')
+    const callEntry = signatureEntry(1, 1, 'm', history[1]!.parts[1]!, 'call-sig')
+
+    // A text-only turn, so the only entry in play is the optional one.
+    const textTurn: Message[] = [
+      history[0]!,
+      {
+        role: 'assistant',
+        parts: [
+          { kind: 'text', text: 'checking' },
+          { kind: 'text', text: 'second part' },
+        ],
+      },
+    ]
+    const textOnly = signatureEntry(1, 0, 'm', textTurn[1]!.parts[0]!, 'text-sig')
+
+    it.each<[string, (m: Message[]) => Message[], string]>([
+      [
+        'edited',
+        (m) => [
+          m[0]!,
+          {
+            role: 'assistant',
+            parts: [{ kind: 'text', text: 'checking!' }, m[1]!.parts[1]!],
+          },
+        ],
+        'does not match',
+      ],
+      [
+        'moved',
+        (m) => [m[0]!, { role: 'assistant', parts: [m[1]!.parts[1]!, m[1]!.parts[0]!] }],
+        'does not match',
+      ],
+      [
+        'removed (the message is gone)',
+        (m) => [m[0]!, { role: 'user', parts: [{ kind: 'text', text: 'x' }] }],
+        'does not point at an assistant message',
+      ],
+    ])('a text entry that is %s is dropped, never fatal', (_l, mutate, why) => {
+      const resolved = resolveSignatures([textOnly], mutate(textTurn), 'm')
+      expect(resolved.dropped).toHaveLength(1)
+      expect(resolved.dropped[0]).toContain(why)
+      expect(resolved.kept).toEqual([])
+    })
+
+    it('the call entry beside a stale text entry still verifies', () => {
+      const edited = clone(history)
+      ;(edited[1]!.parts[0] as { text: string }).text = 'checking!'
+      const resolved = resolveSignatures([textEntry, callEntry], edited, 'm')
+      expect(resolved.dropped).toHaveLength(1)
+      expect(resolved.kept).toEqual([callEntry])
+      expect(resolved.bySlot.get('1:1')).toBe('call-sig')
+    })
+
+    it('a call entry whose message is removed or whose part moved is fatal', () => {
+      const moved: Message[] = [
+        history[0]!,
+        { role: 'assistant', parts: [history[1]!.parts[1]!, history[1]!.parts[0]!] },
+      ]
+      expect(() => resolveSignatures([callEntry], moved, 'm')).toThrow(
+        /is for a "tool-call" part/,
+      )
+      expect(() =>
+        resolveSignatures([callEntry], [history[0]!, history[0]!], 'm'),
+      ).toThrow(/does not point at an assistant message/)
+    })
+
+    it('a text entry issued for another model is dropped; the call entry for another model is fatal', () => {
+      const other = { ...textEntry, model: 'other' }
+      const resolved = resolveSignatures([other, callEntry], history, 'm')
+      expect(resolved.dropped[0]).toContain('not replayed across models')
+      expect(resolved.kept).toEqual([callEntry])
+      expect(() =>
+        resolveSignatures([{ ...callEntry, model: 'other' }], history, 'm'),
+      ).toThrow(/not replayed across models/)
+    })
+
+    it('an edited call argument is fatal', () => {
+      const edited = clone(history)
+      ;(edited[1]!.parts[1] as { args: object }).args = { a: 2 }
+      expect(() => resolveSignatures([callEntry], edited, 'm')).toThrow(
+        /does not match messages.1.parts.1/,
+      )
+    })
+
+    it('a duplicate slot is fatal even for text', () => {
+      expect(() => resolveSignatures([textEntry, textEntry], history, 'm')).toThrow(
+        /duplicates the entry/,
+      )
+    })
+
+    it('a host part outside the JSON domain is rejected while verifying, never silently dropped', () => {
+      const bad = clone(history)
+      ;(bad[1]!.parts[0] as { text: string }).text = 'oops \ud83d'
+      expect(() => resolveSignatures([textEntry], bad, 'm')).toThrow(/lone surrogate/)
+    })
+  })
 })
+
+describe('dropMessagesFromSignatureState', () => {
+  const entry = (messageIndex: number, partIndex = 0) => ({
+    messageIndex,
+    partIndex,
+    kind: 'tool-call' as const,
+    model: 'm',
+    partSha256: 'a'.repeat(64),
+    signature: `s${messageIndex}.${partIndex}`,
+  })
+  const state = { google: { signatures: [entry(1), entry(3), entry(3, 1), entry(5)] } }
+  /** The same entry, now pointing at `messageIndex` (signature unchanged). */
+  const moved = (e: ReturnType<typeof entry>, messageIndex: number) => ({
+    ...e,
+    messageIndex,
+  })
+
+  it('removes the entries of removed messages and shifts later indices down', () => {
+    expect(dropMessagesFromSignatureState(state, [0, 1, 2])).toEqual({
+      google: {
+        signatures: [moved(entry(3), 0), moved(entry(3, 1), 0), moved(entry(5), 2)],
+      },
+    })
+    // A rewind: the tail is dropped.
+    expect(dropMessagesFromSignatureState(state, [4, 5, 6])).toEqual({
+      google: { signatures: [entry(1), entry(3), entry(3, 1)] },
+    })
+    // The order of the indices does not matter.
+    expect(dropMessagesFromSignatureState(state, [2, 0, 1])).toEqual(
+      dropMessagesFromSignatureState(state, [0, 1, 2]),
+    )
+  })
+
+  it('returns undefined when nothing is left, and does not mutate the input', () => {
+    const before = JSON.stringify(state)
+    expect(dropMessagesFromSignatureState(state, [1, 3, 5])).toBeUndefined()
+    expect(dropMessagesFromSignatureState(undefined, [0])).toBeUndefined()
+    expect(JSON.stringify(state)).toBe(before)
+  })
+
+  it('removing nothing returns an equal state', () => {
+    expect(dropMessagesFromSignatureState(state, [])).toEqual(state)
+  })
+
+  it('rejects bad indices and a malformed state with bad_request', () => {
+    expect(() => dropMessagesFromSignatureState(state, [-1])).toThrow(LlmError)
+    expect(() => dropMessagesFromSignatureState(state, [1.5])).toThrow(LlmError)
+    expect(() => dropMessagesFromSignatureState(state, [1, 1])).toThrow(
+      /repeats message 1/,
+    )
+    expect(() => dropMessagesFromSignatureState({ xai: {} }, [0])).toThrow(LlmError)
+  })
+})
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}

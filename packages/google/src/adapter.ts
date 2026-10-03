@@ -32,7 +32,11 @@ import {
 } from './client.js'
 import { GOOGLE_REASONING_EFFORT_BUDGET } from './reasoning-budget.js'
 import { normalizeGroundingCitations } from './grounding.js'
-import { reserveProviderToolCallIds, resolveToolCallId } from './tool-call-id.js'
+import {
+  isSynthesizedToolCallId,
+  reserveProviderToolCallIds,
+  resolveToolCallId,
+} from './tool-call-id.js'
 import type {
   GeminiClientLike,
   GeminiGenerateConfig,
@@ -531,7 +535,8 @@ function mapPart(p: Part, signature: string | undefined): GeminiContentPart {
     case 'tool-call':
       return {
         functionCall: {
-          id: p.toolCallId,
+          // A synthesized id never reached Gemini; sending it would only be noise.
+          ...(isSynthesizedToolCallId(p.toolCallId) ? {} : { id: p.toolCallId }),
           name: p.toolName,
           args: p.args,
         },
@@ -541,7 +546,7 @@ function mapPart(p: Part, signature: string | undefined): GeminiContentPart {
     case 'tool-result':
       return {
         functionResponse: {
-          id: p.toolCallId,
+          ...(isSynthesizedToolCallId(p.toolCallId) ? {} : { id: p.toolCallId }),
           name: p.toolName,
           response: toFunctionResponseObject(p),
         },
@@ -630,15 +635,24 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       //    against the host's own messages (no copy of the history is kept).
       // ------------------------------------------------------------------
 
-      const incomingSignatures: GoogleSignatureEntry[] = signsHistory
-        ? parseSignatureState(req.transientProviderState)
-        : []
-      const replaySignatures = signsHistory
-        ? resolveSignatures(incomingSignatures, req.messages, model)
+      const resolved = signsHistory
+        ? resolveSignatures(
+            parseSignatureState(req.transientProviderState),
+            req.messages,
+            model,
+          )
         : undefined
+      // Stale text entries were dropped; the verified ones are carried forward.
+      const incomingSignatures: GoogleSignatureEntry[] = resolved?.kept ?? []
+      if (resolved !== undefined && resolved.dropped.length > 0) {
+        warnings.push({
+          type: 'other',
+          message: `google: dropped ${resolved.dropped.length} stale text signature(s) from transientProviderState (${resolved.dropped.join('; ')}); Google treats text signatures as optional, so nothing required was lost.`,
+        })
+      }
       const contents: GeminiContent[] = mapMessagesToGeminiContents(
         req.messages,
-        replaySignatures,
+        resolved?.bySlot,
       )
 
       // ------------------------------------------------------------------
@@ -1155,9 +1169,18 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       let droppedSignatures = 0
 
       const nameCounts = new Map<string, number>()
-      const reservedIds = reserveProviderToolCallIds(
-        parts.map((part) => part.functionCall?.id),
-      )
+      // Reserve the provider's ids and every id already in the history, so a
+      // synthesized id is unique within the conversation.
+      const reservedIds = reserveProviderToolCallIds([
+        ...parts.map((part) => part.functionCall?.id),
+        ...req.messages.flatMap((message) =>
+          message.parts.flatMap((part) =>
+            part.kind === 'tool-call' || part.kind === 'tool-result'
+              ? [part.toolCallId]
+              : [],
+          ),
+        ),
+      ])
       for (const part of parts) {
         const signature =
           typeof part.thoughtSignature === 'string' && part.thoughtSignature.length > 0
@@ -1211,18 +1234,31 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       // the message at and to the model string this request named.
       let transientProviderState: JsonValue | undefined
       if (signsHistory) {
-        const issued = issuedSignatures.map(({ partIndex, signature }) =>
-          signatureEntry(
-            req.messages.length,
-            partIndex,
-            model,
-            messageParts[partIndex] as Part,
-            signature,
-          ),
-        )
+        const issued: GoogleSignatureEntry[] = []
+        for (const { partIndex, signature } of issuedSignatures) {
+          const part = messageParts[partIndex] as Part
+          try {
+            issued.push(
+              signatureEntry(req.messages.length, partIndex, model, part, signature),
+            )
+          } catch (error) {
+            // The call is already billed: never fail it for a part that cannot be
+            // hashed (a lone surrogate in provider output). Return the result without
+            // an entry; replaying a call that lacks one is rejected on the next turn.
+            if (!(error instanceof LlmError)) throw error
+            warnings.push({
+              type: 'other',
+              message: `google: no signature entry for messages.${req.messages.length}.parts.${partIndex} (a "${part.kind}" part): ${error.message} The result is returned without it; ${
+                part.kind === 'tool-call'
+                  ? 'replaying this function call on the next turn will be rejected'
+                  : 'a text signature is optional, so nothing required is lost'
+              }.`,
+            })
+          }
+        }
         const signatures = [...incomingSignatures, ...issued]
         if (signatures.length > 0) {
-          transientProviderState = { google: { signatures } } as unknown as JsonValue
+          transientProviderState = { google: { signatures } }
         }
         if (droppedSignatures > 0) {
           warnings.push({
@@ -1233,7 +1269,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         const firstCall = messageParts.findIndex((part) => part.kind === 'tool-call')
         if (
           firstCall !== -1 &&
-          !issuedSignatures.some((issued) => issued.partIndex === firstCall)
+          !issuedSignatures.some((entry) => entry.partIndex === firstCall)
         ) {
           warnings.push({
             type: 'other',
@@ -1366,9 +1402,22 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
             ? { cached: response.cachedContentTokenCount }
             : undefined
 
+        // Gemini 3 bills each replayed thought signature (about 110 prompt tokens
+        // each) and countTokens carries none, so a history with function calls
+        // is counted short of what generate() will bill. Live capture
+        // 2026-10-03: the endpoint accepts function calls without signatures and
+        // returns the same count with or without them.
+        const omitsSignatures =
+          ctx.modelDescriptor?.capabilities?.providerState === true &&
+          req.messages.some(
+            (message) =>
+              message.role === 'assistant' &&
+              message.parts.some((part) => part.kind === 'tool-call'),
+          )
+
         return {
           totalTokens: response.totalTokens,
-          accuracy: 'exact',
+          accuracy: omitsSignatures ? 'estimated' : 'exact',
           ...(details !== undefined ? { details } : {}),
           raw: response as unknown as JsonValue,
         }

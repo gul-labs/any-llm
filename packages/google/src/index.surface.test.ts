@@ -60,9 +60,10 @@ describe('@gullabs/google package surface: token counting', () => {
 })
 
 describe('@gullabs/google package surface: thought signatures', () => {
-  it('exports the overlay state type; the hashing helpers stay internal', () => {
+  it('exports the overlay state type and the history-trim helper; the hashing helpers stay internal', () => {
     const state: GoogleSignatureState = { google: { signatures: [] } }
     expect(state.google.signatures).toEqual([])
+    expect(typeof surface.dropMessagesFromSignatureState).toBe('function')
     expect('partSha256' in surface).toBe(false)
   })
 })

@@ -21,6 +21,7 @@ import {
 import type { JsonValue, LlmResult, Message, ToolDefinition } from '@gullabs/core'
 import { runToolLoop } from '@gullabs/testing'
 import { geminiAdapter } from './adapter.js'
+import { dropMessagesFromSignatureState } from './thought-signatures.js'
 import { geminiModelDescriptors } from './models.js'
 import { googleProvider } from './provider.js'
 
@@ -75,6 +76,46 @@ const capture = JSON.parse(
 ) as { models: Record<string, CapturedModel> }
 const CAPTURED_MODELS = Object.keys(capture.models)
 
+interface IdTurn {
+  status: number
+}
+interface IdCall {
+  id: string
+  signed: boolean
+}
+interface IdModel {
+  singleCall: {
+    turn1Calls: IdCall[]
+    replayWithoutIds: IdTurn
+    replayWithSynthesizedIds: IdTurn
+    replayWithIdOnResponseOnly: IdTurn
+  }
+  parallelCalls: {
+    turn1Calls: IdCall[]
+    replayWithoutIds: IdTurn
+    replayWithSynthesizedIds: IdTurn
+  }
+  sequentialSameTool: {
+    step1Calls: IdCall[]
+    step2Calls: IdCall[]
+    finalWithoutIds: IdTurn
+    finalWithDuplicateSynthesizedIds: IdTurn
+  }
+  countTokens: {
+    withSignatures: { status: number; totalTokens: number }
+    withoutSignatures: { status: number; totalTokens: number }
+    withDummySignatures: { status: number; totalTokens: number }
+  }
+}
+const idCapture = JSON.parse(
+  readFileSync(
+    fileURLToPath(
+      new URL('./__fixtures__/function-call-ids-2026-10-03.json', import.meta.url),
+    ),
+    'utf8',
+  ),
+) as { models: Record<string, IdModel> }
+
 // ---------------------------------------------------------------------------
 // Wire harness
 // ---------------------------------------------------------------------------
@@ -83,6 +124,8 @@ interface WireBody {
   contents: Array<{ role: string; parts: Array<Record<string, unknown>> }>
 }
 type WireResponse = { status: number; body: unknown }
+/** A queued response that is sent as this exact JSON text (for values JSON.stringify cannot write, like -0). */
+const RAW = Symbol('raw')
 
 let wire: { bodies: WireBody[]; urls: string[]; queue: WireResponse[] }
 
@@ -93,7 +136,8 @@ beforeEach(() => {
     wire.bodies.push(JSON.parse(init.body ?? '{}') as WireBody)
     const next = wire.queue.shift()
     if (next === undefined) throw new Error('wire stub: no response queued')
-    return new Response(JSON.stringify(next.body), {
+    const body = next.body as { [RAW]?: string } | undefined
+    return new Response(body?.[RAW] ?? JSON.stringify(next.body), {
       status: next.status,
       headers: { 'content-type': 'application/json' },
     })
@@ -114,6 +158,9 @@ function respond(parts: Array<Record<string, unknown>>): void {
       responseId: 'resp-1',
     },
   })
+}
+function respondRaw(json: string): void {
+  wire.queue.push({ status: 200, body: { [RAW]: json } })
 }
 const sig = (length: number, tag = 'S'): string =>
   tag.repeat(Math.ceil(length / tag.length)).slice(0, length)
@@ -460,14 +507,14 @@ describe('result.message and the signature overlay', () => {
         { kind: 'text', text: 'Let me check.' },
         {
           kind: 'tool-call',
-          toolCallId: 'call_get_weather_1',
+          toolCallId: 'anyllm_call_get_weather_1',
           toolName: 'get_weather',
           args: { city: 'Paris' },
         },
         { kind: 'text', text: 'and also' },
         {
           kind: 'tool-call',
-          toolCallId: 'call_get_weather_2',
+          toolCallId: 'anyllm_call_get_weather_2',
           toolName: 'get_weather',
           args: { city: 'Tokyo' },
         },
@@ -476,8 +523,8 @@ describe('result.message and the signature overlay', () => {
     // Conveniences derived from the same output.
     expect(result.text).toBe('Let me check.and also')
     expect(result.toolCalls?.map((c) => c.toolCallId)).toEqual([
-      'call_get_weather_1',
-      'call_get_weather_2',
+      'anyllm_call_get_weather_1',
+      'anyllm_call_get_weather_2',
     ])
     expect(result.finishReason).toBe('tool_calls')
     expect(result.reasoningText).toBe('planning')
@@ -606,14 +653,44 @@ describe('replaying the overlay', () => {
     )
   })
 
-  it('rejects edited text', async () => {
+  it('drops the signature of edited text instead of rejecting (text signatures are optional)', async () => {
     const { history, state } = await signedTurn()
     const edited = clone(history)
     ;(edited[1]?.parts[0] as { text: string }).text = 'Checking!'
-    await expectRejectedBeforeDispatch(
-      edited,
-      state,
-      /edited, reordered or produced by another model after the signature was issued/,
+    respond([text('ok')])
+    const result = await generate(edited, state)
+    const parts = wire.bodies.at(-1)?.contents[1]?.parts as Array<Record<string, unknown>>
+    expect(parts[0]).toEqual({ text: 'Checking!' })
+    expect(parts[1]?.['thoughtSignature']).toBe(sig(40, 'b'))
+    expect(result.warnings.map((w) => w.message).join('\n')).toMatch(
+      /dropped 1 stale text signature\(s\).*messages\.1\.parts\.0.*does not match/,
+    )
+    // The stale entry is not carried forward.
+    const carried = (result.transientProviderState as Overlay).google.signatures
+    expect(carried.map((e) => [e['messageIndex'], e['partIndex'], e['kind']])).toEqual([
+      [1, 1, 'tool-call'],
+    ])
+  })
+
+  it('a host that trims, joins or rebuilds the final text keeps working', async () => {
+    respond([call('get_weather', { city: 'Paris' }, sig(16, 'x'))])
+    const first = await generate([USER])
+    const afterCall = [USER, first.message, toolResults(first)]
+    respond([text('Final answer. ', sig(32, 'T'))])
+    const final = await generate(afterCall, first.transientProviderState)
+    const stored: Message = {
+      role: 'assistant',
+      parts: [{ kind: 'text', text: 'Final answer.' }], // .trim()-ed by the host
+    }
+    respond([text('ok')])
+    await generate(
+      [...afterCall, stored, { role: 'user', parts: [{ kind: 'text', text: 'Thanks' }] }],
+      final.transientProviderState,
+    )
+    expect(wire.bodies.at(-1)?.contents[3]?.parts[0]).toEqual({ text: 'Final answer.' })
+    // The function-call signature still rode back.
+    expect(wire.bodies.at(-1)?.contents[1]?.parts[0]?.['thoughtSignature']).toBe(
+      sig(16, 'x'),
     )
   })
 
@@ -651,14 +728,29 @@ describe('replaying the overlay', () => {
     )
   })
 
-  it('rejects an out-of-range message or part index', async () => {
+  it('rejects an out-of-range function-call entry; drops an out-of-range text entry', async () => {
     const { history, state } = await signedTurn()
-    const outOfMessages = clone(state) as Overlay
-    ;(outOfMessages.google.signatures[0] as Record<string, unknown>)['messageIndex'] = 9
-    await expectRejectedBeforeDispatch(history, outOfMessages, /assistant message/)
-    const outOfParts = clone(state) as Overlay
-    ;(outOfParts.google.signatures[0] as Record<string, unknown>)['partIndex'] = 9
-    await expectRejectedBeforeDispatch(history, outOfParts, /out of range/)
+    // signatures[0] is the text entry, signatures[1] the function call.
+    const callOutOfMessages = clone(state) as Overlay
+    ;(callOutOfMessages.google.signatures[1] as Record<string, unknown>)['messageIndex'] =
+      9
+    await expectRejectedBeforeDispatch(history, callOutOfMessages, /assistant message/)
+    const callOutOfParts = clone(state) as Overlay
+    ;(callOutOfParts.google.signatures[1] as Record<string, unknown>)['partIndex'] = 9
+    await expectRejectedBeforeDispatch(history, callOutOfParts, /out of range/)
+
+    for (const field of ['messageIndex', 'partIndex']) {
+      const textOut = clone(state) as Overlay
+      ;(textOut.google.signatures[0] as Record<string, unknown>)[field] = 9
+      respond([text('ok')])
+      const result = await generate(history, textOut)
+      expect(result.warnings.map((w) => w.message).join('\n')).toMatch(
+        /dropped 1 stale text signature/,
+      )
+      expect(
+        wire.bodies.at(-1)?.contents[1]?.parts[0]?.['thoughtSignature'],
+      ).toBeUndefined()
+    }
   })
 
   it('rejects a duplicate entry', async () => {
@@ -684,7 +776,7 @@ describe('replaying the overlay', () => {
     const error = await expectRejectedBeforeDispatch(
       history,
       undefined,
-      /call_get_weather_1/,
+      /anyllm_call_get_weather_1/,
     )
     expect(error.message).toMatch(/thought signature/)
     expect(error.issues?.[0]?.path).toBe('messages.1.parts.1')
@@ -694,7 +786,7 @@ describe('replaying the overlay', () => {
     textOnly.google.signatures = textOnly.google.signatures.filter(
       (e) => e['partIndex'] === 0,
     )
-    await expectRejectedBeforeDispatch(history, textOnly, /call_get_weather_1/)
+    await expectRejectedBeforeDispatch(history, textOnly, /anyllm_call_get_weather_1/)
   })
 
   it('rejects history produced by another provider (tool calls, no Google state)', async () => {
@@ -759,6 +851,8 @@ describe('replaying the overlay', () => {
     ['an unknown entry key', { extra: 1 }, /not a known key/],
     ['a negative messageIndex', { messageIndex: -1 }, /messageIndex/],
     ['a fractional partIndex', { partIndex: 0.5 }, /partIndex/],
+    ['an unknown kind', { kind: 'media' }, /kind/],
+    ['no kind', { kind: undefined }, /kind/],
     ['an empty model', { model: '' }, /model/],
     ['an uppercase digest', { partSha256: 'A'.repeat(64) }, /partSha256/],
     ['a short digest', { partSha256: 'ab' }, /partSha256/],
@@ -796,7 +890,7 @@ describe('functionResponse.response is always an object', () => {
           parts: [
             {
               kind: 'tool-result',
-              toolCallId: 'call_get_weather_1',
+              toolCallId: 'anyllm_call_get_weather_1',
               toolName: 'get_weather',
               result: result as JsonValue,
               ...(isError ? { isError: true } : {}),
@@ -947,5 +1041,347 @@ describe('runToolLoop on a history-continuation provider', () => {
       /Invalid request messages or tools/,
     )
     expect(error.issues?.[0]?.message).toMatch(/does not match a prior tool-call/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Provider output that cannot be hashed never fails a billed call
+// ---------------------------------------------------------------------------
+
+const rawResponse = (parts: string): string =>
+  `{"candidates":[{"content":{"role":"model","parts":[${parts}]},"finishReason":"STOP"}],` +
+  `"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":5,"totalTokenCount":1005},` +
+  `"modelVersion":"test-version","responseId":"resp-1"}`
+
+describe('provider output outside the JSON domain', () => {
+  it('-0 in arguments: the call succeeds, hashes as 0, and replays after a JSON round trip', async () => {
+    respondRaw(
+      rawResponse(
+        '{"functionCall":{"name":"get_weather","args":{"dx":-0.0,"city":"Paris"}},"thoughtSignature":"SIG-NEG-ZERO"}',
+      ),
+    )
+    const first = await generate([USER])
+    expect(first.usage.inputTokens).toBe(1000)
+    const args = (first.message.parts[0] as unknown as { args: { dx: number } }).args
+    expect(Object.is(args.dx, -0)).toBe(true)
+    const state = first.transientProviderState as Overlay
+    expect(state.google.signatures).toHaveLength(1)
+
+    // A host that stores history as JSON gets 0 back; the entry still verifies.
+    const stored = clone([USER, first.message, toolResults(first)])
+    respond([text('ok')])
+    await generate(stored, clone(state) as JsonValue)
+    expect(wire.bodies.at(-1)?.contents[1]?.parts[0]).toMatchObject({
+      thoughtSignature: 'SIG-NEG-ZERO',
+      functionCall: { args: { dx: 0, city: 'Paris' } },
+    })
+  })
+
+  it('a lone surrogate in function-call arguments: the billed result is returned without that entry, with a warning', async () => {
+    respondRaw(
+      rawResponse(
+        '{"functionCall":{"name":"get_weather","args":{"city":"Pa\\ud83dris"}},"thoughtSignature":"SIG-LONE"}',
+      ),
+    )
+    const first = await generate([USER])
+    expect(first.usage.inputTokens).toBe(1000)
+    expect(first.toolCalls).toHaveLength(1)
+    expect(first.transientProviderState).toBeUndefined()
+    const warning = first.warnings.map((w) => w.message).join('\n')
+    expect(warning).toMatch(/no signature entry for messages\.1\.parts\.0/)
+    expect(warning).toMatch(/lone surrogate/)
+    expect(warning).toMatch(
+      /replaying this function call on the next turn will be rejected/,
+    )
+
+    // The next turn's bad_request explains it, before dispatch.
+    const error = await expectRejectedBeforeDispatch(
+      [USER, first.message, toolResults(first)],
+      first.transientProviderState,
+      /without its thought signature/,
+    )
+    expect(error.issues?.[0]?.path).toBe('messages.1.parts.0')
+  })
+
+  it('a lone surrogate in a signed text part: returned without the optional entry, and the next turn still works', async () => {
+    respond([text('half an emoji \ud83d', sig(24, 'T'))])
+    const result = await generate([USER])
+    expect(result.text).toBe('half an emoji \ud83d')
+    expect(result.transientProviderState).toBeUndefined()
+    expect(result.warnings.map((w) => w.message).join('\n')).toMatch(
+      /no signature entry for messages\.1\.parts\.0.*optional/,
+    )
+    respond([text('ok')])
+    await generate(
+      [USER, result.message, { role: 'user', parts: [{ kind: 'text', text: 'Thanks' }] }],
+      result.transientProviderState,
+    )
+  })
+
+  it('a lone surrogate in a host-supplied signed part is still rejected', async () => {
+    const { history, state } = await signedTurn()
+    const edited = clone(history)
+    ;(edited[1]?.parts[0] as { text: string }).text = 'Checking \ud83d'
+    await expectRejectedBeforeDispatch(edited, state, /lone surrogate/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Trimming and rewinding the history
+// ---------------------------------------------------------------------------
+
+describe('trimming and rewinding the history', () => {
+  /** [U1, A1(call), R1, A2(text), U2, A3(call), R3] with the state that goes with it. */
+  async function longConversation(): Promise<{ history: Message[]; state: JsonValue }> {
+    respond([call('get_user_city', {}, sig(16, 'x'))])
+    const a1 = await generate([USER])
+    const h1 = [USER, a1.message, toolResults(a1, { city: 'Lisbon' })]
+    respond([text('You live in Lisbon.', sig(24, 'T'))])
+    const a2 = await generate(h1, a1.transientProviderState)
+    const u2: Message = {
+      role: 'user',
+      parts: [{ kind: 'text', text: 'Weather there?' }],
+    }
+    const h2 = [...h1, a2.message, u2]
+    respond([call('get_weather', { city: 'Lisbon' }, sig(16, 'y'))])
+    const a3 = await generate(h2, a2.transientProviderState)
+    return {
+      history: [...h2, a3.message, toolResults(a3)],
+      state: a3.transientProviderState as JsonValue,
+    }
+  }
+
+  it('front-trim: removing the oldest turn without touching the state is rejected', async () => {
+    const { history, state } = await longConversation()
+    await expectRejectedBeforeDispatch(
+      history.slice(4),
+      state,
+      /edited, reordered|assistant message|out of range|dropMessagesFromSignatureState/,
+    )
+  })
+
+  it('front-trim: dropMessagesFromSignatureState rebases the state and the replay carries the right signature', async () => {
+    const { history, state } = await longConversation()
+    const trimmed = history.slice(4) // [U2, A3, R3]: the whole first turn is gone
+    const rebased = dropMessagesFromSignatureState(state, [0, 1, 2, 3])
+    expect(
+      (rebased as unknown as Overlay).google.signatures.map((e) => [
+        e['messageIndex'],
+        e['partIndex'],
+      ]),
+    ).toEqual([[1, 0]])
+    respond([text('18C.')])
+    await generate(trimmed, rebased as unknown as JsonValue)
+    const wireContents = wire.bodies.at(-1)?.contents as WireBody['contents']
+    expect(wireContents.map((c) => c.role)).toEqual(['user', 'model', 'user'])
+    expect(wireContents[1]?.parts[0]?.['thoughtSignature']).toBe(sig(16, 'y'))
+  })
+
+  it('compaction: one summary takes the place of the range\'s first message, as the README says', async () => {
+    const { history, state } = await longConversation()
+    const summary: Message = {
+      role: 'user',
+      parts: [{ kind: 'text', text: 'Summary: the user lives in Lisbon.' }],
+    }
+    const compacted = [summary, ...history.slice(4)] // [S, U2, A3, R3]
+    const rebased = dropMessagesFromSignatureState(state, [1, 2, 3])
+    respond([text('18C.')])
+    await generate(compacted, rebased as unknown as JsonValue)
+    const sent = wire.bodies.at(-1)?.contents as WireBody['contents']
+    expect(sent.map((c) => c.role)).toEqual(['user', 'user', 'model', 'user'])
+    expect(sent[2]?.parts[0]?.['thoughtSignature']).toBe(sig(16, 'y'))
+  })
+
+  it('rewind: resending an earlier history with the newest state is rejected; the helper makes it work', async () => {
+    const { history, state } = await longConversation()
+    const rewound = history.slice(0, 5) // drop A3 and R3: back to the user turn
+    await expectRejectedBeforeDispatch(rewound, state, /assistant message|out of range/)
+    const rebased = dropMessagesFromSignatureState(state, [5, 6])
+    respond([text('retry')])
+    await generate(rewound, rebased as unknown as JsonValue)
+    const sent = wire.bodies.at(-1)?.contents as WireBody['contents']
+    expect(sent).toHaveLength(5)
+    expect(sent[1]?.parts[0]?.['thoughtSignature']).toBe(sig(16, 'x'))
+    expect(sent[3]?.parts[0]?.['thoughtSignature']).toBe(sig(24, 'T'))
+  })
+
+  it('cutting back to an earlier tool step and regenerating from there', async () => {
+    const { history, state } = await longConversation()
+    const regenerate = history.slice(0, 3) // [U1, A1, R1]: everything after the first tool step is gone
+    const rebased = dropMessagesFromSignatureState(state, [3, 4, 5, 6])
+    respond([text('again')])
+    await generate(regenerate, rebased as unknown as JsonValue)
+    expect(wire.bodies.at(-1)?.contents[1]?.parts[0]?.['thoughtSignature']).toBe(
+      sig(16, 'x'),
+    )
+  })
+
+  it('a stale text entry alone never blocks a request', async () => {
+    respond([text('hello', sig(24, 'T'))])
+    const first = await generate([USER])
+    // The host replaced the assistant message with a different one at the same index.
+    respond([text('ok')])
+    const result = await generate(
+      [
+        USER,
+        { role: 'assistant', parts: [{ kind: 'text', text: 'something else' }] },
+        { role: 'user', parts: [{ kind: 'text', text: 'Thanks' }] },
+      ],
+      first.transientProviderState,
+    )
+    expect(result.warnings.map((w) => w.message).join('\n')).toMatch(
+      /dropped 1 stale text signature/,
+    )
+    expect(result.transientProviderState).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Tool-call ids: Gemini's are replayed verbatim, the library's are never sent
+// ---------------------------------------------------------------------------
+
+describe.each(Object.keys(idCapture.models))('function-call ids on %s', (model) => {
+  const captured = idCapture.models[model] as IdModel
+
+  it('the capture: Gemini returns ids, and accepts a replay with them, without them, synthesized, or duplicated', () => {
+    for (const c of [
+      ...captured.singleCall.turn1Calls,
+      ...captured.parallelCalls.turn1Calls,
+    ]) {
+      expect(c.id).toMatch(/^call_\d+$/)
+    }
+    expect(captured.parallelCalls.turn1Calls.map((c) => c.signed)).toEqual([
+      true,
+      false,
+      false,
+    ])
+    for (const turn of [
+      captured.singleCall.replayWithoutIds,
+      captured.singleCall.replayWithSynthesizedIds,
+      captured.singleCall.replayWithIdOnResponseOnly,
+      captured.parallelCalls.replayWithoutIds,
+      captured.parallelCalls.replayWithSynthesizedIds,
+      captured.sequentialSameTool.finalWithoutIds,
+      captured.sequentialSameTool.finalWithDuplicateSynthesizedIds,
+    ]) {
+      expect(turn.status).toBe(200)
+    }
+  })
+
+  it('ids Gemini returned come back verbatim on functionCall and functionResponse', async () => {
+    const calls = captured.parallelCalls.turn1Calls
+    respond(
+      calls.map((c, i) => ({
+        functionCall: { id: c.id, name: 'get_weather', args: { city: `City${i}` } },
+        ...(c.signed ? { thoughtSignature: sig(16, 'p') } : {}),
+      })),
+    )
+    const first = await generate([USER], undefined, model)
+    expect(first.toolCalls?.map((c) => c.toolCallId)).toEqual(calls.map((c) => c.id))
+    respond([text('done')])
+    await generate(
+      [USER, first.message, toolResults(first)],
+      first.transientProviderState,
+      model,
+    )
+    const sent = wire.bodies.at(-1)?.contents as WireBody['contents']
+    const ids = (index: number, key: string) =>
+      sent[index]?.parts.map((p) => (p[key] as { id?: string } | undefined)?.id)
+    expect(ids(1, 'functionCall')).toEqual(calls.map((c) => c.id))
+    expect(ids(2, 'functionResponse')).toEqual(calls.map((c) => c.id))
+  })
+
+  it('when Gemini returns no id the library synthesizes one but never sends it, and ids stay unique across turns', async () => {
+    respond([call('get_weather', { city: 'Paris' }, sig(16, 'a'))])
+    const a = await generate([USER], undefined, model)
+    expect(a.toolCalls?.[0]?.toolCallId).toBe('anyllm_call_get_weather_1')
+    const h1 = [USER, a.message, toolResults(a)]
+
+    // The same tool again on the next step: a different id, so the history never
+    // holds two calls that share one.
+    respond([call('get_weather', { city: 'Tokyo' }, sig(16, 'b'))])
+    const b = await generate(h1, a.transientProviderState, model)
+    expect(b.toolCalls?.[0]?.toolCallId).toBe('anyllm_call_get_weather_2')
+    const sentSecond = wire.bodies.at(-1)?.contents as WireBody['contents']
+    expect(JSON.stringify(sentSecond)).not.toContain('anyllm_call_')
+    expect(JSON.stringify(sentSecond)).not.toContain('"id"')
+
+    respond([text('done')])
+    await generate([...h1, b.message, toolResults(b)], b.transientProviderState, model)
+    const sentLast = wire.bodies.at(-1)?.contents as WireBody['contents']
+    expect(JSON.stringify(sentLast)).not.toContain('"id"')
+    expect(sentLast[1]?.parts[0]?.['thoughtSignature']).toBe(sig(16, 'a'))
+    expect(sentLast[3]?.parts[0]?.['thoughtSignature']).toBe(sig(16, 'b'))
+  })
+
+  it('the part hash still detects an edited name, argument or order with synthesized ids', async () => {
+    respond([
+      call('get_weather', { city: 'Paris' }, sig(16, 'a')),
+      call('get_weather', { city: 'Tokyo' }),
+    ])
+    const first = await generate([USER], undefined, model)
+    const history = [USER, first.message, toolResults(first)]
+    const state = first.transientProviderState as JsonValue
+
+    const renamed = clone(history)
+    ;(renamed[1]?.parts[0] as { toolName: string }).toolName = 'get_user_city'
+    ;(renamed[2]?.parts[0] as { toolName: string }).toolName = 'get_user_city'
+    await expectRejectedBeforeDispatch(renamed, state, /edited, reordered/)
+
+    const edited = clone(history)
+    ;(edited[1]?.parts[0] as unknown as { args: { city: string } }).args.city = 'Rome'
+    await expectRejectedBeforeDispatch(edited, state, /edited, reordered/)
+
+    const swapped = clone(history)
+    const parts = (swapped[1] as Message).parts
+    ;[parts[0], parts[1]] = [parts[1] as Message['parts'][number], parts[0] as never]
+    await expectRejectedBeforeDispatch(swapped, state, /edited, reordered/)
+  })
+
+  it('countTokens: the capture says the endpoint takes function calls without signatures and counts the same', () => {
+    const { withSignatures, withoutSignatures, withDummySignatures } =
+      captured.countTokens
+    expect([
+      withSignatures.status,
+      withoutSignatures.status,
+      withDummySignatures.status,
+    ]).toEqual([200, 200, 200])
+    expect(withoutSignatures.totalTokens).toBe(withSignatures.totalTokens)
+    expect(withDummySignatures.totalTokens).toBe(withSignatures.totalTokens)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A response with nothing representable
+// ---------------------------------------------------------------------------
+
+describe('a thought-only response', () => {
+  it('has an empty message.parts, and that message is not accepted back into history', async () => {
+    respond([{ text: 'pondering', thought: true, thoughtSignature: sig(20, 'th') }])
+    const result = await generate([USER])
+    expect(result.message).toEqual({ role: 'assistant', parts: [] })
+    expect(result.text).toBeUndefined()
+    expect(result.toolCalls).toBeUndefined()
+    expect(result.transientProviderState).toBeUndefined()
+
+    const before = wire.bodies.length
+    const error = await generate(
+      [USER, result.message, { role: 'user', parts: [{ kind: 'text', text: 'again' }] }],
+      result.transientProviderState,
+    ).then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+    expect(error).toBeInstanceOf(LlmError)
+    expect(error).toMatchObject({ kind: 'bad_request' })
+    expect((error as LlmError).issues?.[0]?.path).toBe('messages.1.parts')
+    expect(wire.bodies.length).toBe(before)
+    expect(JSON.stringify(wire.bodies)).not.toContain('"parts":[]')
+  })
+
+  it('a completely empty candidate is the same: message.parts is empty', async () => {
+    respond([])
+    const result = await generate([USER])
+    expect(result.message).toEqual({ role: 'assistant', parts: [] })
   })
 })

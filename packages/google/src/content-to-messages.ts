@@ -490,7 +490,7 @@ export function geminiContentToMessages(
     ...(system !== undefined ? { system } : {}),
     messages,
     ...(signatures.length > 0
-      ? { transientProviderState: { google: { signatures } } as unknown as JsonValue }
+      ? { transientProviderState: { google: { signatures } } }
       : {}),
   }
 }
