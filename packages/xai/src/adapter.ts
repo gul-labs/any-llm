@@ -600,8 +600,6 @@ function isXaiTransportError(rawErr: unknown): boolean {
 /** undici error codes for Node's own header and body timers. */
 const UNDICI_HEADERS_TIMEOUT_CODE = 'UND_ERR_HEADERS_TIMEOUT'
 const UNDICI_BODY_TIMEOUT_CODE = 'UND_ERR_BODY_TIMEOUT'
-/** Connect timeout: the request never reached xAI, so a retry is safe. */
-const UNDICI_CONNECT_TIMEOUT_CODE = 'UND_ERR_CONNECT_TIMEOUT'
 
 /** `rawErr` followed by its `.cause` chain (bounded, cycle-safe). */
 function errorCauseChain(rawErr: unknown): unknown[] {
@@ -620,6 +618,43 @@ function errorCauseChain(rawErr: unknown): unknown[] {
 }
 
 /**
+ * What the adapter knows about the SDK deadline of the call that failed: the
+ * `timeout` it handed the SDK and how long the call ran. Without it an
+ * `APIConnectionTimeoutError` is never taken for the SDK's own deadline.
+ */
+export interface XaiSdkDeadline {
+  /** The per-request `timeout` the adapter passed to the SDK, in ms. */
+  timeoutMs: number
+  /** Wall-clock ms between the SDK call starting and the error. */
+  elapsedMs: number
+}
+
+/** Timers may fire a hair early relative to a monotonic clock. */
+const SDK_DEADLINE_SLACK_MS = 5
+
+/**
+ * True only for the SDK's own deadline. The `openai` SDK wraps EVERY fetch
+ * failure whose text mentions "timed out" (an OS `ETIMEDOUT`, a TLS handshake
+ * timeout, a host fetch's own abort) as an `APIConnectionTimeoutError`, so the
+ * class alone proves nothing. The SDK's own timer produces that class with no
+ * cause (body phase) or with the `AbortError` of its own controller (headers
+ * phase), and it cannot fire before the `timeout` the adapter set; both are
+ * required. Anything else falls through to the ordinary classification.
+ */
+function isSdkDeadline(rawErr: unknown, deadline: XaiSdkDeadline | undefined): boolean {
+  if (deadline === undefined) return false
+  if (
+    !(rawErr instanceof Error) ||
+    rawErr.constructor.name !== 'APIConnectionTimeoutError'
+  ) {
+    return false
+  }
+  const causes = errorCauseChain(rawErr).slice(1)
+  if (!causes.every((e) => (e as { name?: unknown }).name === 'AbortError')) return false
+  return deadline.elapsedMs >= deadline.timeoutMs - SDK_DEADLINE_SLACK_MS
+}
+
+/**
  * Which transport deadline killed the request, or `undefined` when none did.
  *
  * - `'headers'` / `'body'`: Node's undici header or body timer fired (the 300 s
@@ -627,14 +662,15 @@ function errorCauseChain(rawErr: unknown): unknown[] {
  *   cause chain; the `openai` SDK wraps the undici error as the cause of its
  *   own `APIConnectionTimeoutError`, or lets it escape raw while the body is
  *   read.
- * - `'sdk'`: the SDK's own deadline (`APIConnectionTimeoutError` with no
- *   connect-timeout cause) fired.
+ * - `'sdk'`: the SDK's own deadline fired (see {@link isSdkDeadline}).
  *
  * A retry reaches the same limit and repeats the spend, so all three are
- * non-retryable. A connect timeout is not matched: nothing was sent.
+ * non-retryable. A connect timeout, an OS `ETIMEDOUT` and a TLS handshake
+ * timeout are not matched: nothing reached xAI, so a retry is safe.
  */
 function xaiTransportTimeoutKind(
   rawErr: unknown,
+  deadline: XaiSdkDeadline | undefined,
 ): 'headers' | 'body' | 'sdk' | undefined {
   const chain = errorCauseChain(rawErr)
   const has = (code: string, name: string): boolean =>
@@ -644,13 +680,7 @@ function xaiTransportTimeoutKind(
     })
   if (has(UNDICI_HEADERS_TIMEOUT_CODE, 'HeadersTimeoutError')) return 'headers'
   if (has(UNDICI_BODY_TIMEOUT_CODE, 'BodyTimeoutError')) return 'body'
-  if (
-    rawErr instanceof Error &&
-    rawErr.constructor.name === 'APIConnectionTimeoutError' &&
-    !has(UNDICI_CONNECT_TIMEOUT_CODE, 'ConnectTimeoutError')
-  ) {
-    return 'sdk'
-  }
+  if (isSdkDeadline(rawErr, deadline)) return 'sdk'
   return undefined
 }
 
@@ -672,21 +702,22 @@ function xaiTransportTimeoutKind(
  *    suffixes vary) → `content_filter`. A bare 403 without that body stays
  *    the core default, `invalid_auth`.
  * 4. A transport deadline (undici header or body timer, or the SDK's own
- *    deadline; see {@link xaiTransportTimeoutKind}) → `timeout`,
+ *    deadline, which needs the `deadline` argument to be recognised; see
+ *    {@link xaiTransportTimeoutKind}) → `timeout`,
  *    `retryable: false`, `reason: 'transport_timeout'`.
  * 5. `kind: 'unknown'` with a known transport-failure signature (see
  *    {@link isXaiTransportError}) → `server`, retryable. A connection that
  *    never reached xAI is not the caller's fault.
  * 6. Else rebuild the core classification tagged `provider: 'xai'`.
  */
-export function classifyXaiError(rawErr: unknown): LlmError {
+export function classifyXaiError(rawErr: unknown, deadline?: XaiSdkDeadline): LlmError {
   if (rawErr instanceof LlmError) {
     return rawErr
   }
 
   const base = classifyError(rawErr)
 
-  const transportTimeout = xaiTransportTimeoutKind(rawErr)
+  const transportTimeout = xaiTransportTimeoutKind(rawErr, deadline)
   if (transportTimeout !== undefined) {
     const which =
       transportTimeout === 'sdk' ? 'SDK deadline' : `transport ${transportTimeout} timer`
@@ -756,8 +787,10 @@ export interface XaiAdapterOptions {
    * builds. Required in practice for any call that can run longer than 300 s:
    * the SDK `timeout` alone does not lift Node's header and body timers, so
    * pass an undici `fetch` with an `Agent({ headersTimeout, bodyTimeout })`
-   * dispatcher. See the package README. Cannot be combined with `client`
-   * (an injected client owns its own transport).
+   * dispatcher. See the package README. Also used for `countTokens`
+   * (`POST /v1/tokenize-text`). Validated and copied when the adapter is
+   * created. Cannot be combined with `client` (an injected client owns its own
+   * transport).
    */
   transport?: XaiTransport
   /**
@@ -784,6 +817,50 @@ export interface XaiAdapterOptions {
 // ---------------------------------------------------------------------------
 
 /**
+ * Validates a host transport and returns a private copy of it.
+ *
+ * @throws LlmError `bad_request` for a transport that is not an object, whose
+ *   `fetch` is not a function, whose `fetchOptions` is not a plain object, or
+ *   whose `fetchOptions` carries a key the request owns.
+ */
+function snapshotXaiTransport(
+  transport: XaiTransport | undefined,
+): XaiTransport | undefined {
+  if (transport === undefined) return undefined
+  const reject = (message: string): LlmError =>
+    new LlmError(`xaiAdapter: ${message}`, {
+      kind: 'bad_request',
+      retryable: false,
+      provider: 'xai',
+    })
+  const candidate = transport as unknown
+  if (candidate === null || typeof candidate !== 'object') {
+    throw reject('transport must be an object { fetch, fetchOptions? }.')
+  }
+  if (typeof transport.fetch !== 'function') {
+    throw reject('transport.fetch must be a function.')
+  }
+  const fetchOptions = transport.fetchOptions as unknown
+  if (fetchOptions === undefined) return { fetch: transport.fetch }
+  if (
+    fetchOptions === null ||
+    typeof fetchOptions !== 'object' ||
+    Array.isArray(fetchOptions)
+  ) {
+    throw reject('transport.fetchOptions must be an object.')
+  }
+  for (const key of XAI_RESERVED_FETCH_OPTION_KEYS) {
+    if (key in fetchOptions) {
+      throw reject(`transport.fetchOptions.${key} is not supported; the request owns it.`)
+    }
+  }
+  return {
+    fetch: transport.fetch,
+    fetchOptions: { ...(fetchOptions as NonNullable<XaiTransport['fetchOptions']>) },
+  }
+}
+
+/**
  * Create an xAI Grok provider adapter (Responses API).
  *
  * @param opts.client - Optional pre-built client (e.g. for testing).
@@ -796,17 +873,9 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       { kind: 'bad_request', retryable: false, provider: 'xai' },
     )
   }
-  for (const key of XAI_RESERVED_FETCH_OPTION_KEYS) {
-    if (
-      opts?.transport?.fetchOptions !== undefined &&
-      key in opts.transport.fetchOptions
-    ) {
-      throw new LlmError(
-        `xaiAdapter: transport.fetchOptions.${key} is not supported; the request owns it.`,
-        { kind: 'bad_request', retryable: false, provider: 'xai' },
-      )
-    }
-  }
+  // Validated and copied once: the host mutating its own transport object
+  // afterwards cannot reach the SDK or `countTokens`.
+  const transport = snapshotXaiTransport(opts?.transport)
   return {
     id: 'xai',
 
@@ -1135,12 +1204,13 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       //    LlmError(provider:'xai').
       // ------------------------------------------------------------------
       let response: XaiResponseShape
+      let sdkCallStart: { startedAt: number; timeoutMs: number } | undefined
       try {
         const buildClient = opts?._clientFactory ?? buildXaiClient
         const client: XaiClientLike =
           opts?.client !== undefined
             ? opts.client
-            : await buildClient(ctx.auth, opts?.transport)
+            : await buildClient(ctx.auth, transport)
         ctx.logger.debug(
           { model, configKeys: Object.keys(params) },
           'llm.adapter.dispatch',
@@ -1148,16 +1218,26 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
         // SDK deadline: timeoutMs + buffer so the engine's own deadline (armed
         // at exactly timeoutMs) fires first; one hour when no timeoutMs is set.
         // It does not lift Node's 300 s header timer (that needs `transport`).
+        const sdkTimeoutMs =
+          genConfig.timeoutMs !== undefined
+            ? genConfig.timeoutMs + XAI_TIMEOUT_BUFFER_MS
+            : XAI_DEFAULT_TIMEOUT_MS
         const requestOptions: XaiRequestOptions = {
           ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
-          timeout:
-            genConfig.timeoutMs !== undefined
-              ? genConfig.timeoutMs + XAI_TIMEOUT_BUFFER_MS
-              : XAI_DEFAULT_TIMEOUT_MS,
+          timeout: sdkTimeoutMs,
         }
+        sdkCallStart = { startedAt: performance.now(), timeoutMs: sdkTimeoutMs }
         response = await client.responses.create(params, requestOptions)
       } catch (rawErr) {
-        throw classifyXaiError(rawErr)
+        throw classifyXaiError(
+          rawErr,
+          sdkCallStart !== undefined
+            ? {
+                timeoutMs: sdkCallStart.timeoutMs,
+                elapsedMs: performance.now() - sdkCallStart.startedAt,
+              }
+            : undefined,
+        )
       }
 
       // ------------------------------------------------------------------
@@ -1364,10 +1444,13 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
 
       const text = concatenateTokenizeText(req)
       const apiKey = requireApiKey(ctx.auth)
-      const fetchImpl = opts?._fetch ?? fetch
+      const fetchImpl = opts?._fetch ?? transport?.fetch ?? fetch
 
       try {
         const res = await fetchImpl('https://api.x.ai/v1/tokenize-text', {
+          // The host transport's init (a dispatcher, say) first; the request
+          // owns the keys below, which `snapshotXaiTransport` keeps out of it.
+          ...(opts?._fetch === undefined ? transport?.fetchOptions : undefined),
           method: 'POST',
           headers: {
             Authorization: `Bearer ${apiKey}`,

@@ -5,10 +5,10 @@ xAI Grok provider adapter for any-llm. A thin mapping layer over the `openai` np
 ## Install
 
 ```bash
-pnpm add @gullabs/xai @gullabs/core openai  # peer: openai ^6 || ^7
+pnpm add @gullabs/xai @gullabs/core openai  # peer: openai ^7
 ```
 
-**Peer dependency:** `openai ^6 || ^7`
+**Peer dependency:** `openai ^7`
 
 xAI has no first-party TypeScript SDK. xAI's own quickstart recommends using the `openai` npm package with a `baseURL` override pointed at xAI's endpoint — that is the path this adapter takes. `buildXaiClient` is the only place in `packages/xai/src` that imports `openai`, so the rest of the adapter (and its tests) stay decoupled from the real SDK via the structural `XaiClientLike` interface.
 
@@ -360,16 +360,28 @@ Notes:
   transport is the only way to run a call past 300 s. A later release will stream internally; until it
   does, treat the transport as required for any long-running xAI workload.
 - `transport` cannot be combined with an injected `client`, and `fetchOptions` cannot carry `headers`,
-  `signal`, `body` or `method`. Both are `bad_request`.
+  `signal`, `body` or `method`. Both are `bad_request`, as is a `transport` whose `fetch` is not a
+  function or whose `fetchOptions` is not an object. The adapter copies the transport when it is
+  created, so changing your own object afterwards has no effect.
+- `transport` carries every request the adapter makes: `responses.create` **and** `countTokens`
+  (`POST /v1/tokenize-text`), so a proxy, mTLS or egress policy in your `fetch` covers both.
+  `XaiFileStore` is separate and takes its own `fetch` option.
+- `timeoutMs` is at most 2147478647 (Node timers overflow at 2^31 - 1 ms and the SDK deadline adds
+  5 s); a larger value is `bad_request`, not clamped.
 - `timeoutMs` still works as before: the engine arms its own deadline at exactly `timeoutMs` and the
   SDK deadline sits 5 s behind it, so you see the engine's clean timeout.
 
 ### Timeout errors do not retry
 
-A header-timer, body-timer or SDK-deadline timeout is `kind: 'timeout'`, `retryable: false`,
-`reason: 'transport_timeout'`. Retrying reaches the same limit and repeats the spend, so the retry
-middleware does not retry it; resubmit from the host if you want to. A connect timeout (nothing was
-sent) stays a retryable `timeout`. See ADR-032 in the repository root `DECISIONS.md`.
+A header-timer, body-timer or SDK-deadline timeout (a transport-level timeout; it can fire before or
+after response headers) is `kind: 'timeout'`, `retryable: false`, `reason: 'transport_timeout'`.
+Retrying reaches the same limit and repeats the spend, so the retry middleware does not retry it;
+resubmit from the host if you want to. A connect timeout, an OS `ETIMEDOUT` and a TLS handshake
+timeout (nothing reached xAI) stay retryable. The `openai` SDK wraps all of those as the same
+`APIConnectionTimeoutError`, so the adapter recognises its own SDK deadline by the failure's shape (no
+cause, or only the SDK's own `AbortError`) and by the call having run for the `timeout` it set; the
+exported `classifyXaiError(error, { timeoutMs, elapsedMs })` takes that context, and without it never
+reports an SDK deadline. See ADR-032 in the repository root `DECISIONS.md`.
 
 ## Regions
 

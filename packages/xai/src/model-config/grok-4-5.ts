@@ -12,6 +12,7 @@
 
 import { z } from 'zod'
 
+import { XAI_MAX_TIMEOUT_MS } from '../client.js'
 import { XaiProviderOptionsSchema } from './tools.js'
 
 export const Grok45ConfigSchema = z
@@ -60,9 +61,9 @@ export const Grok45ConfigSchema = z
       description:
         'xAI priority processing for grok-4.5, billed at 2× on input, cached input, and output tokens. Live-verified 2026-09-25.',
     }),
-    timeoutMs: z.number().int().positive().optional().meta({
+    timeoutMs: z.number().int().positive().max(XAI_MAX_TIMEOUT_MS).optional().meta({
       title: 'Timeout',
-      description: 'Logical request timeout in milliseconds.',
+      description: 'Logical request timeout in milliseconds (at most 2147478647).',
     }),
     providerOptions: z
       .strictObject({

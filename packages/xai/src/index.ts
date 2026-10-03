@@ -52,7 +52,7 @@ export {
   XAI_TIMEOUT_BUFFER_MS,
 } from './client.js'
 export { xaiAdapter, classifyXaiError } from './adapter.js'
-export type { XaiAdapterOptions } from './adapter.js'
+export type { XaiAdapterOptions, XaiSdkDeadline } from './adapter.js'
 export {
   XaiFileStore,
   XAI_FILE_TTL_MIN_SECONDS,

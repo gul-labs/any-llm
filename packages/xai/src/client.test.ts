@@ -168,7 +168,7 @@ describe('buildXaiClient — SDK deadline (real SDK, stubbed fetch)', () => {
     expect(elapsed).toBeGreaterThanOrEqual(30)
     expect(elapsed).toBeLessThan(5_000)
 
-    const classified = classifyXaiError(err)
+    const classified = classifyXaiError(err, { timeoutMs: 40, elapsedMs: elapsed })
     expect(classified).toMatchObject({
       kind: 'timeout',
       retryable: false,
@@ -207,6 +207,49 @@ describe('buildXaiClient — SDK deadline (real SDK, stubbed fetch)', () => {
     expect(classified.reason).toBeUndefined()
     expect(classified.kind).not.toBe('timeout')
   })
+})
+
+describe('buildXaiClient — connect-phase timeouts are not the SDK deadline (real SDK, stubbed fetch)', () => {
+  const cases: Array<[string, () => Error]> = [
+    [
+      'OS ETIMEDOUT',
+      () =>
+        Object.assign(new Error('connect ETIMEDOUT 1.2.3.4:443'), { code: 'ETIMEDOUT' }),
+    ],
+    ['TLS handshake timeout', () => new Error('TLS handshake timed out')],
+    [
+      'undici connect timeout',
+      () =>
+        Object.assign(new Error('Connect Timeout Error'), {
+          name: 'ConnectTimeoutError',
+          code: 'UND_ERR_CONNECT_TIMEOUT',
+        }),
+    ],
+  ]
+
+  it.each(cases)(
+    '%s wrapped by the SDK as APIConnectionTimeoutError stays a retryable error',
+    async (_name, makeCause) => {
+      const client = await buildXaiClient(
+        AUTH,
+        asTransport(() =>
+          Promise.reject(new TypeError('fetch failed', { cause: makeCause() })),
+        ),
+      )
+      const err: unknown = await client.responses
+        .create(PARAMS, { timeout: 3_600_000 })
+        .then(
+          () => undefined,
+          (e: unknown) => e,
+        )
+      // The real SDK wraps every "timed out" fetch failure as this class.
+      expect((err as Error).constructor.name).toBe('APIConnectionTimeoutError')
+
+      const classified = classifyXaiError(err)
+      expect(classified.reason).toBeUndefined()
+      expect(classified.retryable).toBe(true)
+    },
+  )
 })
 
 describe('buildXaiClient — transport deadline (real SDK, stubbed fetch)', () => {

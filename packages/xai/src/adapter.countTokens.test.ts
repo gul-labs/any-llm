@@ -6,9 +6,10 @@
 
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type { AdapterCtx, TokenCountRequest } from '@gullabs/core'
 import { xaiAdapter } from './adapter.js'
+import type { XaiTransport } from './client.js'
 
 const FAKE_CTX: AdapterCtx = {
   auth: { apiKey: 'test-key' },
@@ -36,6 +37,41 @@ function makeFetch(
 ): typeof fetch {
   return impl as unknown as typeof fetch
 }
+
+describe('xaiAdapter.countTokens — host transport', () => {
+  it('sends tokenize-text through transport.fetch with its fetchOptions, never the global fetch', async () => {
+    const dispatcher = { sentinel: 'agent' }
+    const seen: Array<{ url: string; init: Record<string, unknown> }> = []
+    const globalSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('global'))
+    try {
+      const adapter = xaiAdapter({
+        transport: {
+          fetch: makeFetch(async (url, init) => {
+            seen.push({ url, init: init as unknown as Record<string, unknown> })
+            return new Response(JSON.stringify(tokenizeFixture.body), { status: 200 })
+          }),
+          fetchOptions: { dispatcher } as unknown as XaiTransport['fetchOptions'] &
+            object,
+        },
+      })
+      const result = await adapter.countTokens!(makeCountReq(), FAKE_CTX)
+
+      expect(result.totalTokens).toBe(tokenizeFixture.body.token_ids.length)
+      expect(globalSpy).not.toHaveBeenCalled()
+    } finally {
+      globalSpy.mockRestore()
+    }
+    expect(seen).toHaveLength(1)
+    expect(seen[0]?.url).toBe('https://api.x.ai/v1/tokenize-text')
+    expect(seen[0]?.init['dispatcher']).toBe(dispatcher)
+    expect(seen[0]?.init['method']).toBe('POST')
+    expect(
+      new Headers(
+        seen[0]?.init['headers'] as ConstructorParameters<typeof Headers>[0],
+      ).get('authorization'),
+    ).toBe('Bearer test-key')
+  })
+})
 
 describe('xaiAdapter.countTokens — happy path', () => {
   it('POSTs concatenated text to /v1/tokenize-text and reports lower-bound', async () => {

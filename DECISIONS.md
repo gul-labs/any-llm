@@ -1898,8 +1898,19 @@ the spend repeated.
    `UND_ERR_BODY_TIMEOUT`, or the class name, anywhere in the `.cause` chain), and the SDK's own
    deadline (`APIConnectionTimeoutError`), classify as `kind: 'timeout'`, `retryable: false`,
    `reason: 'transport_timeout'` (ADR-036). A retry reaches the same limit and repeats the spend.
-   A connect timeout (`UND_ERR_CONNECT_TIMEOUT`) is not matched: nothing was sent, so it stays a
-   retryable `timeout`. The engine's own `timeoutMs` deadline is unchanged.
+   A connect timeout (`UND_ERR_CONNECT_TIMEOUT`), an OS `ETIMEDOUT` and a TLS handshake timeout are
+   not matched: nothing reached xAI, so they stay retryable. The `openai` SDK wraps every fetch
+   failure whose text mentions "timed out" as `APIConnectionTimeoutError`, so the class alone is not
+   the SDK deadline. The adapter treats it as the SDK deadline only when the error has no cause or
+   only the `AbortError` of the SDK's own controller, and the call ran at least as long as the
+   `timeout` the adapter set; `classifyXaiError(error, { timeoutMs, elapsedMs })` takes that context
+   and never reports an SDK deadline without it. The engine's own `timeoutMs` deadline is unchanged.
+5. **Transport scope and validation.** `transport` also carries `countTokens`
+   (`POST /v1/tokenize-text`) so a host's proxy or egress policy covers every request the adapter
+   makes. The adapter validates it once (a `fetch` function, an object `fetchOptions` without the
+   reserved keys) and copies it, so later mutation of the host's object cannot bypass the check.
+   `timeoutMs` above 2147478647 (`2^31 - 1` minus the 5 s buffer) is `bad_request` in the grok
+   config schemas: the SDK's timer would overflow and fire after 1 ms.
 
 **Deliberately not built:** a library-owned undici agent; an automatic retry with a longer timer;
 reading a request-level header timeout from `providerOptions`. Streaming internally is the

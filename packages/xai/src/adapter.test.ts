@@ -1206,11 +1206,77 @@ describe('transport-failure classification', () => {
         super('Request timed out.')
       }
     }
-    const result = classifyXaiError(new APIConnectionTimeoutError())
+    const result = classifyXaiError(new APIConnectionTimeoutError(), {
+      timeoutMs: 125_000,
+      elapsedMs: 125_001,
+    })
     expect(result.kind).toBe('timeout')
     expect(result.retryable).toBe(false)
     expect(result.reason).toBe('transport_timeout')
     expect(result.provider).toBe('xai')
+  })
+
+  it('does not take an APIConnectionTimeoutError for the SDK deadline without the deadline context, or before the deadline could have fired', () => {
+    class APIConnectionError extends Error {}
+    class APIConnectionTimeoutError extends APIConnectionError {
+      constructor() {
+        super('Request timed out.')
+      }
+    }
+    const without = classifyXaiError(new APIConnectionTimeoutError())
+    expect(without.reason).toBeUndefined()
+    expect(without.retryable).toBe(true)
+
+    const early = classifyXaiError(new APIConnectionTimeoutError(), {
+      timeoutMs: 125_000,
+      elapsedMs: 40,
+    })
+    expect(early.reason).toBeUndefined()
+    expect(early.retryable).toBe(true)
+  })
+
+  it.each([
+    [
+      'OS ETIMEDOUT',
+      Object.assign(new Error('connect ETIMEDOUT 1.2.3.4:443'), { code: 'ETIMEDOUT' }),
+    ],
+    ['TLS handshake timeout', new Error('TLS handshake timed out')],
+  ])(
+    'a wrapped %s is not the SDK deadline even when it ran as long as the deadline',
+    (_name, cause) => {
+      class APIConnectionTimeoutError extends Error {
+        constructor(c: Error) {
+          super('Request timed out.')
+          this.cause = c
+        }
+      }
+      const result = classifyXaiError(
+        new APIConnectionTimeoutError(new TypeError('fetch failed', { cause })),
+        { timeoutMs: 1_000, elapsedMs: 5_000 },
+      )
+      expect(result.reason).toBeUndefined()
+      expect(result.retryable).toBe(true)
+    },
+  )
+
+  it('an SDK-wrapped AbortError that ran for the full deadline is the SDK deadline', () => {
+    class APIConnectionTimeoutError extends Error {
+      constructor(c: Error) {
+        super('Request timed out.')
+        this.cause = c
+      }
+    }
+    const result = classifyXaiError(
+      new APIConnectionTimeoutError(
+        new DOMException('This operation was aborted', 'AbortError'),
+      ),
+      { timeoutMs: 1_000, elapsedMs: 1_002 },
+    )
+    expect(result).toMatchObject({
+      kind: 'timeout',
+      retryable: false,
+      reason: 'transport_timeout',
+    })
   })
 
   it('classifies APIConnectionTimeoutError by constructor name even with a non-timeout message', () => {
@@ -1220,7 +1286,10 @@ describe('transport-failure classification', () => {
         super('Connection error.')
       }
     }
-    const result = classifyXaiError(new APIConnectionTimeoutError())
+    const result = classifyXaiError(new APIConnectionTimeoutError(), {
+      timeoutMs: 1_000,
+      elapsedMs: 1_000,
+    })
     expect(result.kind).toBe('timeout')
     expect(result.retryable).toBe(false)
     expect(result.reason).toBe('transport_timeout')
@@ -1388,7 +1457,9 @@ describe('xai transport option', () => {
     )
     expect(factory).toHaveBeenCalledTimes(1)
     expect(factory.mock.calls[0]?.[0]).toEqual({ apiKey: 'test-key' })
-    expect(factory.mock.calls[0]?.[1]).toBe(transport)
+    // A snapshot taken at construction: same fetch and options, not the host's object.
+    expect(factory.mock.calls[0]?.[1]).toEqual(transport)
+    expect(factory.mock.calls[0]?.[1]).not.toBe(transport)
   })
 
   it('passes undefined when no transport is configured', async () => {
@@ -1421,6 +1492,52 @@ describe('xai transport option', () => {
       )
     },
   )
+
+  it.each([
+    ['fetchOptions: null', { fetch: (() => {}) as unknown, fetchOptions: null }],
+    ['fetchOptions: an array', { fetch: (() => {}) as unknown, fetchOptions: [] }],
+    ['fetchOptions: a string', { fetch: (() => {}) as unknown, fetchOptions: 'x' }],
+    ['fetch missing', { fetchOptions: {} }],
+    ['fetch not a function', { fetch: 'not-a-function' as unknown }],
+  ])(
+    'rejects a malformed transport (%s) with bad_request, not a TypeError',
+    (_name, t) => {
+      expect(() => xaiAdapter({ transport: t as unknown as XaiTransport })).toThrow(
+        expect.objectContaining({ kind: 'bad_request', provider: 'xai' }) as never,
+      )
+    },
+  )
+
+  it('mutating the host transport object after construction cannot smuggle in a reserved option', async () => {
+    const seen: Array<Record<string, unknown>> = []
+    const stubFetch = ((_input: unknown, init: Record<string, unknown>) => {
+      seen.push(init)
+      return Promise.resolve(
+        new Response(JSON.stringify(fakeXaiResponse({ text: 'ok' })), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+    }) as unknown as typeof fetch
+    const transport = {
+      fetch: stubFetch,
+      fetchOptions: { keepalive: true } as Record<string, unknown>,
+    }
+    const adapter = xaiAdapter({ transport: transport as unknown as XaiTransport })
+    transport.fetchOptions['headers'] = { 'x-smuggled': '1' }
+    transport.fetchOptions['body'] = 'smuggled'
+    transport.fetchOptions['keepalive'] = false
+
+    await adapter.run(makeResolvedReq(), FAKE_CTX)
+
+    expect(seen[0]?.['keepalive']).toBe(true)
+    expect(seen[0]?.['body']).not.toBe('smuggled')
+    expect(
+      new Headers(seen[0]?.['headers'] as ConstructorParameters<typeof Headers>[0]).get(
+        'x-smuggled',
+      ),
+    ).toBeNull()
+  })
 
   it('reaches the real SDK: the stub fetch carries the request, the options and the timeout', async () => {
     const dispatcher = { sentinel: 'undici-agent' }
@@ -1594,6 +1711,51 @@ describe('xai transport-timeout classification', () => {
       ),
     ).rejects.toMatchObject({ kind: 'server' })
     expect(client.calls).toHaveLength(3)
+  })
+})
+
+describe('adapter wires the SDK deadline into classification', () => {
+  class APIConnectionTimeoutError extends Error {
+    constructor(cause?: Error) {
+      super('Request timed out.')
+      if (cause !== undefined) this.cause = cause
+    }
+  }
+  const abortError = () => new DOMException('This operation was aborted', 'AbortError')
+
+  async function failWith(error: Error, advanceMs: number) {
+    const real = performance.now.bind(performance)
+    let offset = 0
+    const spy = vi.spyOn(performance, 'now').mockImplementation(() => real() + offset)
+    try {
+      const client = makeFakeXai(() => {
+        offset += advanceMs
+        throw error
+      })
+      return await xaiAdapter({ client })
+        .run(makeResolvedReq({ config: { timeoutMs: 1_000 } }), FAKE_CTX)
+        .then(
+          () => undefined,
+          (e: unknown) => e as LlmError,
+        )
+    } finally {
+      spy.mockRestore()
+    }
+  }
+
+  it('the SDK timer firing after the timeout the adapter set is non-retryable', async () => {
+    const err = await failWith(new APIConnectionTimeoutError(abortError()), 6_000)
+    expect(err).toMatchObject({
+      kind: 'timeout',
+      retryable: false,
+      reason: 'transport_timeout',
+    })
+  })
+
+  it('an abort that happened long before the SDK deadline (a host fetch with its own timeout) stays retryable', async () => {
+    const err = await failWith(new APIConnectionTimeoutError(abortError()), 10)
+    expect(err?.retryable).toBe(true)
+    expect(err?.reason).toBeUndefined()
   })
 })
 
@@ -2833,6 +2995,47 @@ describe('declared model aliases', () => {
         { auth: { apiKey: 'test-key' } },
       ),
     ).rejects.toMatchObject({ kind: 'bad_request' })
+  })
+})
+
+describe('middleware cannot reroute on the built-in registry (ADR-037)', () => {
+  it('a swapped modelDescriptor and post-next provider/model assignments change neither the SDK model nor the price', async () => {
+    const other = xaiRegistry.resolve('xai', 'grok-4.7')!
+    const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
+    const sink = new RecordingSink()
+    const llm = createClient({
+      adapters: [xaiAdapter({ client })],
+      pricingSources: { xai: xaiPricingSource() },
+      modelRegistry: xaiRegistry,
+      sink,
+      clock: new FakeClock(),
+      ids: new FakeIds(),
+      middleware: [
+        {
+          id: 'swapper',
+          async intercept(req, ctx, next) {
+            ;(req as { modelDescriptor?: ModelDescriptor }).modelDescriptor = other
+            const out = await next(req, ctx)
+            ;(req as { model: string }).model = 'grok-4.7'
+            return out
+          },
+        },
+      ],
+    })
+
+    const out = await llm.generate(
+      {
+        provider: 'xai',
+        model: 'grok-4.5',
+        messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
+      },
+      { auth: { apiKey: 'test-key' } },
+    )
+    const baseline = xaiPricingSource().price('grok-4.5', out.usage)
+
+    expect((client.calls[0] as { model: string }).model).toBe('grok-4.5')
+    expect(out.cost?.microUsd).toBe(baseline.microUsd)
+    expect(sink.records[0]!.model).toBe('grok-4.5')
   })
 })
 

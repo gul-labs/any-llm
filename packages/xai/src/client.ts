@@ -320,6 +320,13 @@ export const XAI_DEFAULT_TIMEOUT_MS = 3_600_000
  */
 export const XAI_TIMEOUT_BUFFER_MS = 5_000
 
+/**
+ * Largest `timeoutMs` the grok config schemas accept. Node timers fire after
+ * 1 ms (with a warning) above 2^31 - 1 ms, and the SDK deadline is `timeoutMs`
+ * plus {@link XAI_TIMEOUT_BUFFER_MS}; a larger value is rejected, not clamped.
+ */
+export const XAI_MAX_TIMEOUT_MS = 2_147_483_647 - XAI_TIMEOUT_BUFFER_MS
+
 // ---------------------------------------------------------------------------
 // buildXaiClient — imports the real `openai` SDK
 // ---------------------------------------------------------------------------

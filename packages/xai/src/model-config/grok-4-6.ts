@@ -12,6 +12,7 @@
 
 import { z } from 'zod'
 
+import { XAI_MAX_TIMEOUT_MS } from '../client.js'
 import { XaiProviderOptionsSchema } from './tools.js'
 
 export const Grok46ConfigSchema = z
@@ -66,9 +67,9 @@ export const Grok46ConfigSchema = z
           'Omitted requests stay on xAI default. ' +
           '"flex"/"standard"/"batch" are rejected.',
       }),
-    timeoutMs: z.number().int().positive().optional().meta({
+    timeoutMs: z.number().int().positive().max(XAI_MAX_TIMEOUT_MS).optional().meta({
       title: 'Timeout',
-      description: 'Logical request timeout in milliseconds.',
+      description: 'Logical request timeout in milliseconds (at most 2147478647).',
     }),
     providerOptions: z
       .strictObject({
