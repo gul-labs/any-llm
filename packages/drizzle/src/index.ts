@@ -1,3 +1,8 @@
-export { llmCalls } from './schema.js'
-export { drizzleUsageSink } from './sink.js'
-export type { InsertableDb } from './sink.js'
+export { llmCallPayloads, llmCalls } from './schema.js'
+export { assertLlmCallsSchema, drizzleUsageSink } from './sink.js'
+export type { DrizzleUsageSinkOptions, PostgresDb } from './sink.js'
+export {
+  assertLlmCallPayloadsSchema,
+  deleteLlmCallPayloads,
+  purgeLlmCallPayloads,
+} from './payloads.js'

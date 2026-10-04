@@ -57,9 +57,10 @@ describe('Grok45ConfigSchema', () => {
     expect(result.success).toBe(true)
   })
 
-  it('accepts a huge maxOutputTokens with no rejection', () => {
-    const result = Grok45ConfigSchema.safeParse({ maxOutputTokens: 100_000_000 })
-    expect(result.success).toBe(true)
+  it('accepts a huge maxOutputTokens: xAI documents no output limit (live-verified)', () => {
+    for (const maxOutputTokens of [500_001, 1_000_000, 100_000_000]) {
+      expect(Grok45ConfigSchema.safeParse({ maxOutputTokens }).success).toBe(true)
+    }
   })
 
   it('rejects a non-positive maxOutputTokens', () => {

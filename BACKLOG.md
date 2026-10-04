@@ -18,7 +18,7 @@ paths to other repos.
 
 - **Priority:** P0 (production document attach without re-sending full corpus tokens)
 - **Status:** shipped (`@gullabs/xai@0.3.0+`, `@gullabs/core@0.11.0+` with `FileRefPart`).
-- **Plan:** [`docs/PLAN-xai-files-store.md`](./docs/PLAN-xai-files-store.md)
+- **Plan:** [`docs/archive/PLAN-xai-files-store.md`](./docs/archive/PLAN-xai-files-store.md)
 - **Origin:** Hosts need provider-scoped Files upload / `file_id` attach / TTL / idempotent
   delete, parity with `@gullabs/google` `GoogleFileStore`.
 - **Scope:** `XaiFileStore` (upload with `expires_after`, get, list, idempotent delete);
@@ -35,7 +35,7 @@ paths to other repos.
 
 - **Priority:** P0 (hosts that gate durable release state on known delete success)
 - **Status:** shipped (`@gullabs/xai@0.4.0`, `@gullabs/google@0.9.0`, `@gullabs/testing@0.5.0`).
-- **Plan:** [`docs/PLAN-file-store-fail-closed-delete.md`](./docs/PLAN-file-store-fail-closed-delete.md)
+- **Plan:** [`docs/archive/PLAN-file-store-fail-closed-delete.md`](./docs/archive/PLAN-file-store-fail-closed-delete.md)
 - **Origin:** Fail-open-only delete cannot gate host DB “released” markers on 5xx/network;
   empty `fileId` should throw.
 - **Scope (P0):** per-call `delete(id, { failClosed?: boolean })` on xAI + Google; 404 success
@@ -70,12 +70,13 @@ paths to other repos.
 ## B-003 — `@gullabs/testing` host-owned-factory documentation
 
 - **Priority:** P2
-- **Status:** docs drafted on a docs branch; merge pending further requirements.
+- **Status:** shipped. `packages/testing/README.md` § "Wiring fakes through a host-owned factory"
+  (with the injected `scheduler` beside `clock`) and the pointer in
+  `packages/any-llm/skills/any-llm/SKILL.md` describe it; the helpers a host needs instead of
+  `vi.mock` (`FakeClient`, `fakeLlmResult`, error factories, recorders, fake stores and CLI runner)
+  shipped with it (ADR-041).
 - **Origin:** several hosts hand-roll `vi.mock` fakes instead of `@gullabs/testing`; many
   inject adapters via a host-owned factory, not a bare `createClient()` call site.
-- **Scope:** README section showing fake wiring through a host-owned factory plus a
-  skill pointer in `packages/any-llm/skills/any-llm/SKILL.md` if applicable.
-- **Next step:** merge when requirements are stable.
 
 ---
 
@@ -84,9 +85,9 @@ paths to other repos.
 - **Priority:** P2
 - **Status:** IMPLEMENTED as ADR-025 (PR #30, 2026-07-10) — strict interpolation
   default, `CallSite.inputSchema`, `LlmRequest.inputContract`, `requireInputContract`,
-  callId⇒ledger-row rule. See `docs/input-contracts-plan.md`.
+  callId⇒ledger-row rule. See `docs/archive/input-contracts-plan.md`.
 - **Origin:** host pipeline incident and proposal in
-  `docs/input-validation-middleware-proposal.md`.
+  `docs/archive/input-validation-middleware-proposal.md`.
 - **Next step:** none — done.
 
 ---
@@ -94,12 +95,11 @@ paths to other repos.
 ## B-006 — Dependency review: pending dependabot PRs, notably `@google/genai` 2.x major
 
 - **Priority:** P3
-- **Status:** largely done on branch `chore/dependabot-upgrades-careful` — routine
-  devDeps + `openai@7` (peer `^6 || ^7`) + `@google/genai@2.16` (peer already `^1 || ^2`)
-  - `actions/setup-node@v7` + pglite 0.5.4. `pnpm quality` green against new majors.
+- **Status:** done. The routine devDeps, `openai@7` (peer `^7`), `@google/genai@2` (peer `^2`),
+  `@changesets/cli@3`, Vitest 5 and `actions/setup-node@v7` are on `main`, and `pnpm quality`
+  passes against them. TypeScript stays on 6.x: 7 is a separate plan.
 - **Origin:** open dependabot PRs.
-- **Next step:** merge upgrade PR; close Dependabot PRs as superseded. Skipped
-  `@changesets/cli@3` and TypeScript 7 / Vitest 4 (out of Dependabot scope; separate plan).
+- **Next step:** none; re-run the review when Dependabot opens the next major.
 
 ---
 
@@ -107,7 +107,7 @@ paths to other repos.
 
 - **Priority:** TBD
 - **Status:** proposal dropped by owner, awaiting triage.
-- **Origin:** `docs/response-chaining-enhancement.md`.
+- **Origin:** `docs/archive/response-chaining-enhancement.md`.
 - **Next step:** owner triage decision.
 
 ---
@@ -115,28 +115,31 @@ paths to other repos.
 ## B-008 — xAI fixture re-capture script
 
 - **Priority:** P2
-- **Status:** open, plan not yet written.
-- **Origin:** `packages/xai/src/__fixtures__/*.json` are live captures (grok-4.5 on
-  2026-07-09, grok-4.6 on 2026-08-12) backing 63 contract tests, including the only
-  external check on cost math — `pricing.test.ts` reconciles `XAI_PRICING` against xAI's
-  own `/v1/models` prices and against `cost_in_usd_ticks` from a real billed call. They
-  were captured by hand and there is no way to refresh them, so they prove the adapter
-  handled the API _as of the capture date_, not as of today. Silent provider drift stays
-  green.
-- **Scope:** a manual, key-gated dev script in the shape of `scripts/probe-capabilities.mjs`
-  (not in CI, documented cost warning): replay each recorded request against the live
-  Responses API, strip Authorization/Bearer/API-key-shaped strings, write the response
-  back to `__fixtures__/`, and diff so drift shows up as a reviewable change. Fixtures are
-  Prettier-ignored so a re-capture produces no formatting noise.
-- **Next step:** write the plan; decide whether the diff runs on a release cadence or
-  ad hoc.
+- **Status:** shipped: `scripts/recapture-fixtures.mjs` (see `scripts/README.md`).
+- **Origin:** `packages/xai/src/__fixtures__/*.json` are live captures that back the contract
+  tests, including the only external check on cost math (`pricing.test.ts` reconciles
+  `XAI_PRICING` against xAI's own `/v1/models` prices and against `cost_in_usd_ticks` from a
+  real billed call). They prove the adapter handled the API _as of the capture date_, not as
+  of today; silent provider drift stays green.
+- **Shipped:** a manual, key-gated script (`XAI_API_KEY`; it refuses to run in CI or without
+  the key) that repeats the probes listed in it (fixtures 02, 09, 13 and 14), redacts the
+  result, writes it to `.recapture/` and prints the drift against the recorded fixture
+  (shape, status and stable values; ids, times, text and token counts are ignored).
+  `--write` overwrites the fixture so `git diff` carries the change. Offline tests cover the
+  refusals, the redaction and the diff.
+- **Left open:** most older fixtures do not record their request and cannot be replayed. A
+  new fixture should record its request and get a probe; the existing ones can gain probes
+  as their requests are rebuilt. A Google counterpart is not written. Whether the diff runs
+  on a release cadence or ad hoc is the maintainer's call (it spends real money, so not CI).
 
 ---
 
 ## Model refresh deferrals (2026-09-25)
 
 - **2027-01-01 Gemini intro-price re-snapshot.** `gemini-3.6-flash`, `gemini-3.7-flash`, and `gemini-3.8-flash` ship at the published intro rates $0.75 / $0.075 / $3.75 per million (input / cached / output). On 2027-01-01 those become $1.50 / $0.15 / $7.50. Re-snapshot `GEMINI_PRICING` and bump `pricingVersion` before that date. The owner chose a dated backlog item instead of date-windowed pricing (plan D1).
-- Gemini `priority` tier. P-G7 captured a `usageMetadata.serviceTier` flex echo and the adapter now reads served tier. Priority still needs live admission, pricing, and downgrade accounting before the schema admits it.
+- **2027-05-07 `gemini-3.1-flash-lite` shutdown.** Google's deprecations page (read 2026-10-03) lists the date and `gemini-3.5-flash-lite` as the replacement. The descriptor warns from 2027-02-06 (`shutdownDate`, ADR-043). After the date, delete the descriptor, its pricing row, config schema and fixtures in one change; do not keep an alias to the replacement. Re-read the page before each release: a new shutdown date is a one-line descriptor change.
+- **`gemini-3.5-flash` status.** The README and `docs/architecture.md` say it is deleted (a live 404 when the registry was refreshed); Google's pricing and deprecations pages still listed it when read 2026-10. Re-read both pages and re-probe the id before the next release; if it serves, it is a registry decision, not an alias.
+- Gemini `priority` tier. A live flex call (2026-09-26) echoed `usageMetadata.serviceTier`, and the adapter reads the served tier. Priority still needs live admission, pricing, and downgrade accounting before the schema admits it.
 - Other Gemini features: built-in tools beyond `googleSearch` (URL context, Maps, code execution, file search); `media_resolution: ultra_high`; `gemini-3.1-pro-preview-customtools`.
 - xAI models not in this refresh: grok-4.3, the grok-4.20 family (including multi-agent), grok-build-0.1.
 - xAI tools not supported: code execution, collections, remote MCP.
@@ -144,20 +147,102 @@ paths to other repos.
 - Undocumented xAI ids (`grok-4.5-cloud`, `grok-4.5-sp`, `grok-orca-oa0917`) are never registered.
 - Vision on the CLI providers (`codex exec -i`; `claude -p --input-format stream-json`).
 - Non-text models (image, video, TTS, STT, live, music, embeddings).
-- P-G5 completed 2026-09-26: cache create at 1024 tokens succeeded, 103 tokens failed with `min_total_token_count=1024`, on all six registered Gemini 3.x ids.
-- P-X2 blocked by the current xAI Zero Data Retention key: file upload returned 403 and public URL attachment returned 400. A non-ZDR key is needed to pin the `attachment_search` usage counter, price it at $10/1k, and delete `attachment_search_unpinned`.
-- P-X3 completed 2026-09-26: live grok-4.7 `store: false` two-turn function call captured the encrypted reasoning item; `result.transientProviderState` and `request.transientProviderState` preserve the full wire history while the next request supplies only new messages. The state stays out of ledger rows. Fixture `28-grok-4-7-replay.json` pins the round trip.
-- P-X1 completed 2026-09-26: live posts-only and users-only X Search responses emitted both item counters, including explicit zeroes, and snapshot cost reconciled to billed ticks. Fixtures `26-x-posts.json` and `27-x-users.json` pin the behavior. The 2026-08-24 fixture predates per-item billing; its billed ticks remain in usage while snapshot cost is unpriced.
+- **xAI `attachment_search` counter.** Blocked by the current xAI Zero Data Retention key: file upload returned 403 and public URL attachment returned 400 (`docs/model-config-provider-evidence.md`). A non-ZDR key is needed to pin the usage counter, price it at $5 per 1,000 calls (pricing page, read 2026-10-02) and delete `attachment_search_unpinned`. Until then the lane stays estimated.
 
 ## Follow-ups from the xAI server tool-choice release (2026-10-02)
 
-- **Gemini search + schema: owner decision needed.** Live re-probe on 2026-10-02 (table in `docs/grounded-structured.md`): with a schema attached, `gemini-3.1-flash-lite` and `gemini-3.5-flash-lite` did not run Search (prompt tokens unchanged, no `groundingMetadata`); the three Flash models appear to search but return no `groundingMetadata`; `gemini-3.1-pro-preview` returned `groundingMetadata` only when the request used `responseJsonSchema`, not `responseSchema`. Decide: (a) send `responseJsonSchema` instead of `responseSchema` when `googleSearch` is present, and (b) turn `structuredOutputWithTools` off for the two Flash-Lite models, where the accepted request silently does not search. Until then hosts that need grounding keep the schema off that route or use the two-call recipe.
+- **Gemini search + schema: opt-in built, default stays off.** `providerOptions.google.allowSchemaWithSearch` (with `requireGrounding` on by default) shipped; a 2026-10-03 probe (ADR-035, `docs/grounded-structured.md`) found no Gemini 3.x model that returned grounding metadata with a query on 3 of 4 schema calls (best: 3.1 Pro, 2 of 4), so `structuredOutputWithTools` stays `false`. Re-probe when a new Gemini model ships or Google changes the schema + Search behaviour; a model that reaches 3 of 4 can be set on by default.
 - **xAI `safety_identifier`.** New Responses request field (September 2026 release notes, <https://docs.x.ai/developers/faq/security>): an opaque, hashed end-user id. Candidate `providerOptions.xai.safetyIdentifier` for multi-tenant hosts on one key. Needs a live probe before admission.
 - **xAI `POST /v1/responses/compact`.** Documented transcript compaction (<https://docs.x.ai/developers/advanced-api-usage/context-compaction>). grok-4.7 replay resends the full wire input; compaction would be the cost control. Needs a design: a second endpoint plus an opaque `compaction` input item.
 - **xAI `include: ["no_inline_citations"]`.** Suppresses inline `[[N]](url)` links in the text (<https://docs.x.ai/developers/tools/citations>). Expose only if a host needs citation-free text.
-- **xAI `attachment_search` price.** The pricing page lists it at $5 per 1,000 calls (read 2026-10-02), not the $10 noted under P-X2 above. The counter name is still unpinned (ZDR key), so the lane stays estimated.
 - **xAI `max_turns` enforcement.** Exposed as `providerOptions.xai.maxTurns`; not enforced by xAI on 2026-10-02 (fixture 33, ADR-030). Re-probe when xAI changes the agentic loop, then update the README.
 - Not exposed on purpose (xAI docs mark them compatibility-only, unsupported, or silently ignored): `reasoning.summary`, function `strict`, `metadata`, `truncation`, `background`, `logprobs`, `search_parameters`, `service_tier: 'fast'`.
+
+## Follow-ups from Gemini 3 thought signatures (2026-10-03)
+
+- **Google dummy thought signature.** Google documents `skip_thought_signature_validator` as a value
+  that bypasses signature validation for a replayed function call. The 2026-10-03 capture
+  (`packages/google/src/__fixtures__/thought-signatures-2026-10-03.json`) shows all six Gemini 3.x
+  models accepting it (HTTP 200). The library does not offer it: Google warns a missing or dummy
+  signature degrades tool-use quality, and the overlay already covers every history the library
+  produced. It would be the only way to replay a hand-authored or other-provider function-call
+  history into Gemini 3, so build it only as an explicit per-call opt-in with a warning, never as a
+  fallback.
+- **`countTokens` with function-call history on Gemini 3.** The adapter sends no signatures to
+  `countTokens`. Whether the Developer API accepts an unsigned function call there is unprobed.
+- **Function-call ids on replay.** When Google returns no `functionCall.id`, the adapter assigns
+  `anyllm_call_<name>_<n>` as the tool call's id for the host, and never sends it to Gemini: the
+  replayed `functionCall` and `functionResponse` carry no `id` (the 2026-10-03 capture replayed the
+  provider's parts as returned). If a host needs Gemini to see the id, that needs a probe first.
+
+## Follow-ups from Gemini grounding usage and price (2026-10-03)
+
+- **Do repeated Gemini queries and tool-use tokens bill?** The grounding fee counts query occurrences
+  (a repeated query counts each time) and `usage.details.tool_use_prompt` is recorded unpriced. Gemini
+  2.5 reported a query three times and `toolUsePromptTokenCount` 77 / 141 on a grounded call; Gemini 3.x
+  deduplicated its queries in 14 of 14 attempts and reported no tool-use tokens. Whether Google bills a
+  repeat, or bills tool-use tokens as input, needs a billing export reconciled against a call with a
+  repeated query. Until then the cost stays `'estimated'` and counts occurrences (ADR-035).
+- **`googleSearch` options.** Google documents `excludeDomains` and `timeRangeFilter` on the Search
+  tool. The strict schema accepts `googleSearch: {}` only. Probe what each does (and whether the
+  response reports them) before admitting them.
+- **Request-side search intent.** One provider-neutral way to say "search" (today: `providerOptions.google.tools`
+  or `providerOptions.xai.tools`) is deferred to its own decision. Usage reports search the same way on
+  both providers already.
+- **Grounding free allowance.** Google publishes a free grounding allowance (read 2026-10:
+  5,000 requests per month shared across Gemini 3.x, 1,500 per day on Gemini 2.5). It is shared across a
+  project, so a single call cannot know it was free and the fee is charged in full. A host that tracks
+  its own volume can subtract it from the ledger.
+- **`providerMetadata` namespace.** Grounding metadata and `promptFeedback` sit at the top of
+  `providerMetadata`; `searchEntryPoint` is under `providerMetadata.google`. Decide one shape for provider
+  metadata before more keys are added.
+
+## Follow-ups from output limits, thinking budgets and spend (2026-10-03)
+
+- **`GenConfig.answerTokens` is rejected by measurement.** A 336-call measurement of Gemini thinking
+  tokens (`docs/thinking-token-distribution.md`) found p95 two to six times the p50 at `high` effort,
+  driven by the prompt more than by the model or the effort. No per-model answer allowance would be
+  stable, so a cap that reserves room for the answer cannot be computed from the descriptor. The warning
+  for a budget at or above `maxOutputTokens` (and, on 3.x, `high` effort under 4,096), and the one for
+  reasoning that used up the cap, are the final state. Re-measure only if Google changes how thinking is bounded.
+- **Enforced spend ceiling.** `spendPreflightMiddleware` is advisory: its read and the dispatch are not
+  atomic, so concurrent workers can overshoot, and billed calls with unknown usage are not counted
+  unless the host's ledger counts them. A ceiling that holds needs an atomic reservation before
+  dispatch and a reconciliation against the billed cost after it, across processes. Own design; needs a
+  shared store port (the quota package's store is the nearest precedent).
+- **xAI search ceiling in flight.** `providerOptions.xai.searchBudget` reports an exceeded budget after
+  the call is billed, and ADR-040 keeps it that way: xAI calls now stream internally, so the search counters
+  are visible mid-call, but whether xAI stops its search loop and its billing when a stream is aborted
+  (probe P9b) could not be tested without console billing access. An abort that saves nothing only loses
+  the result, so nothing aborts. Run P9b first (abort a streamed search call, read the console for the
+  charge); only if the billing stops, add the abort, the `rate_limited` / `retryable: false` error with
+  partial text (the usage estimate of a failed stream already exists, ADR-040 Amendment A) and its
+  `LlmErrorReason` member together. Keep `maxTurns` and re-probe
+  whether xAI enforces it at each model refresh.
+- **xAI tool-using calls past 300 s.** Streaming removed the need for the undici transport on long
+  reasoning calls (live, 17 to 28 minutes, 15 s worst gap between events). A streamed call that itself runs
+  server tools past 300 s was not tested (the longest, 99 s, had the same 15 s gap). Capture one, then tell
+  hosts with tool-using calls whether they can drop the transport. Until then they set
+  `transport.idleTimeoutMs` and a `bodyTimeout` near their longest quiet gap, not the whole deadline.
+- **xAI billing of a cut stream.** A stream that fails after output began is not retried and carries a
+  lower-bound usage estimate (ADR-040 Amendment A) because whether xAI bills a cut call is unknown (P9b).
+  When it is measured, replace the estimate with the real rule and revisit whether a cut stream may retry.
+- **xAI streamed reasoning item.** In two live search runs the streamed final object, and the stream, carried
+  no `reasoning` item where the non-streamed call had one. The adapter reconciles what the stream announces
+  with the final object but cannot rebuild an item nobody announced. Re-probe with
+  `include: ['reasoning.encrypted_content']` and a stateless replay to learn whether the missing item
+  matters for the `'state'` continuation. (Later live runs agreed with the stream every time: a grok-4.5
+  low-effort search again announced no reasoning item, and three grok-4.7 medium-effort searches carried
+  theirs in both the stream and the final object; no run had a final object that lacked an announced item.)
+- **Output limits for providers that document none.** Gemma 4 and xAI Grok 4.x publish no maximum
+  output size, so `limits.maxOutputTokens` is `null` and the schemas apply no cap. Set the real figure
+  when a provider documents one (a live probe of an oversized value would also pin it).
+- **Gemma 4 input media types.** The Gemma pages name no media types; `image/*` and `video/*` are
+  admitted (the model card lists image input and video as frames). Probe whether the Gemini API's Gemma
+  endpoint accepts a video part, and which image types it decodes, before tightening or widening.
+- **Gemini document types.** Google's document page lists no closed set ("TXT, Markdown, HTML, XML,
+  etc."), so `text/*` is admitted as a family. Probe `text/csv`, `application/json` and
+  `text/x-python` against the Files API to see which Google actually takes.
 
 ## Optional later (not ticketed)
 

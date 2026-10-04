@@ -8,7 +8,16 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { LlmError } from '@gullabs/core'
+import { LlmError, createClient } from '@gullabs/core'
+import {
+  FakeClock,
+  RecordingSink,
+  fakeGeminiResponse,
+  makeFakeGemini,
+} from '@gullabs/testing'
+import { geminiAdapter } from './adapter.js'
+import { geminiPricingSource } from './cost.js'
+import { defaultGeminiRegistry } from './models.js'
 import { GoogleFileStore } from './file-store.js'
 import type { GeminiFilesClientLike, GoogleFileHandle } from './file-store.js'
 
@@ -75,6 +84,91 @@ function makeClient(
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+describe('GoogleFileStore media-type admission (same rule as generate)', () => {
+  it('uploads admitted types, case and parameters aside, sending the string unchanged', async () => {
+    for (const type of [
+      'text/csv',
+      'video/quicktime',
+      'IMAGE/PNG',
+      'text/plain; charset=utf-8',
+    ]) {
+      const client = makeClient()
+      const store = new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+      await store.upload(new Uint8Array([1]), type)
+      expect(client.upload).toHaveBeenCalledWith(
+        expect.objectContaining({ config: expect.objectContaining({ mimeType: type }) }),
+      )
+    }
+  })
+
+  it('rejects an empty or unadmitted type before the SDK is called', async () => {
+    for (const type of ['', ' ', 'application/json', 'image/*']) {
+      const client = makeClient()
+      const store = new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+      await expect(store.upload(new Uint8Array([1]), type), type).rejects.toMatchObject({
+        kind: 'bad_request',
+        retryable: false,
+      })
+      expect(client.upload).not.toHaveBeenCalled()
+    }
+  })
+
+  it('a type generate accepts is a type upload accepts, and the reverse', async () => {
+    const { client: llm, fake } = (() => {
+      const f = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
+      return {
+        fake: f,
+        client: createClient({
+          adapters: [geminiAdapter({ client: f })],
+          pricingSources: { google: geminiPricingSource() },
+          modelRegistry: defaultGeminiRegistry,
+          sink: new RecordingSink(),
+        }),
+      }
+    })()
+    for (const type of [
+      'text/csv',
+      'video/mov',
+      'application/pdf',
+      'application/json',
+      'font/ttf',
+      '',
+    ]) {
+      const uploadOk = await new GoogleFileStore({
+        auth: fakeAuth,
+        client: makeClient(),
+        sleep: fastSleep,
+      })
+        .upload(new Uint8Array([1]), type)
+        .then(
+          () => true,
+          () => false,
+        )
+      const before = fake.calls.length
+      const generateOk = await llm
+        .generate(
+          {
+            provider: 'google',
+            model: 'gemini-3.6-flash',
+            messages: [
+              {
+                role: 'user',
+                parts: [{ kind: 'file-uri', mimeType: type, uri: 'https://x.test/f' }],
+              },
+            ],
+          },
+          { auth: fakeAuth },
+        )
+        .then(
+          () => true,
+          () => false,
+        )
+      expect(generateOk, `generate ${type}`).toBe(uploadOk)
+      expect(fake.calls.length > before, type).toBe(generateOk)
+    }
+  })
+})
 
 describe('GoogleFileStore', () => {
   // 1. ACTIVE immediately — no polling
@@ -183,8 +277,111 @@ describe('GoogleFileStore', () => {
     expect((err as LlmError).retryable).toBe(false)
   })
 
-  // 4. Poll timeout → LlmError kind === 'timeout'
-  it('throws LlmError timeout when polling exceeds timeoutMs', async () => {
+  it('keeps the provider File.error message and status on FAILED (immediately and while polling)', async () => {
+    const fileError = { code: 3, message: 'The file could not be decoded as video/mp4.' }
+    const failedImmediately = makeClient({
+      upload: vi.fn().mockResolvedValue({
+        name: 'files/abc123',
+        uri: 'https://example.com/files/abc123',
+        mimeType: 'video/mp4',
+        state: 'FAILED',
+        error: fileError,
+      }),
+    })
+    const store = new GoogleFileStore({
+      auth: fakeAuth,
+      client: failedImmediately,
+      sleep: fastSleep,
+    })
+    const first = (await store
+      .upload(new Uint8Array([1]), 'video/mp4')
+      .catch((e) => e)) as LlmError
+    expect(first).toMatchObject({
+      kind: 'bad_request',
+      retryable: false,
+      provider: 'google',
+    })
+    expect(first.message).toContain('The file could not be decoded as video/mp4.')
+    expect(first.cause).toEqual(fileError)
+
+    const failedWhilePolling = makeClient({
+      upload: vi.fn().mockResolvedValue({
+        name: 'files/abc123',
+        uri: 'https://example.com/files/abc123',
+        mimeType: 'video/mp4',
+        state: 'PROCESSING',
+      }),
+      get: vi.fn().mockResolvedValue({
+        name: 'files/abc123',
+        state: 'FAILED',
+        error: fileError,
+      }),
+    })
+    const polling = new GoogleFileStore({
+      auth: fakeAuth,
+      client: failedWhilePolling,
+      sleep: fastSleep,
+    })
+    const second = (await polling
+      .upload(new Uint8Array([1]), 'video/mp4')
+      .catch((e) => e)) as LlmError
+    expect(second.message).toContain('The file could not be decoded as video/mp4.')
+    expect(second.cause).toEqual(fileError)
+  })
+
+  it('a FAILED file with no provider error keeps the plain message', async () => {
+    const client = makeClient({
+      upload: vi.fn().mockResolvedValue({
+        name: 'files/abc123',
+        uri: 'https://example.com/files/abc123',
+        state: 'FAILED',
+      }),
+    })
+    const store = new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+    const err = (await store
+      .upload(new Uint8Array([1]), 'image/png')
+      .catch((e) => e)) as LlmError
+    expect(err.message).toBe('File processing failed immediately after upload')
+    expect(err.cause).toBeUndefined()
+  })
+
+  it('passes the signal to the SDK upload config', async () => {
+    const controller = new AbortController()
+    const client = makeClient()
+    const store = new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+    await store.upload(new Uint8Array([1]), 'image/png', { signal: controller.signal })
+    const call = (client.upload as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      config: { abortSignal?: AbortSignal }
+    }
+    expect(call.config.abortSignal).toBe(controller.signal)
+  })
+
+  it('an abort during the upload rejects with aborted at once, though the SDK call never settles', async () => {
+    const controller = new AbortController()
+    const client = makeClient({ upload: vi.fn().mockReturnValue(new Promise(() => {})) })
+    const store = new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+    const pending = store
+      .upload(new Uint8Array([1]), 'image/png', { signal: controller.signal })
+      .catch((e) => e)
+    controller.abort()
+    const err = (await pending) as LlmError
+    expect(err).toBeInstanceOf(LlmError)
+    expect(err).toMatchObject({ kind: 'aborted', retryable: false })
+  })
+
+  it('an already-aborted signal rejects before the SDK is called', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const client = makeClient()
+    const store = new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+    await expect(
+      store.upload(new Uint8Array([1]), 'image/png', { signal: controller.signal }),
+    ).rejects.toMatchObject({ kind: 'aborted' })
+    expect(client.upload).not.toHaveBeenCalled()
+  })
+
+  // 4. Poll timeout → server, not retryable (ADR-036: `timeout` is always retryable)
+  it('throws a non-retryable server error when polling exceeds timeoutMs', async () => {
     const client = makeClient({
       upload: vi.fn().mockResolvedValue({
         name: 'files/abc123',
@@ -209,8 +406,9 @@ describe('GoogleFileStore', () => {
     })
     const err = await store.upload(new Uint8Array([1]), 'image/png').catch((e) => e)
     expect(err).toBeInstanceOf(LlmError)
-    expect((err as LlmError).kind).toBe('timeout')
-    expect((err as LlmError).retryable).toBe(true)
+    // Not `timeout`: ADR-036 makes every `timeout` retryable, and a retry here
+    // would upload the bytes again and orphan the first file.
+    expect(err).toMatchObject({ kind: 'server', retryable: false, provider: 'google' })
   })
 
   // 5. expiresAt is Date when expirationTime present; absent (not undefined key) when not
@@ -384,7 +582,7 @@ describe('GoogleFileStore', () => {
       }),
     })
 
-    // Injected clock: starts at 0, advances past deadline (5000) after first sleep
+    // Injected clock: starts at 0, is past the deadline (5000) once the first wait ends
     let tick = 0
     const now = () => (tick === 0 ? 0 : 5_001)
     const countingSleep = (): Promise<void> => {
@@ -402,9 +600,9 @@ describe('GoogleFileStore', () => {
 
     const err = await store.upload(new Uint8Array([1]), 'image/png').catch((e) => e)
     expect(err).toBeInstanceOf(LlmError)
-    expect((err as LlmError).kind).toBe('timeout')
-    // Exactly one poll happened before the virtual clock crossed the deadline
-    expect(client.get).toHaveBeenCalledTimes(1)
+    expect(err).toMatchObject({ kind: 'server', retryable: false })
+    // The virtual clock crossed the deadline during the wait: no poll started
+    expect(client.get).not.toHaveBeenCalled()
   })
 
   // NEW: client.upload throwing → classified LlmError (not raw object)
@@ -581,6 +779,315 @@ describe('GoogleFileStore', () => {
     expect(handle.name).toBe('files/abc123')
     expect(client.get).toHaveBeenCalledTimes(2)
   }, 10_000)
+
+  it('polls on the injected scheduler: a FakeClock fires the wait and the poll timeout', async () => {
+    const clock = new FakeClock()
+    const processing = {
+      name: 'files/abc123',
+      uri: 'https://example.com/files/abc123',
+      mimeType: 'image/png',
+      state: 'PROCESSING',
+    }
+    const client = makeClient({
+      upload: vi.fn().mockResolvedValue(processing),
+      get: vi.fn().mockResolvedValue(processing),
+    })
+    const store = new GoogleFileStore({
+      auth: fakeAuth,
+      client,
+      scheduler: clock,
+      now: () => clock.now(),
+      poll: { intervalMs: 3_000, timeoutMs: 10_000 },
+    })
+    const settled = store
+      .upload(new Uint8Array([1]), 'image/png')
+      .catch((e: unknown) => e)
+
+    await clock.advanceAsync(0)
+    expect(client.get).not.toHaveBeenCalled()
+    // the wait, and the deadline it is raced against
+    expect(clock.pendingTimers).toBe(2)
+    await clock.advanceAsync(3_000)
+    expect(client.get).toHaveBeenCalledTimes(1)
+    await clock.advanceAsync(3_000)
+    await clock.advanceAsync(3_000)
+    await clock.advanceAsync(3_000)
+
+    const err = await settled
+    expect(err).toBeInstanceOf(LlmError)
+    expect(err).toMatchObject({ kind: 'server', retryable: false })
+    expect(clock.pendingTimers).toBe(0)
+  })
+
+  describe('polling never returns a handle after its deadline', () => {
+    const processing = {
+      name: 'files/abc123',
+      uri: 'https://example.com/files/abc123',
+      mimeType: 'image/png',
+      state: 'PROCESSING',
+    }
+    const active = { ...processing, state: 'ACTIVE' }
+
+    it('a poll interval longer than the time left ends at the deadline: no poll starts, no handle comes back', async () => {
+      const clock = new FakeClock()
+      const client = makeClient({
+        upload: vi.fn().mockResolvedValue(processing),
+        get: vi.fn().mockResolvedValue(active),
+      })
+      const store = new GoogleFileStore({
+        auth: fakeAuth,
+        client,
+        scheduler: clock,
+        now: () => clock.now(),
+        poll: { timeoutMs: 1_000, intervalMs: 3_000 },
+      })
+      const settled = store
+        .upload(new Uint8Array([1]), 'image/png')
+        .catch((e: unknown) => e)
+      await clock.advanceAsync(1_000)
+      const err = await settled
+      expect(err).toBeInstanceOf(LlmError)
+      expect(err).toMatchObject({ kind: 'server', retryable: false, provider: 'google' })
+      expect((err as LlmError).message).toContain('Timed out waiting')
+      expect(client.get).not.toHaveBeenCalled()
+      // the wait that lost the race was cleared: nothing stays pending
+      expect(clock.pendingTimers).toBe(0)
+      expect(client.get).not.toHaveBeenCalled()
+    })
+
+    it('an abort that wins the race clears the wait: no timer stays pending', async () => {
+      const clock = new FakeClock()
+      const client = makeClient({
+        upload: vi.fn().mockResolvedValue(processing),
+        get: vi.fn().mockResolvedValue(active),
+      })
+      const store = new GoogleFileStore({
+        auth: fakeAuth,
+        client,
+        scheduler: clock,
+        now: () => clock.now(),
+        poll: { timeoutMs: 600_000, intervalMs: 300_000 },
+      })
+      const ac = new AbortController()
+      const settled = store
+        .upload(new Uint8Array([1]), 'image/png', { signal: ac.signal })
+        .catch((e: unknown) => e)
+      await clock.advanceAsync(0)
+      // the wait, and the deadline it is raced against
+      expect(clock.pendingTimers).toBe(2)
+      ac.abort()
+      const err = await settled
+      expect(err).toMatchObject({ kind: 'aborted' })
+      expect(clock.pendingTimers).toBe(0)
+    })
+
+    it('a host-supplied sleep is awaited as given: the deadline still ends the upload', async () => {
+      const clock = new FakeClock()
+      const hostTimers: ReturnType<FakeClock['setTimeout']>[] = []
+      const client = makeClient({
+        upload: vi.fn().mockResolvedValue(processing),
+        get: vi.fn().mockResolvedValue(active),
+      })
+      const store = new GoogleFileStore({
+        auth: fakeAuth,
+        client,
+        scheduler: clock,
+        now: () => clock.now(),
+        sleep: (ms) =>
+          new Promise<void>((resolve) => {
+            hostTimers.push(clock.setTimeout(resolve, ms))
+          }),
+        poll: { timeoutMs: 1_000, intervalMs: 3_000 },
+      })
+      const settled = store
+        .upload(new Uint8Array([1]), 'image/png')
+        .catch((e: unknown) => e)
+      await clock.advanceAsync(1_000)
+      expect(await settled).toMatchObject({ kind: 'server', retryable: false })
+      // only the host's own, non-cancellable timer is left
+      expect(hostTimers).toHaveLength(1)
+      expect(clock.pendingTimers).toBe(1)
+    })
+
+    it('a completed upload leaves no timer pending, whatever the poll interval', async () => {
+      const clock = new FakeClock()
+      const client = makeClient({
+        upload: vi.fn().mockResolvedValue(processing),
+        get: vi.fn().mockResolvedValue(active),
+      })
+      const store = new GoogleFileStore({
+        auth: fakeAuth,
+        client,
+        scheduler: clock,
+        now: () => clock.now(),
+        poll: { timeoutMs: 600_000, intervalMs: 300_000 },
+      })
+      const settled = store.upload(new Uint8Array([1]), 'image/png')
+      await clock.advanceAsync(300_000)
+      await expect(settled).resolves.toMatchObject({ name: 'files/abc123' })
+      expect(clock.pendingTimers).toBe(0)
+    })
+
+    it('a wait a custom sleep let run past the deadline does not buy another poll', async () => {
+      let nowMs = 0
+      const client = makeClient({
+        upload: vi.fn().mockResolvedValue(processing),
+        get: vi.fn().mockResolvedValue(active),
+      })
+      const store = new GoogleFileStore({
+        auth: fakeAuth,
+        client,
+        sleep: () => {
+          nowMs = 1_500
+          return Promise.resolve()
+        },
+        now: () => nowMs,
+        poll: { timeoutMs: 1_000, intervalMs: 3_000 },
+      })
+      const err = await store.upload(new Uint8Array([1]), 'image/png').catch((e) => e)
+      expect(err).toMatchObject({ kind: 'server', retryable: false })
+      expect(client.get).not.toHaveBeenCalled()
+    })
+
+    it('an ACTIVE answer that arrives after the deadline is the timeout error, not a handle', async () => {
+      let nowMs = 0
+      const client = makeClient({
+        upload: vi.fn().mockResolvedValue(processing),
+        get: vi.fn().mockImplementation(() => {
+          nowMs = 1_001
+          return Promise.resolve(active)
+        }),
+      })
+      const store = new GoogleFileStore({
+        auth: fakeAuth,
+        client,
+        sleep: fastSleep,
+        now: () => nowMs,
+        poll: { timeoutMs: 1_000, intervalMs: 0 },
+      })
+      const err = await store.upload(new Uint8Array([1]), 'image/png').catch((e) => e)
+      expect(err).toBeInstanceOf(LlmError)
+      expect(err).toMatchObject({ kind: 'server', retryable: false })
+      expect((err as LlmError).message).toContain('Timed out waiting')
+      expect(client.get).toHaveBeenCalledTimes(1)
+    })
+
+    it('an ACTIVE answer inside the deadline is still a handle', async () => {
+      let nowMs = 0
+      const client = makeClient({
+        upload: vi.fn().mockResolvedValue(processing),
+        get: vi.fn().mockImplementation(() => {
+          nowMs = 999
+          return Promise.resolve(active)
+        }),
+      })
+      const store = new GoogleFileStore({
+        auth: fakeAuth,
+        client,
+        sleep: fastSleep,
+        now: () => nowMs,
+        poll: { timeoutMs: 1_000, intervalMs: 0 },
+      })
+      await expect(store.upload(new Uint8Array([1]), 'image/png')).resolves.toMatchObject(
+        { name: 'files/abc123' },
+      )
+    })
+  })
+
+  describe('a stalled get() during polling', () => {
+    const processing = {
+      name: 'files/abc123',
+      uri: 'https://example.com/files/abc123',
+      mimeType: 'image/png',
+      state: 'PROCESSING',
+    }
+    /** A get() that never settles by itself; `rejectLate` settles it after the race is lost. */
+    function stalledGet() {
+      let rejectLate: (e: unknown) => void = () => {}
+      const get = vi.fn().mockImplementation(
+        () =>
+          new Promise((_, reject) => {
+            rejectLate = reject
+          }),
+      )
+      return { get, rejectLate: (e: unknown) => rejectLate(e) }
+    }
+
+    it('an abort releases upload() while get() is still pending, and a late rejection is not unhandled', async () => {
+      const unhandled: unknown[] = []
+      const onUnhandled = (reason: unknown) => unhandled.push(reason)
+      process.on('unhandledRejection', onUnhandled)
+      try {
+        const stalled = stalledGet()
+        const client = makeClient({
+          upload: vi.fn().mockResolvedValue(processing),
+          get: stalled.get,
+        })
+        const controller = new AbortController()
+        const store = new GoogleFileStore({
+          auth: fakeAuth,
+          client,
+          sleep: fastSleep,
+          poll: { intervalMs: 0, timeoutMs: 300_000 },
+        })
+        const settled = store
+          .upload(new Uint8Array([1]), 'image/png', { signal: controller.signal })
+          .catch((e: unknown) => e)
+        await vi.waitFor(() => expect(stalled.get).toHaveBeenCalledTimes(1))
+        controller.abort()
+        const err = await settled
+        expect(err).toBeInstanceOf(LlmError)
+        expect(err).toMatchObject({ kind: 'aborted', retryable: false })
+        stalled.rejectLate(new Error('socket closed after the abort'))
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        expect(unhandled).toEqual([])
+      } finally {
+        process.off('unhandledRejection', onUnhandled)
+      }
+    })
+
+    it('the polling deadline releases upload() while get() is still pending, as a non-retryable server error', async () => {
+      const unhandled: unknown[] = []
+      const onUnhandled = (reason: unknown) => unhandled.push(reason)
+      process.on('unhandledRejection', onUnhandled)
+      try {
+        const clock = new FakeClock()
+        const stalled = stalledGet()
+        const client = makeClient({
+          upload: vi.fn().mockResolvedValue(processing),
+          get: stalled.get,
+        })
+        const store = new GoogleFileStore({
+          auth: fakeAuth,
+          client,
+          scheduler: clock,
+          now: () => clock.now(),
+          poll: { intervalMs: 1_000, timeoutMs: 10_000 },
+        })
+        const settled = store
+          .upload(new Uint8Array([1]), 'image/png')
+          .catch((e: unknown) => e)
+        await clock.advanceAsync(1_000)
+        expect(stalled.get).toHaveBeenCalledTimes(1)
+        // 9 000 ms of the deadline remain; get() is still pending.
+        await clock.advanceAsync(9_000)
+        const err = await settled
+        expect(err).toBeInstanceOf(LlmError)
+        expect(err).toMatchObject({
+          kind: 'server',
+          retryable: false,
+          provider: 'google',
+        })
+        expect((err as LlmError).message).toContain('Timed out waiting')
+        expect(clock.pendingTimers).toBe(0)
+        stalled.rejectLate(new Error('late'))
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        expect(unhandled).toEqual([])
+      } finally {
+        process.off('unhandledRejection', onUnhandled)
+      }
+    })
+  })
 
   // NEW: opts.displayName is forwarded into the upload config
   it('forwards opts.displayName into the upload call config', async () => {
@@ -767,17 +1274,17 @@ describe('GoogleFileStore', () => {
       expect(constructorCalls).toHaveLength(1)
     })
 
-    it('lazily-built client converts a Uint8Array with empty mimeType to a Blob without a type', async () => {
+    it('lazily-built client converts a Uint8Array to a Blob typed with the admitted mimeType', async () => {
       constructorCalls.length = 0
       uploadMock.mockClear()
       const store = new GoogleFileStore({ auth: fakeAuth, sleep: fastSleep })
 
-      await store.upload(new Uint8Array([1, 2, 3]), '')
+      await store.upload(new Uint8Array([1, 2, 3]), 'image/png')
 
       expect(uploadMock).toHaveBeenCalledTimes(1)
       const callArg = uploadMock.mock.calls[0]![0] as { file: Blob }
       expect(callArg.file).toBeInstanceOf(Blob)
-      expect(callArg.file.type).toBe('')
+      expect(callArg.file.type).toBe('image/png')
     })
 
     it('lazily-built client passes a Blob source through untouched (no re-wrapping)', async () => {
@@ -869,5 +1376,186 @@ describe('GoogleFileStore', () => {
       expect(consoleSpy).toHaveBeenCalled()
       consoleSpy.mockRestore()
     })
+  })
+
+  // ---------------------------------------------------------------------
+  // Errors classify through classifyGoogleError (one path for every Google error)
+  // ---------------------------------------------------------------------
+  describe('error classification', () => {
+    const handle: GoogleFileHandle = {
+      name: 'files/abc123',
+      uri: 'https://example.com/files/abc123',
+      mimeType: 'image/png',
+    }
+    // Bodies are built from the documented google.rpc detail types (doc-derived,
+    // see __fixtures__/error-bodies-2026-10-03.json); `message` is omitted.
+    const apiError = (status: number, body: unknown): Error =>
+      Object.assign(new Error(JSON.stringify(body)), { status, name: 'ApiError' })
+    const invalidKey = (): Error =>
+      apiError(400, {
+        error: {
+          code: 400,
+          status: 'INVALID_ARGUMENT',
+          details: [
+            {
+              '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+              reason: 'API_KEY_INVALID',
+            },
+          ],
+        },
+      })
+    const dailyQuota = (): Error =>
+      apiError(429, {
+        error: {
+          code: 429,
+          status: 'RESOURCE_EXHAUSTED',
+          details: [
+            {
+              '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+              violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel' }],
+            },
+            { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '34s' },
+          ],
+        },
+      })
+    const perMinute = (): Error =>
+      apiError(429, {
+        error: {
+          code: 429,
+          status: 'RESOURCE_EXHAUSTED',
+          details: [
+            {
+              '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+              violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel' }],
+            },
+            { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '34s' },
+          ],
+        },
+      })
+
+    it('upload: a bad API key is invalid_auth tagged google', async () => {
+      const client = makeClient({ upload: vi.fn().mockRejectedValue(invalidKey()) })
+      const store = new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+      const err = (await store
+        .upload(new Uint8Array([1]), 'image/png')
+        .catch((e) => e)) as LlmError
+      expect(err).toMatchObject({
+        kind: 'invalid_auth',
+        retryable: false,
+        provider: 'google',
+      })
+    })
+
+    it('upload: a per-day quota is not retryable and is sent once', async () => {
+      const upload = vi.fn().mockRejectedValue(dailyQuota())
+      const store = new GoogleFileStore({
+        auth: fakeAuth,
+        client: makeClient({ upload }),
+        sleep: fastSleep,
+      })
+      const err = (await store
+        .upload(new Uint8Array([1]), 'image/png')
+        .catch((e) => e)) as LlmError
+      expect(err).toMatchObject({
+        kind: 'rate_limited',
+        retryable: false,
+        reason: 'daily_quota',
+        provider: 'google',
+      })
+      expect(err.retryAfterMs).toBeUndefined()
+      expect(upload).toHaveBeenCalledTimes(1)
+    })
+
+    it('upload: a per-minute 429 carries RetryInfo as retryAfterMs', async () => {
+      const store = new GoogleFileStore({
+        auth: fakeAuth,
+        client: makeClient({ upload: vi.fn().mockRejectedValue(perMinute()) }),
+        sleep: fastSleep,
+      })
+      const err = (await store
+        .upload(new Uint8Array([1]), 'image/png')
+        .catch((e) => e)) as LlmError
+      expect(err).toMatchObject({
+        kind: 'rate_limited',
+        retryable: true,
+        retryAfterMs: 34_000,
+        provider: 'google',
+      })
+    })
+
+    it('polling get: classified through the same path', async () => {
+      const client = makeClient({
+        upload: vi.fn().mockResolvedValue({
+          name: 'files/abc123',
+          uri: 'https://example.com/files/abc123',
+          state: 'PROCESSING',
+        }),
+        get: vi.fn().mockRejectedValue(invalidKey()),
+      })
+      const store = new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+      const err = (await store
+        .upload(new Uint8Array([1]), 'image/png')
+        .catch((e) => e)) as LlmError
+      expect(err).toMatchObject({ kind: 'invalid_auth', provider: 'google' })
+    })
+
+    it('delete (fail-closed): a bad API key is invalid_auth tagged google', async () => {
+      const client = makeClient({ delete: vi.fn().mockRejectedValue(invalidKey()) })
+      const store = new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+      const err = (await store
+        .delete(handle, { failClosed: true })
+        .catch((e) => e)) as LlmError
+      expect(err).toMatchObject({
+        kind: 'invalid_auth',
+        retryable: false,
+        provider: 'google',
+      })
+    })
+  })
+
+  // ---------------------------------------------------------------------
+  // FAILED files follow the documented File.error status code
+  // ---------------------------------------------------------------------
+  describe('FAILED file classification', () => {
+    const failedWith = (error: unknown): GeminiFilesClientLike =>
+      makeClient({
+        upload: vi.fn().mockResolvedValue({
+          name: 'files/abc123',
+          uri: 'https://example.com/files/abc123',
+          state: 'FAILED',
+          ...(error !== undefined ? { error } : {}),
+        }),
+      })
+    const run = async (client: GeminiFilesClientLike): Promise<LlmError> =>
+      (await new GoogleFileStore({ auth: fakeAuth, client, sleep: fastSleep })
+        .upload(new Uint8Array([1]), 'image/png')
+        .catch((e) => e)) as LlmError
+
+    it.each([
+      [4, 'DEADLINE_EXCEEDED'],
+      [13, 'INTERNAL'],
+      [14, 'UNAVAILABLE'],
+    ])('code %i (%s) is a retryable server error', async (code) => {
+      const err = await run(failedWith({ code, message: 'processing failed' }))
+      expect(err).toMatchObject({ kind: 'server', retryable: true, provider: 'google' })
+      expect(err.message).toContain('processing failed')
+    })
+
+    it.each([[3], [9], [undefined]])(
+      'code %s stays a non-retryable bad_request',
+      async (code) => {
+        const err = await run(
+          failedWith({
+            ...(code !== undefined ? { code } : {}),
+            message: 'cannot decode',
+          }),
+        )
+        expect(err).toMatchObject({
+          kind: 'bad_request',
+          retryable: false,
+          provider: 'google',
+        })
+      },
+    )
   })
 })

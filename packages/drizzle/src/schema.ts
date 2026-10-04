@@ -1,5 +1,8 @@
+import { sql } from 'drizzle-orm'
 import {
+  bigint,
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -7,6 +10,43 @@ import {
   text,
   timestamp,
 } from 'drizzle-orm/pg-core'
+import type { LlmCallRecord, LlmErrorKind } from '@gullabs/core'
+
+/**
+ * The closed `status` and `error_kind` vocabularies the table CHECKs admit.
+ * Both are exhaustive over the core unions (the `Missing*` types below fail to
+ * compile when core adds a member), so a new value is a core change that
+ * ships with SQL. `error_reason` is deliberately not constrained.
+ */
+const STATUS_VALUES = [
+  'ok',
+  'api_error',
+  'timeout',
+  'aborted',
+  'content_filter',
+] as const satisfies readonly LlmCallRecord['status'][]
+
+const ERROR_KIND_VALUES = [
+  'invalid_auth',
+  'rate_limited',
+  'server',
+  'timeout',
+  'aborted',
+  'bad_request',
+  'content_filter',
+  'unknown',
+] as const satisfies readonly LlmErrorKind[]
+
+type MissingStatus = Exclude<LlmCallRecord['status'], (typeof STATUS_VALUES)[number]>
+type MissingErrorKind = Exclude<LlmErrorKind, (typeof ERROR_KIND_VALUES)[number]>
+const _exhaustive: [MissingStatus, MissingErrorKind] extends [never, never]
+  ? true
+  : never = true
+void _exhaustive
+
+function sqlList(values: readonly string[]) {
+  return sql.raw(values.map((v) => `'${v}'`).join(', '))
+}
 
 /**
  * `llm_calls` — the append-only ledger table for `@gullabs/core`'s
@@ -33,8 +73,12 @@ import {
  * - `metadata` — ALWAYS populated (`metadata ?? {}`, host-supplied or
  *   defaulted). Never null on any code path; `.notNull()` is correct.
  *
- * Consumers upgrading from a version where `raw_usage` was `NOT NULL` must
- * run: `ALTER TABLE llm_calls ALTER COLUMN raw_usage DROP NOT NULL;`
+ * To create or upgrade the table, use the SQL in `sql/` (`install.sql`,
+ * `upgrades/NNNN-*.sql`); it is the source of truth for existing databases. This
+ * schema is exported so your queries are typed, and so `drizzle-kit push` can
+ * check a database against it; do not `drizzle-kit generate` migrations from it
+ * for a table you already have: drizzle-kit cannot emit `NOT VALID` CHECKs or a
+ * `lock_timeout`, so a generated migration scans and locks the table.
  */
 export const llmCalls = pgTable(
   'llm_calls',
@@ -61,8 +105,16 @@ export const llmCalls = pgTable(
     cachedInputTokens: integer('cached_input_tokens'),
     thinkingTokens: integer('thinking_tokens'),
     totalTokens: integer('total_tokens'),
-    costMicroUsd: integer('cost_micro_usd'),
+    // BIGINT, read back as a JS number (safe to 2^53 micro-USD, about $9 billion).
+    costMicroUsd: bigint('cost_micro_usd', { mode: 'number' }),
     pricingVersion: text('pricing_version'),
+    // Cost v2 (ADR-039). NULL on rows written before record version 2, on
+    // refusal rows and when the provider had no pricing source.
+    costConfidence: text('cost_confidence'),
+    // `{ input, cached, output, tools }` in micro-USD; NULL when unpriced.
+    costDetails: jsonb('cost_details'),
+    // Why `cost_micro_usd` is NULL (unknown model or tier, missing tool counter).
+    costUnpricedReason: text('cost_unpriced_reason'),
     tokenDetails: jsonb('token_details').notNull(),
     // Nullable: null means no provider usage payload existed for this row
     // (error, timeout, aborted, content_filter, or an ADR-025 attemptNumber:0
@@ -79,6 +131,10 @@ export const llmCalls = pgTable(
     generationConfig: jsonb('generation_config').notNull(),
     reasoningText: text('reasoning_text'),
     errorKind: text('error_kind'),
+    // Typed `LlmError.reason`. Text with NO CHECK constraint: the vocabulary is
+    // a closed TypeScript union that grows in core releases, and a new member
+    // must never need SQL.
+    errorReason: text('error_reason'),
     errorMessage: text('error_message'),
     attemptNumber: integer('attempt_number').notNull(),
     metadata: jsonb('metadata').notNull(),
@@ -87,5 +143,49 @@ export const llmCalls = pgTable(
   (table) => [
     index('llm_calls_call_id_idx').on(table.callId),
     index('llm_calls_external_id_idx').on(table.externalId),
+    index('llm_calls_created_at_idx').on(table.createdAt),
+    index('llm_calls_call_site_created_at_idx').on(table.callSiteId, table.createdAt),
+    // Partial: most rows have no error reason and many hosts set no auth key id.
+    index('llm_calls_error_reason_idx')
+      .on(table.errorReason)
+      .where(sql`${table.errorReason} IS NOT NULL`),
+    index('llm_calls_auth_key_id_idx')
+      .on(table.authKeyId)
+      .where(sql`${table.authKeyId} IS NOT NULL`),
+    check('llm_calls_status_check', sql`${table.status} IN (${sqlList(STATUS_VALUES)})`),
+    check(
+      'llm_calls_error_kind_check',
+      sql`${table.errorKind} IN (${sqlList(ERROR_KIND_VALUES)})`,
+    ),
   ],
+)
+
+/**
+ * `llm_call_payloads` — the opt-in prompt and response text of one attempt
+ * (ADR-038), written by `drizzleUsageSink` when the client sets
+ * `ClientConfig.payloads`. One row per `llm_calls` row at most, keyed by the
+ * same `attempt_id`; deleting the ledger row deletes its payload (`ON DELETE
+ * CASCADE`). Deleting a payload never touches the ledger.
+ *
+ * Payloads can contain customer data. The library never deletes them on its
+ * own: schedule `purgeLlmCallPayloads` and delete by call with
+ * `deleteLlmCallPayloads`. The `created_at` index serves the purge.
+ *
+ * - `request` — `{ system?, messages: [{ role, parts }], tools?: [{ name, schemaSha256 }] }`;
+ *   media parts hold a SHA-256, never bytes.
+ * - `response` — `{ text?, errorMessage? }`.
+ *
+ * The SQL in `sql/` is the source of truth for existing databases.
+ */
+export const llmCallPayloads = pgTable(
+  'llm_call_payloads',
+  {
+    attemptId: text('attempt_id')
+      .primaryKey()
+      .references(() => llmCalls.attemptId, { onDelete: 'cascade' }),
+    request: jsonb('request').notNull(),
+    response: jsonb('response').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('llm_call_payloads_created_at_idx').on(table.createdAt)],
 )

@@ -23,7 +23,11 @@
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
 import { createClient, createModelRegistry, LlmError } from './index.js'
-import { toConfigJsonSchema, zodToStandardSchema } from './model-config/index.js'
+import {
+  toConfigJsonSchema,
+  toConfigKeys,
+  zodToStandardSchema,
+} from './model-config/index.js'
 import type {
   AdapterResult,
   ProviderAdapter,
@@ -43,6 +47,7 @@ import {
   FakeIds,
   RecordingSink,
   SignalAwareFakeAdapter,
+  fakeHttpError,
 } from '@gullabs/testing'
 import { makeTestPricingSource } from './test-pricing-source.js'
 import { makePermissiveTestDescriptor } from './test-model-descriptor.js'
@@ -122,12 +127,20 @@ const STRICT_REGISTRY = createModelRegistry([
   {
     model: 'gemini-2.5-pro',
     provider: 'google',
+    limits: { contextWindow: 1_000_000, maxOutputTokens: 65_536 },
     configSchema: StrictGoogleOptionsSchema,
+    configKeys: toConfigKeys(StrictGoogleOptionsSchema),
     configJsonSchema: toConfigJsonSchema(StrictGoogleOptionsSchema),
     validateConfig: zodToStandardSchema(StrictGoogleOptionsSchema),
   },
 ])
 const TEST_AUTH = { apiKey: 'test-key' }
+const SAFETY_CATEGORIES = [
+  'HARM_CATEGORY_HARASSMENT',
+  'HARM_CATEGORY_HATE_SPEECH',
+  'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+  'HARM_CATEGORY_DANGEROUS_CONTENT',
+] as const
 const MESSAGES = [
   { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'Hi' }] },
 ]
@@ -135,6 +148,7 @@ const MESSAGES = [
 /** Build a minimal valid AdapterResult for happy-path use. */
 function makeOkResult(overrides?: Partial<AdapterResult>): AdapterResult {
   return {
+    message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
     text: 'ok',
     usage: { inputTokens: 100, outputTokens: 20, details: {}, raw: null },
     model: 'gemini-2.5-pro',
@@ -303,7 +317,7 @@ describe('surface-stress: only LlmErrors escape + record always written', () => 
       )
 
       const rec = sink.last()!
-      expect(rec.recordSchemaVersion).toBe(1)
+      expect(rec.recordSchemaVersion).toBe(2)
       expect(rec.provider).toBe('google')
 
       if (rejected && rejectedValue instanceof LlmError) {
@@ -804,7 +818,7 @@ describe('surface-stress: non-finite values in usage.details and usage.raw', () 
         `iter ${i}: JSON.stringify must not throw`,
       ).not.toThrow()
       const roundTripped = JSON.parse(JSON.stringify(rec)) as typeof rec
-      expect(roundTripped.recordSchemaVersion, `iter ${i}: round-trip sanity`).toBe(1)
+      expect(roundTripped.recordSchemaVersion, `iter ${i}: round-trip sanity`).toBe(2)
     }
   })
 })
@@ -820,7 +834,6 @@ describe('surface-stress: cost property', () => {
     'gemini-2.5-flash-lite',
     'gemini-3.1-flash-lite',
     'gemini-3.1-pro-preview',
-    'gemini-2.5-pro-001', // prefix match → gemini-2.5-pro
   ]
   const UNKNOWN_MODELS = [
     'gpt-4',
@@ -927,7 +940,7 @@ describe('surface-stress: cost property', () => {
   it('sum(details)===microUsd on the engine result vs record (50 iterations)', async () => {
     const rand = mulberry32(0xa1b2c3d4)
     for (let i = 0; i < 50; i++) {
-      const model = KNOWN_MODELS[Math.floor(rand() * (KNOWN_MODELS.length - 1))]! // skip prefix-match variant
+      const model = KNOWN_MODELS[Math.floor(rand() * KNOWN_MODELS.length)]!
       const input = Math.floor(rand() * 300_000) + 1
       const cached = Math.floor(rand() * Math.min(input, 100_000))
       const output = Math.floor(rand() * 5_000) + 1
@@ -1009,7 +1022,7 @@ describe('surface-stress: fail-open', () => {
 
   it('throwing sink on error path: LlmError still rethrown (5 iterations)', async () => {
     const sink = new RecordingSink({ failOnRecord: true })
-    const adapter = new FakeAdapter('google', { status: 500 })
+    const adapter = new FakeAdapter('google', fakeHttpError(500))
 
     const client = createClient({
       adapters: [adapter],
@@ -1058,7 +1071,7 @@ describe('surface-stress: fail-open', () => {
 
     // Error path — telemetry throws in onStart + onError, error still rethrown
     const failClient = createClient({
-      adapters: [new FakeAdapter('google', { status: 503 })],
+      adapters: [new FakeAdapter('google', fakeHttpError(503))],
       pricingSources: { google: PRICING },
       modelRegistry: TEST_REGISTRY,
       telemetry: throwingTelemetry,
@@ -1416,7 +1429,7 @@ describe('surface-stress: providerOptions.google strict allowlist', () => {
               google: {
                 safetySettings: [
                   {
-                    category: `HARM_CATEGORY_TEST_${i}`,
+                    category: SAFETY_CATEGORIES[i % SAFETY_CATEGORIES.length]!,
                     threshold: 'BLOCK_ONLY_HIGH',
                   },
                 ],
@@ -1435,7 +1448,7 @@ describe('surface-stress: providerOptions.google strict allowlist', () => {
       expect(googleBlock['httpOptions']).toEqual({ timeout: 60_000 + uniqueVal })
       expect(googleBlock['safetySettings']).toEqual([
         {
-          category: `HARM_CATEGORY_TEST_${i}`,
+          category: SAFETY_CATEGORIES[i % SAFETY_CATEGORIES.length]!,
           threshold: 'BLOCK_ONLY_HIGH',
         },
       ])

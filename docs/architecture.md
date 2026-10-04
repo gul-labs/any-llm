@@ -41,10 +41,11 @@ Concrete implementations live outside the engine, in separate packages or in hos
 | `ProviderAdapter` | `@gullabs/google`, `@gullabs/xai`, dev-only CLI provider packages                | Translates `ResolvedRequest` ↔ raw SDK. Never validates, costs, or persists.                                                                                                                                                                                                    |
 | `UsageSink`       | Host app, `@gullabs/drizzle`                                                     | Receives completed `LlmCallRecord`. Called fail-open.                                                                                                                                                                                                                           |
 | `PricingSource`   | Each provider package (`geminiPricingSource()`, `xaiPricingSource()`), or custom | Provider-scoped source configured per provider via `ClientConfig.pricingSources` (assembled by `composeProviders`); exposes `hasModel`/`listModels` for strict construction-time checks. Core owns only the generic, parameterized `computeCost`. Runtime pricing is fail-open. |
-| `RateLimiter`     | Host app, `@gullabs/quota`, or another companion package                         | Pre-send backpressure. `acquire` is fail-closed. Default is a no-op; wait time is recorded as `queueDelayMs`.                                                                                                                                                                   |
+| `RateLimiter`     | Host app, `@gullabs/quota`, or another companion package                         | Pre-send backpressure. `acquire(key, signal, hint)` is fail-closed and gets an input-token estimate; `Release(usage)` gets the attempt's usage. Default is a no-op; wait time is recorded as `queueDelayMs`.                                                                    |
 | `Telemetry`       | Host app (Sentry / PostHog / OTel hook)                                          | Optional; all callbacks are optional. Called fail-open.                                                                                                                                                                                                                         |
 | `Logger`          | Host app                                                                         | Structured logger (`info`, `warn`, `error`). Defaults to no-op.                                                                                                                                                                                                                 |
 | `Clock`           | `@gullabs/testing` (`FakeClock`) or default                                      | `Date.now()` abstraction for deterministic latency in tests.                                                                                                                                                                                                                    |
+| `Scheduler`       | `@gullabs/testing` (`FakeClock`, also a `Clock`) or default                      | `setTimeout` / `clearTimeout` for every engine wait (attempt timeout, call deadline, sink waits), retry back-off and fake adapter delays; makes timeouts deterministic in tests.                                                                                                |
 | `IdGenerator`     | `@gullabs/testing` (`FakeIds`) or default                                        | `crypto.randomUUID()` abstraction for deterministic records in tests.                                                                                                                                                                                                           |
 
 ### Component Diagram
@@ -82,7 +83,7 @@ Concrete implementations live outside the engine, in separate packages or in hos
        ▼
   Provider plugins (composed via composeProviders)
     ├── @gullabs/google (googleProvider → geminiAdapter → @google/genai SDK)
-    ├── @gullabs/xai    (xaiProvider → xaiAdapter → openai SDK @ api.x.ai)
+    ├── @gullabs/xai    (xaiProvider → xaiAdapter → openai SDK @ api.x.ai, streamed internally)
     └── @gullabs/claude-cli / @gullabs/codex-cli (dev-only local CLI sessions)
 ```
 
@@ -108,7 +109,8 @@ interpolation and config-layer merging before handing off to the shared core.
    equal to `apiKey`) throws `LlmError('bad_request', retryable: false)`. The resolved
    `AuthMaterial` is then threaded through `AdapterCtx` unchanged on every retry attempt — it is
    **not** re-resolved per attempt. There is no `AuthProvider` port and no environment/ambient
-   credential lookup; the caller supplies `{ apiKey }` on every `generate()` / `runStructured()`
+   credential lookup in the library (the CLI adapters' runners forward an allowlisted host environment to the
+   local CLI, ADR-046); the caller supplies `{ apiKey }` on every `generate()` / `runStructured()`
    call. `keyId`, when present, is captured onto `LlmCallRecord.authKeyId` for per-key attribution
    (ADR-026) — see item 9 below (`buildRecord`).
 
@@ -137,8 +139,8 @@ interpolation and config-layer merging before handing off to the shared core.
    in `llm.call.start` log and forwarded to `telemetry.onStart`.
 
 5. **ModelDescriptor resolution.** The registry resolves the explicit
-   (`req.provider`, `req.model`) pair — exact match first, then longest-prefix within that
-   provider only. An unregistered pair throws `LlmError('bad_request')` at the public API
+   (`req.provider`, `req.model`) pair by exact match on the descriptor's canonical `model` or one
+   of its declared `aliases` (ADR-033); there is no prefix matching. An unregistered pair throws `LlmError('bad_request')` at the public API
    boundary (reject, don't map). The resolved descriptor is attached to `ResolvedRequest` for
    the adapter's use (`reasoningApi` variant, capability flags).
 
@@ -155,13 +157,13 @@ interpolation and config-layer merging before handing off to the shared core.
    - Because both checks here run after `callId` assignment, a violation writes a synthetic
      zero-usage `attemptNumber: 0` ledger record (step 7 below) rather than staying row-less.
 
-7. **Pre-attempt refusal record** (ADR-025). Any `LlmError` thrown after `callId` assignment but
-   before `runAttempt` starts — a request input-contract violation (step 6), or a pre-attempt
-   refusal from a middleware such as `@gullabs/quota` — writes one synthetic `LlmCallRecord`:
-   `attemptNumber: 0`, all-zero usage, `cost` omitted, `status` derived from the error's `kind`
-   via the same `errorKindToStatus` mapping used for real attempts. `attemptId` follows the same
-   idempotency rule as a real first attempt (`request.idempotencyKey` when supplied, minted
-   otherwise). This is the only ledger-visible trace of a pre-attempt refusal; errors thrown
+7. **Refusal record** (ADR-025, ADR-037). Any final `LlmError` that did not come out of `runAttempt`
+   — a request input-contract violation (step 6), a refusal from a middleware such as
+   `@gullabs/quota`, an exhausted retry budget — writes one synthetic `LlmCallRecord`:
+   `attemptNumber: 0` when no attempt had run, otherwise the refused attempt's number, all-zero usage, `cost` omitted, `status` derived from the error's `kind`
+   via the same `errorKindToStatus` mapping used for real attempts. `attemptId` is minted like
+   any attempt's (ADR-031). A middleware that tries to change the call's provider or model is
+   refused the same way (ADR-037). This is the only ledger-visible trace of a pre-attempt refusal; errors thrown
    before `callId` assignment (steps 1–3, 5) stay row-less. See ADR-025 for the full boundary
    table and the deliberate `CallErrorEvent.attemptId` telemetry divergence.
 
@@ -175,9 +177,17 @@ Each `Middleware` receives `(req, ctx, next)` where `next` is the rest of the ch
 `runAttempt`. Middleware calling `next` once is a passthrough; calling it multiple times
 implements retry patterns.
 
-`retryMiddleware` (first-party, opt-in) sits outermost. On a retryable error it computes a
+`retryMiddleware` (first-party, opt-in) normally sits outermost. On a retryable error it computes a
 backoff delay and calls `next` again. Each `next` call generates a fresh `attemptId` in the
 sink — retries are visible as separate records sharing a `callId`.
+
+The `next` every middleware receives is guarded (ADR-037): a request whose `provider` or `model`
+differs from the call's is refused with `bad_request` at that boundary, before anything inside the
+offender runs, and the engine's `runAttempt` dispatches, validates, prices and authenticates with
+the `{ provider, requestedModel, descriptor }` it recorded at call start rather than reading them
+from the request. A middleware that wants another target cannot reroute; the host catches the
+error and makes a new call. Quota middleware (`role: 'quota'`) must sit inside retry
+(`role: 'retry'`) so it accounts one unit per dispatch; `createClient` rejects the other order.
 
 ### Phase 3 — Per-Attempt Handler (`runAttempt`)
 
@@ -200,9 +210,28 @@ attempt. Steps:
    one fires when the caller's `AbortSignal` fires, one fires after `timeoutMs`. The timeout
    promise rejects **before** calling `AbortController.abort()` on the combined signal — this
    ordering guarantees `kind: 'timeout'` wins the `Promise.race` even against a synchronously
-   aborting adapter.
+   aborting adapter. The attempt's window is what the logical-call deadline has left, so an
+   attempt that starts late cannot run past `timeoutMs`.
 
-4. **Rate-limiter acquire.** `rateLimiter.acquire("${provider}:${model}", signal)` is raced
+   **The logical-call deadline.** `timeoutMs` is armed when the call starts (ADR-036), not when
+   an attempt does, so middleware time counts against it; it is measured on the client's `Clock`
+   and enforced by real timers, and `EngineCtx.deadlineAt` carries its end to middleware.
+   `EngineCtx.signal` is the caller's signal merged with that deadline. While no attempt is in
+   flight (middleware is what is taking the time) the deadline ends the call with
+   `LlmError('timeout')` even if the middleware ignores the signal, and a continuation of the
+   middleware that wakes later never dispatches. While an attempt is in flight the attempt enforces
+   the deadline itself and records the failure as its own row; one macrotask after it ends, a call
+   that is still pending is ended (so a middleware that hangs after a failed attempt cannot hold
+   `generate()`). A result the attempt already produced is returned instead of a timeout, even if
+   the work after `next()` runs past the deadline or hangs. The deadline's own error carries the
+   last attempt's error as `cause`, and is that error when it is a `timeout` or carries a provider
+   `retryAfterMs`. A signal that is already aborted never dispatches. `timeoutMs`,
+   `sinkTimeoutMs` and `countTokens`' `timeoutMs` above 2^31 - 1 are `bad_request`.
+
+4. **Rate-limiter acquire.** `rateLimiter.acquire("${provider}:${model}", signal)` (once per
+   attempt, so once per retry; `model` is the descriptor's canonical id, so aliases share a
+   bucket; `acquire` must honour the signal, and a late-resolved `acquire` whose race was lost is
+   released by the engine) is raced
    against the cancellation promises. On rejection (caller abort, timeout, or limiter error),
    the call fails. On resolution, a `Release` function is returned; it is called on every exit
    path (success and error). Time spent waiting here is recorded as `queueDelayMs` and excluded
@@ -210,6 +239,10 @@ attempt. Steps:
 
 5. **Adapter invocation.** `adapter.run(resolvedReq, adapterCtx)` is raced against the
    cancellation promises. The adapter receives the merged abort signal (caller + timeout).
+   When a timeout or abort wins the race, the engine waits up to 64 microtask turns for the
+   adapter's own failure and, if it carries `usage` (an estimate for a stream cut mid-answer),
+   adopts that usage and `servedServiceTier` onto the cancellation error; the cancellation
+   error stays the error.
 
 6. **Usage normalization.** `normalizeUsage(adapterResult.usage)` enforces the GROSS token
    convention: clamps `cachedInputTokens ≤ inputTokens` and `thinkingTokens ≤ outputTokens`;
@@ -231,12 +264,17 @@ attempt. Steps:
    `warnings`, `generationConfig`) are stored as JSONB-compatible `JsonValue`. `authKeyId` (ADR-026)
    is populated from the resolved `AuthMaterial`'s `keyId`, omitted otherwise; it is never redacted.
 
-10. **Sink write.** `sink.record(record)` is called inside a try/catch. Failure logs
-    `llm.call.sink.failed` and is swallowed (fail-open). A record is written on both the success
-    path and the error path (postmortem record with whatever usage was known).
+10. **Sink write.** `sink.record(record)` is called inside a try/catch and raced against
+    `ClientConfig.sinkTimeoutMs` (default 5 s). Failure logs `llm.call.sink.failed` and is
+    swallowed (fail-open); a sink still pending at the timeout is abandoned and logged as
+    `llm.call.sink.timeout`, and the result or error goes on unchanged. The wait also ends 100 ms
+    after a caller abort or the call deadline (`llm.call.sink.interrupted`), so a hung sink holds
+    neither. A record is written on
+    both the success path and the error path (postmortem record with whatever usage was known).
 
 11. **Return `LlmResult`.** The result carries `usage`, `cost` (including derived `cost.usd`),
-    `text`, parsed `output` + `outputParsed` for structured-output calls, `reasoningText`,
+    `message` (ordered assistant output) and `continuation`, `text`, parsed `output` +
+    `outputParsed` for structured-output calls, `reasoningText`,
     `latencyMs`, `queueDelayMs`, `warnings`, `providerMetadata`, and provider metadata fields.
 
 ### Phase 4 — Epilogue (once per logical call)
@@ -255,16 +293,16 @@ narrow by `kind` or read `retryable` without parsing message strings.
 
 ### Error Kinds
 
-| `kind`           | HTTP             | `retryable` | Description                                                                                                                                                                              |
-| ---------------- | ---------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `invalid_auth`   | 401; 403 default | No          | Wrong or missing credentials, or a 403 the adapter did not reclassify.                                                                                                                   |
-| `rate_limited`   | 429              | Yes         | Provider quota exceeded; `retryAfterMs` may be set.                                                                                                                                      |
-| `server`         | 5xx              | Yes         | Transient provider error.                                                                                                                                                                |
-| `timeout`        | 408              | Yes         | Request exceeded `timeoutMs` or network timeout.                                                                                                                                         |
-| `aborted`        | —                | No          | Caller cancelled via `AbortSignal`. Never retried.                                                                                                                                       |
-| `bad_request`    | 400, 422         | No          | Malformed request; retrying without change will not help.                                                                                                                                |
-| `content_filter` | overlay / 200    | No          | Provider refused the call for safety / AUP. Google output blocks are 200-path; xAI input blocks are the 403 overlay. Unrecorded xAI 200 incomplete reasons stay `finishReason: 'other'`. |
-| `unknown`        | other            | No          | Uncategorised; inspect `cause` for details.                                                                                                                                              |
+| `kind`           | HTTP               | `retryable` | Description                                                                                                                                                                                                                                                                                                                                                                                         |
+| ---------------- | ------------------ | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `invalid_auth`   | 401; 403 default   | No          | Wrong or missing credentials, or a 403 the adapter did not reclassify.                                                                                                                                                                                                                                                                                                                              |
+| `rate_limited`   | 429                | Yes         | Provider quota exceeded; `retryAfterMs` may be set. Not retryable with `reason` `daily_quota` (Google per-day quota) or `credits_exhausted` (xAI). A Flex 429 is this ordinary path; only a 503 falls back to Standard.                                                                                                                                                                             |
+| `server`         | 5xx; transport     | Yes         | Transient provider error, or a connection that never produced a response. A call that creates a provider resource (`GoogleFileStore` polling timeout, a malformed upload or cache-create payload) is `server` with `retryable: false`: repeating it would orphan the first resource.                                                                                                                |
+| `timeout`        | 408                | Yes         | Request exceeded `timeoutMs` or network timeout. The engine's own deadline timeout is retryable with no `reason` (`retryMiddleware` makes no further attempt, because the budget is spent). Retryable too, except an adapter's `transport_timeout` reason (xAI's idle timer, undici header and body timers and its deadline when `timeoutMs` is unset; Google's client-side ceiling and SDK timer). |
+| `aborted`        | —                  | No          | Caller cancelled via `AbortSignal`. Never retried.                                                                                                                                                                                                                                                                                                                                                  |
+| `bad_request`    | 400, 404, 413, 422 | No          | Malformed request; retrying without change will not help.                                                                                                                                                                                                                                                                                                                                           |
+| `content_filter` | overlay / 200      | No          | Provider refused the call for safety / AUP. Google output blocks are 200-path (a filter stop with no text and no tool call throws); xAI input blocks are the 403 overlay. Unrecorded xAI 200 incomplete reasons stay `finishReason: 'other'`.                                                                                                                                                       |
+| `unknown`        | other              | No          | Uncategorised; inspect `cause` for details.                                                                                                                                                                                                                                                                                                                                                         |
 
 ### Classification
 
@@ -272,11 +310,33 @@ narrow by `kind` or read `retryable` without parsing message strings.
 
 1. Already an `LlmError` — returned as-is.
 2. `Error.name === 'AbortError'` → `aborted`.
-3. `Error.name === 'TimeoutError'` or message matches `/timeout|timed? out/i` → `timeout`.
-4. Any object with a recognizable `status`, `code`, or `response.status` numeric property →
-   routed through `classifyHttpStatus`, with `retryAfterMs` extracted from `Retry-After` /
-   `x-ratelimit-reset` headers.
-5. Anything else → `unknown`.
+3. Any object, or an object on its `cause` chain, with a recognizable HTTP `status`, `statusCode`,
+   `code` (a number or a three-digit numeric string) or `response.status` / `error.status` /
+   `error.code` (100-599) → routed through `classifyHttpStatus`, with `retryAfterMs` read by
+   `parseRetryAfter` from `headers` or `response.headers`. The delay travels with every retryable
+   status (408, 429, 5xx).
+4. `Error.name === 'TimeoutError'` → `timeout`.
+5. A transport failure (`isTransportError`): `ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`,
+   `EAI_AGAIN`, `EPIPE`, `ENOTFOUND`, `ENETUNREACH`, `EHOSTUNREACH` or an undici connection code
+   (`UND_ERR_CONNECT_TIMEOUT`, `_HEADERS_TIMEOUT`, `_BODY_TIMEOUT`, `_SOCKET`,
+   `_RES_CONTENT_LENGTH_MISMATCH`) on the error or its `cause` chain, or an error whose whole
+   message is "fetch failed", "connection error" or "socket hang up" (or a Node syscall failure
+   such as `connect ECONNREFUSED 127.0.0.1:443`) → `server`, retryable. An undici deadline
+   (`UND_ERR_*_TIMEOUT`) → `timeout`. Text that only mentions one of these phrases does not match.
+6. An `Error` whose message matches `/timeout|timed? out/i` → `timeout`. This is the last and
+   weakest signal; it never overrides a status or an errno.
+7. Anything else → `unknown`.
+
+`classifyHttpStatus` maps 404 and 413 to `bad_request` (the request names a model or resource the
+provider does not have, or is too large) and leaves 409 as `unknown`. `parseRetryAfter(headers, now)`
+reads `retry-after-ms`, `retry-after` (delta-seconds with decimals, an HTTP-date, or a duration such
+as `6m0s`) and the rate-limit reset headers, and caps the result at 24 hours. The reset headers
+(`x-ratelimit-reset`, `-requests`, `-tokens`, `ratelimit-reset`; a value above 1e9 is epoch seconds,
+above 1e12 epoch milliseconds) say when each limit resets, not which one refused the call: the
+delay is the longest reset among windows whose `-remaining` header is 0, else the shortest reset of
+all of them, so a distant unused window never extends the wait. Adapters call `classifyError` and
+overlay what a structured body proves; none keeps its own transport matcher or cause-chain walker
+(`causeChain` is exported for the overlays that need one).
 
 `classifyHttpStatus` maps an HTTP code to a _default_ kind. HTTP status is a hint,
 not a kind: providers overload codes (xAI invalid keys arrive as 400; xAI input
@@ -296,8 +356,12 @@ linked by `callId`.
 
 **Backoff.** Two modes:
 
-- `retryAfterMs` present on the error (from a 429): the sleep duration is
-  `min(retryAfterMs, maxDelayMs)`.
+- `retryAfterMs` present on the error (a positive finite number, from a 429, 503 or 408): the
+  sleep is that delay plus a small additive jitter (at most 10 %, at most 1 s). It is never
+  shortened: a delay longer than `maxDelayMs` (default 60 s, equal to the quota middleware's
+  `maxDeferMs`), or one that leaves less than 250 ms of the call's budget for the next attempt,
+  stops the retry and rethrows the attempt's own error with `retryAfterMs` intact (ADR-036). A
+  `NaN`, zero or negative `retryAfterMs` is not a delay.
 - No hint: exponential backoff with full jitter —
   `rand() * min(maxDelayMs, baseDelayMs * 2^(attempt-1))`.
 
@@ -309,11 +373,19 @@ because it prevents retry storms when many callers fail simultaneously.
 `LlmError('aborted')`.
 
 **Terminal conditions.** `kind === 'aborted'` is always terminal — even a custom `shouldRetry`
-returning true for `aborted` is overridden. Exhausting `maxAttempts` rethrows the last error.
+returning true for `aborted` is overridden. Exhausting `maxAttempts` rethrows the last error. So
+does a backoff that is not shorter than the remaining `timeoutMs` budget: the attempt's own error
+is rethrown at once instead of sleeping the budget away and replacing it with a synthetic
+`timeout`; so does a new attempt that would start with less than 250 ms left. The middleware
+measures against `EngineCtx.deadlineAt`, the engine's budget for the whole call, so middleware time
+before it counts; it keeps no clock of its own. There is no synthetic deadline error in retry.
+Invalid `maxAttempts` (not a positive integer) or `baseDelayMs` / `maxDelayMs` (not a finite number
+from 0 to 2^31 - 1) are `bad_request` at construction.
 
-**Per-attempt timeout.** Each call to `next()` (each attempt) builds its own independent
-cancellation race with a fresh timeout window. The timeout clock resets between attempts; the
-retry delay is not counted against the per-attempt timeout.
+**Per-attempt timeout.** Each call to `next()` (each attempt) builds its own cancellation race.
+`timeoutMs` is the overall budget, so the attempt's window is the budget that is left
+(`attemptTimeoutMs`, set by the engine), never a fresh one: backoff and middleware time are
+counted against it.
 
 ---
 
@@ -372,8 +444,11 @@ helper classes in `@gullabs/google` handle the stateful upload and cache lifecyc
 Wraps the Gemini Files API. Not part of the engine; not imported by `@gullabs/core`.
 
 - `upload(source, mimeType, opts?)` — uploads bytes (`Uint8Array` or `Blob`) and polls until
-  the file reaches `ACTIVE` state (default poll interval: 3 s; default timeout: 120 s). Returns a
-  `GoogleFileHandle` with `name`, `uri`, `mimeType`, and optional `expiresAt`.
+  the file reaches `ACTIVE` state (default poll interval: 3 s; default timeout: 300 s). Returns a
+  `GoogleFileHandle` with `name`, `uri`, `mimeType`, and optional `expiresAt`. Every SDK failure (here and in
+  `GoogleCacheStore`) is classified by `classifyGoogleError`; a `FAILED` file follows `File.error.code`
+  (transient codes are a retryable `server` error, others `bad_request`), and a polling timeout is a
+  non-retryable `server` error.
 - The returned `handle.uri` maps directly to `FileUriPart.uri`; no conversion needed.
 - `delete(handle)` and `deleteAll(handles)` are fail-open: errors go to an injectable
   `onDeleteError` callback and are not rethrown.
@@ -404,32 +479,42 @@ not survive restarts.
 
 Each descriptor carries:
 
-- `model` — the bare provider-native model string (used as exact-match key and prefix).
+- `model` — the canonical provider-native model string (the exact-match key).
   Identity is the pair (`provider`, `model`); the same bare `model` may exist under multiple
   providers with different config schemas.
+- `aliases` — optional extra model strings the provider serves as the same model (real version
+  suffixes). Exact-match keys too; sent to the provider unchanged and priced under this descriptor.
 - `provider` — matches the `ProviderAdapter.id` used for routing. `createClient` verifies at
   construction that every registry descriptor's `provider` matches a configured adapter's `id`.
 - `pricingFamily` — the key into the pricing table (e.g., `"gemini-2.5-pro"` for
-  `"gemini-2.5-pro-001"`).
+  `"gemini-2.5-pro-001"`, when that string is a declared alias).
 - `capabilities.reasoningApi` — `'budget'` (Gemini 2.5 series, `thinkingBudget`) or
   `'level'` (Gemini 3.x series, `thinkingLevel`).
 - `capabilities.sampling` — `'tunable'` (Gemini 2.5 series) or `'fixed'` (Gemini 3.x series).
 - `capabilities.caching` — `{ explicit: boolean; minTokens: number }`.
 - `capabilities.grounding` — whether the model supports Google Search grounding.
 - `capabilities.nativeStructuredOutput` — whether the adapter may send provider-native
-  `responseMimeType` / `responseSchema` hints for `output.jsonSchema`.
-- `capabilities.vision` / `capabilities.audioInput` — declarative multimodal support flags.
+  `responseMimeType` / `responseJsonSchema` for `output.jsonSchema` (standard JSON Schema,
+  checked against the keywords Google enforces; ADR-034).
+- `configKeys` — the sorted top-level keys the config schema names across all union branches
+  (`toConfigKeys(configSchema)`; a stale list fails registry construction).
+- `limits` — required `{ contextWindow, maxOutputTokens }` from the provider's documentation;
+  `maxOutputTokens` is `null` when the provider documents no output limit, and the config schema caps
+  `maxOutputTokens` only for a number (ADR-033, Amendments A and C).
+- `capabilities.inputMimeTypes` — the media types (or `type/*` families) admitted in `inline-media` and
+  `file-uri` parts, the single statement of multimodal support (no `vision` / `audioInput` flags); adapters
+  reject any other, and an empty type, with `bad_request` before dispatch. Matching ignores case and
+  `; parameters` and the type is sent unchanged.
 - `capabilities.serviceTiers` — provider service tiers safe to send to the SDK for this model.
 
 ### Resolution Order
 
 `ModelRegistry.resolve(provider, model)`:
 
-1. Exact match on the (`provider`, `model`) pair — O(1) hash lookup.
-2. Longest-prefix match — linear scan **within that provider only**; the candidate with
-   `model.startsWith(descriptor.model)` and the longest `descriptor.model` wins. Prefix
-   matching never crosses providers.
-3. `undefined` — no descriptor found.
+1. Exact match on the (`provider`, `model`) pair — O(1) hash lookup. Declared `aliases` are
+   additional keys for the same descriptor, unique within the provider.
+2. `undefined` — no descriptor found. There is no prefix matching: an unregistered sibling such as
+   `gemini-2.5-flash-image` next to `gemini-2.5-flash` is unknown, never priced as the shorter id.
 
 When `undefined`, the engine throws `LlmError('bad_request')` at the public API boundary.
 There is no provider derivation, no `provider/model` slash convention, and no `'unknown'`
@@ -461,7 +546,7 @@ directly to extend or replace it.
 
 Implement `ProviderAdapter` from `@gullabs/core`:
 
-```ts
+```ts no-check
 import type {
   ProviderAdapter,
   ResolvedRequest,
@@ -492,7 +577,7 @@ Bundle the adapter with model descriptors (and an optional pricing source) into 
 `ProviderPlugin`, and compose it via `composeProviders` (ADR-023) — the same shape
 `googleProvider()` and `xaiProvider()` use:
 
-```ts
+```ts no-check
 import { composeProviders, createClient } from '@gullabs/core'
 import type { ProviderPlugin } from '@gullabs/core'
 import { toConfigJsonSchema, zodToStandardSchema } from '@gullabs/core'
@@ -521,7 +606,7 @@ const client = createClient({ ...composeProviders([myProvider()]), ... })
 
 Implement `UsageSink`:
 
-```ts
+```ts no-check
 import type { UsageSink, LlmCallRecord } from '@gullabs/core'
 
 const mySink: UsageSink = {
@@ -539,7 +624,7 @@ same `callId`.
 
 Implement `Middleware`:
 
-```ts
+```ts no-check
 import type { Middleware } from '@gullabs/core'
 
 const tracingMiddleware: Middleware = {
@@ -571,7 +656,7 @@ on duplicates.
 
 Google Search grounding is requested via `providerOptions.google`:
 
-```ts
+```ts no-check
 config: {
   providerOptions: {
     google: {
@@ -582,15 +667,27 @@ config: {
 ```
 
 `providerOptions.google` is a strict allowlist, not a general SDK passthrough. Only
-`cachedContent`, `httpOptions`, `safetySettings`, and exact `tools` declarations are admitted, and
+`allowSchemaWithSearch`, `cachedContent`, `flexFallback`, `httpOptions`, `requireGrounding`,
+`safetySettings`, and exact `tools` declarations are admitted, and
 reserved typed fields such as `serviceTier`, `thinkingConfig`, `responseMimeType`, and sampling
 knobs are rejected. If a `tools` entry requests `googleSearch` while `req.outputJsonSchema` is
-also set on a non-allowlisted model, the adapter throws
-`LlmError('bad_request', retryable: false)` before dispatch.
+also set on a model whose descriptor does not set `structuredOutputWithTools` (none of the
+registered Google models do), the adapter throws `LlmError('bad_request', retryable: false)`
+before dispatch unless the call sets `allowSchemaWithSearch: true`; the message names the two-call
+recipe in `docs/grounded-structured.md`. Opting in turns `requireGrounding` on (ADR-035).
+The adapter reports `usage.details.web_search_requested` and `web_search_calls`, the pricing source
+prices the grounding fee on the `tools` lane, and a call that ran Search is costed as
+`confidence: 'estimated'`. `requireGrounding: true` throws a `server` error with reason
+`grounding_missing` unless the response has `groundingMetadata` with at least one non-empty query; it
+is retryable only without an output schema (ADR-035 Amendment A). It is judged only on a `STOP`
+candidate: a filtered one throws `content_filter`. A descriptor with `structuredOutputWithTools`
+absent (Gemini 2.5, Gemma) rejects schema + Search even with `allowSchemaWithSearch`.
 
 When grounding is active, `candidate.groundingMetadata` from the response is captured into
 `result.providerMetadata['groundingMetadata']` as `JsonValue`. `promptFeedback`, when present, is
-captured alongside it under `result.providerMetadata['promptFeedback']`. Both are persisted in the
+captured alongside it under `result.providerMetadata['promptFeedback']`; `searchEntryPoint` is moved to
+`result.providerMetadata['google']['searchEntryPoint']` and omitted from the raw `groundingMetadata`, so
+the widget HTML is persisted once. All are persisted in the
 `LlmCallRecord` via the existing `providerMetadata` JSONB lane.
 
 ### Transport Timeout
@@ -609,6 +706,18 @@ The 5 000 ms buffer ensures the engine's `AbortSignal` fires before the SDK tran
 the error is classified as `LlmError('timeout')` rather than a raw SDK error.
 `FLEX_DEFAULT_TIMEOUT_MS`, `STANDARD_DEFAULT_TIMEOUT_MS`, and `TRANSPORT_TIMEOUT_BUFFER_MS` are
 exported constants from `@gullabs/google`.
+
+### xAI: Streaming Internally
+
+`@gullabs/xai`'s `run()` always sends `stream: true` and reads the server-sent events to the terminal
+event (ADR-040), so Node's 300 s body timer does not fire on a long reasoning call. This is internal:
+`LlmClient` has no `stream()` method. The client rebuilds the output items from the events and reconciles
+them with the final response object (which a live capture showed can omit the `reasoning` item), and applies
+the request deadline (`timeoutMs + 5 000 ms`, or one hour) to the whole stream, because the SDK `timeout`
+alone covers only the wait for headers; `transport.idleTimeoutMs` (off by default) ends a stream that sends
+no bytes at all. A stream that fails before any output event is a retryable `server` error with no usage (an
+unpriced attempt); one that fails after output began is never retried and carries a usage
+estimate priced `'estimated'` (ADR-040 Amendments A and B). Search budgets stay observed after the call.
 
 ---
 
@@ -632,11 +741,12 @@ matches `req.provider` against adapter ids directly, one adapter configured or t
 
 **Function calling / tool use.** Shipped as a seam only (ADR-029): `LlmRequest.tools` /
 `toolChoice` in, `tool-call` / `tool-result` parts and `LlmResult.toolCalls` out. No
-agent loop, no tool execution. `runStructured` + `tools` is `bad_request`.
+agent loop, no tool execution. `LlmResult.message` is the ordered assistant message and
+`LlmResult.continuation` says how the next turn is sent (ADR-029 addendum). `runStructured` + `tools` is `bad_request`.
 
-**Provider-fallback middleware.** The middleware contract allows calling `next` with a modified
-`ResolvedRequest` pointing to a different model. A fallback middleware (retry on `server` with
-a different provider) is implementable today; no first-party implementation ships in v1.
+**Provider fallback.** Deliberately host-side (ADR-037). A middleware cannot change a call's
+provider or model; the host catches the error and makes a new `generate` call against the other
+target. No first-party fallback ships.
 
 **Distributed rate limiting.** The `RateLimiter` port is in place. Core defaults to a no-op
 limiter, while `@gullabs/quota` provides companion quota primitives for shared enforcement.

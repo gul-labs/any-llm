@@ -6,10 +6,11 @@ changelog.
 
 ## Where to find changes
 
-Each package in this monorepo versions and releases independently via
-[changesets](https://github.com/changesets/changesets), cut automatically on every merge
-to `main`. For the authoritative, current, per-version change history of a package, see
-its own changelog:
+The nine packages are one [changesets](https://github.com/changesets/changesets) `fixed`
+group: they always release at the same version, and mixed versions are unsupported
+([RELEASING.md](RELEASING.md)). Merging a changeset to `main` makes the Release workflow
+open a "Version Packages" pull request; merging that pull request publishes. For the
+authoritative, current, per-version change history of a package, see its own changelog:
 
 - [packages/any-llm/CHANGELOG.md](packages/any-llm/CHANGELOG.md)
 - [packages/core/CHANGELOG.md](packages/core/CHANGELOG.md)
@@ -83,8 +84,9 @@ now also provide `hasModel()` and `listModels()`, so strict pricing checks use t
 exact/prefix model-resolution rules as runtime pricing — hosts using their own
 `PricingSource` instead of the built-in `geminiPricingSource()` need to add these.
 
-The same release added `idempotencyKey` and `externalId` to `LlmRequest` for ledger
-correlation, made `attempt_id` the Drizzle primary key (dropping the redundant UUID
+The same release added `idempotencyKey` (later removed again: ledger rows are per
+attempt, and `externalId` is the correlation key, ADR-031) and `externalId` to
+`LlmRequest` for ledger correlation, made `attempt_id` the Drizzle primary key (dropping the redundant UUID
 `id` column), and made Gemini Flex calls fall back to standard tier automatically under
 capacity pressure — with the tier actually served reported back as `servedServiceTier`
 so cost accounting and retries stay consistent.

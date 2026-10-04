@@ -29,6 +29,7 @@ import type {
   Message,
   Part,
 } from '@gullabs/core'
+import { parseExtraEnv } from './env.js'
 import { createCodexCliRunner } from './runner.js'
 import type { CodexCliRunner } from './runner.js'
 import { assertOpenAiStrictOutputSchema } from './output-schema.js'
@@ -49,38 +50,66 @@ export interface CodexCliAdapterOptions {
   codexPath?: string
   /** Maximum number of concurrent `runner.run` invocations. Defaults to 2. */
   maxConcurrency?: number
+  /**
+   * Variables handed to the `codex` child on top of the allowlisted copy of the
+   * host environment (PATH, HOME, locale, proxy, `CODEX_HOME`, `CODEX_CA_CERTIFICATE`).
+   * They win over the allowlisted ones. The host's `CODEX_API_KEY`, `OPENAI_API_KEY`
+   * and provider-routing variables are never inherited, so the CLI uses its saved
+   * login; passing one here is the explicit opt-in, and the call is then billed to
+   * it while the ledger still records it as unpriced. Values must be strings, else
+   * `bad_request` at construction.
+   */
+  env?: Readonly<Record<string, string>>
 }
 
 // ---------------------------------------------------------------------------
 // In-file concurrency semaphore — no external dep, no core RateLimiter port.
 // ---------------------------------------------------------------------------
 
+function abortError(): Error {
+  const err = new Error('codex-cli call aborted')
+  err.name = 'AbortError'
+  return err
+}
+
 function createSemaphore(maxConcurrency: number): {
-  acquire: () => Promise<() => void>
+  acquire: (signal?: AbortSignal) => Promise<() => void>
 } {
   let active = 0
   const queue: Array<() => void> = []
 
+  // A freed slot goes straight to the next waiter, so a new caller cannot
+  // overtake it between the release and the waiter's wake-up.
   const release = (): void => {
-    active -= 1
     const next = queue.shift()
-    if (next !== undefined) {
-      active += 1
-      next()
-    }
+    if (next !== undefined) next()
+    else active -= 1
   }
 
   return {
-    acquire(): Promise<() => void> {
-      return new Promise((resolve) => {
-        if (active < maxConcurrency) {
-          active += 1
+    /**
+     * Take a slot. A caller that has to wait leaves the queue, and rejects with an
+     * `AbortError`, as soon as `signal` fires: a call the engine already gave up
+     * on must not hold a place in line.
+     */
+    acquire(signal?: AbortSignal): Promise<() => void> {
+      if (signal?.aborted === true) return Promise.reject(abortError())
+      if (active < maxConcurrency) {
+        active += 1
+        return Promise.resolve(release)
+      }
+      return new Promise((resolve, reject) => {
+        const grant = (): void => {
+          signal?.removeEventListener('abort', onAbort)
           resolve(release)
-        } else {
-          queue.push(() => {
-            resolve(release)
-          })
         }
+        const onAbort = (): void => {
+          const at = queue.indexOf(grant)
+          if (at >= 0) queue.splice(at, 1)
+          reject(abortError())
+        }
+        signal?.addEventListener('abort', onAbort, { once: true })
+        queue.push(grant)
       })
     },
   }
@@ -252,6 +281,12 @@ interface NestedCodexErrorBody {
   status?: number
 }
 
+// Word-anchored: a bare `auth` would match "author" and "authority", and a bare
+// `429` a port or a timestamp.
+const AUTH_FAILURE = /\b(?:log ?in|auth|oauth|authentication|unauthori[sz]ed|401)\b/i
+const RATE_LIMITED =
+  /\brate[ -]?limit(?:ed|s|ing)?\b|\btoo many requests\b|(?<![\w.:/-])429(?![\w-]|\.\d)/i
+
 /**
  * Classify a fatal codex stream error message into an `LlmError`.
  *
@@ -283,22 +318,18 @@ function classifyCodexStreamError(rawMessage: string): LlmError {
   }
 
   // Text-based fallback — no numeric status found.
-  const lower = rawMessage.toLowerCase()
-  if (
-    lower.includes('login') ||
-    lower.includes('auth') ||
-    lower.includes('unauthorized')
-  ) {
-    return new LlmError(rawMessage, {
-      kind: 'invalid_auth',
-      retryable: false,
-      provider: 'codex-cli',
-    })
-  }
-  if (lower.includes('rate limit') || lower.includes('429')) {
+  // An explicit rate-limit signal wins over an incidental mention of auth.
+  if (RATE_LIMITED.test(rawMessage)) {
     return new LlmError(rawMessage, {
       kind: 'rate_limited',
       retryable: true,
+      provider: 'codex-cli',
+    })
+  }
+  if (AUTH_FAILURE.test(rawMessage)) {
+    return new LlmError(rawMessage, {
+      kind: 'invalid_auth',
+      retryable: false,
       provider: 'codex-cli',
     })
   }
@@ -375,6 +406,7 @@ export function codexCliAdapter(opts?: CodexCliAdapterOptions): ProviderAdapter 
   const runner = opts?.runner ?? createCodexCliRunner(opts?.codexPath)
   const maxConcurrency = opts?.maxConcurrency ?? 2
   const semaphore = createSemaphore(maxConcurrency)
+  const env = parseExtraEnv(opts?.env)
 
   return {
     id: 'codex-cli',
@@ -407,11 +439,10 @@ export function codexCliAdapter(opts?: CodexCliAdapterOptions): ProviderAdapter 
       const warnings: Warning[] = []
       const model = req.model
       if (
-        req.modelDescriptor !== undefined &&
-        (req.modelDescriptor.model !== model ||
-          req.modelDescriptor.provider !== 'codex-cli')
+        req.modelDescriptor?.model !== model ||
+        req.modelDescriptor.provider !== 'codex-cli'
       ) {
-        throw new LlmError(`Mismatched Codex model descriptor for "${model}".`, {
+        throw new LlmError(`No matching Codex model descriptor for "${model}".`, {
           kind: 'bad_request',
           retryable: false,
           provider: 'codex-cli',
@@ -436,10 +467,26 @@ export function codexCliAdapter(opts?: CodexCliAdapterOptions): ProviderAdapter 
       //    both the runner's `cwd` AND the `-C <scratchDir>` argv value,
       //    and it holds the --output-schema / -o temp files.
       // ------------------------------------------------------------------
-      const scratchDir = await mkdtemp(join(tmpdir(), 'codex-cli-'))
+      // A slot is taken first, and the directory made only once one is held: a
+      // queued call owns nothing to clean up and leaves the queue on abort.
+      let release: () => void
+      try {
+        release = await semaphore.acquire(req.signal)
+      } catch (waitErr) {
+        throw new LlmError(
+          waitErr instanceof Error ? waitErr.message : 'codex-cli call aborted',
+          { kind: 'aborted', retryable: false, provider: 'codex-cli' },
+        )
+      }
+      let scratchDir: string
+      try {
+        scratchDir = await mkdtemp(join(tmpdir(), 'codex-cli-'))
+      } catch (mkdirErr) {
+        release()
+        throw mkdirErr
+      }
 
       try {
-        const release = await semaphore.acquire()
         try {
           // ----------------------------------------------------------------
           // 3. Build argv.
@@ -476,12 +523,11 @@ export function codexCliAdapter(opts?: CodexCliAdapterOptions): ProviderAdapter 
           args.push('-o', outputPath)
 
           // The fully-serialized prompt (with the optional <system> preamble
-          // folded in) is the FINAL POSITIONAL ARGUMENT — matching the
-          // captured smoke-test invocation shape (`codex exec ... 'Say
-          // exactly: hi'`). We still pass an empty string as the runner's
-          // `input` (stdin) to satisfy the shared CodexCliRunner interface
-          // shape; codex never reads stdin in this invocation form.
-          args.push(prompt)
+          // folded in) travels on stdin and the positional argument is `-`,
+          // which `codex exec` documents as "read instructions from stdin".
+          // A prompt in argv would hit the OS limit on one argument (128 KiB
+          // on Linux, E2BIG) for a large history or file.
+          args.push('-')
 
           // ----------------------------------------------------------------
           // 4. Timeout — the runner owns timeout/abort enforcement
@@ -499,10 +545,11 @@ export function codexCliAdapter(opts?: CodexCliAdapterOptions): ProviderAdapter 
 
           let result: Awaited<ReturnType<CodexCliRunner['run']>>
           try {
-            result = await runner.run(args, '', {
+            result = await runner.run(args, prompt, {
               cwd: scratchDir,
               ...(timeoutMs !== undefined ? { timeoutMs } : {}),
               ...(req.signal !== undefined ? { signal: req.signal } : {}),
+              ...(env !== undefined ? { env } : {}),
             })
           } catch (rawErr) {
             if (
@@ -546,6 +593,20 @@ export function codexCliAdapter(opts?: CodexCliAdapterOptions): ProviderAdapter 
               const message = failed.error?.message ?? 'codex turn failed'
               throw classifyCodexStreamError(message)
             }
+          }
+
+          // `null` is a process ended by a signal (an outside SIGKILL, the OOM
+          // killer). With no `turn.completed` the turn never finished, whatever
+          // intermediate message was streamed before the kill.
+          if (
+            exitCode === null &&
+            !events.some((event) => event.type === 'turn.completed')
+          ) {
+            const stderrTail = result.stderr.slice(-2000)
+            throw new LlmError(
+              `codex exec was killed by a signal before the turn completed: ${stderrTail}`,
+              { kind: 'server', retryable: false, provider: 'codex-cli' },
+            )
           }
 
           if (exitCode !== 0 && exitCode !== null) {
@@ -644,6 +705,11 @@ export function codexCliAdapter(opts?: CodexCliAdapterOptions): ProviderAdapter 
 
           const adapterResult: AdapterResult = {
             model,
+            message: {
+              role: 'assistant',
+              parts:
+                preferredText.length > 0 ? [{ kind: 'text', text: preferredText }] : [],
+            },
             usage,
             warnings,
             // No explicit finish-reason signal is present in the captured

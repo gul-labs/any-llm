@@ -2,7 +2,7 @@
  * Call-site definition for @gullabs/core.
  *
  * A {@link CallSite} is a reusable, named prompt template with an associated
- * model and optional JSON Schema hint for structured output.  It is the unit of
+ * model and optional JSON Schema for structured output.  It is the unit of
  * observability: every call made through a call site records a `callSiteId`
  * so usage can be grouped by prompt template in dashboards and audits.
  *
@@ -17,7 +17,7 @@ import type { StandardSchemaV1 } from './standard-schema.js'
 // ---------------------------------------------------------------------------
 
 /**
- * A reusable prompt template that bundles model, JSON Schema hint, and gen-config.
+ * A reusable prompt template that bundles model, JSON Schema, and gen-config.
  *
  * @example
  * ```ts
@@ -69,7 +69,9 @@ export interface CallSite {
    * here or in `system` must have a string-typed value in the `vars` passed
    * to `runStructured`, or the call is refused before any request is built
    * (`bad_request`, not retryable). No escape syntax for literal `{{...}}`
-   * text.
+   * text. A template that renders to the empty string (or an absent one) is
+   * only valid when the call passes `attachments`; otherwise `runStructured`
+   * refuses the call with `bad_request`.
    */
   userTemplate?: string
   /**

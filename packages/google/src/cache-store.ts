@@ -11,10 +11,11 @@
  */
 
 import type { AuthMaterial, Logger } from '@gullabs/core'
-import type { Content } from '@google/genai'
+import type { Content, Tool, ToolConfig } from '@google/genai'
 
-import { requireApiKey } from './client.js'
-import { LlmError, classifyError, redactSecrets } from '@gullabs/core'
+import { newGoogleGenAI } from './client.js'
+import { classifyGoogleError, isGoogleNotFoundError } from './errors.js'
+import { LlmError, redactSecrets } from '@gullabs/core'
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -35,6 +36,23 @@ export interface GoogleCacheHandle {
   expiresAt: Date
   /** Caches are model-bound; never use a handle with a different model. */
   model: string
+  /**
+   * Tokens the cache holds, from `usageMetadata.totalTokenCount` of the create
+   * response. Cache storage is billed per token-hour (see Google's pricing page)
+   * and no usage record carries it, so a host that prices storage reads this.
+   * Absent when the response had no `usageMetadata`. Kept across a TTL refresh.
+   */
+  totalTokenCount?: number
+  /**
+   * The kinds of tool the cache holds, from the `tools` given to `create` (the
+   * keys of each `Tool`: `googleSearch`, `functionDeclarations`, ...); empty when
+   * it holds none. Pass it with the name as
+   * `providerOptions.google.cachedContent: { cacheName, toolKinds }` so a cached
+   * `googleSearch` is priced as Search: the request carries no tool, so nothing
+   * else says Search runs. Absent on a handle built by hand, where the content of
+   * the cache is unknown. Kept across a TTL refresh.
+   */
+  toolKinds?: readonly string[]
 }
 
 /** Key used to look up or create an entry in the in-process cache map. */
@@ -54,10 +72,17 @@ export interface GeminiCachesClientLike {
     config: {
       contents?: Content[]
       systemInstruction?: Content | string
+      tools?: Tool[]
+      toolConfig?: ToolConfig
       ttl?: string
       displayName?: string
     }
-  }): Promise<{ name?: string; model?: string; expireTime?: string }>
+  }): Promise<{
+    name?: string
+    model?: string
+    expireTime?: string
+    usageMetadata?: { totalTokenCount?: number }
+  }>
 
   update(params: {
     name: string
@@ -98,9 +123,9 @@ export interface GoogleCacheStoreOptions {
     minTokens: number
     /**
      * Counts tokens for the exact token-bearing payload of the impending
-     * create — `model` + `contents` + `systemInstruction` only. `ttl` and
-     * `displayName` are excluded: they carry no tokens and are irrelevant to
-     * the pre-flight check.
+     * create — `model` + `contents` + `systemInstruction` + `tools` only.
+     * `toolConfig`, `ttl` and `displayName` are excluded: they carry no tokens
+     * and are irrelevant to the pre-flight check.
      *
      * This callback receives genai-native `Content[]`/`Content|string` — it
      * does NOT receive the library's `Message[]` shape and there is no
@@ -114,6 +139,7 @@ export interface GoogleCacheStoreOptions {
       model: string
       contents?: Content[]
       systemInstruction?: Content | string
+      tools?: Tool[]
     }) => Promise<number>
   }
 }
@@ -125,10 +151,33 @@ export interface GoogleCacheStoreOptions {
 const DEFAULT_SKEW_SECONDS = 30
 const DEFAULT_EXTENSION_SECONDS = 3600
 
-async function buildCachesClient(auth: AuthMaterial): Promise<GeminiCachesClientLike> {
-  const { GoogleGenAI } = await import('@google/genai')
+/** The distinct kinds (keys with a value) of a list of `Tool` objects. */
+function toolKindsOf(tools: readonly Tool[] | undefined): string[] {
+  const kinds = new Set<string>()
+  for (const tool of tools ?? []) {
+    for (const [kind, value] of Object.entries(tool)) {
+      if (value !== undefined) kinds.add(kind)
+    }
+  }
+  return [...kinds]
+}
 
-  const ai = new GoogleGenAI({ apiKey: requireApiKey(auth) })
+/**
+ * When a cache expires: the server's `expireTime` when it parses, else
+ * `fallbackMs`. An unparseable `expireTime` would make an Invalid Date, which is
+ * never live, so every `getOrCreate` would create (and bill storage for) a new
+ * cache.
+ */
+function expiryOf(expireTime: string | undefined, fallbackMs: number): Date {
+  if (expireTime !== undefined && expireTime.length > 0) {
+    const parsed = new Date(expireTime)
+    if (!Number.isNaN(parsed.getTime())) return parsed
+  }
+  return new Date(fallbackMs)
+}
+
+async function buildCachesClient(auth: AuthMaterial): Promise<GeminiCachesClientLike> {
+  const ai = await newGoogleGenAI(auth)
 
   return {
     async create(params) {
@@ -137,6 +186,7 @@ async function buildCachesClient(auth: AuthMaterial): Promise<GeminiCachesClient
           name?: string
           model?: string
           expireTime?: string
+          usageMetadata?: { totalTokenCount?: number }
         }>
       )(params)
       return result
@@ -215,13 +265,13 @@ export class GoogleCacheStore {
       ((cacheName, err) => {
         if (this.logger !== undefined) {
           this.logger.error(
-            { name: cacheName, error: redactSecrets(classifyError(err).message) },
+            { name: cacheName, error: redactSecrets(classifyGoogleError(err).message) },
             'gemini.cache.delete.failed',
           )
         } else {
           console.error(
             `[GoogleCacheStore] delete failed for "${cacheName}":`,
-            redactSecrets(classifyError(err).message),
+            redactSecrets(classifyGoogleError(err).message),
           )
         }
       })
@@ -253,8 +303,22 @@ export class GoogleCacheStore {
     ttlSeconds: number
     contents?: Content[]
     systemInstruction?: Content | string
+    /**
+     * Tool declarations to store in the cache. Gemini rejects a request that
+     * sends `tools` or `toolConfig` together with `cachedContent`, so a cache
+     * used by a tool-calling call must hold them (the adapter rejects the
+     * combination before dispatch).
+     */
+    tools?: Tool[]
+    toolConfig?: ToolConfig
     displayName?: string
   }): Promise<GoogleCacheHandle> {
+    if (!Number.isInteger(input.ttlSeconds) || input.ttlSeconds <= 0) {
+      throw new LlmError(
+        `GoogleCacheStore.create: ttlSeconds must be a positive integer, got ${String(input.ttlSeconds)}.`,
+        { kind: 'bad_request', retryable: false, provider: 'google' },
+      )
+    }
     if (this.preflight !== undefined) {
       const counted = await this.preflight.countTokens({
         model: input.model,
@@ -262,6 +326,7 @@ export class GoogleCacheStore {
         ...(input.systemInstruction !== undefined
           ? { systemInstruction: input.systemInstruction }
           : {}),
+        ...(input.tools !== undefined ? { tools: input.tools } : {}),
       })
       if (counted < this.preflight.minTokens) {
         throw new LlmError(
@@ -278,19 +343,23 @@ export class GoogleCacheStore {
       ttl: string
       contents?: Content[]
       systemInstruction?: Content | string
+      tools?: Tool[]
+      toolConfig?: ToolConfig
       displayName?: string
     } = { ttl: `${input.ttlSeconds}s` }
 
     if (input.contents !== undefined) config.contents = input.contents
     if (input.systemInstruction !== undefined)
       config.systemInstruction = input.systemInstruction
+    if (input.tools !== undefined) config.tools = input.tools
+    if (input.toolConfig !== undefined) config.toolConfig = input.toolConfig
     if (input.displayName !== undefined) config.displayName = input.displayName
 
-    let resp: { name?: string; model?: string; expireTime?: string }
+    let resp: Awaited<ReturnType<GeminiCachesClientLike['create']>>
     try {
       resp = await client.create({ model: input.model, config })
     } catch (e) {
-      throw classifyError(e)
+      throw classifyGoogleError(e)
     }
 
     if (resp.name === undefined || resp.name.length === 0) {
@@ -307,16 +376,17 @@ export class GoogleCacheStore {
       })
     }
 
-    const fallbackExpiry = new Date(this.now() + input.ttlSeconds * 1000)
-    const expiresAt =
-      resp.expireTime !== undefined && resp.expireTime.length > 0
-        ? new Date(resp.expireTime)
-        : fallbackExpiry
+    const expiresAt = expiryOf(resp.expireTime, this.now() + input.ttlSeconds * 1000)
 
+    const totalTokenCount = resp.usageMetadata?.totalTokenCount
     return {
       cacheName: resp.name,
       model: resp.model ?? input.model,
       expiresAt,
+      ...(typeof totalTokenCount === 'number' && Number.isFinite(totalTokenCount)
+        ? { totalTokenCount }
+        : {}),
+      toolKinds: toolKindsOf(input.tools),
     }
   }
 
@@ -335,14 +405,18 @@ export class GoogleCacheStore {
       ttlSeconds: number
       contents?: Content[]
       systemInstruction?: Content | string
+      tools?: Tool[]
+      toolConfig?: ToolConfig
     }>,
   ): Promise<GoogleCacheHandle> {
     const mapKey = `${key.model}:${key.stableKey}`
 
     // Return existing live entry if available.
     const existing = this.entries.get(mapKey)
-    if (existing !== undefined && this.isLive(existing.handle)) {
-      return existing.handle
+    if (existing !== undefined) {
+      if (this.isLive(existing.handle)) return existing.handle
+      // An expired entry is dropped now, not kept until the next create.
+      this.entries.delete(mapKey)
     }
 
     // If coalescing, piggyback on an in-flight create for this key.
@@ -363,6 +437,10 @@ export class GoogleCacheStore {
           : {}),
         ...(factoryResult.systemInstruction !== undefined
           ? { systemInstruction: factoryResult.systemInstruction }
+          : {}),
+        ...(factoryResult.tools !== undefined ? { tools: factoryResult.tools } : {}),
+        ...(factoryResult.toolConfig !== undefined
+          ? { toolConfig: factoryResult.toolConfig }
           : {}),
       })
       this.entries.set(mapKey, { handle, ttlSeconds: factoryResult.ttlSeconds })
@@ -422,16 +500,16 @@ export class GoogleCacheStore {
         config: { ttl: `${extensionSeconds}s` },
       })
 
-      const fallbackExpiry = new Date(this.now() + extensionSeconds * 1000)
-      const newExpiresAt =
-        resp.expireTime !== undefined && resp.expireTime.length > 0
-          ? new Date(resp.expireTime)
-          : fallbackExpiry
+      const newExpiresAt = expiryOf(resp.expireTime, this.now() + extensionSeconds * 1000)
 
       const newHandle: GoogleCacheHandle = {
         cacheName: handle.cacheName,
         model: handle.model,
         expiresAt: newExpiresAt,
+        ...(handle.totalTokenCount !== undefined
+          ? { totalTokenCount: handle.totalTokenCount }
+          : {}),
+        ...(handle.toolKinds !== undefined ? { toolKinds: handle.toolKinds } : {}),
       }
 
       // Update the entries map entry if this handle is tracked.
@@ -450,9 +528,11 @@ export class GoogleCacheStore {
   }
 
   /**
-   * Delete a cached content resource.
+   * Delete a cached content resource. Idempotent: a cache that is already gone
+   * (HTTP 404, or the 403 `CachedContent not found` Google sends for an expired
+   * one) is success, not an error.
    *
-   * Errors are forwarded to `onDeleteError` and NOT rethrown.
+   * Any other error is forwarded to `onDeleteError` and NOT rethrown.
    * The handle is removed from the in-process entries map regardless.
    */
   async delete(handle: GoogleCacheHandle): Promise<void> {
@@ -468,6 +548,7 @@ export class GoogleCacheStore {
       const client = await this.getClient()
       await client.delete({ name: handle.cacheName })
     } catch (err) {
+      if (isGoogleNotFoundError(err)) return
       this.onDeleteError(handle.cacheName, err)
     }
   }

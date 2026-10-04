@@ -24,6 +24,8 @@ export interface GeminiPartLike {
   /** Present and `true` on thought-summary parts. */
   thought?: boolean
   functionCall?: { id?: string; name?: string; args?: unknown }
+  /** Opaque signature Gemini 3.x attaches to the first function call of a turn. */
+  thoughtSignature?: string
 }
 
 /** The `content` object inside a Gemini candidate. */
@@ -39,6 +41,11 @@ export interface GeminiCandidateLike {
    * e.g. `'STOP'`, `'MAX_TOKENS'`, `'SAFETY'`, `'OTHER'`.
    */
   finishReason?: string
+  /** Human-readable detail Google sends with some finish reasons. */
+  finishMessage?: string
+  safetyRatings?: unknown[]
+  citationMetadata?: unknown
+  urlContextMetadata?: unknown
   /** Grounding metadata returned when Google Search grounding is active. */
   groundingMetadata?: unknown
 }
@@ -54,8 +61,14 @@ export interface GeminiUsageMetadataLike {
   candidatesTokenCount?: number
   cachedContentTokenCount?: number
   thoughtsTokenCount?: number
+  /** Search-result tokens fed back to the model (Gemini 2.5 grounding). */
+  toolUsePromptTokenCount?: number
   totalTokenCount?: number
   serviceTier?: string
+  /** Prompt tokens per modality (`TEXT`, `AUDIO`, ...); includes the cached part. */
+  promptTokensDetails?: Array<{ modality?: string; tokenCount?: number }>
+  /** The cached part of the prompt per modality. */
+  cacheTokensDetails?: Array<{ modality?: string; tokenCount?: number }>
 }
 
 /**
@@ -121,6 +134,7 @@ export interface FakeGeminiResponseOpts {
   candidatesTokenCount?: number
   cachedContentTokenCount?: number
   thoughtsTokenCount?: number
+  toolUsePromptTokenCount?: number
   totalTokenCount?: number
   /** e.g. `'STOP'` | `'MAX_TOKENS'` | `'SAFETY'` */
   finishReason?: string
@@ -184,6 +198,9 @@ export function fakeGeminiResponse(
       : {}),
     ...(opts.thoughtsTokenCount !== undefined
       ? { thoughtsTokenCount: opts.thoughtsTokenCount }
+      : {}),
+    ...(opts.toolUsePromptTokenCount !== undefined
+      ? { toolUsePromptTokenCount: opts.toolUsePromptTokenCount }
       : {}),
     ...(opts.totalTokenCount !== undefined
       ? { totalTokenCount: opts.totalTokenCount }
@@ -345,8 +362,8 @@ export interface FakeGeminiClient {
  * await client.models.generateContent({})  // → second response
  * expect(client.calls).toHaveLength(2)
  *
- * // Error injection (mimics a 429 object thrown by the real SDK)
- * const errorClient = makeFakeGemini(() => { throw { status: 429 } })
+ * // Error injection: the real SDK error class, which the real adapter classifies
+ * const errorClient = makeFakeGemini(() => { throw fakeProviderError('google', 'per-day-quota') })
  * await expect(errorClient.models.generateContent({})).rejects.toMatchObject({ status: 429 })
  * ```
  */

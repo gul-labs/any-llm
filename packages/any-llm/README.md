@@ -2,10 +2,11 @@
 
 The default, batteries-included any-llm client package.
 
-"Batteries-included" means concretely this: `@gullabs/any-llm` bundles `@gullabs/core` (the
-engine), `@gullabs/google` (the Gemini adapter), and `@google/genai` (the Gemini SDK) as
-dependencies and re-exports their full public API, so a single `pnpm add` gets you a working
-client instead of three separate installs.
+"Batteries-included" means concretely this: `@gullabs/any-llm` depends on `@gullabs/google` (the
+Gemini adapter) and `@google/genai` (the Gemini SDK), takes `@gullabs/core` (the engine) as an
+exact-version peer dependency that your package manager installs for you, and re-exports the full
+public API of core and google, so a single `pnpm add` gets you a working client instead of three
+separate installs.
 
 ## Install
 
@@ -13,7 +14,18 @@ client instead of three separate installs.
 pnpm add @gullabs/any-llm
 ```
 
-This installs the core engine, Gemini adapter, and `@google/genai`.
+This installs the Gemini adapter and `@google/genai`, plus the `@gullabs/core` engine at the same
+version. Core is an exact-version peer dependency, which npm 7+ and pnpm install automatically.
+Package managers that do not install peers (pnpm with `autoInstallPeers: false`, yarn, npm with
+`--legacy-peer-deps`) leave it out, and the import then fails with `Cannot find module '@gullabs/core'`.
+There, add it yourself at the same version:
+
+```bash
+pnpm add @gullabs/any-llm @gullabs/core   # or: yarn add ... / npm i ... --legacy-peer-deps
+```
+
+All `@gullabs/*` packages must be at one version; see
+[Versioning](../../RELEASING.md#versioning-one-version-for-every-package).
 
 ## Usage
 
@@ -48,7 +60,7 @@ const summarize = defineCallSite({
 // Auth is required per call — the library never reads environment variables itself.
 const result = await client.runStructured(
   summarize,
-  { text: documentText },
+  { text: 'The document to summarize.' },
   { auth: { apiKey: process.env.GEMINI_API_KEY! } },
 )
 
@@ -81,16 +93,16 @@ This package re-exports the full public API of `@gullabs/core` and `@gullabs/goo
 `geminiPricingSource`, `LlmError`, and every other named export from both packages. See their
 READMEs for details:
 
-| Export                      | What it is                                                  |
-| --------------------------- | ----------------------------------------------------------- |
-| `createClient(config)`      | Wires ports into a `{ generate, runStructured }` client     |
-| `composeProviders(plugins)` | Merges `ProviderPlugin`s into `ClientConfig` fields         |
-| `defineCallSite(opts)`      | Defines a typed, reusable prompt template bound to a model  |
-| `googleProvider(opts?)`     | The Gemini `ProviderPlugin` factory, from `@gullabs/google` |
-| `geminiAdapter(opts?)`      | The Gemini `ProviderAdapter`, from `@gullabs/google`        |
-| `geminiPricingSource()`     | Built-in Gemini pricing snapshot, from `@gullabs/google`    |
-| `LlmError`                  | Typed error class — always thrown on call failure           |
-| `ANY_LLM_VERSION`           | This package's version, sourced from `package.json`         |
+| Export                      | What it is                                                           |
+| --------------------------- | -------------------------------------------------------------------- |
+| `createClient(config)`      | Wires ports into a `{ generate, runStructured, countTokens }` client |
+| `composeProviders(plugins)` | Merges `ProviderPlugin`s into `ClientConfig` fields                  |
+| `defineCallSite(opts)`      | Defines a typed, reusable prompt template bound to a model           |
+| `googleProvider(opts?)`     | The Gemini `ProviderPlugin` factory, from `@gullabs/google`          |
+| `geminiAdapter(opts?)`      | The Gemini `ProviderAdapter`, from `@gullabs/google`                 |
+| `geminiPricingSource()`     | Built-in Gemini pricing snapshot, from `@gullabs/google`             |
+| `LlmError`                  | Typed error class — always thrown on call failure                    |
+| `ANY_LLM_VERSION`           | This package's version, sourced from `package.json`                  |
 
 Use `@gullabs/core` and `@gullabs/google` directly only when you want modular dependency control.
 

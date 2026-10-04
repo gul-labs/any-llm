@@ -1,4 +1,9 @@
+import { maxOutputTokensSchema } from '@gullabs/core'
 import { z } from 'zod'
+
+import { GOOGLE_MAX_TIMEOUT_MS, MAX_TIMER_MS } from '../client.js'
+import { GOOGLE_MODEL_LIMITS } from '../model-limits.js'
+import { GOOGLE_SAFETY_CATEGORIES, GOOGLE_SAFETY_THRESHOLDS } from '../safety-settings.js'
 
 export const Gemma431bItConfigSchema = z
   .strictObject({
@@ -20,10 +25,12 @@ export const Gemma431bItConfigSchema = z
       title: 'Top K',
       description: 'Top-k sampling limit for gemma-4-31b-it.',
     }),
-    maxOutputTokens: z.number().int().positive().optional().meta({
-      title: 'Max Output Tokens',
-      description: 'Maximum output token cap for gemma-4-31b-it.',
-    }),
+    maxOutputTokens: maxOutputTokensSchema(GOOGLE_MODEL_LIMITS['gemma-4-31b-it'])
+      .optional()
+      .meta({
+        title: 'Max Output Tokens',
+        description: 'Maximum output token cap for gemma-4-31b-it.',
+      }),
     stopSequences: z.array(z.string()).max(5).optional().meta({
       title: 'Stop Sequences',
       description: 'Up to five stop sequences for gemma-4-31b-it.',
@@ -52,7 +59,7 @@ export const Gemma431bItConfigSchema = z
         title: 'Reasoning',
         description: 'Gemma 4 31B IT thinkingLevel configuration.',
       }),
-    timeoutMs: z.number().int().positive().optional().meta({
+    timeoutMs: z.number().int().positive().max(GOOGLE_MAX_TIMEOUT_MS).optional().meta({
       title: 'Timeout',
       description: 'Logical request timeout in milliseconds.',
     }),
@@ -60,20 +67,21 @@ export const Gemma431bItConfigSchema = z
       .strictObject({
         google: z
           .strictObject({
-            cachedContent: z.string().min(1).optional().meta({
-              title: 'Cached Content',
-              description: 'Google cached content resource name.',
+            requireGrounding: z.boolean().optional().meta({
+              title: 'Require Grounding',
+              description:
+                'Fail the call unless the response proves Google Search ran (grounding metadata with at least one query). Judged only on a candidate that finished with STOP: a MAX_TOKENS or other abnormal finish returns with its own finish reason, a filtered one throws content_filter. The error is retryable only when no response schema is attached.',
             }),
             safetySettings: z
               .array(
                 z.strictObject({
-                  category: z.string().min(1).meta({
+                  category: z.enum(GOOGLE_SAFETY_CATEGORIES).meta({
                     title: 'Safety Category',
-                    description: 'Google safety category identifier.',
+                    description: 'Documented Google safety category.',
                   }),
-                  threshold: z.string().min(1).meta({
+                  threshold: z.enum(GOOGLE_SAFETY_THRESHOLDS).meta({
                     title: 'Safety Threshold',
-                    description: 'Google safety threshold identifier.',
+                    description: 'Documented Google safety threshold.',
                   }),
                 }),
               )
@@ -99,9 +107,10 @@ export const Gemma431bItConfigSchema = z
               }),
             httpOptions: z
               .strictObject({
-                timeout: z.number().int().positive().optional().meta({
+                timeout: z.number().int().positive().max(MAX_TIMER_MS).optional().meta({
                   title: 'HTTP Timeout',
-                  description: 'Per-request Google transport timeout in milliseconds.',
+                  description:
+                    'Per-request Google transport timeout in milliseconds, at most 2147483647; with timeoutMs set, at least timeoutMs + 5000.',
                 }),
               })
               .optional()

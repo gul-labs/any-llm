@@ -19,7 +19,14 @@ import type {
   ResolvedRequest,
   AdapterCtx,
   AdapterResult,
+  Scheduler,
+  TimerHandle,
 } from '@gullabs/core'
+
+import { PLATFORM_SCHEDULER } from './platform-scheduler.js'
+import { classifyEntry } from './fake-adapter.js'
+import { classifyAsAdapter, isProviderShaped } from './provider-errors.js'
+import type { FakeAdapterEntry } from './fake-adapter.js'
 
 // ---------------------------------------------------------------------------
 // SignalAwareFakeAdapter
@@ -31,7 +38,7 @@ import type {
 export interface SignalAwareFakeAdapterOptions {
   /**
    * Artificial per-call delay before resolving the scripted result, in
-   * milliseconds.  The signal is observed during this delay.  Default: `200`.
+   * milliseconds on the client's `scheduler`.  The signal is observed during this delay.  Default: `200`.
    */
   delayMs?: number
   /**
@@ -61,7 +68,7 @@ export interface SignalAwareFakeAdapterOptions {
  *   abortsSynchronouslyOnSignal: true, // stress-test timeout determinism
  * })
  * const ctrl = new AbortController()
- * setTimeout(() => ctrl.abort(), 50)
+ * clock.setTimeout(() => ctrl.abort(), 50) // a FakeClock passed as the client's `scheduler`
  * await expect(
  *   client.generate({
  *     provider: 'google',
@@ -86,7 +93,7 @@ export class SignalAwareFakeAdapter implements ProviderAdapter {
    */
   abortObserved = false
 
-  private readonly _entry: AdapterResult | Error | Record<string, unknown>
+  private readonly _entry: FakeAdapterEntry
   private readonly _delayMs: number
   private readonly _abortsSynchronouslyOnSignal: boolean
 
@@ -96,12 +103,9 @@ export class SignalAwareFakeAdapter implements ProviderAdapter {
    *   completes normally (without abort).
    * @param opts - Optional configuration (see {@link SignalAwareFakeAdapterOptions}).
    */
-  constructor(
-    id: string,
-    entry: AdapterResult | Error | Record<string, unknown>,
-    opts?: SignalAwareFakeAdapterOptions,
-  ) {
+  constructor(id: string, entry: FakeAdapterEntry, opts?: SignalAwareFakeAdapterOptions) {
     this.id = id
+    classifyEntry(entry, 'SignalAwareFakeAdapter entry')
     this._entry = entry
     this._delayMs = opts?.delayMs ?? 200
     this._abortsSynchronouslyOnSignal = opts?.abortsSynchronouslyOnSignal ?? false
@@ -119,17 +123,23 @@ export class SignalAwareFakeAdapter implements ProviderAdapter {
   run(req: ResolvedRequest, ctx: AdapterCtx): Promise<AdapterResult> {
     this.calls.push(req)
     const signal = ctx.signal
+    const scheduler: Scheduler = ctx.scheduler ?? PLATFORM_SCHEDULER
     const abortsSynchronously = this._abortsSynchronouslyOnSignal
     const self = this
 
     return new Promise<AdapterResult>((resolve, reject) => {
       let settled = false
-      let timerId: ReturnType<typeof setTimeout> | undefined
+      let timerId: TimerHandle | undefined
 
-      /** Settle the promise at most once. */
+      /**
+       * Settle the promise at most once. The abort listener stays attached until
+       * here, so an abort that lands while an error is still being classified
+       * wins, as the comment on the classification says.
+       */
       const settle = (fn: () => void): void => {
         if (!settled) {
           settled = true
+          signal?.removeEventListener('abort', onAbort)
           fn()
         }
       }
@@ -138,7 +148,7 @@ export class SignalAwareFakeAdapter implements ProviderAdapter {
       const onAbort = (): void => {
         // Cancel the delay timer to avoid double-settlement.
         if (timerId !== undefined) {
-          clearTimeout(timerId)
+          scheduler.clearTimeout(timerId)
           timerId = undefined
         }
         self.abortObserved = true
@@ -180,27 +190,34 @@ export class SignalAwareFakeAdapter implements ProviderAdapter {
       }
 
       // Schedule the scripted result after delayMs.
-      timerId = setTimeout(() => {
+      timerId = scheduler.setTimeout(() => {
         timerId = undefined
-        // Remove abort listener — the delay elapsed without abort.
-        if (signal !== undefined) {
-          signal.removeEventListener('abort', onAbort)
-        }
 
         const entry = this._entry
         if (entry instanceof Error) {
-          settle(() => {
-            reject(entry)
-          })
-        } else if ('usage' in entry) {
-          settle(() => {
-            resolve(entry as AdapterResult)
-          })
+          if (isProviderShaped(entry)) {
+            // Classified as the real adapter classifies it; an abort that lands
+            // while the classifier loads still wins (`settle` runs once).
+            classifyAsAdapter(entry).then(
+              (classified) => {
+                settle(() => {
+                  reject(classified)
+                })
+              },
+              (failure: unknown) => {
+                settle(() => {
+                  reject(failure)
+                })
+              },
+            )
+          } else {
+            settle(() => {
+              reject(entry)
+            })
+          }
         } else {
-          // Plain-object error (e.g. `{ status: 429 }`) — throw as-is so
-          // the engine's `classifyError` can extract the HTTP status.
           settle(() => {
-            reject(entry)
+            resolve(entry)
           })
         }
       }, this._delayMs)

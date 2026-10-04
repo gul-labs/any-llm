@@ -3,7 +3,12 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { buildRecord, errorKindToStatus } from './record.js'
+import {
+  buildRecord,
+  errorKindToStatus,
+  normalizeUsage,
+  RECORD_TEXT_CAP_BYTES,
+} from './record.js'
 import { LlmError } from './errors.js'
 import type { BuildRecordInput } from './record.js'
 import type { Usage, Cost, GenConfig } from './types.js'
@@ -63,9 +68,18 @@ function makeBaseInput(overrides: Partial<BuildRecordInput> = {}): BuildRecordIn
 // ---------------------------------------------------------------------------
 
 describe('buildRecord — success path', () => {
-  it('sets recordSchemaVersion to 1', () => {
+  it('sets recordSchemaVersion to 2', () => {
     const r = buildRecord(makeBaseInput())
-    expect(r.recordSchemaVersion).toBe(1)
+    expect(r.recordSchemaVersion).toBe(2)
+  })
+
+  it('rounds latencyMs and queueDelayMs to whole milliseconds (a Clock may return fractions)', () => {
+    const r = buildRecord(makeBaseInput({ latencyMs: 12.5, queueDelayMs: 0.3 }))
+    expect(r.latencyMs).toBe(13)
+    expect(r.queueDelayMs).toBe(0)
+    const whole = buildRecord(makeBaseInput({ latencyMs: 1234, queueDelayMs: 7 }))
+    expect([whole.latencyMs, whole.queueDelayMs]).toEqual([1234, 7])
+    expect('queueDelayMs' in buildRecord(makeBaseInput())).toBe(false)
   })
 
   it('persists requested toolNames and toolCount even without toolCalls', () => {
@@ -331,6 +345,21 @@ describe('buildRecord — error path', () => {
     expect(r.errorMessage).toBe('Service temporarily unavailable')
   })
 
+  it('persists errorReason only when the error carries one', () => {
+    const withReason = new LlmError('window exhausted', {
+      kind: 'rate_limited',
+      retryable: false,
+      reason: 'quota_window',
+    })
+    const r = buildRecord(makeBaseInput({ status: 'api_error', error: withReason }))
+    expect(r.errorKind).toBe('rate_limited')
+    expect(r.errorReason).toBe('quota_window')
+
+    const plain = new LlmError('boom', { kind: 'server', retryable: true })
+    const p = buildRecord(makeBaseInput({ status: 'api_error', error: plain }))
+    expect('errorReason' in p).toBe(false)
+  })
+
   it('derives status from error.kind — timeout', () => {
     const error = new LlmError('timed out', { kind: 'timeout', retryable: true })
     const r = buildRecord(makeBaseInput({ status: 'ok', error }))
@@ -525,5 +554,381 @@ describe('buildRecord — usage invariant clamping (fail-open)', () => {
 
     const warnings = r.warnings as Array<{ type: string; message: string }>
     expect(warnings.length).toBeGreaterThanOrEqual(2)
+  })
+})
+
+describe('normalizeUsage — totalTokens above input + output', () => {
+  const base = { details: {}, raw: null }
+
+  it('warns and reports estimated when the provider counted tokens the fields omit', () => {
+    const r = normalizeUsage({
+      ...base,
+      inputTokens: 44,
+      outputTokens: 102,
+      totalTokens: 223,
+    })
+    expect(r.estimated).toBe(true)
+    expect(r.warnings).toHaveLength(1)
+    expect(r.warnings[0]?.message).toContain('greater than inputTokens + outputTokens')
+    expect(r.usage.totalTokens).toBe(223)
+  })
+
+  it.each([
+    ['equal', 146],
+    ['below (warned, not estimated)', 100],
+    ['absent', undefined],
+  ])('is not estimated when the total is %s', (_name, totalTokens) => {
+    const r = normalizeUsage({
+      ...base,
+      inputTokens: 44,
+      outputTokens: 102,
+      ...(totalTokens !== undefined ? { totalTokens } : {}),
+    })
+    expect(r.estimated).toBe(false)
+  })
+
+  it('buildRecord does not repeat a warning the caller already carries', () => {
+    const usage = { ...base, inputTokens: 44, outputTokens: 102, totalTokens: 223 }
+    const { warnings } = normalizeUsage(usage)
+    const record = buildRecord(makeBaseInput({ usage, warnings }))
+    expect(record.warnings).toEqual(warnings)
+  })
+})
+
+describe('buildRecord — cost v2 fields (ADR-039)', () => {
+  it('persists confidence and the four lanes of a priced cost', () => {
+    const r = buildRecord(
+      makeBaseInput({
+        cost: makeCost({
+          confidence: 'estimated',
+          details: { input: 1000, cached: 100, output: 300, tools: 100 },
+        }),
+      }),
+    )
+    expect(r.costMicroUsd).toBe(1500)
+    expect(r.costConfidence).toBe('estimated')
+    expect(r.costDetails).toEqual({ input: 1000, cached: 100, output: 300, tools: 100 })
+    expect(r.costUnpricedReason).toBeUndefined()
+  })
+
+  it('an exact cost is recorded as exact', () => {
+    expect(buildRecord(makeBaseInput({ cost: makeCost() })).costConfidence).toBe('exact')
+  })
+
+  it('an unpriced cost keeps the reason and drops the meaningless zero lanes', () => {
+    const r = buildRecord(
+      makeBaseInput({
+        cost: makeCost({
+          microUsd: null,
+          usd: null,
+          confidence: 'estimated',
+          details: { input: 0, cached: 0, output: 0, tools: 0 },
+          unpricedReason: 'Unknown model "x"; no pricing entry found.',
+        }),
+      }),
+    )
+    expect(r.costMicroUsd).toBeNull()
+    expect(r.costConfidence).toBe('estimated')
+    expect(r.costUnpricedReason).toBe('Unknown model "x"; no pricing entry found.')
+    expect('costDetails' in r).toBe(false)
+  })
+
+  it('a row without a cost has none of the cost fields', () => {
+    const r = buildRecord(makeBaseInput())
+    for (const key of [
+      'costMicroUsd',
+      'costConfidence',
+      'costDetails',
+      'costUnpricedReason',
+    ]) {
+      expect(key in r, key).toBe(false)
+    }
+  })
+})
+
+describe('buildRecord — 16 KiB cap on reasoningText and errorMessage (D-01)', () => {
+  const utf8 = (text: string) => new TextEncoder().encode(text).length
+
+  it('the cap is 16 KiB', () => {
+    expect(RECORD_TEXT_CAP_BYTES).toBe(16_384)
+  })
+
+  it('leaves text at or under the cap untouched, with no warning', () => {
+    const text = 'a'.repeat(RECORD_TEXT_CAP_BYTES)
+    const r = buildRecord(makeBaseInput({ reasoningText: text }))
+    expect(r.reasoningText).toBe(text)
+    expect(r.warnings).toBeUndefined()
+  })
+
+  it('truncates reasoningText over the cap, marks it and warns', () => {
+    const r = buildRecord(makeBaseInput({ reasoningText: 'a'.repeat(50_000) }))
+    expect(utf8(r.reasoningText as string)).toBeLessThanOrEqual(RECORD_TEXT_CAP_BYTES)
+    expect(r.reasoningText?.endsWith('…[truncated]')).toBe(true)
+    expect(r.reasoningText?.startsWith('aaaa')).toBe(true)
+    expect(r.warnings).toEqual([
+      {
+        type: 'other',
+        message: `reasoningText was truncated to ${RECORD_TEXT_CAP_BYTES} bytes in the ledger record.`,
+      },
+    ])
+  })
+
+  it('cuts multi-byte text on a code point boundary, within the byte cap', () => {
+    // Each emoji is 4 UTF-8 bytes and 2 UTF-16 units.
+    const r = buildRecord(makeBaseInput({ reasoningText: '😀'.repeat(10_000) }))
+    const text = r.reasoningText as string
+    expect(utf8(text)).toBeLessThanOrEqual(RECORD_TEXT_CAP_BYTES)
+    const body = text.slice(0, -'…[truncated]'.length)
+    expect(body).toMatch(/^(?:😀)+$/)
+    expect(utf8(text)).toBeGreaterThan(RECORD_TEXT_CAP_BYTES - 8)
+  })
+
+  it('truncates errorMessage after redaction; the live error keeps the full message', () => {
+    const secretLine = `key=${['AIza', 'SyA1234567890abcdefghijklmnopqrstuv1'].join('')}`
+    const message = `${secretLine} ${'x'.repeat(40_000)}`
+    const err = new LlmError(message, { kind: 'server', retryable: false })
+    const r = buildRecord(makeBaseInput({ error: err, status: 'api_error' }))
+    expect(utf8(r.errorMessage as string)).toBeLessThanOrEqual(RECORD_TEXT_CAP_BYTES)
+    expect(r.errorMessage?.endsWith('…[truncated]')).toBe(true)
+    expect(r.errorMessage).not.toContain('AIzaSyA1234567890')
+    expect(err.message).toBe(message)
+    expect(
+      (r.warnings as Array<{ message: string }> | undefined)?.map((w) => w.message),
+    ).toContain(
+      `errorMessage was truncated to ${RECORD_TEXT_CAP_BYTES} bytes in the ledger record.`,
+    )
+  })
+
+  it('a short error message is unchanged', () => {
+    const r = buildRecord(
+      makeBaseInput({
+        error: new LlmError('boom', { kind: 'server', retryable: false }),
+        status: 'api_error',
+      }),
+    )
+    expect(r.errorMessage).toBe('boom')
+  })
+})
+
+describe('buildRecord — text Postgres cannot store (U+0000, lone surrogates)', () => {
+  const NUL = '\u0000'
+  const LONE_HIGH = '\ud800'
+  const LONE_LOW = '\udc00'
+
+  it('strips U+0000 from reasoningText and warns once', () => {
+    const r = buildRecord(makeBaseInput({ reasoningText: `a${NUL}b${NUL}` }))
+    expect(r.reasoningText).toBe('ab')
+    expect(r.warnings).toEqual([
+      {
+        type: 'other',
+        message:
+          'the ledger record held U+0000 or an unpaired surrogate, which Postgres cannot store; U+0000 was removed and each unpaired surrogate replaced with U+FFFD.',
+      },
+    ])
+  })
+
+  it('strips U+0000 from the error message (after redaction); the live error is unchanged', () => {
+    const err = new LlmError(`boom${NUL}after`, { kind: 'server', retryable: false })
+    const r = buildRecord(makeBaseInput({ error: err, status: 'api_error' }))
+    expect(r.errorMessage).toBe('boomafter')
+    expect(err.message).toBe(`boom${NUL}after`)
+  })
+
+  it('cleans warnings, provider metadata, citations, tool calls, usage, metadata and short text fields', () => {
+    const r = buildRecord(
+      makeBaseInput({
+        responseId: `resp${NUL}1`,
+        modelVersion: `v${LONE_HIGH}`,
+        warnings: [{ type: 'other', message: `w${NUL}x` }],
+        providerMetadata: { note: `p${NUL}`, nested: [{ [`k${NUL}`]: `s${LONE_LOW}t` }] },
+        citations: [{ url: `https://x/${NUL}`, title: `t${NUL}` } as never],
+        toolCalls: [{ toolCallId: `c${NUL}`, toolName: 'f', args: { q: `a${NUL}b` } }],
+        usage: makeUsage({ raw: { text: `r${NUL}` } }),
+        metadata: { tenantId: `t${NUL}1` },
+        generationConfig: makeConfig({ stopSequences: [`s${NUL}`] }),
+      }),
+    )
+    const serialised = JSON.stringify(r)
+    expect(serialised).not.toContain('\\u0000')
+    expect(serialised).not.toContain('\\ud800')
+    expect(serialised).not.toContain('\\udc00')
+    expect(r.responseId).toBe('resp1')
+    expect(r.modelVersion).toBe('v\ufffd')
+    expect(r.providerMetadata).toEqual({ note: 'p', nested: [{ k: 's\ufffdt' }] })
+    expect(r.toolCalls?.[0]).toEqual({
+      toolCallId: 'c',
+      toolName: 'f',
+      args: { q: 'ab' },
+    })
+    expect(r.rawUsage).toEqual({ text: 'r' })
+    expect(r.metadata).toEqual({ tenantId: 't1' })
+    expect((r.warnings as Array<{ message: string }>).map((w) => w.message)).toEqual([
+      'wx',
+      expect.stringContaining('U+0000'),
+    ])
+  })
+
+  it('a well-formed surrogate pair and ordinary text are untouched, with no warning and the same objects', () => {
+    const raw = { text: 'emoji 😀 \u00e9 \u4e2d' }
+    const providerMetadata = { a: ['😀'] }
+    const r = buildRecord(
+      makeBaseInput({
+        reasoningText: 'think 😀',
+        usage: makeUsage({ raw }),
+        providerMetadata,
+      }),
+    )
+    expect(r.reasoningText).toBe('think 😀')
+    expect(r.rawUsage).toBe(raw)
+    expect(r.providerMetadata).toBe(providerMetadata)
+    expect(r.warnings).toBeUndefined()
+  })
+
+  it('does not mutate the caller input', () => {
+    const providerMetadata = { note: `p${NUL}` }
+    const warnings = [{ type: 'other' as const, message: `w${NUL}` }]
+    buildRecord(makeBaseInput({ providerMetadata, warnings }))
+    expect(providerMetadata.note).toBe(`p${NUL}`)
+    expect(warnings[0]?.message).toBe(`w${NUL}`)
+  })
+})
+
+describe('buildRecord — the ledger row redacts what it stores', () => {
+  const NUL = '\u0000'
+  const KEY = ['AIza', 'SyA1234567890abcdefghijklmnopqrstuv'].join('')
+
+  it('redacts secrets in reasoningText, and does so before the byte cap', () => {
+    const r = buildRecord(
+      makeBaseInput({ reasoningText: `think ${KEY} and Bearer abcdef123456 done` }),
+    )
+    expect(r.reasoningText).toBe('think AIza…REDACTED and Bearer …REDACTED done')
+  })
+
+  it('redacts tool-call arguments by pattern and by secret-looking key name', () => {
+    const r = buildRecord(
+      makeBaseInput({
+        toolCalls: [
+          {
+            toolCallId: 'c1',
+            toolName: 'http',
+            args: {
+              url: `https://x.test/?X-Amz-Signature=abc&api=1`,
+              headers: { Authorization: 'Bearer abcdef123456', accept: 'json' },
+              password: 'hunter2',
+              body: 'PATIENT SSN 123-45-6789',
+            },
+          },
+        ],
+      }),
+    )
+    expect(r.toolCalls).toEqual([
+      {
+        toolCallId: 'c1',
+        toolName: 'http',
+        args: {
+          url: 'https://x.test/?X-Amz-Signature=REDACTED&api=1',
+          headers: { Authorization: '[REDACTED]', accept: 'json' },
+          password: '[REDACTED]',
+          // personal data is not a credential pattern: the host's custom sink redacts it
+          body: 'PATIENT SSN 123-45-6789',
+        },
+      },
+    ])
+  })
+
+  it('does not mutate the tool calls it was given', () => {
+    const toolCalls = [
+      { toolCallId: 'c', toolName: 't', args: { token: 'secret-value' } },
+    ]
+    buildRecord(makeBaseInput({ toolCalls }))
+    expect(toolCalls[0]?.args).toEqual({ token: 'secret-value' })
+  })
+
+  it('a credential-shaped tool-call id or name is redacted, including one split by U+0000', () => {
+    const split = `AIza${NUL}SyA1234567890abcdefghijklmnopqrstuv`
+    const r = buildRecord(
+      makeBaseInput({
+        toolCalls: [
+          { toolCallId: `call_${KEY}`, toolName: `fn Bearer abcdef123456`, args: {} },
+          { toolCallId: split, toolName: split, args: {} },
+        ],
+      }),
+    )
+    const json = JSON.stringify(r.toolCalls)
+    expect(json).not.toContain('SyA1234567890')
+    expect(json).not.toContain('abcdef123456')
+    expect(json).not.toContain('\\u0000')
+    expect(r.toolCalls?.[0]).toEqual({
+      toolCallId: 'call_AIza…REDACTED',
+      toolName: 'fn Bearer …REDACTED',
+      args: {},
+    })
+    expect(r.toolCalls?.[1]).toMatchObject({
+      toolCallId: 'AIza…REDACTED',
+      toolName: 'AIza…REDACTED',
+    })
+  })
+
+  it('a tool-call id or name longer than the text cap is cut, with a warning', () => {
+    const r = buildRecord(
+      makeBaseInput({
+        toolCalls: [
+          { toolCallId: 'i'.repeat(RECORD_TEXT_CAP_BYTES + 1), toolName: 't', args: {} },
+          { toolCallId: 'c', toolName: 'n'.repeat(RECORD_TEXT_CAP_BYTES + 1), args: {} },
+        ],
+      }),
+    )
+    for (const [field, call] of [
+      ['toolCallId', r.toolCalls?.[0]],
+      ['toolName', r.toolCalls?.[1]],
+    ] as const) {
+      const text = call?.[field] ?? ''
+      expect(Buffer.byteLength(text)).toBeLessThanOrEqual(RECORD_TEXT_CAP_BYTES)
+      expect(text.endsWith('…[truncated]')).toBe(true)
+    }
+    expect(JSON.stringify(r.warnings)).toContain('Tool-call ids and names')
+  })
+
+  it('a secret split by U+0000 is redacted whole, then the NUL is stripped (error, reasoning, tool args, provider options)', () => {
+    const split = `AIza${NUL}SyA1234567890abcdefghijklmnopqrstuv`
+    const bearer = `Bearer ${NUL}abcdef1234567890SECRET`
+    const r = buildRecord(
+      makeBaseInput({
+        error: new LlmError(`failed ${split}`, { kind: 'server', retryable: false }),
+        status: 'api_error',
+        reasoningText: `r ${split} ${bearer}`,
+        toolCalls: [{ toolCallId: 'c', toolName: 't', args: { note: split } }],
+        generationConfig: makeConfig({ providerOptions: { x: { v: split } } } as never),
+      }),
+    )
+    const json = JSON.stringify(r)
+    expect(json).not.toContain('SyA1234567890')
+    expect(json).not.toContain('abcdef1234567890SECRET')
+    expect(json).not.toContain('\\u0000')
+    expect(r.errorMessage).toBe('failed AIza…REDACTED')
+    expect(JSON.stringify(r.warnings)).toContain('U+0000 was removed')
+  })
+})
+
+describe('buildRecord — a __proto__ key is data', () => {
+  it('cleaning a record that also holds U+0000 keeps a __proto__ key in metadata and tool arguments', () => {
+    const metadata = JSON.parse('{"__proto__":{"a":1},"b":"x\\u0000y"}') as never
+    const r = buildRecord(
+      makeBaseInput({
+        metadata,
+        toolCalls: [
+          {
+            toolCallId: 'c',
+            toolName: 't',
+            args: JSON.parse('{"__proto__":{"k":"v"},"n":"a\\u0000b"}') as never,
+          },
+        ],
+      }),
+    )
+    expect(JSON.stringify(r.metadata)).toBe('{"__proto__":{"a":1},"b":"xy"}')
+    expect(JSON.stringify(r.toolCalls?.[0]?.args)).toBe(
+      '{"__proto__":{"k":"v"},"n":"ab"}',
+    )
+    expect(Object.getPrototypeOf(r.metadata)).toBe(Object.prototype)
   })
 })

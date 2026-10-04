@@ -166,3 +166,38 @@ describe('scriptedRateLimiter', () => {
     expect(clock.now()).toBe(1_000)
   })
 })
+
+describe('scriptedRateLimiter on a scheduler', () => {
+  it('waits delayMs on the injected scheduler, so a FakeClock releases it without real time', async () => {
+    const clock = new FakeClock()
+    const limiter = scriptedRateLimiter({ delayMs: 2_000, scheduler: clock })
+    let resolved = false
+    const pending = limiter.acquire('k').then((release) => {
+      resolved = true
+      return release
+    })
+
+    await clock.advanceAsync(1_999)
+    expect(resolved).toBe(false)
+    await clock.advanceAsync(1)
+    expect(resolved).toBe(true)
+    expect(typeof (await pending)).toBe('function')
+    expect(clock.pendingTimers).toBe(0)
+  })
+
+  it('an abort during the wait rejects and clears the timer', async () => {
+    const clock = new FakeClock()
+    const limiter = scriptedRateLimiter({ delayMs: 2_000, scheduler: clock })
+    const controller = new AbortController()
+    const pending = limiter.acquire('k', controller.signal)
+    const outcome = pending.then(
+      () => 'resolved',
+      (e: unknown) => e,
+    )
+
+    controller.abort()
+
+    await expect(outcome).resolves.toMatchObject({ name: 'AbortError' })
+    expect(clock.pendingTimers).toBe(0)
+  })
+})

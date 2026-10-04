@@ -1,0 +1,56 @@
+{
+  "source": "https://docs.x.ai/developers/model-capabilities/text/structured-outputs, read 2026-10-03. Facts transcribed as lists; no live call.",
+  "scope": "Structured outputs; tool parameter schemas follow the same rules (the strict flag is implicitly always true).",
+  "dialect": "Schemas authored against Draft 2020-12 work best; Draft-07 is also accepted.",
+  "supportedTypesAndKeywords": [
+    "string",
+    "number",
+    "integer",
+    "boolean",
+    "null",
+    "enum",
+    "const",
+    "array",
+    "object",
+    "anyOf"
+  ],
+  "reinterpreted": {
+    "oneOf": "behaves identically to anyOf",
+    "allOf": "single subschema only; multiple subschemas are best-effort"
+  },
+  "references": "$ref / $defs, non-circular references only",
+  "additionalProperties": "defaults to false and must be set to true explicitly",
+  "nullable": "type array with 'null', or an anyOf variant that includes null",
+  "formatsEnforced": ["date", "time", "date-time", "email", "uuid", "ipv4", "ipv6", "uri"],
+  "constraintLimits": {
+    "minimum/maximum/exclusiveMinimum/exclusiveMaximum": "no limit",
+    "minLength/maxLength": 2048,
+    "minItems/maxItems": 256,
+    "minProperties/maxProperties": 64,
+    "aboveTheLimit": "accepted, conformance relies on model behavior"
+  },
+  "pattern": {
+    "supported": "a practical subset of ECMAScript regular expressions",
+    "notSupported": [
+      "backreferences",
+      "unicode property escapes",
+      "word boundaries",
+      "lookahead and lookbehind",
+      "inline modifiers",
+      "conditional expressions"
+    ]
+  },
+  "bestEffortNotEnforced": [
+    "not",
+    "if/then/else",
+    "allOf with more than one subschema",
+    "format values not listed as enforced",
+    "constraints above the limits"
+  ],
+  "rejectedWith400": [
+    "enum or anyOf with zero variants",
+    "properties with a schema of true or false",
+    "maxContains / minContains",
+    "items as an array (use prefixItems)"
+  ]
+}

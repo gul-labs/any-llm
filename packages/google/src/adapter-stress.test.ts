@@ -320,12 +320,14 @@ describe('adapter-stress: finishReason mapping', () => {
     ['BLOCKLIST', 'content_filter'],
     ['PROHIBITED_CONTENT', 'content_filter'],
     ['IMAGE_SAFETY', 'content_filter'],
+    ['SPII', 'content_filter'],
+    ['IMAGE_PROHIBITED_CONTENT', 'content_filter'],
+    ['IMAGE_RECITATION', 'content_filter'],
   ]
 
   const UNKNOWN_REASONS = [
     'MALFORMED_FUNCTION_CALL',
     'LANGUAGE',
-    'SPII',
     'UNKNOWN_REASON_999',
     'FINISH_REASON_UNSPECIFIED',
     'OTHER', // note: 'OTHER' as SDK string → our 'other'

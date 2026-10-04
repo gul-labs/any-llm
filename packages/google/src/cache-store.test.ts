@@ -101,6 +101,107 @@ describe('GoogleCacheStore', () => {
     expect(handle.expiresAt.getTime()).toBe(BASE_NOW + ttlSeconds * 1000)
   })
 
+  it("create returns the create call's usageMetadata.totalTokenCount on the handle", async () => {
+    const client = makeClient({
+      create: vi.fn().mockResolvedValue({
+        name: 'cachedContents/abc123',
+        model: 'gemini-2.0-flash',
+        expireTime: new Date(BASE_NOW + 3600 * 1000).toISOString(),
+        usageMetadata: { totalTokenCount: 4321 },
+      }),
+    })
+    const store = new GoogleCacheStore({ auth: fakeAuth, client, now: () => BASE_NOW })
+    const handle = await store.create({ model: 'gemini-2.0-flash', ttlSeconds: 3600 })
+    expect(handle.totalTokenCount).toBe(4321)
+
+    // A TTL refresh keeps it: the cache holds the same tokens.
+    const refreshed = await store.refreshIfExpiringSoon(
+      { ...handle, expiresAt: new Date(BASE_NOW + 10_000) },
+      { extensionSeconds: 3600 },
+    )
+    expect(refreshed.expiresAt.getTime()).toBe(BASE_NOW + 7200 * 1000)
+    expect(refreshed.totalTokenCount).toBe(4321)
+  })
+
+  it('totalTokenCount is absent when the create response has no usageMetadata or a non-numeric count', async () => {
+    const store = new GoogleCacheStore({
+      auth: fakeAuth,
+      client: makeClient(),
+      now: () => BASE_NOW,
+    })
+    expect(
+      'totalTokenCount' in (await store.create({ model: 'm', ttlSeconds: 60 })),
+    ).toBe(false)
+    const odd = new GoogleCacheStore({
+      auth: fakeAuth,
+      client: makeClient({
+        create: vi.fn().mockResolvedValue({
+          name: 'cachedContents/x',
+          usageMetadata: { totalTokenCount: 'many' },
+        }),
+      }),
+      now: () => BASE_NOW,
+    })
+    expect('totalTokenCount' in (await odd.create({ model: 'm', ttlSeconds: 60 }))).toBe(
+      false,
+    )
+  })
+
+  it('create sends tools and toolConfig to the SDK create config, and the preflight sees the tools', async () => {
+    const client = makeClient()
+    const countTokens = vi.fn().mockResolvedValue(5000)
+    const store = new GoogleCacheStore({
+      auth: fakeAuth,
+      client,
+      now: () => BASE_NOW,
+      preflight: { minTokens: 1024, countTokens },
+    })
+    const tools = [
+      {
+        functionDeclarations: [
+          {
+            name: 'get_weather',
+            description: 'Weather',
+            parametersJsonSchema: { type: 'object' },
+          },
+        ],
+      },
+    ]
+    const toolConfig = { functionCallingConfig: { mode: 'AUTO' as never } }
+
+    await store.create({
+      model: 'gemini-2.5-flash',
+      ttlSeconds: 600,
+      systemInstruction: 'Be brief.',
+      tools,
+      toolConfig,
+    })
+
+    expect(client.create).toHaveBeenCalledWith({
+      model: 'gemini-2.5-flash',
+      config: { ttl: '600s', systemInstruction: 'Be brief.', tools, toolConfig },
+    })
+    expect(countTokens).toHaveBeenCalledWith({
+      model: 'gemini-2.5-flash',
+      systemInstruction: 'Be brief.',
+      tools,
+    })
+  })
+
+  it('getOrCreate forwards tools and toolConfig from the factory', async () => {
+    const client = makeClient()
+    const store = new GoogleCacheStore({ auth: fakeAuth, client, now: () => BASE_NOW })
+    const tools = [{ functionDeclarations: [{ name: 'f', description: 'd' }] }]
+    await store.getOrCreate({ model: 'm', stableKey: 'k' }, async () => ({
+      ttlSeconds: 60,
+      tools,
+    }))
+    expect(client.create).toHaveBeenCalledWith({
+      model: 'm',
+      config: { ttl: '60s', tools },
+    })
+  })
+
   it('create falls back to local clock expiry when server omits expireTime', async () => {
     const ttlSeconds = 1800
     const client = makeClient({
@@ -948,6 +1049,82 @@ describe('GoogleCacheStore', () => {
 
       // @ts-expect-error — contents must be Content[], not a bare string.
       void store.create({ model: 'gemini-2.0-flash', ttlSeconds: 3600, contents: 'nope' })
+    })
+  })
+
+  // Errors classify through classifyGoogleError (bodies are doc-derived or
+  // captured shapes; see __fixtures__/error-bodies-2026-10-03.json).
+  describe('error classification', () => {
+    const apiError = (status: number, body: unknown): Error =>
+      Object.assign(new Error(JSON.stringify(body)), { status, name: 'ApiError' })
+    const createWith = async (error: Error): Promise<LlmError> => {
+      const client = makeClient({ create: vi.fn().mockRejectedValue(error) })
+      const store = new GoogleCacheStore({ auth: fakeAuth, client, now: () => BASE_NOW })
+      return (await store
+        .create({ model: 'gemini-2.0-flash', ttlSeconds: 3600 })
+        .catch((e) => e)) as LlmError
+    }
+
+    it('create: a bad API key is invalid_auth tagged google, not a bad_request', async () => {
+      const err = await createWith(
+        apiError(400, {
+          error: {
+            code: 400,
+            status: 'INVALID_ARGUMENT',
+            details: [
+              {
+                '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+                reason: 'API_KEY_INVALID',
+              },
+            ],
+          },
+        }),
+      )
+      expect(err).toMatchObject({
+        kind: 'invalid_auth',
+        retryable: false,
+        provider: 'google',
+      })
+    })
+
+    it('create: a per-day quota is rate_limited, daily_quota, not retryable', async () => {
+      const err = await createWith(
+        apiError(429, {
+          error: {
+            code: 429,
+            status: 'RESOURCE_EXHAUSTED',
+            details: [
+              {
+                '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+                violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel' }],
+              },
+            ],
+          },
+        }),
+      )
+      expect(err).toMatchObject({
+        kind: 'rate_limited',
+        retryable: false,
+        reason: 'daily_quota',
+        provider: 'google',
+      })
+    })
+
+    it('create: the stale CachedContent 403 is bad_request, cache_not_found', async () => {
+      const err = await createWith(
+        apiError(403, {
+          error: {
+            code: 403,
+            message: 'CachedContent not found (or permission denied)',
+            status: 'PERMISSION_DENIED',
+          },
+        }),
+      )
+      expect(err).toMatchObject({
+        kind: 'bad_request',
+        reason: 'cache_not_found',
+        provider: 'google',
+      })
     })
   })
 })

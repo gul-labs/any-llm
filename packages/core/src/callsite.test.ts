@@ -27,6 +27,7 @@ const GOOD_USAGE: Usage = {
 
 function successResult(overrides?: Partial<AdapterResult>): AdapterResult {
   return {
+    message: { role: 'assistant', parts: [{ kind: 'text', text: 'result text' }] },
     text: 'result text',
     usage: GOOD_USAGE,
     model: 'gemini-2.5-flash',
@@ -178,20 +179,32 @@ describe('runStructured — template rendering', () => {
     expect(part.text).toBe('Input: {{secret}}')
   })
 
-  it('sends empty string for userTemplate when no template provided', async () => {
+  it('refuses a call site that renders an empty user message when there are no attachments', async () => {
     const adapter = new FakeAdapter('google', successResult())
-    const client = makeClient(adapter)
+    const sink = new RecordingSink()
+    const client = makeClient(adapter, sink)
 
     const cs = defineCallSite({
       id: 'empty',
       provider: 'google',
       model: 'gemini-2.5-flash',
     })
-    await client.runStructured(cs, { auth: TEST_AUTH })
-
-    const req = adapter.calls[0]!
-    const part = req.messages[0]?.parts[0] as { kind: string; text: string }
-    expect(part.text).toBe('')
+    await expect(client.runStructured(cs, { auth: TEST_AUTH })).rejects.toMatchObject({
+      kind: 'bad_request',
+      retryable: false,
+      issues: [{ path: 'userTemplate' }],
+    })
+    // Same for a template that renders to nothing.
+    await expect(
+      client.runStructured(
+        { ...cs, userTemplate: '{{x}}' },
+        { x: '' },
+        { auth: TEST_AUTH },
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request' })
+    expect(adapter.calls).toHaveLength(0)
+    // Row-less, like the other prologue refusals.
+    expect(sink.records).toHaveLength(0)
   })
 
   it('D1: no vars argument (two-arg overload → vars = {}) throws for any templated placeholder', async () => {
@@ -235,6 +248,7 @@ describe('runStructured — config resolution', () => {
       id: 'cfg',
       provider: 'google',
       model: 'gemini-2.5-flash',
+      userTemplate: 'Hi',
       config: { temperature: 0.5 },
     })
 
@@ -274,6 +288,7 @@ describe('runStructured — config resolution', () => {
       id: 'meta',
       provider: 'google',
       model: 'gemini-2.5-flash',
+      userTemplate: 'Hi',
     })
 
     await client.runStructured(
@@ -306,6 +321,7 @@ describe('runStructured — structured output', () => {
       id: 'classify',
       provider: 'google',
       model: 'gemini-2.5-flash',
+      userTemplate: 'Hi',
       jsonSchema,
     })
 
@@ -327,6 +343,7 @@ describe('runStructured — structured output', () => {
       id: 'classify-bad',
       provider: 'google',
       model: 'gemini-2.5-flash',
+      userTemplate: 'Hi',
       jsonSchema,
     })
 

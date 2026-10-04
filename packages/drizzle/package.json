@@ -14,26 +14,37 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
-    }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json",
+    "./sql/*": "./sql/*"
   },
   "files": [
-    "dist"
+    "dist",
+    "sql",
+    "NOTICE"
   ],
   "scripts": {
     "build": "tsup"
   },
-  "dependencies": {
-    "@gullabs/core": "workspace:*"
-  },
   "peerDependencies": {
-    "drizzle-orm": ">=0.36.0"
+    "@gullabs/core": "workspace:*",
+    "drizzle-orm": ">=0.36 <1"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",
-    "drizzle-orm": "^0.45.3"
+    "@gullabs/core": "workspace:*",
+    "@types/pg": "^8.23.1",
+    "drizzle-orm": "^0.45.3",
+    "pg": "^8.23.1",
+    "postgres": "^3.4.9"
   },
   "engines": {
     "node": ">=22.12.0"

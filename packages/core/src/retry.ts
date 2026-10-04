@@ -13,21 +13,56 @@
  */
 
 import { LlmError, classifyError } from './errors.js'
-import type { Middleware, Handler, EngineCtx } from './ports.js'
+import { isThenable } from './host-guard.js'
+import { MAX_TIMER_MS } from './timer.js'
+import type { Middleware, Handler, EngineCtx, Scheduler, TimerHandle } from './ports.js'
 import type { ResolvedRequest } from './ports.js'
 import type { LlmResult } from './types.js'
 
+/**
+ * The tier a retry is pinned to: the tier the failed attempt was served at, when
+ * the request named a tier and the model supports the served one (a flex call
+ * the provider moved to standard retries at standard). A request that named no
+ * tier is never pinned: a retry must send the request the first attempt sent,
+ * and an explicit tier can change what an adapter arms (a client-side ceiling,
+ * a transport timeout) that the first attempt never had.
+ */
 function revalidatePinnedServiceTier(
   req: ResolvedRequest,
   tier: string | undefined,
 ): string | undefined {
-  if (tier === undefined) {
+  if (tier === undefined || req.config.serviceTier === undefined) {
     return undefined
   }
 
   const supported = req.modelDescriptor?.capabilities?.serviceTiers
   return supported?.includes(tier) === true ? tier : undefined
 }
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/**
+ * Default `maxDelayMs`: 60 s. It equals `@gullabs/quota`'s default `maxDeferMs`,
+ * so a per-minute quota deferral (at most 60 s) is slept on and retried.
+ */
+const DEFAULT_MAX_DELAY_MS = 60_000
+
+/**
+ * The least budget a retry attempt may start with. A window shorter than this
+ * cannot complete a provider request, only add a billed row and replace the
+ * real error with a timeout, so the middleware stops and rethrows instead.
+ */
+const MIN_ATTEMPT_WINDOW_MS = 250
+
+/**
+ * Most the middleware adds on top of a provider delay: 10 % of it, at most 1 s.
+ * The provider's delay is a floor, so spreading the retries of workers that
+ * were limited together can only add to it.
+ */
+const PROVIDER_DELAY_JITTER_FRACTION = 0.1
+const PROVIDER_DELAY_JITTER_MAX_MS = 1000
 
 // ---------------------------------------------------------------------------
 // Policy
@@ -38,7 +73,8 @@ function revalidatePinnedServiceTier(
  */
 export interface RetryPolicy {
   /**
-   * Maximum number of total attempts (including the first).
+   * Maximum number of total attempts (including the first). A positive integer,
+   * else `bad_request` when the middleware is created.
    * With `maxAttempts: 3`, the first call + up to 2 retries will be tried.
    * @default 3
    */
@@ -46,18 +82,32 @@ export interface RetryPolicy {
   /**
    * Base delay in milliseconds for exponential back-off.
    * Actual delay = `min(maxDelayMs, baseDelayMs * 2^(attempt-1)) * rand()`.
+   * A finite number from 0 to 2147483647, else `bad_request` when the
+   * middleware is created.
    * @default 500
    */
   baseDelayMs?: number
   /**
-   * Hard cap on computed delay in milliseconds.
-   * Also caps `retryAfterMs` values supplied by the provider.
-   * @default 30_000
+   * Hard cap on the computed back-off delay in milliseconds.
+   *
+   * It never shortens a provider delay: when the provider asks for a wait
+   * (`LlmError.retryAfterMs`) longer than this, the middleware stops retrying
+   * and rethrows that error with `retryAfterMs` intact, so a host that can
+   * schedule work later reschedules it. A retry before the provider's delay
+   * would be refused again and billed again. A finite number from 0 to
+   * 2147483647, else `bad_request` when the middleware is created.
+   *
+   * The default equals `@gullabs/quota`'s default `maxDeferMs`, so a
+   * per-minute quota deferral (at most 60 s) is slept on and retried; a longer
+   * one ends the retry with the deferral error.
+   * @default 60_000
    */
   maxDelayMs?: number
   /**
    * Predicate that decides whether to retry a specific error.
    * Called with the `LlmError` and the 1-based attempt number that just failed.
+   * Must return a boolean synchronously: a returned promise is refused with
+   * `bad_request` (it would be truthy for every error).
    * @default `(err) => err.retryable === true`
    */
   shouldRetry?(this: void, err: LlmError, attempt: number): boolean
@@ -68,17 +118,32 @@ export interface RetryPolicy {
 // ---------------------------------------------------------------------------
 
 /**
+ * A provider delay the middleware can act on: a positive finite number. A
+ * `NaN`, zero or negative `retryAfterMs` is not a delay (a `setTimeout` would
+ * fire it after 1 ms, an immediate retry with no back-off), so it counts as
+ * absent and the exponential back-off applies.
+ */
+function usableDelay(ms: number | undefined): number | undefined {
+  return ms !== undefined && Number.isFinite(ms) && ms > 0 ? ms : undefined
+}
+
+/**
  * Computes the delay in milliseconds before the next retry attempt.
  *
  * Two modes:
- * - **retryAfterMs present**: honor the provider's hint, capped at `maxDelayMs`.
- * - **no retryAfterMs**: exponential back-off with FULL JITTER.
+ * - **retryAfterMs present** (a positive finite number): the provider's delay
+ *   plus a small additive jitter, `retryAfterMs + rand() * min(1000,
+ *   retryAfterMs / 10)`. The provider's delay is a floor, so it is never
+ *   shortened or clamped; the middleware decides whether to wait that long or
+ *   give up.
+ * - **no usable retryAfterMs**: exponential back-off with FULL JITTER.
  *   `delay = rand() * min(maxDelayMs, baseDelayMs * 2^(attempt-1))`
  *   where `attempt` is the 1-based number of the attempt that just failed.
  *
  * @param attempt      - 1-based attempt number that just failed.
  * @param policy       - Resolved `baseDelayMs` and `maxDelayMs`.
- * @param retryAfterMs - Provider-supplied hint (ms). `undefined` → use exponential.
+ * @param retryAfterMs - Provider-supplied hint (ms). `undefined`, `NaN`, zero
+ *                       and negative values → use exponential.
  * @param rand         - RNG in [0, 1). Inject `Math.random` in production;
  *                       a deterministic function in tests.
  * @returns Computed delay in milliseconds.
@@ -89,8 +154,13 @@ export function computeBackoffMs(
   retryAfterMs: number | undefined,
   rand: () => number,
 ): number {
-  if (retryAfterMs !== undefined) {
-    return Math.min(retryAfterMs, policy.maxDelayMs)
+  const hint = usableDelay(retryAfterMs)
+  if (hint !== undefined) {
+    return (
+      hint +
+      rand() *
+        Math.min(PROVIDER_DELAY_JITTER_MAX_MS, hint * PROVIDER_DELAY_JITTER_FRACTION)
+    )
   }
   // Exponential back-off ceiling, capped at maxDelayMs.
   const ceiling = Math.min(
@@ -106,13 +176,17 @@ export function computeBackoffMs(
 // ---------------------------------------------------------------------------
 
 /**
- * Returns a promise that resolves after `ms` milliseconds, or rejects with an
+ * Returns a promise that resolves after `ms` milliseconds on `scheduler`, or rejects with an
  * `LlmError('aborted')` if `signal` fires first.
  *
  * Cleans up all listeners and timers on both resolution and rejection, so no
  * leaks occur even when `ms` is very large.
  */
-function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+function abortableSleep(
+  ms: number,
+  signal: AbortSignal | undefined,
+  scheduler: Scheduler,
+): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     if (signal?.aborted === true) {
       reject(
@@ -125,12 +199,12 @@ function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<vo
       return
     }
 
-    let timer: ReturnType<typeof setTimeout> | undefined
+    let timer: TimerHandle | undefined
     let abortHandler: (() => void) | undefined
 
     const cleanup = (): void => {
       if (timer !== undefined) {
-        clearTimeout(timer)
+        scheduler.clearTimeout(timer)
         timer = undefined
       }
       if (abortHandler !== undefined && signal !== undefined) {
@@ -139,7 +213,7 @@ function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<vo
       }
     }
 
-    timer = setTimeout(() => {
+    timer = scheduler.setTimeout(() => {
       cleanup()
       resolve()
     }, ms)
@@ -164,6 +238,20 @@ function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<vo
 // Public factory
 // ---------------------------------------------------------------------------
 
+/** Throws `bad_request` naming `path` unless `ok`. */
+function assertPolicy(ok: boolean, path: string, rule: string, value: unknown): void {
+  if (ok) return
+  throw new LlmError(`retryMiddleware: ${path} ${rule}, got ${String(value)}.`, {
+    kind: 'bad_request',
+    retryable: false,
+    issues: [{ path, message: `${rule}.` }],
+  })
+}
+
+function isTimerDelay(value: number): boolean {
+  return Number.isFinite(value) && value >= 0 && value <= MAX_TIMER_MS
+}
+
 /**
  * Creates a {@link Middleware} that retries on retryable errors with
  * exponential back-off and full jitter.
@@ -177,23 +265,32 @@ function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<vo
  * - The back-off delay is abortable by `ctx.signal`: if the caller aborts
  *   during a sleep, the promise rejects promptly with `LlmError('aborted')`.
  *
- * **Overall wall-clock deadline (timeoutMs):**
- * When `req.config.timeoutMs` is set, it is treated as the OVERALL budget for
- * the entire logical call (all attempts + back-off sleep combined).  The
- * middleware enforces this by:
- * 1. Refusing to start a new attempt when the remaining budget is ≤ 0.
- * 2. Passing the remaining budget as the per-attempt `config.timeoutMs` so
- *    each attempt's internal timeout shrinks with elapsed time.
- * 3. Clamping the back-off sleep to the remaining budget so the sleep never
- *    overshoots the deadline.
- * 4. Refusing to sleep-and-retry when the budget is already exhausted after
- *    an attempt.
+ * **Provider delays are honoured.** When the failed attempt carries a usable
+ * `retryAfterMs` (positive and finite), the middleware sleeps that long plus a
+ * small additive jitter (at most 10 %, and at most 1 s: the delay is a floor),
+ * or stops and rethrows the attempt's own error (with `retryAfterMs` intact)
+ * when the delay is longer than `maxDelayMs` or does not leave a usable
+ * window before the deadline. It never retries before the provider's delay,
+ * whatever `shouldRetry` says, because that retry is refused again and billed
+ * again. There is no option to clamp.
+ *
+ * **Deadline (`timeoutMs`).** `config.timeoutMs` is the budget of the whole
+ * logical call. The engine starts it when the call starts and puts the end of
+ * it on `ctx.deadlineAt` (on `ctx.clock`), so middleware time before this one
+ * counts, and this middleware shares the engine's budget instead of keeping
+ * its own. The engine also cuts each attempt's window to what is left. When the
+ * budget is spent the middleware rethrows the failed attempt's own error, never
+ * a synthetic one:
+ * 1. A back-off that would leave a window shorter than 250 ms for the next
+ *    attempt is not slept: the attempt's error is rethrown at once.
+ * 2. A new attempt is not started with less than 250 ms left.
  *
  * Each invocation of `next()` produces a separate `attemptId` in the sink
  * (because `runAttempt` generates a fresh ID on every call).
  *
- * @param policy - Override any subset of the default retry policy.
- * @param opts   - Injectable `sleep`, `random`, and `now` for deterministic tests.
+ * @param policy - Override any subset of the default retry policy. Invalid
+ *   numbers are `bad_request` here, not an unbounded loop later.
+ * @param opts   - Injectable `sleep` and `random` for deterministic tests.
  *
  * @example
  * ```ts
@@ -206,69 +303,93 @@ function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<vo
 export function retryMiddleware(
   policy?: RetryPolicy,
   opts?: {
-    /** Injected sleep function for testing (default: `abortableSleep`). */
+    /**
+     * Replaces the sleep (default: an abortable wait on `ctx.scheduler`, so
+     * `FakeClock` drives it). A test that only needs to see the delays can
+     * record them here; one that needs time to pass advances the clock.
+     */
     sleep?(this: void, ms: number, signal?: AbortSignal): Promise<void>
     /** Injected RNG for deterministic back-off tests (default: `Math.random`). */
     random?(this: void): number
-    /**
-     * Injected clock for deterministic deadline tests (default: `Date.now`).
-     * Returns elapsed milliseconds since the Unix epoch.
-     */
-    now?(this: void): number
   },
 ): Middleware {
   const maxAttempts = policy?.maxAttempts ?? 3
   const baseDelayMs = policy?.baseDelayMs ?? 500
-  const maxDelayMs = policy?.maxDelayMs ?? 30_000
+  const maxDelayMs = policy?.maxDelayMs ?? DEFAULT_MAX_DELAY_MS
+  assertPolicy(
+    Number.isInteger(maxAttempts) && maxAttempts >= 1,
+    'maxAttempts',
+    'must be a positive integer',
+    maxAttempts,
+  )
+  assertPolicy(
+    isTimerDelay(baseDelayMs),
+    'baseDelayMs',
+    `must be a finite number from 0 to ${MAX_TIMER_MS}`,
+    baseDelayMs,
+  )
+  assertPolicy(
+    isTimerDelay(maxDelayMs),
+    'maxDelayMs',
+    `must be a finite number from 0 to ${MAX_TIMER_MS}`,
+    maxDelayMs,
+  )
   const shouldRetryFn =
     policy?.shouldRetry ?? ((err: LlmError): boolean => err.retryable === true)
-  const sleepFn = opts?.sleep ?? abortableSleep
+  const sleepOverride = opts?.sleep
   const rand = opts?.random ?? ((): number => Math.random())
-  const nowFn = opts?.now ?? ((): number => Date.now())
 
   return {
     id: 'retry',
+    role: 'retry',
 
     async intercept(
       req: ResolvedRequest,
       ctx: EngineCtx,
       next: Handler,
     ): Promise<LlmResult> {
-      // Capture the overall budget (if set) and the wall-clock start time once,
-      // before any attempt runs.  When timeoutMs is undefined, all deadline logic
-      // is skipped and behavior is identical to the pre-deadline implementation.
-      const timeoutMs = req.config.timeoutMs
-      const start = nowFn()
       let attempt = 0
       let pinnedServiceTier: string | undefined
+      let lastErr: LlmError | undefined
+
+      /** Ends the retry with the attempt's own error, and says why. */
+      const stop = (err: LlmError, fields: object): never => {
+        ctx.logger.debug(
+          {
+            callId: ctx.callId,
+            attemptNumber: attempt,
+            errorKind: err.kind,
+            ...fields,
+          },
+          'llm.call.retry.stopped',
+        )
+        throw err
+      }
 
       for (;;) {
         attempt++
 
-        // ── Pre-attempt budget check ─────────────────────────────────────────
-        // Build a (possibly shrunk) request for this attempt.  Always stamp
-        // attemptNumber so the engine can record/log which attempt this is.
-        // When no overall timeout is set only attemptNumber is added.
-        let currentReq: ResolvedRequest = {
+        // Build the request for this attempt. Always stamp attemptNumber so
+        // the engine can record/log which attempt this is.
+        const currentReq: ResolvedRequest = {
           ...req,
           attemptNumber: attempt,
           ...(pinnedServiceTier !== undefined
             ? { config: { ...req.config, serviceTier: pinnedServiceTier } }
             : {}),
         }
-        if (timeoutMs !== undefined) {
-          const remaining = timeoutMs - (nowFn() - start)
-          if (remaining <= 0) {
-            throw new LlmError(
-              `Overall timeout budget of ${timeoutMs}ms exhausted before attempt ${attempt}`,
-              { kind: 'timeout', retryable: false },
-            )
+
+        // A retry needs a window worth dispatching into. (The first attempt
+        // always goes: if the deadline already passed, the engine refuses it.)
+        if (attempt > 1 && lastErr !== undefined && ctx.deadlineAt !== undefined) {
+          const remainingMs = ctx.deadlineAt - ctx.clock.now()
+          if (remainingMs < MIN_ATTEMPT_WINDOW_MS) {
+            stop(lastErr, {
+              reason: 'attempt window too short',
+              remainingMs: Math.max(remainingMs, 0),
+              minWindowMs: MIN_ATTEMPT_WINDOW_MS,
+            })
           }
-          // Pass the shrinking remaining budget as the per-attempt timeout so
-          // the engine's per-attempt AbortSignal respects the overall ceiling.
-          // Uses attemptTimeoutMs (not config.timeoutMs) so the caller's original
-          // timeoutMs is never mutated and thus never mis-recorded in the audit record.
-          currentReq = { ...currentReq, attemptTimeoutMs: remaining }
         }
 
         try {
@@ -277,6 +398,7 @@ export function retryMiddleware(
           return result
         } catch (rawErr) {
           const err = classifyError(rawErr)
+          lastErr = err
           pinnedServiceTier = revalidatePinnedServiceTier(req, err.servedServiceTier)
 
           // Abort is always terminal — never retry.
@@ -286,36 +408,52 @@ export function retryMiddleware(
           if (attempt >= maxAttempts) throw err
 
           // Policy veto — propagate without sleeping.
-          if (!shouldRetryFn(err, attempt)) throw err
+          const verdict = shouldRetryFn(err, attempt) as boolean | PromiseLike<unknown>
+          if (isThenable(verdict)) {
+            // A promise is truthy, so it would retry every error; and a rejecting
+            // one would be an unhandled rejection. Refuse it, with the error that
+            // was being judged as the cause.
+            void Promise.resolve(verdict).then(undefined, () => {})
+            throw new LlmError(
+              'retryMiddleware: shouldRetry must return a boolean synchronously; it returned a promise.',
+              { kind: 'bad_request', retryable: false, cause: err },
+            )
+          }
+          if (!verdict) throw err
 
-          // ── Post-attempt budget check + back-off ───────────────────────────
-          // Compute the delay once so it can be logged before sleeping.
-          let delayMs: number
-          if (timeoutMs !== undefined) {
-            const remainingAfter = timeoutMs - (nowFn() - start)
-            if (remainingAfter <= 0) {
-              // Budget exhausted immediately after this attempt — do not sleep
-              // and retry; surface the classified error from this attempt.
-              throw err
+          // ── Provider delay, then deadline check ───────────────────────────
+          // A provider delay is never undercut: a wait longer than `maxDelayMs`
+          // ends the retry with the error (and its `retryAfterMs`) intact.
+          const providerDelayMs = usableDelay(err.retryAfterMs)
+          if (providerDelayMs !== undefined && providerDelayMs > maxDelayMs) {
+            stop(err, {
+              reason: 'provider delay above maxDelayMs',
+              retryAfterMs: providerDelayMs,
+              maxDelayMs,
+            })
+          }
+          const delayMs = computeBackoffMs(
+            attempt,
+            { baseDelayMs, maxDelayMs },
+            providerDelayMs,
+            rand,
+          )
+          let sleepMs = delayMs
+          if (ctx.deadlineAt !== undefined) {
+            // What may be slept and still leave the next attempt a usable
+            // window. The delay itself (the provider's, or the computed
+            // back-off) must fit; only the jitter on top of a provider delay
+            // is trimmed to fit.
+            const sleepableMs = ctx.deadlineAt - ctx.clock.now() - MIN_ATTEMPT_WINDOW_MS
+            if ((providerDelayMs ?? delayMs) > sleepableMs) {
+              stop(err, {
+                reason: 'delay does not leave a usable window before the deadline',
+                delayMs: providerDelayMs ?? delayMs,
+                remainingMs: Math.max(ctx.deadlineAt - ctx.clock.now(), 0),
+                minWindowMs: MIN_ATTEMPT_WINDOW_MS,
+              })
             }
-            // Cap the back-off so we never sleep past the deadline.
-            delayMs = Math.min(
-              computeBackoffMs(
-                attempt,
-                { baseDelayMs, maxDelayMs },
-                err.retryAfterMs,
-                rand,
-              ),
-              remainingAfter,
-            )
-          } else {
-            // No overall budget — original behavior unchanged.
-            delayMs = computeBackoffMs(
-              attempt,
-              { baseDelayMs, maxDelayMs },
-              err.retryAfterMs,
-              rand,
-            )
+            sleepMs = Math.min(delayMs, sleepableMs)
           }
 
           // A3: Emit debug log at the retry decision point so operators can see
@@ -324,14 +462,16 @@ export function retryMiddleware(
             {
               callId: ctx.callId,
               attemptNumber: attempt,
-              delayMs,
+              delayMs: sleepMs,
               errorKind: err.kind,
               retryable: err.retryable,
             },
             'llm.call.retry',
           )
 
-          await sleepFn(delayMs, ctx.signal)
+          await (sleepOverride !== undefined
+            ? sleepOverride(sleepMs, ctx.signal)
+            : abortableSleep(sleepMs, ctx.signal, ctx.scheduler))
         }
       }
     },

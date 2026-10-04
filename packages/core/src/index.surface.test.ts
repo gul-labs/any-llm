@@ -37,6 +37,20 @@ describe('@gullabs/core package surface', () => {
     expect(typeof surface.composeProviders).toBe('function')
   })
 
+  it('exports estimateInputTokens for pacing and the scheduler and rate-limit hint types', () => {
+    expect(typeof surface.estimateInputTokens).toBe('function')
+    expectTypeOf<surface.Scheduler>().toHaveProperty('setTimeout')
+    expectTypeOf<surface.RateLimitHint>().toHaveProperty('estimatedInputTokens')
+    expectTypeOf<surface.ClientConfig['scheduler']>().toEqualTypeOf<
+      surface.Scheduler | undefined
+    >()
+    expectTypeOf<surface.Release>().toBeCallableWith(undefined)
+  })
+
+  it('exports canonicalJson (RFC 8785)', () => {
+    expect(surface.canonicalJson({ b: 1, a: [true] })).toBe('{"a":[true],"b":1}')
+  })
+
   it('no longer exports the Google-specific provider option types (moved to @gullabs/google)', () => {
     // These were only ever type exports, so this `in` check cannot catch a
     // stray `export type`; it only guards against someone reintroducing them
@@ -65,14 +79,14 @@ describe('@gullabs/core package surface', () => {
     }>()
     expectTypeOf<TokenCount>().toEqualTypeOf<{
       totalTokens: number
-      accuracy: 'exact' | 'lower-bound'
+      accuracy: 'exact' | 'lower-bound' | 'estimated'
       details?: Record<string, number>
       raw: import('./types.js').JsonValue
     }>()
     expectTypeOf<Client['countTokens']>().toEqualTypeOf<
       (
         request: TokenCountRequest,
-        opts: import('./engine.js').GenerateOptions,
+        opts: import('./engine.js').CountTokensOptions,
       ) => Promise<TokenCount>
     >()
   })
@@ -105,6 +119,8 @@ describe('@gullabs/core package surface', () => {
       url: string
       title?: string
       sourceName?: string
+      cited?: boolean
+      textRange?: { start: number; end: number }
     }>()
   })
 

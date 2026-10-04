@@ -78,11 +78,11 @@ describe('built-in descriptors', () => {
     expect(
       defaultGeminiRegistry.resolve('google', 'gemini-3.1-pro-preview')?.capabilities
         ?.structuredOutputWithTools,
-    ).toBe(true)
+    ).toBe(false)
     expect(
       defaultGeminiRegistry.resolve('google', 'gemini-3.8-flash')?.capabilities
         ?.structuredOutputWithTools,
-    ).toBe(true)
+    ).toBe(false)
     for (const model of [
       'gemini-3.7-flash',
       'gemini-3.6-flash',
@@ -92,7 +92,7 @@ describe('built-in descriptors', () => {
       expect(
         defaultGeminiRegistry.resolve('google', model)?.capabilities
           ?.structuredOutputWithTools,
-      ).toBe(true)
+      ).toBe(false)
     }
     expect(
       defaultGeminiRegistry.resolve('google', 'gemini-3.8-flash')?.capabilities?.caching

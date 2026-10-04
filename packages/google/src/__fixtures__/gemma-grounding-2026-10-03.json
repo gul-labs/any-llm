@@ -1,0 +1,165 @@
+{
+  "capturedOn": "2026-10-03",
+  "kind": "derived-summary",
+  "description": "A DERIVED SUMMARY of six live calls, not the raw responses: Gemma 4 with tools [{ googleSearch: {} }], three prompts per model, no schema, maxOutputTokens 800. Each entry keeps whether groundingMetadata came back, its query list and chunk count, the finish reason, whether the answer was empty, and the usage numbers. The answer text and the raw groundingMetadata were not kept, so a reader cannot re-derive these fields from this file. Redacted per ADR-013.",
+  "counts": {
+    "calls": 6,
+    "completed": 5,
+    "completedWithGroundingMetadata": 5,
+    "truncatedByMaxTokens": 1,
+    "truncatedWithGroundingMetadata": 0,
+    "note": "Metadata came back on 5 of 5 completed calls. The sixth call ended at MAX_TOKENS with an empty answer and no metadata: it neither shows nor rules out grounding, so it is not counted against it."
+  },
+  "calls": [
+    {
+      "model": "gemma-4-31b-it",
+      "prompt": "What is the latest stable release of the Node.js runtime and when was it published? Use Google Search.",
+      "status": 200,
+      "hasGroundingMetadata": true,
+      "webSearchQueries": [
+        "latest stable release of Node.js and publication date"
+      ],
+      "groundingChunks": 2,
+      "finishReason": "STOP",
+      "answerEmpty": false,
+      "usage": {
+        "promptTokenCount": 64,
+        "candidatesTokenCount": 205,
+        "totalTokenCount": 826,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 64
+          }
+        ],
+        "thoughtsTokenCount": 557,
+        "serviceTier": "standard"
+      }
+    },
+    {
+      "model": "gemma-4-31b-it",
+      "prompt": "Which team won the most recent Formula 1 Grand Prix? Use Google Search.",
+      "status": 200,
+      "hasGroundingMetadata": true,
+      "webSearchQueries": [
+        "most recent Formula 1 Grand Prix winner 2026",
+        "F1 race results September 2026"
+      ],
+      "groundingChunks": 3,
+      "finishReason": "STOP",
+      "answerEmpty": false,
+      "usage": {
+        "promptTokenCount": 81,
+        "candidatesTokenCount": 46,
+        "totalTokenCount": 345,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 81
+          }
+        ],
+        "thoughtsTokenCount": 218,
+        "serviceTier": "standard"
+      }
+    },
+    {
+      "model": "gemma-4-31b-it",
+      "prompt": "What is the current stable version of PostgreSQL? Use Google Search.",
+      "status": 200,
+      "hasGroundingMetadata": true,
+      "webSearchQueries": [
+        "current stable version of PostgreSQL"
+      ],
+      "groundingChunks": 3,
+      "finishReason": "STOP",
+      "answerEmpty": false,
+      "usage": {
+        "promptTokenCount": 53,
+        "candidatesTokenCount": 69,
+        "totalTokenCount": 309,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 53
+          }
+        ],
+        "thoughtsTokenCount": 187,
+        "serviceTier": "standard"
+      }
+    },
+    {
+      "model": "gemma-4-26b-a4b-it",
+      "prompt": "What is the latest stable release of the Node.js runtime and when was it published? Use Google Search.",
+      "status": 200,
+      "hasGroundingMetadata": false,
+      "webSearchQueries": [],
+      "groundingChunks": 0,
+      "finishReason": "MAX_TOKENS",
+      "answerEmpty": true,
+      "usage": {
+        "promptTokenCount": 85,
+        "candidatesTokenCount": 22,
+        "totalTokenCount": 904,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 85
+          }
+        ],
+        "thoughtsTokenCount": 797,
+        "serviceTier": "standard"
+      }
+    },
+    {
+      "model": "gemma-4-26b-a4b-it",
+      "prompt": "Which team won the most recent Formula 1 Grand Prix? Use Google Search.",
+      "status": 200,
+      "hasGroundingMetadata": true,
+      "webSearchQueries": [
+        "most recent Formula 1 Grand Prix winner October 2026",
+        "F1 race results 2026 season"
+      ],
+      "groundingChunks": 4,
+      "finishReason": "STOP",
+      "answerEmpty": false,
+      "usage": {
+        "promptTokenCount": 93,
+        "candidatesTokenCount": 59,
+        "totalTokenCount": 731,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 93
+          }
+        ],
+        "thoughtsTokenCount": 579,
+        "serviceTier": "standard"
+      }
+    },
+    {
+      "model": "gemma-4-26b-a4b-it",
+      "prompt": "What is the current stable version of PostgreSQL? Use Google Search.",
+      "status": 200,
+      "hasGroundingMetadata": true,
+      "webSearchQueries": [
+        "current stable version of PostgreSQL"
+      ],
+      "groundingChunks": 2,
+      "finishReason": "STOP",
+      "answerEmpty": false,
+      "usage": {
+        "promptTokenCount": 47,
+        "candidatesTokenCount": 97,
+        "totalTokenCount": 644,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 47
+          }
+        ],
+        "thoughtsTokenCount": 500,
+        "serviceTier": "standard"
+      }
+    }
+  ]
+}

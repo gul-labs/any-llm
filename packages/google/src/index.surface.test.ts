@@ -15,7 +15,11 @@ import {
   TRANSPORT_TIMEOUT_BUFFER_MS,
   googleProvider,
 } from './index.js'
-import type { GeminiCountTokensParams, GeminiCountTokensResponseShape } from './index.js'
+import type {
+  GeminiCountTokensParams,
+  GeminiCountTokensResponseShape,
+  GoogleSignatureState,
+} from './index.js'
 
 describe('@gullabs/google package surface: timeout constants', () => {
   it('FLEX_DEFAULT_TIMEOUT_MS is exported and equals 1_500_000', () => {
@@ -24,6 +28,23 @@ describe('@gullabs/google package surface: timeout constants', () => {
 
   it('TRANSPORT_TIMEOUT_BUFFER_MS is exported and equals 5_000', () => {
     expect(TRANSPORT_TIMEOUT_BUFFER_MS).toBe(5_000)
+  })
+})
+
+describe('@gullabs/google package surface: grounding facts', () => {
+  it('has no Google-specific search marker: the normalised web_search_* facts replace it', () => {
+    expect('GOOGLE_SEARCH_REQUESTED_DETAIL' in surface).toBe(false)
+  })
+
+  it('exports the grounding price table', () => {
+    expect(surface.GEMINI_GROUNDING_PRICING['gemini-3.6-flash']).toEqual({
+      unit: 'query',
+      microUsdPerUnit: 14_000,
+    })
+    expect(surface.GEMINI_GROUNDING_PRICING['gemini-2.5-flash']).toEqual({
+      unit: 'prompt',
+      microUsdPerUnit: 35_000,
+    })
   })
 })
 
@@ -45,5 +66,14 @@ describe('@gullabs/google package surface: token counting', () => {
     const response: GeminiCountTokensResponseShape = { totalTokens: 1 }
     expect(params.model).toBe('gemini-2.5-pro')
     expect(response.totalTokens).toBe(1)
+  })
+})
+
+describe('@gullabs/google package surface: thought signatures', () => {
+  it('exports the overlay state type and the history-trim helper; the hashing helpers stay internal', () => {
+    const state: GoogleSignatureState = { google: { signatures: [] } }
+    expect(state.google.signatures).toEqual([])
+    expect(typeof surface.dropMessagesFromSignatureState).toBe('function')
+    expect('partSha256' in surface).toBe(false)
   })
 })

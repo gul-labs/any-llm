@@ -11,10 +11,11 @@
  */
 
 import { z } from 'zod'
-import type { ModelDescriptor, ModelRegistry } from '@gullabs/core'
+import type { ModelDescriptor, ModelLimits, ModelRegistry } from '@gullabs/core'
 import {
   createModelRegistry,
   toConfigJsonSchema,
+  toConfigKeys,
   zodToStandardSchema,
 } from '@gullabs/core'
 
@@ -112,22 +113,43 @@ const CONFIG_SCHEMAS: Record<ClaudeCliModelId, z.ZodType> = {
 // Descriptors + registry
 // ---------------------------------------------------------------------------
 
+/**
+ * Context window and maximum output per model, as the CLI itself reports them in
+ * the captured `modelUsage` of every registered id
+ * (`__fixtures__/model-refresh-p-a1.json`, Claude Code 2.1.282). The CLI exposes no
+ * output-size knob, so the limit a call runs under is the CLI's, not the API's:
+ * Fable 5.1 reports 64 000 and Haiku 4.5 reports 32 000, below the API maxima in
+ * the Anthropic models overview (`https://platform.claude.com/docs/en/about-claude/models/overview`,
+ * read 2026-10-03: Fable 5.1 "128K tokens", Haiku 4.5 "64K tokens"). Opus 5.5 and
+ * Sonnet 5 report 128 000, equal to the documented value. The context windows
+ * agree with the documentation.
+ */
+const CLAUDE_CLI_LIMITS: Record<ClaudeCliModelId, ModelLimits> = {
+  'claude-fable-5-1': { contextWindow: 1_000_000, maxOutputTokens: 64_000 },
+  'claude-opus-5-5': { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+  'claude-sonnet-5': { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+  'claude-haiku-4-5-20251001': { contextWindow: 200_000, maxOutputTokens: 32_000 },
+}
+
 export const claudeCliModelDescriptors: ModelDescriptor[] = CLAUDE_CLI_MODEL_IDS.map(
   (id): ModelDescriptor => {
     const configSchema = CONFIG_SCHEMAS[id]
     return {
       model: id,
       provider: 'claude-cli',
+      limits: CLAUDE_CLI_LIMITS[id],
       capabilities: {
+        // The CLI runs text-only: the adapter rejects every non-text part.
+        inputMimeTypes: [],
         structuredOutput: true,
         nativeStructuredOutput: true,
         ...(id !== 'claude-haiku-4-5-20251001' ? { reasoningApi: 'level' as const } : {}),
         admittedReasoningEfforts:
           id === 'claude-haiku-4-5-20251001' ? [] : CLAUDE_CLI_EFFORTS,
         sampling: 'fixed',
-        vision: false,
       },
       configSchema,
+      configKeys: toConfigKeys(configSchema),
       configJsonSchema: toConfigJsonSchema(configSchema),
       validateConfig: zodToStandardSchema(configSchema),
     }

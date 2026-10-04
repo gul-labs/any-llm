@@ -1,12 +1,22 @@
+import { maxOutputTokensSchema } from '@gullabs/core'
 import { z } from 'zod'
+
+import { GOOGLE_MAX_TIMEOUT_MS, MAX_TIMER_MS } from '../client.js'
+import { cachedContentSchema } from './cached-content.js'
+import { GOOGLE_MODEL_LIMITS } from '../model-limits.js'
+import { GOOGLE_SAFETY_CATEGORIES, GOOGLE_SAFETY_THRESHOLDS } from '../safety-settings.js'
 
 export const Gemini31ProPreviewConfigSchema = z
   .union([
     z.strictObject({
-      maxOutputTokens: z.number().int().positive().optional().meta({
-        title: 'Max Output Tokens',
-        description: 'Maximum output token cap for gemini-3.1-pro-preview.',
-      }),
+      maxOutputTokens: maxOutputTokensSchema(
+        GOOGLE_MODEL_LIMITS['gemini-3.1-pro-preview'],
+      )
+        .optional()
+        .meta({
+          title: 'Max Output Tokens',
+          description: 'Maximum output token cap for gemini-3.1-pro-preview.',
+        }),
       stopSequences: z.array(z.string()).max(5).optional().meta({
         title: 'Stop Sequences',
         description: 'Up to five stop sequences for gemini-3.1-pro-preview.',
@@ -40,7 +50,7 @@ export const Gemini31ProPreviewConfigSchema = z
           title: 'Reasoning',
           description: 'Gemini 3.1 Pro Preview thinkingLevel configuration.',
         }),
-      timeoutMs: z.number().int().positive().optional().meta({
+      timeoutMs: z.number().int().positive().max(GOOGLE_MAX_TIMEOUT_MS).optional().meta({
         title: 'Timeout',
         description: 'Logical request timeout in milliseconds.',
       }),
@@ -48,20 +58,27 @@ export const Gemini31ProPreviewConfigSchema = z
         .strictObject({
           google: z
             .strictObject({
-              cachedContent: z.string().min(1).optional().meta({
-                title: 'Cached Content',
-                description: 'Google cached content resource name.',
+              allowSchemaWithSearch: z.boolean().optional().meta({
+                title: 'Allow Schema With Search',
+                description:
+                  'Admit googleSearch together with a response schema. Turns requireGrounding on unless it is false.',
               }),
+              requireGrounding: z.boolean().optional().meta({
+                title: 'Require Grounding',
+                description:
+                  'Fail the call unless the response proves Google Search ran (grounding metadata with at least one query). Judged only on a candidate that finished with STOP: a MAX_TOKENS or other abnormal finish returns with its own finish reason, a filtered one throws content_filter. The error is retryable only when no response schema is attached.',
+              }),
+              cachedContent: cachedContentSchema,
               safetySettings: z
                 .array(
                   z.strictObject({
-                    category: z.string().min(1).meta({
+                    category: z.enum(GOOGLE_SAFETY_CATEGORIES).meta({
                       title: 'Safety Category',
-                      description: 'Google safety category identifier.',
+                      description: 'Documented Google safety category.',
                     }),
-                    threshold: z.string().min(1).meta({
+                    threshold: z.enum(GOOGLE_SAFETY_THRESHOLDS).meta({
                       title: 'Safety Threshold',
-                      description: 'Google safety threshold identifier.',
+                      description: 'Documented Google safety threshold.',
                     }),
                   }),
                 )
@@ -87,9 +104,10 @@ export const Gemini31ProPreviewConfigSchema = z
                 }),
               httpOptions: z
                 .strictObject({
-                  timeout: z.number().int().positive().optional().meta({
+                  timeout: z.number().int().positive().max(MAX_TIMER_MS).optional().meta({
                     title: 'HTTP Timeout',
-                    description: 'Per-request Google transport timeout in milliseconds.',
+                    description:
+                      'Per-request Google transport timeout in milliseconds, at most 2147483647; with timeoutMs set, at least timeoutMs + 5000.',
                   }),
                 })
                 .optional()
@@ -117,10 +135,14 @@ export const Gemini31ProPreviewConfigSchema = z
         }),
     }),
     z.strictObject({
-      maxOutputTokens: z.number().int().positive().optional().meta({
-        title: 'Max Output Tokens',
-        description: 'Maximum output token cap for gemini-3.1-pro-preview.',
-      }),
+      maxOutputTokens: maxOutputTokensSchema(
+        GOOGLE_MODEL_LIMITS['gemini-3.1-pro-preview'],
+      )
+        .optional()
+        .meta({
+          title: 'Max Output Tokens',
+          description: 'Maximum output token cap for gemini-3.1-pro-preview.',
+        }),
       stopSequences: z.array(z.string()).max(5).optional().meta({
         title: 'Stop Sequences',
         description: 'Up to five stop sequences for gemini-3.1-pro-preview.',
@@ -154,7 +176,7 @@ export const Gemini31ProPreviewConfigSchema = z
           title: 'Reasoning',
           description: 'Gemini 3.1 Pro Preview thinkingLevel configuration.',
         }),
-      timeoutMs: z.number().int().positive().optional().meta({
+      timeoutMs: z.number().int().positive().max(GOOGLE_MAX_TIMEOUT_MS).optional().meta({
         title: 'Timeout',
         description: 'Logical request timeout in milliseconds.',
       }),
@@ -162,20 +184,27 @@ export const Gemini31ProPreviewConfigSchema = z
         .strictObject({
           google: z
             .strictObject({
-              cachedContent: z.string().min(1).optional().meta({
-                title: 'Cached Content',
-                description: 'Google cached content resource name.',
+              allowSchemaWithSearch: z.boolean().optional().meta({
+                title: 'Allow Schema With Search',
+                description:
+                  'Admit googleSearch together with a response schema. Turns requireGrounding on unless it is false.',
               }),
+              requireGrounding: z.boolean().optional().meta({
+                title: 'Require Grounding',
+                description:
+                  'Fail the call unless the response proves Google Search ran (grounding metadata with at least one query). Judged only on a candidate that finished with STOP: a MAX_TOKENS or other abnormal finish returns with its own finish reason, a filtered one throws content_filter. The error is retryable only when no response schema is attached.',
+              }),
+              cachedContent: cachedContentSchema,
               safetySettings: z
                 .array(
                   z.strictObject({
-                    category: z.string().min(1).meta({
+                    category: z.enum(GOOGLE_SAFETY_CATEGORIES).meta({
                       title: 'Safety Category',
-                      description: 'Google safety category identifier.',
+                      description: 'Documented Google safety category.',
                     }),
-                    threshold: z.string().min(1).meta({
+                    threshold: z.enum(GOOGLE_SAFETY_THRESHOLDS).meta({
                       title: 'Safety Threshold',
-                      description: 'Google safety threshold identifier.',
+                      description: 'Documented Google safety threshold.',
                     }),
                   }),
                 )
@@ -201,9 +230,10 @@ export const Gemini31ProPreviewConfigSchema = z
                 }),
               httpOptions: z
                 .strictObject({
-                  timeout: z.number().int().positive().optional().meta({
+                  timeout: z.number().int().positive().max(MAX_TIMER_MS).optional().meta({
                     title: 'HTTP Timeout',
-                    description: 'Per-request Google transport timeout in milliseconds.',
+                    description:
+                      'Per-request Google transport timeout in milliseconds, at most 2147483647; with timeoutMs set, at least timeoutMs + 5000.',
                   }),
                 })
                 .optional()

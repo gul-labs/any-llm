@@ -31,7 +31,7 @@ export { codexCliProvider } from './provider.js'
 export { toOpenAiStrictOutputSchema } from './output-schema.js'
 
 export { createCodexCliRunner } from './runner.js'
-export type { CodexCliRunner, CodexCliRunResult } from './runner.js'
+export type { CodexCliRunner, CodexCliRunOptions, CodexCliRunResult } from './runner.js'
 
 export {
   codexCliModelDescriptors,

@@ -10,9 +10,10 @@
  * @module
  */
 
-import { readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { parse as parseYaml } from 'yaml'
 
 const workspaceRoot = resolve(import.meta.dirname, '../../..')
 const packagesRoot = join(workspaceRoot, 'packages')
@@ -22,6 +23,9 @@ const hostedUrl = `https://github.com/${repoPath}`
 type Manifest = {
   name?: string
   private?: boolean
+  engines?: { node?: string }
+  exports?: Record<string, unknown>
+  files?: string[]
   repository?: { type?: string; url?: string; directory?: string }
   homepage?: string
   bugs?: string
@@ -61,6 +65,85 @@ describe('published package metadata', () => {
       )
       expect(pkg.homepage).toBe(`${hostedUrl}/tree/main/packages/${dir}#readme`)
       expect(pkg.bugs).toBe(`${hostedUrl}/issues`)
+    },
+  )
+})
+
+describe('published package license files', () => {
+  // Apache-2.0 4(d): the NOTICE text travels with every redistribution. `files` lists
+  // NOTICE (npm adds LICENSE on its own), and each package directory holds a copy that
+  // must equal the repository's, so a tarball never ships a stale one.
+  it.each(publishedManifests())(
+    '$dir ships LICENSE and NOTICE equal to the root',
+    ({ dir, pkg }) => {
+      expect(pkg.files).toContain('NOTICE')
+      for (const file of ['LICENSE', 'NOTICE']) {
+        expect(readFileSync(join(packagesRoot, dir, file), 'utf8')).toBe(
+          readFileSync(join(workspaceRoot, file), 'utf8'),
+        )
+      }
+    },
+  )
+})
+
+describe('published package runtime contract', () => {
+  /** The one Node floor: every `engines.node`, the README, the SPEC and the CI matrix. */
+  const floor = '22.12.0'
+
+  it.each(publishedManifests())('$dir declares the Node floor', ({ pkg }) => {
+    expect(pkg.engines?.node).toBe(`>=${floor}`)
+  })
+
+  it('README and SPEC state the same floor', () => {
+    const readme = readFileSync(join(workspaceRoot, 'README.md'), 'utf8')
+    const spec = readFileSync(join(workspaceRoot, 'SPEC.md'), 'utf8')
+    expect(readme).toContain(`Node \`>=${floor}\``)
+    expect(spec).toContain('Node ≥22.12')
+  })
+
+  it('the CI node-matrix job runs the tests on the floor (parsed, not grepped)', () => {
+    const ci = parseYaml(
+      readFileSync(join(workspaceRoot, '.github/workflows/ci.yml'), 'utf8'),
+    ) as {
+      jobs: Record<
+        string,
+        { strategy?: { matrix?: { node?: unknown } }; steps?: unknown[] }
+      >
+    }
+    const matrix = ci.jobs['node-matrix']?.strategy?.matrix?.node
+    expect(Array.isArray(matrix)).toBe(true)
+    expect(matrix).toContain(floor)
+    const runs = (ci.jobs['node-matrix']?.steps ?? []).map((step) =>
+      String((step as { run?: unknown }).run ?? ''),
+    )
+    expect(runs.some((run) => run.includes('vitest.mjs run'))).toBe(true)
+  })
+
+  it.each(publishedManifests())(
+    '$dir serves .d.ts to import and .d.cts to require',
+    ({ pkg }) => {
+      expect(pkg.exports?.['.']).toEqual({
+        import: { types: './dist/index.d.ts', default: './dist/index.js' },
+        require: { types: './dist/index.d.cts', default: './dist/index.cjs' },
+      })
+    },
+  )
+
+  // Every export is accounted for: the entry, `./package.json` (bundlers and license or
+  // version scanners read it, and `require.resolve('<pkg>/package.json')` throws
+  // ERR_PACKAGE_PATH_NOT_EXPORTED without it), and drizzle's shipped SQL.
+  it.each(publishedManifests())(
+    '$dir exports exactly its entry, package.json and SQL',
+    ({ dir, pkg }) => {
+      const expected = ['.', './package.json', ...(dir === 'drizzle' ? ['./sql/*'] : [])]
+      expect(Object.keys(pkg.exports ?? {}).sort()).toEqual(expected.sort())
+      expect(pkg.exports?.['./package.json']).toBe('./package.json')
+      if (dir === 'drizzle') {
+        expect(pkg.exports?.['./sql/*']).toBe('./sql/*')
+        expect(pkg.files).toContain('sql')
+        expect(existsSync(join(packagesRoot, dir, 'sql'))).toBe(true)
+      }
+      expect(pkg.files).toContain('dist')
     },
   )
 })

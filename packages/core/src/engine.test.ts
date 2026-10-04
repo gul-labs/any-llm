@@ -12,7 +12,11 @@
 import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
 import { createClient, createModelRegistry, LlmError, retryMiddleware } from './index.js'
-import { toConfigJsonSchema, zodToStandardSchema } from './model-config/index.js'
+import {
+  toConfigJsonSchema,
+  toConfigKeys,
+  zodToStandardSchema,
+} from './model-config/index.js'
 import type {
   AdapterResult,
   AdapterCtx,
@@ -33,6 +37,7 @@ import {
   FakeIds,
   RecordingSink,
   SignalAwareFakeAdapter,
+  fakeHttpError,
 } from '@gullabs/testing'
 import {
   makePermissiveTestDescriptor,
@@ -53,6 +58,7 @@ const GOOD_USAGE: Usage = {
 
 function makeSuccessResult(overrides?: Partial<AdapterResult>): AdapterResult {
   return {
+    message: { role: 'assistant', parts: [{ kind: 'text', text: 'Hello, world!' }] },
     text: 'Hello, world!',
     usage: GOOD_USAGE,
     model: 'gemini-2.5-pro',
@@ -121,7 +127,9 @@ const STRICT_REGISTRY = createModelRegistry([
   {
     model: 'gemini-2.5-pro',
     provider: 'google',
+    limits: { contextWindow: 1_000_000, maxOutputTokens: 65_536 },
     configSchema: StrictGeminiConfigSchema,
+    configKeys: toConfigKeys(StrictGeminiConfigSchema),
     configJsonSchema: toConfigJsonSchema(StrictGeminiConfigSchema),
     validateConfig: zodToStandardSchema(StrictGeminiConfigSchema),
   },
@@ -170,7 +178,7 @@ describe('engine — success path', () => {
         makePermissiveTestDescriptor({
           model: 'gemini-2.5-pro',
           provider: 'google',
-          capabilities: { statelessReasoningReplay: true },
+          capabilities: { providerState: true },
         }),
       ]),
     })
@@ -233,7 +241,7 @@ describe('engine — success path', () => {
     expect(sink.records).toHaveLength(1)
     const rec = sink.last()!
     expect(rec.status).toBe('ok')
-    expect(rec.recordSchemaVersion).toBe(1)
+    expect(rec.recordSchemaVersion).toBe(2)
     expect(rec.callId).toBe('call_1')
     expect(rec.attemptId).toBe('attempt_1')
     expect(rec.provider).toBe('google')
@@ -489,7 +497,7 @@ describe('engine — double-count integration', () => {
 
 describe('engine — failure path', () => {
   it('adapter throws {status:429} → rethrows LlmError rate_limited, record written', async () => {
-    const adapter = new FakeAdapter('google', { status: 429 })
+    const adapter = new FakeAdapter('google', fakeHttpError(429))
     const sink = new RecordingSink()
     const errors: object[] = []
     const telemetry: Telemetry = {
@@ -720,7 +728,7 @@ describe('engine — fail-open sink', () => {
 
   it('sink throws on error-path record → still rethrows the LlmError', async () => {
     const sink = new RecordingSink({ failOnRecord: true })
-    const adapter = new FakeAdapter('google', { status: 500 })
+    const adapter = new FakeAdapter('google', fakeHttpError(500))
 
     const client = createClient({
       adapters: [adapter],
@@ -1084,11 +1092,13 @@ describe('engine — routing', () => {
 
   it('generate: custom registry resolving to a mismatched-provider descriptor → bad_request', async () => {
     const google = new FakeAdapter('google', makeSuccessResult())
-    // Resolve-only registry (no listDescriptors) that always answers with an
+    // Registry that lists nothing and always answers with an
     // 'anthropic' descriptor, regardless of the provider requested.
     const wrongProviderRegistry: ModelRegistry = {
       resolve: () =>
         makeTestDescriptor({ model: 'claude-sonnet-5', provider: 'anthropic' }),
+      findByModel: () => [],
+      listDescriptors: () => [],
     }
 
     const client = createClient({
@@ -1113,6 +1123,8 @@ describe('engine — routing', () => {
     const wrongProviderRegistry: ModelRegistry = {
       resolve: () =>
         makeTestDescriptor({ model: 'claude-sonnet-5', provider: 'anthropic' }),
+      findByModel: () => [],
+      listDescriptors: () => [],
     }
 
     const client = createClient({
@@ -1264,7 +1276,7 @@ describe('engine — logger', () => {
     }
 
     const client = createClient({
-      adapters: [new FakeAdapter('google', { status: 500 })],
+      adapters: [new FakeAdapter('google', fakeHttpError(500))],
 
       pricingSources: { google: PRICING },
       modelRegistry: TEST_REGISTRY,
@@ -1508,7 +1520,9 @@ describe('engine — providerOptions strict merge', () => {
         providerOptions: {
           google: {
             httpOptions: { timeout: 1_000 },
-            safetySettings: [{ category: 'harm', threshold: 'block_only_high' }],
+            safetySettings: [
+              { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
+            ],
           },
         },
       },
@@ -1538,7 +1552,7 @@ describe('engine — providerOptions strict merge', () => {
     expect(google['httpOptions']).toEqual({ timeout: 2_000 })
     expect(google['cachedContent']).toBe('cached/abc123')
     expect(google['safetySettings']).toEqual([
-      { category: 'harm', threshold: 'block_only_high' },
+      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
     ])
   })
 
@@ -1790,28 +1804,25 @@ describe('engine — pricingFamily routing', () => {
     ).not.toThrow()
   })
 
-  it('strictPricing requires custom registries to implement listDescriptors', () => {
-    const registryWithoutEnumeration: ModelRegistry = {
-      resolve(_provider, model) {
-        if (model === 'my-priced-model') {
-          return makeTestDescriptor({
-            model: 'my-priced-model',
-            provider: 'google',
-            pricingFamily: 'gemini-2.5-pro',
-          })
-        }
-        return undefined
-      },
-    }
-
+  it('a modelRegistry that lacks a registry method is refused at construction', () => {
+    const resolveOnly = { resolve: () => undefined } as unknown as ModelRegistry
     expect(() =>
       createClient({
         adapters: [new FakeAdapter('google', makeSuccessResult())],
         pricingSources: { google: PRICING },
-        modelRegistry: registryWithoutEnumeration,
-        strictPricing: true,
+        modelRegistry: resolveOnly,
       }),
-    ).toThrow(/listDescriptors/)
+    ).toThrow(/modelRegistry must implement findByModel\(\)/)
+    expect(() =>
+      createClient({
+        adapters: [new FakeAdapter('google', makeSuccessResult())],
+        pricingSources: { google: PRICING },
+        modelRegistry: {
+          ...resolveOnly,
+          findByModel: () => [],
+        } as unknown as ModelRegistry,
+      }),
+    ).toThrow(/modelRegistry must implement listDescriptors\(\)/)
   })
 
   it('default pricing remains fail-open for unpriced models and emits a warning', async () => {
@@ -2011,7 +2022,7 @@ describe('engine — reconcile loop (callId/attemptId/telemetry)', () => {
     expect(result.attemptId).not.toBe(failedRecord.attemptId)
   })
 
-  it('idempotencyKey is deterministic but still preserves per-attempt retry records', async () => {
+  it('every attempt mints its own attemptId; retries share the callId and externalId', async () => {
     const adapter = new FakeAdapter('google', [
       new LlmError('transient', { kind: 'server', retryable: true }),
       makeSuccessResult(),
@@ -2027,7 +2038,7 @@ describe('engine — reconcile loop (callId/attemptId/telemetry)', () => {
       middleware: [
         retryMiddleware(
           { maxAttempts: 2, baseDelayMs: 0 },
-          { sleep: async () => {}, random: () => 0, now: () => 0 },
+          { sleep: async () => {}, random: () => 0 },
         ),
       ],
     })
@@ -2037,17 +2048,40 @@ describe('engine — reconcile loop (callId/attemptId/telemetry)', () => {
         provider: 'google',
         model: 'gemini-2.5-pro',
         messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hi' }] }],
-        idempotencyKey: 'ctx-123',
+        externalId: 'ctx-123',
       },
       { auth: TEST_AUTH },
     )
 
     expect(sink.records).toHaveLength(2)
-    expect(sink.records[0]!.attemptId).toBe('ctx-123')
+    expect(sink.records[0]!.attemptId).toBe('attempt_1')
     expect(sink.records[0]!.status).toBe('api_error')
-    expect(sink.records[1]!.attemptId).toBe('ctx-123:2')
+    expect(sink.records[1]!.attemptId).toBe('attempt_2')
     expect(sink.records[1]!.status).toBe('ok')
-    expect(result.attemptId).toBe('ctx-123:2')
+    expect(sink.records[0]!.externalId).toBe('ctx-123')
+    expect(sink.records[1]!.externalId).toBe('ctx-123')
+    expect(result.attemptId).toBe('attempt_2')
+  })
+
+  it('two calls with one externalId (a host retry) write two rows with distinct attemptIds', async () => {
+    const { client, sink } = makeClient()
+    const request = {
+      provider: 'google',
+      model: 'gemini-2.5-pro',
+      messages: [
+        { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'Hi' }] },
+      ],
+      externalId: 'host-op-1',
+    }
+
+    const first = await client.generate(request, { auth: TEST_AUTH })
+    const second = await client.generate(request, { auth: TEST_AUTH })
+
+    expect(sink.records).toHaveLength(2)
+    expect(first.callId).not.toBe(second.callId)
+    expect(first.attemptId).not.toBe(second.attemptId)
+    expect(new Set(sink.records.map((r) => r.attemptId)).size).toBe(2)
+    expect(sink.records.map((r) => r.externalId)).toEqual(['host-op-1', 'host-op-1'])
   })
 
   it('externalId round-trips to success records', async () => {

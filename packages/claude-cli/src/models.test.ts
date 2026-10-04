@@ -4,6 +4,7 @@
  * @module
  */
 
+import { readFileSync } from 'node:fs'
 import { describe, it, expect } from 'vitest'
 import { assertRegistryInvariants } from '@gullabs/testing'
 import {
@@ -122,6 +123,40 @@ describe('registry', () => {
     expect(result).toBeDefined()
     if (result !== undefined && !(result instanceof Promise)) {
       expect(result.issues).toBeDefined()
+    }
+  })
+})
+
+describe('claude-cli limits and media', () => {
+  it('states each limit as the CLI reports it in the captured modelUsage, and admits no media', () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        new URL('./__fixtures__/model-refresh-p-a1.json', import.meta.url),
+        'utf8',
+      ),
+    ) as {
+      responses: Record<
+        string,
+        { modelUsage: Record<string, { contextWindow: number; maxOutputTokens: number }> }
+      >
+    }
+    for (const d of claudeCliModelDescriptors) {
+      const reported = fixture.responses[d.model]?.modelUsage[d.model]
+      expect(reported, d.model).toBeDefined()
+      expect(d.limits).toEqual({
+        contextWindow: reported?.contextWindow,
+        maxOutputTokens: reported?.maxOutputTokens,
+      })
+      expect(d.capabilities?.inputMimeTypes).toEqual([])
+    }
+  })
+})
+
+describe('claude-cli configKeys', () => {
+  it('lists only the keys each schema names: Haiku has no reasoning, none has maxOutputTokens', () => {
+    for (const d of claudeCliModelDescriptors) {
+      const haiku = d.model === 'claude-haiku-4-5-20251001'
+      expect(d.configKeys).toEqual(haiku ? ['timeoutMs'] : ['reasoning', 'timeoutMs'])
     }
   })
 })

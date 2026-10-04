@@ -10,18 +10,41 @@
  * @module
  */
 
+import type { GoogleCacheHandle } from './cache-store.js'
+import type { GoogleSafetyCategory, GoogleSafetyThreshold } from './safety-settings.js'
+
 export type GoogleSafetySetting = {
-  category: string
-  threshold: string
+  /** A documented `HarmCategory`; see `safety-settings.ts` for the source. */
+  category: GoogleSafetyCategory
+  /** A documented `HarmBlockThreshold`. */
+  threshold: GoogleSafetyThreshold
 }
 
 export type GoogleSearchTool = {
   googleSearch: Record<string, never>
 }
 
+/**
+ * A cached-content reference: the resource name, or `{ cacheName, toolKinds }`
+ * taken from a `GoogleCacheHandle` (`handle.toolKinds` records which tools the
+ * cache holds). Pass those two fields, not the whole handle: the other fields
+ * are typed `never` here and the schema is strict. The request sent to Google
+ * carries only the name. A bare name says nothing about what the cache holds,
+ * so a Search fee in the response is priced from the observed queries and the
+ * cost is `estimated`; a handle whose `toolKinds` lists `googleSearch` marks the
+ * call as a Search call up front.
+ */
+export type GoogleCachedContentRef =
+  | string
+  | (Pick<GoogleCacheHandle, 'cacheName' | 'toolKinds'> & {
+      expiresAt?: never
+      model?: never
+      totalTokenCount?: never
+    })
+
 export type GoogleProviderOptions = {
-  /** Google cached content resource name. */
-  cachedContent?: string
+  /** Google cached content: the resource name, or a handle that records the cache's tool kinds. Explicit-caching models only. */
+  cachedContent?: GoogleCachedContentRef
   /** Allowlisted Google safety settings. */
   safetySettings?: GoogleSafetySetting[]
   /** Exact Google tool declarations admitted by the selected model schema. */
@@ -33,6 +56,32 @@ export type GoogleProviderOptions = {
   }
   /** Allow provider fallback from flex when flex was explicitly selected. */
   flexFallback?: boolean
+  /**
+   * Admit `googleSearch` together with `output.jsonSchema` on a model that does
+   * not admit the pair by default. Opting in turns on {@link requireGrounding}
+   * unless it is set to `false`, because Search can be skipped silently when a
+   * response schema is attached. Requires both Search and a schema; Search is
+   * `googleSearch` in `tools` or a `cachedContent` handle whose `toolKinds` lists
+   * it. A schema call on such a model with a handle that lists `googleSearch`
+   * needs this flag, like an inline `googleSearch`; a bare cache name is not
+   * blocked, and a response of a schema call that reports search queries without
+   * a declared Search carries a warning.
+   */
+  allowSchemaWithSearch?: boolean
+  /**
+   * Fail the call unless the response proves Search ran: `groundingMetadata`
+   * present with at least one `webSearchQueries` entry. The check judges only a
+   * candidate that finished normally (`STOP`, or no finish reason). Without the
+   * proof it throws a `server` error with reason `grounding_missing` and the
+   * attempt's usage is recorded; the error is retryable when no response schema
+   * is attached and not retryable when one is (the same request keeps missing).
+   * A `MAX_TOKENS` or other abnormal finish with no proof is not judged: it
+   * returns, with its own finish reason (`length`), and a filtered candidate
+   * throws its `content_filter` error. Requires Search (`googleSearch` in `tools`
+   * or a `cachedContent` handle whose `toolKinds` lists it). Defaults to
+   * `true` when {@link allowSchemaWithSearch} is `true`, else `false`.
+   */
+  requireGrounding?: boolean
 }
 
 declare module '@gullabs/core' {

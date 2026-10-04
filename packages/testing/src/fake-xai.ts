@@ -5,9 +5,12 @@
  * The xAI adapter (`@gullabs/xai`) depends on `openai` as a peer-dependency.
  * Tests must never touch the real network, so this module provides a fully
  * structural (no import of `openai` or `@gullabs/xai`) fake that scripts
- * responses, captures calls, and can inject errors. `packages/testing`
- * depends only on `@gullabs/core` — this fake re-derives the xAI Responses
- * API shapes structurally rather than importing them.
+ * responses, captures calls, and can inject errors. The fake re-derives the xAI
+ * Responses API shapes structurally rather than importing them (`openai` and
+ * `@gullabs/xai` are optional peers of this package, loaded only by the error
+ * factories). It sits above the adapter's streaming client and returns the final
+ * response; to script a failure inside an open stream, throw
+ * `fakeStreamFailure()` from a `FakeAdapter` instead.
  *
  * @module
  */
@@ -47,8 +50,22 @@ export interface XaiMessageOutputItemLike {
   content: XaiOutputTextPartLike[]
 }
 
+/** A `type: 'function_call'` item in `output`: the model asks for a tool to be run. */
+export interface XaiFunctionCallOutputItemLike {
+  type: 'function_call'
+  id?: string
+  call_id: string
+  name: string
+  /** The call's arguments as the API sends them: a JSON string. */
+  arguments: string
+  status?: string
+  /** The API may add fields; the adapter's own output-item type is open in the same way. */
+  [otherKeys: string]: unknown
+}
+
 /** Union of output-item shapes the Responses API may return. */
-export type XaiOutputItemLike = XaiReasoningOutputItemLike | XaiMessageOutputItemLike
+export type XaiOutputItemLike =
+  XaiReasoningOutputItemLike | XaiMessageOutputItemLike | XaiFunctionCallOutputItemLike
 
 /**
  * Token usage metadata returned alongside an xAI response.
@@ -140,6 +157,17 @@ export interface FakeXaiResponseOpts {
    * when attachment_search ran). Merged into the usage object for adapter tests.
    */
   usageExtras?: Record<string, number>
+  /**
+   * Function calls the model makes, placed after the message item. `arguments`
+   * may be an object (serialized to JSON) or a string sent as written, for a
+   * test of arguments that are not JSON. `status` defaults to `'completed'`.
+   */
+  functionCalls?: Array<{
+    callId: string
+    name: string
+    arguments: string | Record<string, unknown>
+    status?: string
+  }>
 }
 
 /**
@@ -173,6 +201,19 @@ export function fakeXaiResponse(opts: FakeXaiResponseOpts = {}): XaiResponseLike
       role: 'assistant',
       status: 'completed',
       content: [{ type: 'output_text', text: mainText }],
+    })
+  }
+
+  for (const call of opts.functionCalls ?? []) {
+    output.push({
+      type: 'function_call',
+      call_id: call.callId,
+      name: call.name,
+      arguments:
+        typeof call.arguments === 'string'
+          ? call.arguments
+          : JSON.stringify(call.arguments),
+      status: call.status ?? 'completed',
     })
   }
 
@@ -264,8 +305,8 @@ export interface FakeXaiClient {
  * await client.responses.create({})  // → second response
  * expect(client.calls).toHaveLength(2)
  *
- * // Error injection (mimics a 429 object thrown by the real SDK)
- * const errorClient = makeFakeXai(() => { throw { status: 429 } })
+ * // Error injection: the real SDK error class, which the real adapter classifies
+ * const errorClient = makeFakeXai(() => { throw fakeProviderError('xai', 'credits-exhausted-429') })
  * await expect(errorClient.responses.create({})).rejects.toMatchObject({ status: 429 })
  * ```
  */

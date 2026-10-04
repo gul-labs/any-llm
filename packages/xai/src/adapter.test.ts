@@ -8,11 +8,25 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { LlmError, createClient } from '@gullabs/core'
+import {
+  LlmError,
+  createClient,
+  createModelRegistry,
+  retryMiddleware,
+} from '@gullabs/core'
 import type { ResolvedRequest, AdapterCtx, ModelDescriptor } from '@gullabs/core'
-import { fakeXaiResponse, makeFakeXai, RecordingSink } from '@gullabs/testing'
-import { xaiAdapter, classifyXaiError } from './adapter.js'
-import { computeXaiCost } from './pricing.js'
+import { XAI_DEFAULT_TIMEOUT_MS, XAI_TIMEOUT_BUFFER_MS } from './client.js'
+import type { XaiClientLike, XaiRequestOptions, XaiTransport } from './client.js'
+import {
+  FakeClock,
+  FakeIds,
+  fakeXaiResponse,
+  makeFakeXai,
+  RecordingSink,
+} from '@gullabs/testing'
+import { xaiAdapter, xaiAdapterWithSeams, classifyXaiError } from './adapter.js'
+import { computeXaiCost, xaiPricingSource } from './pricing.js'
+import { sseResponse, synthesizeStreamEvents } from './test-sse.js'
 import {
   xaiRegistry,
   grok45ModelDescriptor,
@@ -197,13 +211,13 @@ describe('basic text completion', () => {
     expect(obj).toMatchObject({ model: 'grok-4.5' })
   })
 
-  it('uses a _clientFactory override when supplied', async () => {
+  it('uses a client factory seam when supplied', async () => {
     const client = makeFakeXai(fakeXaiResponse({ text: 'factory-built' }))
     const factory = vi.fn().mockResolvedValue(client)
-    const adapter = xaiAdapter({ _clientFactory: factory })
+    const adapter = xaiAdapterWithSeams(undefined, { clientFactory: factory })
     const result = await adapter.run(makeResolvedReq(), FAKE_CTX)
 
-    expect(factory).toHaveBeenCalledWith(FAKE_CTX.auth)
+    expect(factory).toHaveBeenCalledWith(FAKE_CTX.auth, undefined)
     expect(result.text).toBe('factory-built')
   })
 
@@ -675,6 +689,41 @@ describe('vision / media mapping', () => {
         FAKE_CTX,
       ),
     ).rejects.toMatchObject({ kind: 'bad_request' })
+  })
+
+  it('sizes an inline image by its base64 characters, not by its line breaks', async () => {
+    // Built by repetition (a few ms), never by encoding and regex-wrapping tens of
+    // megabytes: that took seconds of CPU under parallel load and made the test flaky.
+    // 76 base64 characters = 57 decoded bytes per CRLF-wrapped line.
+    const line = `${'QUFB'.repeat(19)}\r\n`
+    const wrapped = (decodedBytes: number): string =>
+      line.repeat(Math.ceil(decodedBytes / 57))
+    const png = (decodedBytes: number) => ({
+      kind: 'inline-media' as const,
+      mimeType: 'image/png',
+      data: wrapped(decodedBytes),
+    })
+    const run = (decodedBytes: number) => {
+      const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
+      return {
+        client,
+        done: xaiAdapter({ client }).run(
+          makeResolvedReq({
+            messages: [{ role: 'user', parts: [png(decodedBytes)] }],
+          }),
+          FAKE_CTX,
+        ),
+      }
+    }
+    // 19.5 MiB decoded is about 27.3 MB of text once wrapped every 76 characters,
+    // over the ceiling by plain length alone: only the line-break-free count admits it.
+    const within = run(19.5 * 1024 * 1024)
+    await within.done
+    expect(within.client.calls).toHaveLength(1)
+    // Wrapping does not hide an image that really is over the ceiling.
+    await expect(run(20 * 1024 * 1024 + 57 * 4).done).rejects.toMatchObject({
+      kind: 'bad_request',
+    })
   })
 
   it('maps a FileUriPart with an https:// URL and image mimeType', async () => {
@@ -1185,36 +1234,120 @@ describe('transport-failure classification', () => {
     expect(result.provider).toBe('xai')
   })
 
-  it('classifies APIConnectionTimeoutError (subclass of APIConnectionError) as retryable', () => {
-    // The openai SDK's default message for this subclass is "Request timed
-    // out.", which core's classifyError already recognizes via its own
-    // timeout heuristic (kind: 'timeout', retryable: true) — so this never
-    // even needs the transport-fallback path to be safe to retry. Confirm
-    // it does NOT fall through to the non-retryable 'unknown' kind.
+  it('classifies the SDK deadline (APIConnectionTimeoutError) as a non-retryable transport timeout', () => {
+    // A retry reaches the same SDK deadline and repeats the spend.
     class APIConnectionError extends Error {}
     class APIConnectionTimeoutError extends APIConnectionError {
       constructor() {
         super('Request timed out.')
       }
     }
-    const result = classifyXaiError(new APIConnectionTimeoutError())
+    const result = classifyXaiError(new APIConnectionTimeoutError(), {
+      timeoutMs: 125_000,
+      elapsedMs: 125_001,
+    })
     expect(result.kind).toBe('timeout')
-    expect(result.retryable).toBe(true)
+    expect(result.retryable).toBe(false)
+    expect(result.reason).toBe('transport_timeout')
+    expect(result.provider).toBe('xai')
   })
 
-  it('classifies an APIConnectionTimeoutError with a non-timeout-worded message via the transport fallback', () => {
-    // Simulate a caller-supplied custom message that does not happen to
-    // contain the word "timeout" — the constructor-name check must still
-    // catch it.
+  it('does not take an APIConnectionTimeoutError for the SDK deadline without the deadline context, or before the deadline could have fired', () => {
+    class APIConnectionError extends Error {}
+    class APIConnectionTimeoutError extends APIConnectionError {
+      constructor() {
+        super('Request timed out.')
+      }
+    }
+    const without = classifyXaiError(new APIConnectionTimeoutError())
+    expect(without.reason).toBeUndefined()
+    expect(without.retryable).toBe(true)
+
+    const early = classifyXaiError(new APIConnectionTimeoutError(), {
+      timeoutMs: 125_000,
+      elapsedMs: 40,
+    })
+    expect(early.reason).toBeUndefined()
+    expect(early.retryable).toBe(true)
+  })
+
+  it.each([
+    [
+      'OS ETIMEDOUT',
+      Object.assign(new Error('connect ETIMEDOUT 1.2.3.4:443'), { code: 'ETIMEDOUT' }),
+    ],
+    ['TLS handshake timeout', new Error('TLS handshake timed out')],
+  ])(
+    'a wrapped %s is not the SDK deadline even when it ran as long as the deadline',
+    (_name, cause) => {
+      class APIConnectionTimeoutError extends Error {
+        constructor(c: Error) {
+          super('Request timed out.')
+          this.cause = c
+        }
+      }
+      const result = classifyXaiError(
+        new APIConnectionTimeoutError(new TypeError('fetch failed', { cause })),
+        { timeoutMs: 1_000, elapsedMs: 5_000 },
+      )
+      expect(result.reason).toBeUndefined()
+      expect(result.retryable).toBe(true)
+    },
+  )
+
+  it('an SDK-wrapped AbortError that ran for the full deadline is the SDK deadline', () => {
+    class APIConnectionTimeoutError extends Error {
+      constructor(c: Error) {
+        super('Request timed out.')
+        this.cause = c
+      }
+    }
+    const result = classifyXaiError(
+      new APIConnectionTimeoutError(
+        new DOMException('This operation was aborted', 'AbortError'),
+      ),
+      { timeoutMs: 1_000, elapsedMs: 1_002 },
+    )
+    expect(result).toMatchObject({
+      kind: 'timeout',
+      retryable: false,
+      reason: 'transport_timeout',
+    })
+  })
+
+  it('classifies APIConnectionTimeoutError by constructor name even with a non-timeout message', () => {
     class APIConnectionError extends Error {}
     class APIConnectionTimeoutError extends APIConnectionError {
       constructor() {
         super('Connection error.')
       }
     }
-    const result = classifyXaiError(new APIConnectionTimeoutError())
-    expect(result.kind).toBe('server')
+    const result = classifyXaiError(new APIConnectionTimeoutError(), {
+      timeoutMs: 1_000,
+      elapsedMs: 1_000,
+    })
+    expect(result.kind).toBe('timeout')
+    expect(result.retryable).toBe(false)
+    expect(result.reason).toBe('transport_timeout')
+  })
+
+  it('keeps a connect timeout retryable: nothing was sent, so a retry is safe', () => {
+    class APIConnectionTimeoutError extends Error {
+      constructor(cause: Error) {
+        super('Request timed out.')
+        this.cause = cause
+      }
+    }
+    const connect = Object.assign(new Error('Connect Timeout Error'), {
+      name: 'ConnectTimeoutError',
+      code: 'UND_ERR_CONNECT_TIMEOUT',
+    })
+    const result = classifyXaiError(
+      new APIConnectionTimeoutError(new TypeError('fetch failed', { cause: connect })),
+    )
+    expect(result.kind).toBe('timeout')
     expect(result.retryable).toBe(true)
+    expect(result.reason).toBeUndefined()
   })
 
   it('classifies a plain Error with "Connection error." message as retryable server', () => {
@@ -1287,6 +1420,375 @@ describe('transport-failure classification', () => {
       retryable: true,
       provider: 'xai',
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Transport and timeout (ADR-032)
+// ---------------------------------------------------------------------------
+
+function undiciError(name: string, code: string, message: string): Error {
+  return Object.assign(new Error(message), { name, code })
+}
+
+/** A client that records the per-request options and returns a canned response. */
+function makeOptionsCapturingClient(): {
+  client: XaiClientLike
+  optionCalls: Array<XaiRequestOptions | undefined>
+} {
+  const optionCalls: Array<XaiRequestOptions | undefined> = []
+  const response = fakeXaiResponse({ text: 'ok' })
+  const client: XaiClientLike = {
+    responses: {
+      create(_params, options) {
+        optionCalls.push(options)
+        return Promise.resolve(response as never)
+      },
+    },
+  }
+  return { client, optionCalls }
+}
+
+describe('xai SDK timeout derivation', () => {
+  it('derives the SDK timeout from config.timeoutMs plus the buffer', async () => {
+    const { client, optionCalls } = makeOptionsCapturingClient()
+    await xaiAdapter({ client }).run(
+      makeResolvedReq({ config: { timeoutMs: 120_000 } }),
+      FAKE_CTX,
+    )
+    expect(XAI_TIMEOUT_BUFFER_MS).toBe(5_000)
+    expect(optionCalls[0]?.timeout).toBe(125_000)
+  })
+
+  it('falls back to XAI_DEFAULT_TIMEOUT_MS (one hour) when timeoutMs is unset', async () => {
+    const { client, optionCalls } = makeOptionsCapturingClient()
+    await xaiAdapter({ client }).run(makeResolvedReq(), FAKE_CTX)
+    expect(XAI_DEFAULT_TIMEOUT_MS).toBe(3_600_000)
+    expect(optionCalls[0]?.timeout).toBe(3_600_000)
+  })
+
+  it('still forwards the abort signal next to the timeout', async () => {
+    const { client, optionCalls } = makeOptionsCapturingClient()
+    const controller = new AbortController()
+    await xaiAdapter({ client }).run(makeResolvedReq(), {
+      ...FAKE_CTX,
+      signal: controller.signal,
+    })
+    expect(optionCalls[0]?.signal).toBe(controller.signal)
+    expect(optionCalls[0]?.timeout).toBe(3_600_000)
+  })
+})
+
+describe('xai transport option', () => {
+  it('passes the transport to the client factory', async () => {
+    const transport: XaiTransport = {
+      fetch: (() => Promise.reject(new Error('unused'))) as unknown as typeof fetch,
+      fetchOptions: { keepalive: true },
+    }
+    const { client } = makeOptionsCapturingClient()
+    const factory = vi.fn((_auth: unknown, _transport?: XaiTransport) => client)
+    await xaiAdapterWithSeams({ transport }, { clientFactory: factory }).run(
+      makeResolvedReq(),
+      FAKE_CTX,
+    )
+    expect(factory).toHaveBeenCalledTimes(1)
+    expect(factory.mock.calls[0]?.[0]).toEqual({ apiKey: 'test-key' })
+    // A snapshot taken at construction: same fetch and options, not the host's object.
+    expect(factory.mock.calls[0]?.[1]).toEqual(transport)
+    expect(factory.mock.calls[0]?.[1]).not.toBe(transport)
+  })
+
+  it('passes undefined when no transport is configured', async () => {
+    const { client } = makeOptionsCapturingClient()
+    const factory = vi.fn((_auth: unknown, _transport?: XaiTransport) => client)
+    await xaiAdapterWithSeams(undefined, { clientFactory: factory }).run(
+      makeResolvedReq(),
+      FAKE_CTX,
+    )
+    expect(factory.mock.calls[0]?.[1]).toBeUndefined()
+  })
+
+  it('rejects transport combined with an injected client', () => {
+    const { client } = makeOptionsCapturingClient()
+    const transport: XaiTransport = { fetch: (() => {}) as unknown as typeof fetch }
+    expect(() => xaiAdapter({ client, transport })).toThrow(
+      expect.objectContaining({ kind: 'bad_request' }) as never,
+    )
+  })
+
+  it.each(['headers', 'signal', 'body', 'method'] as const)(
+    'rejects transport.fetchOptions.%s, which the request owns',
+    (key) => {
+      const transport = {
+        fetch: (() => {}) as unknown as typeof fetch,
+        fetchOptions: { [key]: undefined },
+      } as unknown as XaiTransport
+      expect(() => xaiAdapter({ transport })).toThrow(
+        expect.objectContaining({
+          kind: 'bad_request',
+          message: expect.stringContaining(`fetchOptions.${key}`) as never,
+        }) as never,
+      )
+    },
+  )
+
+  it.each([
+    ['fetchOptions: null', { fetch: (() => {}) as unknown, fetchOptions: null }],
+    ['fetchOptions: an array', { fetch: (() => {}) as unknown, fetchOptions: [] }],
+    ['fetchOptions: a string', { fetch: (() => {}) as unknown, fetchOptions: 'x' }],
+    ['fetch missing', { fetchOptions: {} }],
+    ['fetch not a function', { fetch: 'not-a-function' as unknown }],
+  ])(
+    'rejects a malformed transport (%s) with bad_request, not a TypeError',
+    (_name, t) => {
+      expect(() => xaiAdapter({ transport: t as unknown as XaiTransport })).toThrow(
+        expect.objectContaining({ kind: 'bad_request', provider: 'xai' }) as never,
+      )
+    },
+  )
+
+  it('mutating the host transport object after construction cannot smuggle in a reserved option', async () => {
+    const seen: Array<Record<string, unknown>> = []
+    const stubFetch = ((_input: unknown, init: Record<string, unknown>) => {
+      seen.push(init)
+      return Promise.resolve(
+        sseResponse(synthesizeStreamEvents({ ...fakeXaiResponse({ text: 'ok' }) })),
+      )
+    }) as unknown as typeof fetch
+    const transport = {
+      fetch: stubFetch,
+      fetchOptions: { keepalive: true } as Record<string, unknown>,
+    }
+    const adapter = xaiAdapter({ transport: transport as unknown as XaiTransport })
+    transport.fetchOptions['headers'] = { 'x-smuggled': '1' }
+    transport.fetchOptions['body'] = 'smuggled'
+    transport.fetchOptions['keepalive'] = false
+
+    await adapter.run(makeResolvedReq(), FAKE_CTX)
+
+    expect(seen[0]?.['keepalive']).toBe(true)
+    expect(seen[0]?.['body']).not.toBe('smuggled')
+    expect(
+      new Headers(seen[0]?.['headers'] as ConstructorParameters<typeof Headers>[0]).get(
+        'x-smuggled',
+      ),
+    ).toBeNull()
+  })
+
+  it('reaches the real SDK: the stub fetch carries the request, the options and the timeout', async () => {
+    const dispatcher = { sentinel: 'undici-agent' }
+    const seen: Array<{ url: string; init: Record<string, unknown> }> = []
+    const stubFetch = ((input: unknown, init: Record<string, unknown>) => {
+      seen.push({ url: String(input), init })
+      return Promise.resolve(
+        sseResponse(synthesizeStreamEvents({ ...fakeXaiResponse({ text: 'wire ok' }) })),
+      )
+    }) as unknown as typeof fetch
+    const adapter = xaiAdapter({
+      transport: {
+        fetch: stubFetch,
+        fetchOptions: { dispatcher } as unknown as XaiTransport['fetchOptions'] & object,
+      },
+    })
+
+    const result = await adapter.run(
+      makeResolvedReq({ config: { timeoutMs: 600_000 } }),
+      FAKE_CTX,
+    )
+
+    expect(result.text).toBe('wire ok')
+    expect(seen).toHaveLength(1)
+    expect(seen[0]?.url).toBe('https://api.x.ai/v1/responses')
+    expect(seen[0]?.init['dispatcher']).toBe(dispatcher)
+    expect(
+      new Headers(
+        seen[0]?.init['headers'] as ConstructorParameters<typeof Headers>[0],
+      ).get('authorization'),
+    ).toBe('Bearer test-key')
+    expect(JSON.parse(String(seen[0]?.init['body']))).toMatchObject({
+      model: 'grok-4.5',
+      store: false,
+    })
+  })
+})
+
+describe('xai transport-timeout classification', () => {
+  const headers = undiciError(
+    'HeadersTimeoutError',
+    'UND_ERR_HEADERS_TIMEOUT',
+    'Headers Timeout Error',
+  )
+  const body = undiciError(
+    'BodyTimeoutError',
+    'UND_ERR_BODY_TIMEOUT',
+    'Body Timeout Error',
+  )
+
+  it('classifies undici headers timeout under fetch failed as non-retryable with a reason', () => {
+    const result = classifyXaiError(new TypeError('fetch failed', { cause: headers }))
+    expect(result).toMatchObject({
+      kind: 'timeout',
+      retryable: false,
+      reason: 'transport_timeout',
+      provider: 'xai',
+    })
+    expect(result.message).toContain('headers')
+  })
+
+  it('classifies undici body timeout (terminated) as non-retryable with a reason', () => {
+    const result = classifyXaiError(new TypeError('terminated', { cause: body }))
+    expect(result).toMatchObject({
+      kind: 'timeout',
+      retryable: false,
+      reason: 'transport_timeout',
+      provider: 'xai',
+    })
+    expect(result.message).toContain('body')
+  })
+
+  it('finds the undici error through the SDK wrapper two levels deep', () => {
+    class APIConnectionTimeoutError extends Error {
+      constructor(cause: Error) {
+        super('Request timed out. Node.js fetch timed out waiting for response headers')
+        this.cause = cause
+      }
+    }
+    const result = classifyXaiError(
+      new APIConnectionTimeoutError(new TypeError('fetch failed', { cause: headers })),
+    )
+    expect(result).toMatchObject({
+      kind: 'timeout',
+      retryable: false,
+      reason: 'transport_timeout',
+    })
+  })
+
+  it('matches by class name when the code is absent', () => {
+    const named = Object.assign(new Error('x'), { name: 'HeadersTimeoutError' })
+    const result = classifyXaiError(new TypeError('fetch failed', { cause: named }))
+    expect(result.reason).toBe('transport_timeout')
+    expect(result.retryable).toBe(false)
+  })
+
+  it('survives a cyclic cause chain', () => {
+    const a = new Error('a') as Error & { cause?: unknown }
+    const b = new Error('b') as Error & { cause?: unknown }
+    a.cause = b
+    b.cause = a
+    expect(classifyXaiError(a).kind).toBe('unknown')
+  })
+
+  it('a plain ETIMEDOUT stays a retryable server error (not a transport deadline)', () => {
+    const err = Object.assign(new Error('read ETIMEDOUT'), { code: 'ETIMEDOUT' })
+    const result = classifyXaiError(err)
+    expect(result.kind).toBe('server')
+    expect(result.retryable).toBe(true)
+    expect(result.reason).toBeUndefined()
+  })
+
+  it('end-to-end: a headers timeout is not retried and the ledger row carries the reason', async () => {
+    const client = makeFakeXai(() => {
+      throw new TypeError('fetch failed', { cause: headers })
+    })
+    const sink = new RecordingSink()
+    const llm = createClient({
+      adapters: [xaiAdapter({ client })],
+      modelRegistry: xaiRegistry,
+      sink,
+      middleware: [
+        retryMiddleware({ maxAttempts: 3 }, { sleep: () => Promise.resolve() }),
+      ],
+    })
+
+    await expect(
+      llm.generate(
+        {
+          provider: 'xai',
+          model: 'grok-4.5',
+          messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
+        },
+        { auth: { apiKey: 'test-key' } },
+      ),
+    ).rejects.toMatchObject({
+      kind: 'timeout',
+      retryable: false,
+      reason: 'transport_timeout',
+    })
+
+    expect(client.calls).toHaveLength(1)
+    expect(sink.records).toHaveLength(1)
+    expect(sink.last()?.errorKind).toBe('timeout')
+    expect(sink.last()?.errorReason).toBe('transport_timeout')
+  })
+
+  it('control: a retryable connection error is retried by the same middleware', async () => {
+    const client = makeFakeXai(() => {
+      throw new Error('Connection error.')
+    })
+    const llm = createClient({
+      adapters: [xaiAdapter({ client })],
+      modelRegistry: xaiRegistry,
+      sink: new RecordingSink(),
+      middleware: [
+        retryMiddleware({ maxAttempts: 3 }, { sleep: () => Promise.resolve() }),
+      ],
+    })
+    await expect(
+      llm.generate(
+        {
+          provider: 'xai',
+          model: 'grok-4.5',
+          messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
+        },
+        { auth: { apiKey: 'test-key' } },
+      ),
+    ).rejects.toMatchObject({ kind: 'server' })
+    expect(client.calls).toHaveLength(3)
+  })
+})
+
+describe('adapter wires the SDK deadline into classification', () => {
+  class APIConnectionTimeoutError extends Error {
+    constructor(cause?: Error) {
+      super('Request timed out.')
+      if (cause !== undefined) this.cause = cause
+    }
+  }
+  const abortError = () => new DOMException('This operation was aborted', 'AbortError')
+
+  async function failWith(error: Error, advanceMs: number) {
+    const real = performance.now.bind(performance)
+    let offset = 0
+    const spy = vi.spyOn(performance, 'now').mockImplementation(() => real() + offset)
+    try {
+      const client = makeFakeXai(() => {
+        offset += advanceMs
+        throw error
+      })
+      return await xaiAdapter({ client })
+        .run(makeResolvedReq({ config: { timeoutMs: 1_000 } }), FAKE_CTX)
+        .then(
+          () => undefined,
+          (e: unknown) => e as LlmError,
+        )
+    } finally {
+      spy.mockRestore()
+    }
+  }
+
+  it('the SDK timer firing after the timeout the adapter set is non-retryable', async () => {
+    const err = await failWith(new APIConnectionTimeoutError(abortError()), 6_000)
+    expect(err).toMatchObject({
+      kind: 'timeout',
+      retryable: false,
+      reason: 'transport_timeout',
+    })
+  })
+
+  it('an abort that happened long before the SDK deadline (a host fetch with its own timeout) stays retryable', async () => {
+    const err = await failWith(new APIConnectionTimeoutError(abortError()), 10)
+    expect(err?.retryable).toBe(true)
+    expect(err?.reason).toBeUndefined()
   })
 })
 
@@ -1413,8 +1915,10 @@ describe('xai function calling', () => {
           model: 'grok-4.7',
           modelDescriptor: grok47ModelDescriptor,
           transientProviderState: {
-            model: 'grok-4.7',
-            input: [{ role: 'user', content: [{ type: 'input_text', text: 'temp?' }] }],
+            xai: {
+              model: 'grok-4.7',
+              input: [{ role: 'user', content: [{ type: 'input_text', text: 'temp?' }] }],
+            },
           },
           tools: [tool],
           messages: [
@@ -1521,7 +2025,7 @@ describe('xai function calling', () => {
           model: 'grok-4.7',
           modelDescriptor: makeXaiDescriptor({
             model: 'grok-4.7',
-            capabilities: { statelessReasoningReplay: false },
+            capabilities: { continuation: 'history' },
           }),
         }),
         FAKE_CTX,
@@ -1537,10 +2041,12 @@ describe('xai function calling', () => {
         model: 'grok-4.7',
         modelDescriptor: grok47ModelDescriptor,
         transientProviderState: {
-          model: 'grok-4.7',
-          input: [
-            { role: 'user', content: [{ type: 'input_file', file_id: 'file_abc' }] },
-          ],
+          xai: {
+            model: 'grok-4.7',
+            input: [
+              { role: 'user', content: [{ type: 'input_file', file_id: 'file_abc' }] },
+            ],
+          },
         },
         messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Summarize it.' }] }],
       }),
@@ -1558,8 +2064,10 @@ describe('xai function calling', () => {
           model: 'grok-4.7',
           modelDescriptor: grok47ModelDescriptor,
           transientProviderState: {
-            model: 'grok-4.7',
-            input: [{ role: 'user', content: [{ type: 'input_text', text: 'Hi' }] }],
+            xai: {
+              model: 'grok-4.7',
+              input: [{ role: 'user', content: [{ type: 'input_text', text: 'Hi' }] }],
+            },
           },
           messages: [
             {
@@ -1634,7 +2142,7 @@ describe('xai function calling', () => {
     ])
   })
 
-  it('keeps unparsable function_call arguments as the raw string', async () => {
+  it('rejects a completed function_call whose arguments are not JSON, keeping the usage', async () => {
     const client = makeFakeXai({
       id: 'resp-fn-bad',
       model: 'grok-4.5',
@@ -1650,14 +2158,18 @@ describe('xai function calling', () => {
       usage: { input_tokens: 1, output_tokens: 1 },
     })
     const adapter = xaiAdapter({ client })
-    const result = await adapter.run(
-      makeResolvedReq({
-        modelDescriptor: grok45ModelDescriptor,
-        tools: [tool],
-      }),
-      FAKE_CTX,
-    )
-    expect(result.toolCalls?.[0]?.args).toBe('not-json')
+    const err = await adapter
+      .run(
+        makeResolvedReq({
+          modelDescriptor: grok45ModelDescriptor,
+          tools: [tool],
+        }),
+        FAKE_CTX,
+      )
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(LlmError)
+    expect(err).toMatchObject({ kind: 'server', retryable: false })
+    expect((err as LlmError).usage?.outputTokens).toBe(1)
   })
 
   it('combines server-side search tools with function tools', async () => {
@@ -1738,8 +2250,8 @@ describe('xai function calling', () => {
   })
 
   it('countTokens rejects tools', async () => {
-    const adapter = xaiAdapter({
-      _fetch: (async () => {
+    const adapter = xaiAdapterWithSeams(undefined, {
+      fetch: (async () => {
         throw new Error('should not fetch')
       }) as typeof fetch,
     })
@@ -1860,10 +2372,17 @@ describe('xai Live Search tools', () => {
       document_search_calls: 0,
     }
     const message = response.output.find((item) => item.type === 'message') as {
-      content: Array<{ annotations?: unknown[] }>
+      content: Array<{ text?: string; annotations?: unknown[] }>
     }
+    message.content[0]!.text = 'see docs [[1]](https://docs.x.ai)'
     message.content[0]!.annotations = [
-      { type: 'url_citation', url: 'https://docs.x.ai', title: '1' },
+      {
+        type: 'url_citation',
+        url: 'https://docs.x.ai',
+        title: '1',
+        start_index: 9,
+        end_index: 33,
+      },
     ]
     const adapter = xaiAdapter({ client: makeFakeXai(response) })
     const result = await adapter.run(
@@ -1873,12 +2392,262 @@ describe('xai Live Search tools', () => {
       }),
       FAKE_CTX,
     )
+    // The title equals the label of the inline marker xAI numbered: not a title.
     expect(result.citations).toEqual([
-      { url: 'https://docs.x.ai', title: '1', sourceName: 'docs.x.ai' },
+      {
+        url: 'https://docs.x.ai',
+        sourceName: 'docs.x.ai',
+        cited: true,
+        textRange: { start: 9, end: 33 },
+      },
     ])
     expect(result.usage.details.web_search_calls).toBe(1)
+    expect(result.usage.details.web_search_requested).toBe(1)
     expect(result.usage.details.server_tools_requested).toBe(1)
     expect(result.warnings).toEqual([])
+  })
+
+  describe('citation cited / textRange / titles', () => {
+    const run = async (
+      content: Array<{ type: 'output_text'; text: string; annotations?: unknown[] }>,
+      topLevel?: unknown[],
+    ) => {
+      const response = fakeXaiResponse({
+        text: 'x',
+        inputTokens: 10,
+        outputTokens: 4,
+        usageExtras: { num_server_side_tools_used: 1 },
+      })
+      response.usage['server_side_tool_usage_details'] = { web_search_calls: 1 }
+      const message = response.output.find((item) => item.type === 'message') as {
+        content: unknown[]
+      }
+      message.content = content
+      if (topLevel !== undefined) {
+        ;(response as unknown as Record<string, unknown>)['citations'] = topLevel
+      }
+      return xaiAdapter({ client: makeFakeXai(response) }).run(
+        makeResolvedReq({
+          modelDescriptor: grok45ModelDescriptor,
+          config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
+        }),
+        FAKE_CTX,
+      )
+    }
+
+    it('adds the earlier parts of the message to a later part annotation offset', async () => {
+      const result = await run([
+        { type: 'output_text', text: 'First part. ' },
+        {
+          type: 'output_text',
+          text: 'See [[1]](https://a.example/x).',
+          annotations: [
+            {
+              type: 'url_citation',
+              url: 'https://a.example/x',
+              title: '1',
+              start_index: 4,
+              end_index: 30,
+            },
+          ],
+        },
+      ])
+      const range = result.citations?.[0]?.textRange
+      expect(range).toEqual({ start: 16, end: 42 })
+      expect(result.text?.slice(range!.start, range!.end)).toBe(
+        '[[1]](https://a.example/x)',
+      )
+    })
+
+    it('a zero-width annotation reports no marker range: cited stays absent, not false', async () => {
+      const result = await run([
+        {
+          type: 'output_text',
+          text: 'answer',
+          annotations: [
+            {
+              type: 'url_citation',
+              url: 'https://a.example/x',
+              start_index: 0,
+              end_index: 0,
+              title: 'https://a.example/x',
+            },
+          ],
+        },
+      ])
+      expect(result.citations).toEqual([
+        { url: 'https://a.example/x', sourceName: 'a.example' },
+      ])
+    })
+
+    it('a source seen twice keeps one entry: first range, cited if any annotation is', async () => {
+      const result = await run(
+        [
+          {
+            type: 'output_text',
+            text: 'aa [[1]](https://a.example/x) bb [[2]](https://a.example/x)',
+            annotations: [
+              {
+                type: 'url_citation',
+                url: 'https://a.example/x',
+                start_index: 0,
+                end_index: 0,
+              },
+              {
+                type: 'url_citation',
+                url: 'https://a.example/x',
+                title: 'Real title',
+                start_index: 3,
+                end_index: 29,
+              },
+              {
+                type: 'url_citation',
+                url: 'https://a.example/x',
+                start_index: 33,
+                end_index: 59,
+              },
+            ],
+          },
+        ],
+        ['https://a.example/x'],
+      )
+      expect(result.citations).toEqual([
+        {
+          url: 'https://a.example/x',
+          title: 'Real title',
+          sourceName: 'a.example',
+          cited: true,
+          textRange: { start: 3, end: 29 },
+        },
+      ])
+    })
+
+    it('leaves cited and textRange absent when the provider gives no indices', async () => {
+      const result = await run(
+        [{ type: 'output_text', text: 'answer' }],
+        ['https://a.example/x', { url: 'https://b.example/y', title: '12' }],
+      )
+      expect(result.citations).toEqual([
+        { url: 'https://a.example/x', sourceName: 'a.example' },
+        { url: 'https://b.example/y', title: '12', sourceName: 'b.example' },
+      ])
+    })
+
+    it('a real title that is numeric survives: only the inline marker label is dropped', async () => {
+      const text = 'In 2024 [[1]](https://a.example/x)'
+      const result = await run([
+        {
+          type: 'output_text',
+          text,
+          annotations: [
+            {
+              type: 'url_citation',
+              url: 'https://a.example/x',
+              title: '2024',
+              start_index: 8,
+              end_index: 34,
+            },
+          ],
+        },
+      ])
+      expect(result.citations).toEqual([
+        {
+          url: 'https://a.example/x',
+          title: '2024',
+          sourceName: 'a.example',
+          cited: true,
+          textRange: { start: 8, end: 34 },
+        },
+      ])
+    })
+
+    it('a range that is not the inline marker (emoji shifted a code-point base) is dropped with a warning, the source stays cited', async () => {
+      // Synthetic: the same range as a UTF-16 reading of a text whose indices
+      // were counted in code points. Not a capture; it pins the safety net.
+      const marker = '[[1]](https://a.example/x)'
+      const text = `😀😀 ${marker}`
+      const start = 3 // code points before the marker; UTF-16 offset is 5
+      const result = await run([
+        {
+          type: 'output_text',
+          text,
+          annotations: [
+            {
+              type: 'url_citation',
+              url: 'https://a.example/x',
+              title: '1',
+              start_index: start,
+              end_index: start + marker.length,
+            },
+          ],
+        },
+      ])
+      const citation = result.citations![0]!
+      expect(citation.cited).toBe(true)
+      expect(citation).not.toHaveProperty('textRange')
+      const warning = result.warnings.find((w) => w.message.includes('textRange'))
+      expect(warning?.message).toContain('https://a.example/x')
+    })
+
+    it('a correct range after an emoji (UTF-16 indices) is kept', async () => {
+      const marker = '[[1]](https://a.example/x)'
+      const text = `😀😀 ${marker}`
+      const result = await run([
+        {
+          type: 'output_text',
+          text,
+          annotations: [
+            {
+              type: 'url_citation',
+              url: 'https://a.example/x',
+              start_index: 5,
+              end_index: 5 + marker.length,
+            },
+          ],
+        },
+      ])
+      const range = result.citations![0]!.textRange!
+      expect(text.slice(range.start, range.end)).toBe(marker)
+      expect(result.warnings).toEqual([])
+    })
+
+    it('a multi-part range indexed from the whole message instead of its part is dropped, not misplaced', async () => {
+      const marker = '[[1]](https://a.example/x)'
+      const result = await run([
+        { type: 'output_text', text: 'First part. ' },
+        {
+          type: 'output_text',
+          text: `See ${marker}`,
+          annotations: [
+            {
+              type: 'url_citation',
+              url: 'https://a.example/x',
+              start_index: 12 + 4,
+              end_index: 12 + 4 + marker.length,
+            },
+          ],
+        },
+      ])
+      expect(result.citations![0]).not.toHaveProperty('textRange')
+      expect(result.citations![0]!.cited).toBe(true)
+    })
+  })
+
+  it('does not report web_search_requested when only x_search was requested', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 8, outputTokens: 2 })
+    response.usage['server_side_tool_usage_details'] = {
+      x_posts_fetched: 4,
+      x_users_fetched: 0,
+    }
+    const result = await xaiAdapter({ client: makeFakeXai(response) }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'x_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.usage.details).not.toHaveProperty('web_search_requested')
+    expect(result.usage.details).not.toHaveProperty('web_search_calls')
   })
 
   it('expects x_posts_fetched and x_users_fetched when x_search is requested', async () => {
@@ -1999,6 +2768,13 @@ describe('xai Live Search tools', () => {
     await adapter.run(
       makeResolvedReq({
         modelDescriptor: grok45ModelDescriptor,
+        tools: [
+          {
+            name: 'get_temperature',
+            description: 'Get temperature',
+            inputJsonSchema: { type: 'object', properties: {} },
+          },
+        ],
         config: { providerOptions: { xai: { parallelToolCalls: false } } },
       }),
       FAKE_CTX,
@@ -2214,7 +2990,7 @@ describe('providerOptions.xai.toolChoice', () => {
     await expect(run).rejects.toMatchObject({
       kind: 'bad_request',
       message: expect.stringContaining(
-        'Allowed keys: promptCacheKey, tools, parallelToolCalls, toolChoice, maxTurns.',
+        'Allowed keys: promptCacheKey, tools, parallelToolCalls, toolChoice, maxTurns, searchBudget.',
       ),
     })
   })
@@ -2434,5 +3210,304 @@ describe('outputJsonSchema dialect preflight', () => {
       .format
     expect(sent.schema).toBe(schema)
     expect(result.rawStructured).toEqual({ employees: null })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Declared model aliases (ADR-033)
+// ---------------------------------------------------------------------------
+
+describe('declared model aliases', () => {
+  const aliased: ModelDescriptor = {
+    ...grok45ModelDescriptor,
+    aliases: ['grok-4.5-0415'],
+  }
+
+  it('accepts a declared alias on a first-turn dispatch and sends it to the SDK verbatim', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
+    await xaiAdapter({ client }).run(
+      makeResolvedReq({ model: 'grok-4.5-0415', modelDescriptor: aliased }),
+      FAKE_CTX,
+    )
+    expect((client.calls[0] as { model: string }).model).toBe('grok-4.5-0415')
+  })
+
+  it('rejects a string that is neither the canonical id nor a declared alias', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
+    await expect(
+      xaiAdapter({ client }).run(
+        makeResolvedReq({ model: 'grok-4.5-0416', modelDescriptor: aliased }),
+        FAKE_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('rejects another provider’s descriptor whose alias list matches the requested string', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
+    const foreign = makeTestDescriptor({
+      provider: 'google',
+      model: 'gemini-2.5-pro',
+      aliases: ['grok-4.5-0415'],
+    })
+    await expect(
+      xaiAdapter({ client }).run(
+        makeResolvedReq({ model: 'grok-4.5-0415', modelDescriptor: foreign }),
+        FAKE_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('through createClient: dispatches the alias verbatim and prices it under the canonical descriptor', async () => {
+    const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
+    const sink = new RecordingSink()
+    const llm = createClient({
+      adapters: [xaiAdapter({ client })],
+      pricingSources: { xai: xaiPricingSource() },
+      modelRegistry: createModelRegistry([aliased]),
+      sink,
+      clock: new FakeClock(),
+      ids: new FakeIds(),
+    })
+    const request = {
+      provider: 'xai',
+      model: 'grok-4.5-0415',
+      messages: [
+        { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'hi' }] },
+      ],
+    }
+
+    const viaAlias = await llm.generate(request, { auth: { apiKey: 'test-key' } })
+    const viaCanonical = await llm.generate(
+      { ...request, model: 'grok-4.5' },
+      { auth: { apiKey: 'test-key' } },
+    )
+
+    expect((client.calls[0] as { model: string }).model).toBe('grok-4.5-0415')
+    expect((client.calls[1] as { model: string }).model).toBe('grok-4.5')
+    expect(sink.records[0]!.model).toBe('grok-4.5-0415')
+    expect(viaAlias.cost?.microUsd).not.toBeNull()
+    expect(viaAlias.cost?.microUsd).toBe(viaCanonical.cost?.microUsd)
+
+    await expect(
+      llm.generate(
+        { ...request, model: 'grok-4.5-0416' },
+        { auth: { apiKey: 'test-key' } },
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request' })
+  })
+})
+
+describe('middleware cannot reroute on the built-in registry (ADR-037)', () => {
+  it('a swapped modelDescriptor and post-next provider/model assignments change neither the SDK model nor the price', async () => {
+    const other = xaiRegistry.resolve('xai', 'grok-4.7')!
+    const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
+    const sink = new RecordingSink()
+    const llm = createClient({
+      adapters: [xaiAdapter({ client })],
+      pricingSources: { xai: xaiPricingSource() },
+      modelRegistry: xaiRegistry,
+      sink,
+      clock: new FakeClock(),
+      ids: new FakeIds(),
+      middleware: [
+        {
+          id: 'swapper',
+          async intercept(req, ctx, next) {
+            ;(req as { modelDescriptor?: ModelDescriptor }).modelDescriptor = other
+            const out = await next(req, ctx)
+            ;(req as { model: string }).model = 'grok-4.7'
+            return out
+          },
+        },
+      ],
+    })
+
+    const out = await llm.generate(
+      {
+        provider: 'xai',
+        model: 'grok-4.5',
+        messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
+      },
+      { auth: { apiKey: 'test-key' } },
+    )
+    const baseline = xaiPricingSource().price('grok-4.5', out.usage)
+
+    expect((client.calls[0] as { model: string }).model).toBe('grok-4.5')
+    expect(out.cost?.microUsd).toBe(baseline.microUsd)
+    expect(sink.records[0]!.model).toBe('grok-4.5')
+  })
+})
+
+describe('reasoning used up the output cap', () => {
+  it('a max_output_tokens response with only reasoning tokens carries the warning', async () => {
+    const client = makeFakeXai(
+      fakeXaiResponse({
+        status: 'incomplete',
+        incompleteReason: 'max_output_tokens',
+        inputTokens: 20,
+        outputTokens: 600,
+        reasoningTokens: 600,
+      }),
+    )
+    const llm = createClient({
+      adapters: [xaiAdapter({ client })],
+      pricingSources: { xai: xaiPricingSource() },
+      modelRegistry: xaiRegistry,
+      clock: new FakeClock(),
+      ids: new FakeIds(),
+    })
+
+    const result = await llm.generate(
+      {
+        provider: 'xai',
+        model: 'grok-4.5',
+        messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
+        config: { maxOutputTokens: 600 },
+      },
+      { auth: { apiKey: 'test-key' } },
+    )
+
+    expect(result.finishReason).toBe('length')
+    expect(result.text).toBeUndefined()
+    expect(result.warnings.map((w) => w.message)).toContain(
+      'maxOutputTokens (600) was used up by reasoning (600 tokens); no answer was produced. Raise maxOutputTokens or lower the reasoning effort.',
+    )
+  })
+})
+
+describe('response metadata and unpriced server tools', () => {
+  /** A client that reports response metadata through `onResponse`, like the real one. */
+  function clientWithMeta(
+    meta: import('./client.js').XaiResponseMeta,
+    response: ReturnType<typeof fakeXaiResponse>,
+  ): XaiClientLike {
+    return {
+      responses: {
+        create(_params, options) {
+          options?.onResponse?.(meta)
+          return Promise.resolve(response as never)
+        },
+      },
+    }
+  }
+
+  it('puts requestId and the remaining-quota headers on providerMetadata.xai', async () => {
+    const result = await xaiAdapter({
+      client: clientWithMeta(
+        {
+          requestId: 'req_9',
+          rateLimitRemaining: { 'x-ratelimit-remaining-requests': '7' },
+        },
+        fakeXaiResponse({ text: 'ok', inputTokens: 1, outputTokens: 1 }),
+      ),
+    }).run(makeResolvedReq(), FAKE_CTX)
+    expect(result.providerMetadata).toEqual({
+      xai: {
+        requestId: 'req_9',
+        rateLimitRemaining: { 'x-ratelimit-remaining-requests': '7' },
+      },
+    })
+  })
+
+  it('keeps context_details and metadata beside the xai key', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 1, outputTokens: 1 })
+    ;(response.usage as Record<string, unknown>)['context_details'] = { input_tokens: 1 }
+    const result = await xaiAdapter({
+      client: clientWithMeta({ requestId: 'req_1' }, response),
+    }).run(makeResolvedReq(), FAKE_CTX)
+    expect(result.providerMetadata).toEqual({
+      context_details: { input_tokens: 1 },
+      xai: { requestId: 'req_1' },
+    })
+  })
+
+  it('adds no xai key when the client reports nothing (a fake client, or no headers)', async () => {
+    const result = await xaiAdapter({
+      client: clientWithMeta({}, fakeXaiResponse({ text: 'ok' })),
+    }).run(makeResolvedReq(), FAKE_CTX)
+    expect(result.providerMetadata).toBeUndefined()
+    const plain = await xaiAdapter({
+      client: makeFakeXai(fakeXaiResponse({ text: 'ok' })),
+    }).run(makeResolvedReq(), FAKE_CTX)
+    expect(plain.providerMetadata).toBeUndefined()
+  })
+
+  it('warns, and the cost is estimated, when an unpriced server tool counter is non-zero', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 1000, outputTokens: 10 })
+    ;(response.usage as Record<string, unknown>)['server_side_tool_usage_details'] = {
+      web_search_calls: 1,
+      code_interpreter_calls: 2,
+      mcp_calls: 0,
+    }
+    ;(response.usage as Record<string, unknown>)['num_server_side_tools_used'] = 3
+    const result = await xaiAdapter({ client: makeFakeXai(response) }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.warnings.map((w) => w.message)).toEqual([
+      expect.stringContaining('code_interpreter_calls=2'),
+    ])
+    expect(result.warnings[0]?.message).not.toContain('mcp_calls')
+    expect(computeXaiCost('grok-4.5', result.usage).confidence).toBe('estimated')
+  })
+
+  it('stays silent and exact when a token-only tool (MCP) ran', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 1000, outputTokens: 10 })
+    ;(response.usage as Record<string, unknown>)['server_side_tool_usage_details'] = {
+      web_search_calls: 1,
+      mcp_calls: 3,
+    }
+    ;(response.usage as Record<string, unknown>)['num_server_side_tools_used'] = 4
+    const result = await xaiAdapter({ client: makeFakeXai(response) }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.warnings).toEqual([])
+    expect(computeXaiCost('grok-4.5', result.usage).confidence).toBe('exact')
+  })
+
+  it('warns about a counter the pricing table does not know', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 1000, outputTokens: 10 })
+    ;(response.usage as Record<string, unknown>)['server_side_tool_usage_details'] = {
+      web_search_calls: 1,
+      brand_new_tool: 2,
+    }
+    const result = await xaiAdapter({ client: makeFakeXai(response) }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.warnings.map((w) => w.message)).toEqual([
+      expect.stringContaining('brand_new_tool=2'),
+    ])
+    expect(computeXaiCost('grok-4.5', result.usage).confidence).toBe('estimated')
+  })
+
+  it('stays silent and exact when only priced counters ran', async () => {
+    const response = fakeXaiResponse({ text: 'ok', inputTokens: 1000, outputTokens: 10 })
+    ;(response.usage as Record<string, unknown>)['server_side_tool_usage_details'] = {
+      web_search_calls: 1,
+      code_interpreter_calls: 0,
+    }
+    ;(response.usage as Record<string, unknown>)['num_server_side_tools_used'] = 1
+    const result = await xaiAdapter({ client: makeFakeXai(response) }).run(
+      makeResolvedReq({
+        modelDescriptor: grok45ModelDescriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    expect(result.warnings).toEqual([])
+    expect(computeXaiCost('grok-4.5', result.usage).confidence).toBe('exact')
   })
 })

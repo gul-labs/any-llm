@@ -34,6 +34,7 @@ export type {
   Warning,
   Usage,
   Cost,
+  CallCost,
   Citation,
   LlmResult,
 } from './types.js'
@@ -49,11 +50,21 @@ export {
 // Errors
 export type {
   LlmErrorKind,
+  LlmErrorReason,
   LlmErrorOptions,
   LlmErrorIssue,
   HttpClassification,
+  RetryAfterHeaders,
 } from './errors.js'
-export { LlmError, classifyHttpStatus, classifyError } from './errors.js'
+export {
+  LlmError,
+  classifyHttpStatus,
+  classifyError,
+  causeChain,
+  llmErrorOptionsOf,
+  isTransportError,
+  parseRetryAfter,
+} from './errors.js'
 
 // Ports
 export type {
@@ -67,14 +78,18 @@ export type {
   ApiKeyAuth,
   CliSessionAuth,
   Clock,
+  Scheduler,
+  TimerHandle,
   IdGenerator,
   Logger,
   Telemetry,
   // Telemetry event types
+  AttemptEvent,
   CallStartEvent,
   CallSuccessEvent,
   CallErrorEvent,
   RateLimiter,
+  RateLimitHint,
   Release,
   // Middleware seam
   EngineCtx,
@@ -100,6 +115,7 @@ export type { CostRatesLookup } from './cost.js'
 export type {
   ClientConfig,
   GenerateOptions,
+  CountTokensOptions,
   RunStructuredOptions,
   Client,
 } from './engine.js'
@@ -110,15 +126,29 @@ export type { ProviderPlugin } from './plugin.js'
 export { composeProviders } from './plugin.js'
 
 // Model registry
-export type { ModelDescriptor, ModelRegistry } from './registry.js'
-export { createModelRegistry } from './registry.js'
-export { toConfigJsonSchema, zodToStandardSchema } from './model-config/index.js'
+export type { ModelDescriptor, ModelLimits, ModelRegistry } from './registry.js'
+export {
+  SHUTDOWN_WARNING_DAYS,
+  createModelRegistry,
+  assertModelMatchesDescriptor,
+  assertInputMimeTypesAdmitted,
+  assertMediaTypeAdmitted,
+  isMediaTypeAdmitted,
+} from './registry.js'
+export {
+  toConfigJsonSchema,
+  toConfigKeys,
+  maxOutputTokensSchema,
+  zodToStandardSchema,
+} from './model-config/index.js'
 
 // Call site
 export type { CallSite } from './callsite.js'
 export { defineCallSite } from './callsite.js'
 
 // In-memory rate limiter (production-ready, dependency-free)
+export { estimateInputTokens } from './estimate.js'
+export type { EstimableRequest } from './estimate.js'
 export { inMemoryRateLimiter } from './rate-limiter.js'
 export type { InMemoryRateLimiterOptions } from './rate-limiter.js'
 
@@ -126,11 +156,38 @@ export type { InMemoryRateLimiterOptions } from './rate-limiter.js'
 export type { RetryPolicy } from './retry.js'
 export { retryMiddleware, computeBackoffMs } from './retry.js'
 
+// Advisory spend preflight
+export type { SpendPreflightOptions } from './spend-preflight.js'
+export { spendPreflightMiddleware } from './spend-preflight.js'
+
+// Opt-in payload storage (ADR-038)
+export type {
+  LlmCallPayload,
+  PayloadsConfig,
+  StoredMessage,
+  StoredPart,
+  StoredTool,
+  UsageSinkContext,
+} from './payload.js'
+
 // Utilities
+export { canonicalJson } from './canonical-json.js'
+export { sha256Hex } from './sha256.js'
+
 export { assertNever } from './assert.js'
+
+// JSON Schema contract (ADR-034)
+export type { JsonSchemaProfile } from './json-schema.js'
+export {
+  assertStandardJsonSchema,
+  assertJsonSchemaProfile,
+  assertPortableJsonSchema,
+  PORTABLE_JSON_SCHEMA_KEYWORDS,
+  PORTABLE_JSON_SCHEMA_FORMATS,
+} from './json-schema.js'
 
 // Secret redaction (best-effort; for persisted/logged error text)
 export { redactSecrets } from './redact.js'
 
-/** Library version — kept in sync with `package.json`. */
-export const VERSION = '0.0.0'
+// The guard for host callbacks that must not affect a call (sync throw or rejected promise)
+export { guardHostCall } from './host-guard.js'

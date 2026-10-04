@@ -1,0 +1,110 @@
+{
+  "_note": "DOC-DERIVED, NOT CAPTURES (ADR-013). Probe P7 could not exhaust the account's credits, and no probe produced a failed response. creditsExhausted429/403 bodies are the sentence quoted in public bug reports of the live API (continuedev/continue#10373 reports HTTP 429, LCV-Ideas-Software/cross-review#270 reports HTTP 403), team id replaced by a placeholder; xAI's error reference (docs.x.ai/docs/key-information/debugging, read 2026-10-03) documents 403 and 429 with no body. The failed/cancelled responses follow the Responses API response object. xAI's API reference (docs.x.ai/docs/api-reference, read 2026-10-03) lists status completed|in_progress|incomplete and names an `error` object without its shape or codes; the failed and cancelled statuses and the error codes (server_error, rate_limit_exceeded, invalid_prompt, bio_policy, misalignment_policy_violation, image_*, ...) come from OpenAI's Responses object as typed in the openai SDK 7.22.0 (`ResponseError.code`), which xAI's API is compatible with. `error` is documented there as set only when the response failed, and live xAI captures carry `error: null`; a completed response with an error object is not a documented shape and has no fixture. Every `message` below is a placeholder, not provider text. Replace each with a pinned capture when one exists.",
+  "creditsExhausted429": {
+    "status": 429,
+    "error": "Your team 00000000-0000-0000-0000-000000000000 has either used all available credits or reached its monthly spending limit. To continue making API requests, please purchase more credits or raise your spending limit."
+  },
+  "creditsExhausted403": {
+    "status": 403,
+    "error": "Your team 00000000-0000-0000-0000-000000000000 has either used all available credits or reached its monthly spending limit. To continue making API requests, please purchase more credits or raise your spending limit."
+  },
+  "failedResponse": {
+    "id": "resp_failed_doc",
+    "model": "grok-4.5",
+    "status": "failed",
+    "error": {
+      "code": "server_error",
+      "message": "placeholder message for server_error"
+    },
+    "output": [],
+    "usage": {
+      "input_tokens": 1200,
+      "output_tokens": 40,
+      "total_tokens": 1240
+    }
+  },
+  "cancelledResponse": {
+    "id": "resp_cancelled_doc",
+    "model": "grok-4.5",
+    "status": "cancelled",
+    "error": null,
+    "output": [],
+    "usage": {
+      "input_tokens": 1200,
+      "output_tokens": 0,
+      "total_tokens": 1200
+    }
+  },
+  "failedInvalidPrompt": {
+    "id": "resp_failed_invalid_prompt_doc",
+    "model": "grok-4.5",
+    "status": "failed",
+    "error": {
+      "code": "invalid_prompt",
+      "message": "placeholder message for invalid_prompt"
+    },
+    "output": [],
+    "usage": {
+      "input_tokens": 1200,
+      "output_tokens": 40,
+      "total_tokens": 1240
+    }
+  },
+  "failedPolicy": {
+    "id": "resp_failed_policy_doc",
+    "model": "grok-4.5",
+    "status": "failed",
+    "error": {
+      "code": "bio_policy",
+      "message": "placeholder message for bio_policy"
+    },
+    "output": [],
+    "usage": {
+      "input_tokens": 1200,
+      "output_tokens": 40,
+      "total_tokens": 1240
+    }
+  },
+  "failedRateLimit": {
+    "id": "resp_failed_rate_limit_doc",
+    "model": "grok-4.5",
+    "status": "failed",
+    "error": {
+      "code": "rate_limit_exceeded",
+      "message": "placeholder message for rate_limit_exceeded"
+    },
+    "output": [],
+    "usage": {
+      "input_tokens": 1200,
+      "output_tokens": 40,
+      "total_tokens": 1240
+    }
+  },
+  "failedUnknownCode": {
+    "id": "resp_failed_unknown_doc",
+    "model": "grok-4.5",
+    "status": "failed",
+    "error": {
+      "code": "some_future_code",
+      "message": "placeholder message for some_future_code"
+    },
+    "output": [],
+    "usage": {
+      "input_tokens": 1200,
+      "output_tokens": 40,
+      "total_tokens": 1240
+    }
+  },
+  "failedNoError": {
+    "id": "resp_failed_no_error_doc",
+    "model": "grok-4.5",
+    "status": "failed",
+    "error": null,
+    "output": [],
+    "usage": {
+      "input_tokens": 1200,
+      "output_tokens": 0,
+      "total_tokens": 1200
+    }
+  }
+}

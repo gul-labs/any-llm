@@ -10,31 +10,34 @@
  * @module
  */
 
+import { maxOutputTokensSchema } from '@gullabs/core'
 import { z } from 'zod'
 
+import { XAI_MODEL_LIMITS } from '../model-limits.js'
+import { XAI_MAX_TIMEOUT_MS } from '../client.js'
 import { XaiProviderOptionsSchema } from './tools.js'
 
 export const Grok46ConfigSchema = z
   .strictObject({
-    temperature: z.number().optional().meta({
+    temperature: z.number().min(0).max(2).optional().meta({
       title: 'Temperature',
-      description: 'Sampling temperature forwarded verbatim to grok-4.6.',
+      description:
+        'Sampling temperature forwarded verbatim to grok-4.6, from 0 to 2 (the range xAI documents for the Responses API: "between 0 and 2"); a value outside it is rejected.',
     }),
-    topP: z.number().optional().meta({
+    topP: z.number().min(0).max(1).optional().meta({
       title: 'Top P',
-      description: 'Nucleus sampling parameter forwarded verbatim to grok-4.6.',
+      description:
+        'Nucleus sampling probability forwarded verbatim to grok-4.6, from 0 to 1 (xAI documents no range for it; a probability mass outside 0 to 1 is meaningless); a value outside it is rejected.',
     }),
-    maxOutputTokens: z
-      .number()
-      .int()
-      .positive()
+    maxOutputTokens: maxOutputTokensSchema(XAI_MODEL_LIMITS['grok-4.6'])
       .optional()
       .meta({
         title: 'Max Output Tokens',
         description:
-          'Maximum output token cap for grok-4.6. No artificial ceiling — xAI ' +
-          'accepts arbitrarily large values; truncation surfaces as ' +
-          "finishReason:'length', not an error.",
+          'Maximum output token cap for grok-4.6, including reasoning tokens. No ' +
+          'ceiling is applied: xAI documents no output limit and has accepted very ' +
+          "large values (live-verified). Truncation surfaces as finishReason:'length', " +
+          'not an error.',
       }),
     reasoning: z
       .strictObject({
@@ -66,9 +69,9 @@ export const Grok46ConfigSchema = z
           'Omitted requests stay on xAI default. ' +
           '"flex"/"standard"/"batch" are rejected.',
       }),
-    timeoutMs: z.number().int().positive().optional().meta({
+    timeoutMs: z.number().int().positive().max(XAI_MAX_TIMEOUT_MS).optional().meta({
       title: 'Timeout',
-      description: 'Logical request timeout in milliseconds.',
+      description: 'Logical request timeout in milliseconds (at most 2147478647).',
     }),
     providerOptions: z
       .strictObject({

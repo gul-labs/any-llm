@@ -10,6 +10,7 @@
 
 import { LlmError } from '@gullabs/core'
 import type { AuthMaterial } from '@gullabs/core'
+import type { GoogleGenAI } from '@google/genai'
 
 // ---------------------------------------------------------------------------
 // Auth narrowing — Google only accepts ApiKeyAuth
@@ -75,12 +76,26 @@ export const STANDARD_DEFAULT_TIMEOUT_MS = 300_000
  */
 export const TRANSPORT_TIMEOUT_BUFFER_MS = 5_000
 
+/**
+ * Largest delay a Node timer holds: above 2^31 - 1 ms a timer fires after 1 ms
+ * (with a warning). The SDK arms one for every `httpOptions.timeout`, so a
+ * larger transport timeout is rejected, not clamped.
+ */
+export const MAX_TIMER_MS = 2_147_483_647
+
+/**
+ * Largest `timeoutMs` the gemini config schemas accept. The SDK deadline is
+ * `timeoutMs` plus {@link TRANSPORT_TIMEOUT_BUFFER_MS} and must itself fit a
+ * timer ({@link MAX_TIMER_MS}); a larger value is rejected, not clamped.
+ */
+export const GOOGLE_MAX_TIMEOUT_MS = MAX_TIMER_MS - TRANSPORT_TIMEOUT_BUFFER_MS
+
 // ---------------------------------------------------------------------------
 // Response shape — mirrors the @google/genai surface we actually consume
 // ---------------------------------------------------------------------------
 
 /** A single text/thought part in a Gemini candidate content. */
-export interface GeminiPartShape {
+interface GeminiPartShape {
   text?: string
   /**
    * Present and `true` on thought-summary parts.
@@ -88,10 +103,15 @@ export interface GeminiPartShape {
    */
   thought?: boolean
   functionCall?: { id?: string; name?: string; args?: unknown }
+  /**
+   * Opaque signature Gemini 3.x attaches to the first function call of a turn
+   * (and sometimes to text parts). Real field: `Part.thoughtSignature`.
+   */
+  thoughtSignature?: string
 }
 
 /** A candidate returned by Gemini generateContent. */
-export interface GeminiCandidateShape {
+interface GeminiCandidateShape {
   content?: {
     parts?: GeminiPartShape[]
   }
@@ -101,6 +121,14 @@ export interface GeminiCandidateShape {
    * "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", etc.
    */
   finishReason?: string
+  /** Human-readable detail Google sends with some finish reasons. */
+  finishMessage?: string
+  /** Per-category safety ratings of the candidate. */
+  safetyRatings?: unknown[]
+  /** Source-attribution metadata for recited content. */
+  citationMetadata?: unknown
+  /** Retrieval status of each URL the model was asked to read. */
+  urlContextMetadata?: unknown
   /**
    * Grounding metadata returned when Google Search grounding is active.
    * Real SDK type: GroundingMetadata. Kept as `unknown` to avoid a hard
@@ -121,9 +149,24 @@ export interface GeminiUsageMetadataShape {
   candidatesTokenCount?: number
   cachedContentTokenCount?: number
   thoughtsTokenCount?: number
+  /** Tokens of tool results fed back to the model (Search results on Gemini 2.5). */
+  toolUsePromptTokenCount?: number
   totalTokenCount?: number
   /** Provider-echoed actual tier; can differ from the requested tier. */
   serviceTier?: string
+  /**
+   * Prompt tokens per modality (`TEXT`, `IMAGE`, `VIDEO`, `AUDIO`, `DOCUMENT`);
+   * the counts sum to `promptTokenCount` and include the cached part.
+   */
+  promptTokensDetails?: GeminiModalityTokenCount[]
+  /** The cached part of the prompt per modality, when a cache was used. */
+  cacheTokensDetails?: GeminiModalityTokenCount[]
+}
+
+/** One entry of `usageMetadata.promptTokensDetails` / `cacheTokensDetails`. */
+interface GeminiModalityTokenCount {
+  modality?: string
+  tokenCount?: number
 }
 
 /**
@@ -160,20 +203,22 @@ export interface GeminiResponseShape {
  * the `PartMediaResolutionLevel` string enum (we only emit the LOW/MEDIUM/HIGH
  * subset our normalized `mediaResolution` maps to).
  */
-export interface GeminiPartMediaResolution {
+interface GeminiPartMediaResolution {
   level?: 'MEDIA_RESOLUTION_LOW' | 'MEDIA_RESOLUTION_MEDIUM' | 'MEDIA_RESOLUTION_HIGH'
 }
 
 /** A text part in a content object we construct. */
-export interface GeminiTextContentPart {
+interface GeminiTextContentPart {
   text: string
+  /** Replayed signature for this part (real field: `Part.thoughtSignature`). */
+  thoughtSignature?: string
 }
 
 /**
  * An inline binary media part in a content object we construct.
  * `data` must be raw base64 — no `data:…;base64,` prefix.
  */
-export interface GeminiInlineDataContentPart {
+interface GeminiInlineDataContentPart {
   inlineData: {
     /** IANA media type, e.g. `"image/png"`. */
     mimeType: string
@@ -188,7 +233,7 @@ export interface GeminiInlineDataContentPart {
  * A provider-hosted file reference part in a content object we construct.
  * The Gemini service dereferences `fileUri` server-side.
  */
-export interface GeminiFileDataContentPart {
+interface GeminiFileDataContentPart {
   fileData: {
     /** IANA media type of the referenced file. */
     mimeType: string
@@ -204,11 +249,13 @@ export interface GeminiFileDataContentPart {
  * Each member (including the optional per-part `mediaResolution`) is a
  * structural subset of the real `@google/genai` `Part` type for the fields we use.
  */
-export interface GeminiFunctionCallPart {
+interface GeminiFunctionCallPart {
   functionCall: { id?: string; name: string; args?: unknown }
+  /** Replayed signature for this call (real field: `Part.thoughtSignature`). */
+  thoughtSignature?: string
 }
 
-export interface GeminiFunctionResponsePart {
+interface GeminiFunctionResponsePart {
   functionResponse: { id?: string; name: string; response: unknown }
 }
 
@@ -226,27 +273,12 @@ export interface GeminiContent {
 }
 
 /**
- * Schema shape we pass as responseSchema.
- * Structurally compatible with @google/genai Schema.
- */
-export interface GeminiSchema {
-  type?: string
-  description?: string
-  properties?: Record<string, GeminiSchema>
-  required?: string[]
-  items?: GeminiSchema
-  enum?: string[]
-  nullable?: boolean
-  format?: string
-}
-
-/**
  * Thinking configuration.
  * Real type: ThinkingConfig in @google/genai.
  * - thinkingBudget: 0 = DISABLED, -1 = AUTOMATIC
  * - thinkingLevel: ThinkingLevel enum ("LOW", "MEDIUM", "HIGH", "MINIMAL")
  */
-export interface GeminiThinkingConfig {
+interface GeminiThinkingConfig {
   includeThoughts?: boolean
   thinkingBudget?: number
   /**
@@ -269,7 +301,12 @@ export interface GeminiGenerateConfig {
   maxOutputTokens?: number
   stopSequences?: string[]
   responseMimeType?: string
-  responseSchema?: GeminiSchema
+  /**
+   * Standard JSON Schema for the response, sent verbatim (real field:
+   * `GenerateContentConfig.responseJsonSchema`). Never `responseSchema`, the
+   * OpenAPI-dialect field (ADR-034).
+   */
+  responseJsonSchema?: unknown
   thinkingConfig?: GeminiThinkingConfig
   /** Real type: ServiceTier enum. Values: "flex" | "standard". */
   serviceTier?: string
@@ -280,19 +317,16 @@ export interface GeminiGenerateConfig {
    * We use this to set a transport-level timeout that is >= the AbortSignal
    * deadline so the SDK fetch does not preempt the abort.
    *
-   * Real field: GenerateContentConfig.httpOptions.timeout (milliseconds).
-   * Real field: GenerateContentConfig.httpOptions.headers (Record<string,string>).
-   *   (No current use of custom headers here: Vertex AI auth — and the
-   *   Vertex flex-routing header injection this field once supported — was
-   *   removed from this library; see ADR-019 in DECISIONS.md. Only
-   *   API-key auth is supported below.)
+   * Real field: GenerateContentConfig.httpOptions.timeout (milliseconds). No
+   * other `httpOptions` field is admitted.
    */
-  httpOptions?: { timeout?: number; headers?: Record<string, string> }
+  httpOptions?: { timeout?: number }
   tools?: Array<{
     functionDeclarations?: Array<{
       name: string
       description: string
-      parameters?: unknown
+      /** Standard JSON Schema, verbatim (real field: `parametersJsonSchema`). */
+      parametersJsonSchema?: unknown
     }>
     googleSearch?: Record<string, never>
   }>
@@ -315,21 +349,26 @@ export interface GeminiGenerateParams {
 }
 
 /**
- * Parameters for models.countTokens.
- * Real type: CountTokensParameters.
+ * Parameters for counting tokens.
+ *
+ * With only `model` and `contents` the call is the SDK's `models.countTokens`.
+ * With `systemInstruction` or `tools` the Developer API's SDK method cannot
+ * carry them (it throws), so `buildGoogleClient` sends the REST `countTokens`
+ * with a full `generateContentRequest` instead; the two forms are mutually
+ * exclusive on the wire, so `contents` then travels inside the request.
  */
 export interface GeminiCountTokensParams {
   model: string
   contents: GeminiContent[]
+  systemInstruction?: { parts: GeminiContentPart[] }
+  tools?: NonNullable<GeminiGenerateConfig['tools']>
   config?: {
-    systemInstruction?: { parts: GeminiContentPart[] }
     /**
      * Real field: CountTokensConfig.abortSignal. countTokens has no
-     * tier-timeout dance (no flex/standard default ceilings) — `ctx.signal`
+     * tier-timeout dance (no flex/standard default ceilings): `ctx.signal`
      * is forwarded here directly, unlike `run()`'s combined timer signal.
      */
     abortSignal?: AbortSignal
-    tools?: GeminiGenerateConfig['tools']
   }
 }
 
@@ -366,6 +405,29 @@ export interface GeminiClientLike {
 // ---------------------------------------------------------------------------
 
 /**
+ * Root of the Gemini Developer API. The SDK client is built with it as its
+ * explicit `baseUrl` and the REST `countTokens` below builds its URL from it,
+ * so one endpoint serves every call. Pinning it also keeps the SDK from taking
+ * a base URL out of the process environment (`GOOGLE_GEMINI_BASE_URL`), which
+ * would send the call's API key to a host the caller never named.
+ */
+const GEMINI_API_ROOT = 'https://generativelanguage.googleapis.com'
+
+/**
+ * A real `GoogleGenAI` client for `auth`, pinned to {@link GEMINI_API_ROOT}.
+ * Shared by the generation client and both stores.
+ *
+ * @internal
+ */
+export async function newGoogleGenAI(auth: AuthMaterial): Promise<GoogleGenAI> {
+  const { GoogleGenAI: Sdk } = await import('@google/genai')
+  return new Sdk({
+    apiKey: requireApiKey(auth),
+    httpOptions: { baseUrl: `${GEMINI_API_ROOT}/` },
+  })
+}
+
+/**
  * Build a real @google/genai client from AuthMaterial.
  *
  * Returns a GeminiClientLike wrapper around the real GoogleGenAI client.
@@ -378,9 +440,7 @@ export async function buildGoogleClient(auth: AuthMaterial): Promise<GeminiClien
   // The cast is safe: GeminiGenerateParams is a structural subset of
   // GenerateContentParameters; GeminiResponseShape is a subset of
   // GenerateContentResponse.
-  const { GoogleGenAI } = await import('@google/genai')
-
-  const ai = new GoogleGenAI({ apiKey: requireApiKey(auth) })
+  const ai = await newGoogleGenAI(auth)
 
   return {
     models: {
@@ -394,6 +454,9 @@ export async function buildGoogleClient(auth: AuthMaterial): Promise<GeminiClien
       async countTokens(
         params: GeminiCountTokensParams,
       ): Promise<GeminiCountTokensResponseShape> {
+        if (params.systemInstruction !== undefined || params.tools !== undefined) {
+          return countTokensWithRequest(requireApiKey(auth), params)
+        }
         // Cast needed: our structural types are subsets of the real SDK types.
         const result = await (
           ai.models.countTokens as (
@@ -404,4 +467,93 @@ export async function buildGoogleClient(auth: AuthMaterial): Promise<GeminiClien
       },
     },
   }
+}
+
+// ---------------------------------------------------------------------------
+// REST countTokens with a full generateContentRequest
+// ---------------------------------------------------------------------------
+
+/**
+ * Base of the Gemini Developer API (`v1beta`), the version the SDK's Developer
+ * API client uses. Only the REST `countTokens` below builds a URL itself.
+ */
+const GEMINI_API_BASE = `${GEMINI_API_ROOT}/v1beta`
+
+/** Longest non-structured error body kept in an error message (characters). */
+const MAX_ERROR_BODY_CHARS = 500
+
+/**
+ * `models.countTokens` with `systemInstruction` and `tools`.
+ *
+ * The SDK's Developer API `countTokens` throws on both fields, but the REST
+ * method accepts a `generateContentRequest` (a `GenerateContentRequest` with a
+ * `models/<id>` name), which counts the whole request. `model` and `contents`
+ * are mutually exclusive with it (ai.google.dev/api/tokens, dated 2026-08-17,
+ * read 2026-10-03), so `contents` goes inside it.
+ *
+ * A non-2xx response is thrown as the SDK's own `ApiError` (status plus the
+ * JSON body as the message), so `classifyGoogleError` reads it exactly like a
+ * `generateContent` failure. `fetch` is the global, resolved per call.
+ */
+async function countTokensWithRequest(
+  apiKey: string,
+  params: GeminiCountTokensParams,
+): Promise<GeminiCountTokensResponseShape> {
+  const { ApiError } = await import('@google/genai')
+  const model = params.model.startsWith('models/')
+    ? params.model
+    : `models/${params.model}`
+  const response = await fetch(`${GEMINI_API_BASE}/${model}:countTokens`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
+    body: JSON.stringify({
+      generateContentRequest: {
+        model,
+        contents: params.contents,
+        ...(params.systemInstruction !== undefined
+          ? { systemInstruction: params.systemInstruction }
+          : {}),
+        ...(params.tools !== undefined ? { tools: params.tools } : {}),
+      },
+    }),
+    ...(params.config?.abortSignal !== undefined
+      ? { signal: params.config.abortSignal }
+      : {}),
+  })
+  const raw = await response.text()
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    parsed = undefined
+  }
+  if (!response.ok) {
+    // A structured `{ error: {...} }` body is passed on as sent. Anything else
+    // (an HTML proxy page, a JSON body of another shape, an unparseable one) is
+    // wrapped with its text cut short, so a page cannot flood the message.
+    const body =
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      typeof (parsed as { error?: unknown }).error === 'object'
+        ? parsed
+        : {
+            error: {
+              message:
+                raw.length > MAX_ERROR_BODY_CHARS
+                  ? `${raw.slice(0, MAX_ERROR_BODY_CHARS)}…`
+                  : raw,
+              code: response.status,
+              status: response.statusText,
+            },
+          }
+    throw new ApiError({ message: JSON.stringify(body), status: response.status })
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new LlmError('Gemini countTokens response is not a JSON object', {
+      kind: 'server',
+      retryable: true,
+      provider: 'google',
+    })
+  }
+  return parsed
 }

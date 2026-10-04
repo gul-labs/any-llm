@@ -16,6 +16,7 @@ import {
   FakeIds,
   RecordingSink,
   scriptedRateLimiter,
+  fakeHttpError,
 } from '@gullabs/testing'
 import type { AdapterResult, Usage } from './index.js'
 import { makeTestPricingSource } from './test-pricing-source.js'
@@ -34,6 +35,7 @@ const GOOD_USAGE: Usage = {
 
 function makeSuccessResult(overrides?: Partial<AdapterResult>): AdapterResult {
   return {
+    message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
     text: 'ok',
     usage: GOOD_USAGE,
     model: 'gemini-2.5-flash',
@@ -150,7 +152,7 @@ describe('engine — rateLimiter integration', () => {
     const spy = makeSpyLimiter()
     const clock = new FakeClock(1_000)
     const ids = new FakeIds()
-    const adapter = new FakeAdapter('google', { status: 500 })
+    const adapter = new FakeAdapter('google', fakeHttpError(500))
     const client = createClient({
       adapters: [adapter],
       pricingSources: { google: PRICING },

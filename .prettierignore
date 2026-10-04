@@ -6,6 +6,7 @@ pnpm-lock.yaml
 .remember
 .research
 .private
+.recapture
 docs/assets
 
 # Recorded live-API captures. These are data, not authored source — keep them

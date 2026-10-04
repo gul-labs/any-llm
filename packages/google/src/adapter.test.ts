@@ -8,7 +8,12 @@
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { LlmError, createClient, retryMiddleware } from '@gullabs/core'
+import {
+  LlmError,
+  createClient,
+  createModelRegistry,
+  retryMiddleware,
+} from '@gullabs/core'
 import type { ResolvedRequest, AdapterCtx, ModelDescriptor } from '@gullabs/core'
 import type { ProviderOptions } from '@gullabs/core'
 import {
@@ -19,8 +24,9 @@ import {
   FakeIds,
   RecordingSink,
 } from '@gullabs/testing'
-import { geminiAdapter } from './adapter.js'
+import { geminiAdapter, geminiAdapterWithClientFactory } from './adapter.js'
 import { isGeminiCapacityError } from './flex-fallback.js'
+import { classifyGoogleError } from './errors.js'
 import { FLEX_DEFAULT_TIMEOUT_MS } from './client.js'
 import type { GeminiClientLike, GeminiResponseShape } from './client.js'
 import { GOOGLE_REASONING_EFFORT_BUDGET } from './reasoning-budget.js'
@@ -309,44 +315,87 @@ describe('service tier', () => {
 // ---------------------------------------------------------------------------
 
 describe('flex fallback', () => {
-  it('classifies only 503 server errors and capacity-flavored 429s as fallbackable', () => {
+  /** An SDK `ApiError` as the SDK throws it: status plus the JSON body as the message. */
+  const apiError = (status: number, error: Record<string, unknown>): Error =>
+    Object.assign(new Error(JSON.stringify({ error: { code: status, ...error } })), {
+      status,
+    })
+  const QUOTA_FAILURE = {
+    '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+    violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel' }],
+  }
+  const RETRY_INFO_DETAIL = {
+    '@type': 'type.googleapis.com/google.rpc.RetryInfo',
+    retryDelay: '30s',
+  }
+  const RETRY_INFO = RETRY_INFO_DETAIL
+
+  it('decides capacity from the structured error: only HTTP 503 is capacity', () => {
+    const capacity = (err: Error): boolean =>
+      isGeminiCapacityError(classifyGoogleError(err))
+    expect(capacity(apiError(503, { status: 'UNAVAILABLE' }))).toBe(true)
+    expect(capacity(apiError(500, { status: 'INTERNAL' }))).toBe(false)
+    // Google's Flex page lists 429 beside 503 for "no capacity" but documents no
+    // field that tells a capacity 429 from a quota 429, so no 429 is capacity.
+    expect(capacity(apiError(429, { status: 'RESOURCE_EXHAUSTED' }))).toBe(false)
     expect(
-      isGeminiCapacityError(
-        new LlmError('unavailable', {
-          kind: 'server',
-          retryable: true,
-          httpStatus: 503,
-        }),
-      ),
-    ).toBe(true)
-    expect(
-      isGeminiCapacityError(
-        new LlmError('internal error', {
-          kind: 'server',
-          retryable: true,
-          httpStatus: 500,
-        }),
-      ),
+      capacity(apiError(429, { status: 'RESOURCE_EXHAUSTED', details: [QUOTA_FAILURE] })),
     ).toBe(false)
     expect(
-      isGeminiCapacityError(
-        new LlmError('shared capacity is overloaded', {
-          kind: 'rate_limited',
-          retryable: true,
-          httpStatus: 429,
-        }),
-      ),
-    ).toBe(true)
-    expect(
-      isGeminiCapacityError(
-        new LlmError('quota exceeded for project billing account', {
-          kind: 'rate_limited',
-          retryable: true,
-          httpStatus: 429,
-        }),
-      ),
+      capacity(apiError(429, { status: 'RESOURCE_EXHAUSTED', details: [RETRY_INFO] })),
     ).toBe(false)
   })
+
+  it('never reads the message text: capacity words do not make a 429 or a bodyless error capacity', () => {
+    const capacity = (err: unknown): boolean =>
+      isGeminiCapacityError(classifyGoogleError(err))
+    expect(
+      capacity(
+        apiError(429, {
+          status: 'RESOURCE_EXHAUSTED',
+          message: 'shared capacity is overloaded, try again',
+        }),
+      ),
+    ).toBe(false)
+    expect(capacity({ status: 429, message: 'shared capacity is overloaded' })).toBe(
+      false,
+    )
+    expect(capacity(new Error('no capacity available'))).toBe(false)
+  })
+
+  describe.each([
+    ['RetryInfo only', [RETRY_INFO_DETAIL], 30_000],
+    ['a quota message with no details', undefined, undefined],
+    ['QuotaFailure and RetryInfo', [QUOTA_FAILURE, RETRY_INFO_DETAIL], 30_000],
+  ] as const)(
+    'a flex 429 with %s follows the rate-limit path',
+    (_name, details, delay) => {
+      const quota429 = (): Error =>
+        apiError(429, {
+          status: 'RESOURCE_EXHAUSTED',
+          message: 'You exceeded your current quota, please check your plan and billing.',
+          ...(details !== undefined ? { details } : {}),
+        })
+
+      it('dispatches once, with no standard attempt, and surfaces the provider delay', async () => {
+        const client = makeFakeGemini(() => {
+          throw quota429()
+        })
+        const adapter = geminiAdapter({ client })
+        const err = await adapter
+          .run(makeResolvedReq({ config: { serviceTier: 'flex' } }), FAKE_CTX)
+          .catch((e) => e as LlmError)
+        expect(client.calls).toHaveLength(1)
+        expect(err).toMatchObject({
+          kind: 'rate_limited',
+          retryable: true,
+          httpStatus: 429,
+          servedServiceTier: 'flex',
+        })
+        expect((err as LlmError).retryAfterMs).toBe(delay)
+      })
+    },
+  )
 
   it('falls back from flex 503 capacity error to one standard attempt', async () => {
     let callCount = 0
@@ -422,7 +471,7 @@ describe('flex fallback', () => {
       middleware: [
         retryMiddleware(
           { maxAttempts: 2, baseDelayMs: 0 },
-          { sleep: async () => {}, random: () => 0, now: () => 0 },
+          { sleep: async () => {}, random: () => 0 },
         ),
       ],
     })
@@ -844,7 +893,7 @@ describe('structured output', () => {
     expect(call?.config?.responseMimeType).toBe('application/json')
   })
 
-  it('forwards JSON Schema directly as responseSchema', async () => {
+  it('forwards JSON Schema directly as responseJsonSchema', async () => {
     const jsonSchema = {
       type: 'object',
       properties: { name: { type: 'string' }, age: { type: 'number' } },
@@ -857,47 +906,43 @@ describe('structured output', () => {
     await adapter.run(makeResolvedReq({ outputJsonSchema: jsonSchema }), FAKE_CTX)
 
     const call = client.calls[0] as {
-      config?: {
-        responseSchema?: { type?: string; properties?: Record<string, { type?: string }> }
-      }
+      config?: { responseJsonSchema?: unknown; responseSchema?: unknown }
     }
-    expect(call?.config?.responseSchema?.type).toBe('object')
-    expect(call?.config?.responseSchema?.properties?.['name']?.type).toBe('string')
-    expect(call?.config?.responseSchema?.properties?.['age']?.type).toBe('number')
+    expect(call?.config?.responseJsonSchema).toEqual(jsonSchema)
+    expect(call?.config?.responseSchema).toBeUndefined()
   })
 
-  it('skips responseMimeType and responseSchema when native structured output is disabled', async () => {
+  it('rejects output.jsonSchema when the model has no native structured output', async () => {
     const client = makeFakeGemini(fakeGeminiResponse({ structuredJson: '{"pass":true}' }))
     const adapter = geminiAdapter({ client })
-    // Use a synthetic descriptor with nativeStructuredOutput: false to test the
-    // skip-native-schema path. The real gemma-4-26b-a4b-it now has
-    // nativeStructuredOutput: true (verified against the live API).
+    // A synthetic descriptor with nativeStructuredOutput: false: the adapter has
+    // no other structured-output path, so the schema is rejected, not dropped.
+    // The real gemma-4-26b-a4b-it has nativeStructuredOutput: true (live capture).
     const syntheticNoNativeOutput = makeGoogleDescriptor({
       model: 'gemma-4-26b-a4b-it',
       capabilities: {
         structuredOutput: true,
         nativeStructuredOutput: false,
-        vision: true,
         sampling: 'tunable' as const,
         serviceTiers: ['flex', 'standard'] as ['flex', 'standard'],
       },
     })
 
-    const result = await adapter.run(
-      makeResolvedReq({
-        model: 'gemma-4-26b-a4b-it',
-        modelDescriptor: syntheticNoNativeOutput,
-        outputJsonSchema: { type: 'object', additionalProperties: true },
-      }),
-      FAKE_CTX,
-    )
+    const err = await adapter
+      .run(
+        makeResolvedReq({
+          model: 'gemma-4-26b-a4b-it',
+          modelDescriptor: syntheticNoNativeOutput,
+          outputJsonSchema: { type: 'object', additionalProperties: true },
+        }),
+        FAKE_CTX,
+      )
+      .catch((e: unknown) => e)
 
-    const call = client.calls[0] as {
-      config?: { responseMimeType?: string; responseSchema?: unknown }
-    }
-    expect(call?.config?.responseMimeType).toBeUndefined()
-    expect(call?.config?.responseSchema).toBeUndefined()
-    expect(result.rawStructured).toEqual({ pass: true })
+    expect(err).toBeInstanceOf(LlmError)
+    expect((err as LlmError).kind).toBe('bad_request')
+    expect((err as LlmError).issues?.[0]?.path).toBe('output.jsonSchema')
+    expect(client.calls).toHaveLength(0)
   })
 
   it('parses JSON text into rawStructured', async () => {
@@ -1072,13 +1117,11 @@ describe('error classification', () => {
     }
   })
 
-  it('client construction failure → LlmError not raw Error (fix: constructor inside try/catch)', async () => {
+  it('client construction failure → LlmError not raw Error ', async () => {
     // Simulate buildGoogleClient throwing (e.g. bad credentials, missing SDK)
     // by injecting a _clientFactory that throws a raw Error.
-    const adapter = geminiAdapter({
-      _clientFactory: () => {
-        throw new Error('auth init failed')
-      },
+    const adapter = geminiAdapterWithClientFactory(undefined, () => {
+      throw new Error('auth init failed')
     })
     const err = await adapter.run(makeResolvedReq(), FAKE_CTX).catch((e: unknown) => e)
     // Must be a typed LlmError, not a raw Error.
@@ -1167,12 +1210,12 @@ describe('providerOptions.google lockdown', () => {
 
     const safetySettings = [
       {
-        category: 'HARM_CATEGORY_HATE_SPEECH',
-        threshold: 'BLOCK_MEDIUM_AND_ABOVE',
+        category: 'HARM_CATEGORY_HATE_SPEECH' as const,
+        threshold: 'BLOCK_MEDIUM_AND_ABOVE' as const,
       },
       {
-        category: 'HARM_CATEGORY_HARASSMENT',
-        threshold: 'BLOCK_ONLY_HIGH',
+        category: 'HARM_CATEGORY_HARASSMENT' as const,
+        threshold: 'BLOCK_ONLY_HIGH' as const,
       },
     ]
 
@@ -1512,7 +1555,7 @@ describe('full-stack integration', () => {
         },
         { auth: { apiKey: 'test-key' } },
       ),
-    ).rejects.toMatchObject({ kind: 'server', retryable: true })
+    ).rejects.toMatchObject({ kind: 'server', retryable: false })
 
     const record = sink.last()!
     expect(record.status).toBe('api_error')
@@ -1904,7 +1947,7 @@ describe('transport timeout (httpOptions.timeout)', () => {
     const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
     const adapter = geminiAdapter({ client })
 
-    // The adapter computes timeoutMs + buffer = 1_205_000, but caller's 42 wins.
+    // The adapter computes timeoutMs + buffer = 1_205_000; the caller's longer one wins.
     await adapter.run(
       makeResolvedReq({
         config: {
@@ -1912,7 +1955,7 @@ describe('transport timeout (httpOptions.timeout)', () => {
           timeoutMs: 1_200_000,
           providerOptions: {
             google: {
-              httpOptions: { timeout: 42 },
+              httpOptions: { timeout: 1_300_000 },
             },
           },
         },
@@ -1923,7 +1966,7 @@ describe('transport timeout (httpOptions.timeout)', () => {
     const call = client.calls[0] as {
       config?: { httpOptions?: { timeout?: number } }
     }
-    expect(call?.config?.httpOptions?.timeout).toBe(42)
+    expect(call?.config?.httpOptions?.timeout).toBe(1_300_000)
   })
 
   it('rejects unsupported httpOptions keys instead of preserving SDK passthrough', async () => {
@@ -2000,49 +2043,90 @@ describe('grounding — model-aware tool guard', () => {
     expect(client.calls).toHaveLength(0)
   })
 
-  it.each([
+  const GEMINI_3_MODELS = [
     'gemini-3.1-pro-preview',
     'gemini-3.8-flash',
     'gemini-3.7-flash',
     'gemini-3.6-flash',
     'gemini-3.5-flash-lite',
     'gemini-3.1-flash-lite',
-  ])(
-    'allows structured output + googleSearch on %s when the descriptor admits it',
+  ]
+
+  it.each(GEMINI_3_MODELS)(
+    'rejects structured output + googleSearch on %s with the two-call recipe, before dispatch',
     async (model) => {
       const client = makeFakeGemini(
         fakeGeminiResponse({ structuredJson: '{"winner":"Spain"}' }),
       )
       const adapter = geminiAdapter({ client })
       const descriptor = geminiModelDescriptors.find((d) => d.model === model)!
-      expect(descriptor.capabilities?.structuredOutputWithTools).toBe(true)
+      expect(descriptor.capabilities?.structuredOutputWithTools).toBe(false)
 
-      const result = await adapter.run(
-        makeResolvedReq({
-          model,
-          modelDescriptor: descriptor,
-          outputJsonSchema: {
-            type: 'object',
-            properties: { winner: { type: 'string' } },
-            required: ['winner'],
-            additionalProperties: false,
-          },
-          config: {
-            serviceTier: 'flex',
-            providerOptions: { google: { tools: [{ googleSearch: {} }] } },
-          },
-        }),
-        FAKE_CTX,
-      )
+      const err = await adapter
+        .run(
+          makeResolvedReq({
+            model,
+            modelDescriptor: descriptor,
+            outputJsonSchema: {
+              type: 'object',
+              properties: { winner: { type: 'string' } },
+              required: ['winner'],
+              additionalProperties: false,
+            },
+            config: {
+              serviceTier: 'flex',
+              providerOptions: { google: { tools: [{ googleSearch: {} }] } },
+            },
+          }),
+          FAKE_CTX,
+        )
+        .catch((e: unknown) => e)
 
-      expect(result.rawStructured).toEqual({ winner: 'Spain' })
-      const call = client.calls[0] as {
-        config?: { responseMimeType?: string; tools?: unknown[] }
-      }
-      expect(call?.config?.responseMimeType).toBe('application/json')
-      expect(call?.config?.tools).toEqual([{ googleSearch: {} }])
+      expect(err).toBeInstanceOf(LlmError)
+      expect((err as LlmError).kind).toBe('bad_request')
+      expect((err as LlmError).retryable).toBe(false)
+      expect((err as LlmError).message).toContain('docs/grounded-structured.md')
+      expect((err as LlmError).message).toMatch(/two-call recipe/i)
+      expect(client.calls).toHaveLength(0)
     },
   )
+
+  it('still admits structured output + googleSearch for a descriptor that declares it', async () => {
+    const client = makeFakeGemini(
+      fakeGeminiResponse({ structuredJson: '{"winner":"Spain"}' }),
+    )
+    const adapter = geminiAdapter({ client })
+    const base = geminiModelDescriptors.find((d) => d.model === 'gemini-3.1-pro-preview')!
+    const descriptor: ModelDescriptor = {
+      ...base,
+      capabilities: { ...base.capabilities, structuredOutputWithTools: true },
+    }
+
+    const result = await adapter.run(
+      makeResolvedReq({
+        model: 'gemini-3.1-pro-preview',
+        modelDescriptor: descriptor,
+        outputJsonSchema: {
+          type: 'object',
+          properties: { winner: { type: 'string' } },
+          required: ['winner'],
+          additionalProperties: false,
+        },
+        config: {
+          serviceTier: 'flex',
+          providerOptions: { google: { tools: [{ googleSearch: {} }] } },
+        },
+      }),
+      FAKE_CTX,
+    )
+
+    expect(result.rawStructured).toEqual({ winner: 'Spain' })
+    const call = client.calls[0] as {
+      config?: { responseMimeType?: string; tools?: unknown[] }
+    }
+    expect(call?.config?.responseMimeType).toBe('application/json')
+    expect(call?.config?.tools).toEqual([{ googleSearch: {} }])
+  })
 
   it('rejects structured output + googleSearch when the descriptor does not admit it', async () => {
     const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
@@ -2354,7 +2438,7 @@ describe('google function calling', () => {
     )
     expect(result.finishReason).toBe('tool_calls')
     expect(result.toolCalls?.[0]?.toolName).toBe('get_temperature')
-    expect(result.toolCalls?.[0]?.toolCallId).toBe('call_get_temperature_1')
+    expect(result.toolCalls?.[0]?.toolCallId).toBe('anyllm_call_get_temperature_1')
   })
 
   it('uses provider functionCall.id and keeps two same-name calls distinct', async () => {
@@ -2385,7 +2469,13 @@ describe('google function calling', () => {
       fakeGeminiResponse({
         text: '',
         parts: [
-          { functionCall: { id: 'call_lookup_1', name: 'lookup', args: { q: '1' } } },
+          {
+            functionCall: {
+              id: 'anyllm_call_lookup_1',
+              name: 'lookup',
+              args: { q: '1' },
+            },
+          },
           { functionCall: { name: 'lookup', args: { q: '2' } } },
         ],
       }),
@@ -2401,8 +2491,8 @@ describe('google function calling', () => {
       FAKE_CTX,
     )
     expect(result.toolCalls?.map((c) => c.toolCallId)).toEqual([
-      'call_lookup_1',
-      'call_lookup_2',
+      'anyllm_call_lookup_1',
+      'anyllm_call_lookup_2',
     ])
   })
 
@@ -2412,7 +2502,13 @@ describe('google function calling', () => {
         text: '',
         parts: [
           { functionCall: { name: 'lookup', args: { q: '1' } } },
-          { functionCall: { id: 'call_lookup_1', name: 'lookup', args: { q: '2' } } },
+          {
+            functionCall: {
+              id: 'anyllm_call_lookup_1',
+              name: 'lookup',
+              args: { q: '2' },
+            },
+          },
         ],
       }),
     )
@@ -2427,8 +2523,8 @@ describe('google function calling', () => {
       FAKE_CTX,
     )
     expect(result.toolCalls?.map((c) => c.toolCallId)).toEqual([
-      'call_lookup_2',
-      'call_lookup_1',
+      'anyllm_call_lookup_2',
+      'anyllm_call_lookup_1',
     ])
   })
 
@@ -2628,10 +2724,10 @@ describe('fixed-sampling defensive check', () => {
 })
 
 // ---------------------------------------------------------------------------
-// FIX A-2. Client-side AbortSignal for flex default timeout
+// Client-side AbortSignal ceiling for the flex default timeout
 // ---------------------------------------------------------------------------
 
-describe('FIX A-2: client-side flex AbortSignal ceiling', () => {
+describe('client-side flex AbortSignal ceiling', () => {
   afterEach(() => {
     vi.useRealTimers()
   })
@@ -2672,6 +2768,40 @@ describe('FIX A-2: client-side flex AbortSignal ceiling', () => {
     const err = await errPromise
     expect(err).toBeInstanceOf(LlmError)
     expect((err as LlmError).kind).toBe('timeout')
+  })
+
+  it('arms the ceiling on the engine scheduler (ctx.scheduler) when there is one, never on real timers', async () => {
+    const clock = new FakeClock()
+    const hangingClient: GeminiClientLike = {
+      models: {
+        generateContent(params): Promise<GeminiResponseShape> {
+          return new Promise<GeminiResponseShape>((_resolve, reject) => {
+            const sig = params.config?.abortSignal
+            sig?.addEventListener('abort', () => reject(sig.reason), { once: true })
+          })
+        },
+        countTokens() {
+          return Promise.resolve({ totalTokens: 0 })
+        },
+      },
+    }
+    const adapter = geminiAdapter({ client: hangingClient })
+    const settled = adapter
+      .run(makeResolvedReq({ config: { serviceTier: 'flex' } }), {
+        ...FAKE_CTX,
+        scheduler: clock,
+      })
+      .catch((e: unknown) => e)
+    await clock.advanceAsync(0)
+    expect(clock.pendingTimers).toBe(1)
+
+    await clock.advanceAsync(FLEX_DEFAULT_TIMEOUT_MS)
+
+    const err = await settled
+    expect(err).toBeInstanceOf(LlmError)
+    expect((err as LlmError).kind).toBe('timeout')
+    // The ceiling is cleared when the call settles.
+    expect(clock.pendingTimers).toBe(0)
   })
 
   it('does NOT arm the flex timer when timeoutMs is set (engine handles that path)', async () => {
@@ -2757,5 +2887,137 @@ describe('FIX A-2: client-side flex AbortSignal ceiling', () => {
     // Confirm a combined signal was passed (not the raw callerController signal).
     expect(capturedSignal).not.toBe(callerController.signal)
     expect(capturedSignal?.aborted).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Declared model aliases (ADR-033)
+// ---------------------------------------------------------------------------
+
+describe('declared model aliases', () => {
+  const canonical = geminiModelDescriptors.find((d) => d.model === 'gemini-2.5-pro')!
+  const aliased: ModelDescriptor = { ...canonical, aliases: ['gemini-2.5-pro-001'] }
+
+  it('accepts a declared alias on a first-turn dispatch and sends it to the SDK verbatim', async () => {
+    const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
+    await geminiAdapter({ client }).run(
+      makeResolvedReq({ model: 'gemini-2.5-pro-001', modelDescriptor: aliased }),
+      FAKE_CTX,
+    )
+    expect((client.calls[0] as { model: string }).model).toBe('gemini-2.5-pro-001')
+  })
+
+  it('rejects a string that is neither the canonical id nor a declared alias', async () => {
+    const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
+    await expect(
+      geminiAdapter({ client }).run(
+        makeResolvedReq({ model: 'gemini-2.5-pro-002', modelDescriptor: aliased }),
+        FAKE_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('rejects another provider’s descriptor whose alias list matches the requested string', async () => {
+    const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
+    const foreign = makeTestDescriptor({
+      provider: 'xai',
+      model: 'grok-4.5',
+      aliases: ['gemini-2.5-pro-001'],
+    })
+    await expect(
+      geminiAdapter({ client }).run(
+        makeResolvedReq({ model: 'gemini-2.5-pro-001', modelDescriptor: foreign }),
+        FAKE_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
+    expect(client.calls).toHaveLength(0)
+  })
+
+  it('through createClient: dispatches the alias verbatim and prices it under the canonical descriptor', async () => {
+    const client = makeFakeGemini(
+      fakeGeminiResponse({ text: 'ok', promptTokenCount: 100, candidatesTokenCount: 10 }),
+    )
+    const sink = new RecordingSink()
+    const llm = createClient({
+      adapters: [geminiAdapter({ client })],
+      pricingSources: { google: geminiPricingSource() },
+      modelRegistry: createModelRegistry([aliased]),
+      sink,
+      clock: new FakeClock(),
+      ids: new FakeIds(),
+    })
+    const request = {
+      provider: 'google',
+      model: 'gemini-2.5-pro-001',
+      messages: [
+        { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'hi' }] },
+      ],
+    }
+
+    await llm.generate(request, { auth: { apiKey: 'test-key' } })
+    const viaCanonical = await llm.generate(
+      { ...request, model: 'gemini-2.5-pro' },
+      { auth: { apiKey: 'test-key' } },
+    )
+
+    expect((client.calls[0] as { model: string }).model).toBe('gemini-2.5-pro-001')
+    expect(sink.records[0]!.model).toBe('gemini-2.5-pro-001')
+    expect(sink.records[0]!.costMicroUsd).toBeGreaterThan(0)
+    expect(sink.records[0]!.costMicroUsd).toBe(viaCanonical.cost?.microUsd)
+
+    await expect(
+      llm.generate(
+        { ...request, model: 'gemini-2.5-pro-002' },
+        { auth: { apiKey: 'test-key' } },
+      ),
+    ).rejects.toMatchObject({ kind: 'bad_request' })
+  })
+})
+
+describe('middleware cannot reroute on the built-in registry (ADR-037)', () => {
+  it('a swapped modelDescriptor and post-next provider/model assignments change neither the SDK model nor the price', async () => {
+    const flash = defaultGeminiRegistry.resolve('google', 'gemini-2.5-flash')!
+    const client = makeFakeGemini(
+      fakeGeminiResponse({
+        text: 'ok',
+        promptTokenCount: 1000,
+        candidatesTokenCount: 10,
+      }),
+    )
+    const sink = new RecordingSink()
+    const llm = createClient({
+      adapters: [geminiAdapter({ client })],
+      pricingSources: { google: geminiPricingSource() },
+      modelRegistry: defaultGeminiRegistry,
+      sink,
+      clock: new FakeClock(),
+      ids: new FakeIds(),
+      middleware: [
+        {
+          id: 'swapper',
+          async intercept(req, ctx, next) {
+            ;(req as { modelDescriptor?: ModelDescriptor }).modelDescriptor = flash
+            const out = await next(req, ctx)
+            ;(req as { model: string }).model = 'gemini-2.5-flash'
+            return out
+          },
+        },
+      ],
+    })
+    const request = {
+      provider: 'google',
+      model: 'gemini-2.5-pro',
+      messages: [
+        { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'hi' }] },
+      ],
+    }
+
+    const out = await llm.generate(request, { auth: { apiKey: 'test-key' } })
+    const baseline = geminiPricingSource().price('gemini-2.5-pro', out.usage)
+
+    expect((client.calls[0] as { model: string }).model).toBe('gemini-2.5-pro')
+    expect(out.cost?.microUsd).toBe(baseline.microUsd)
+    expect(sink.records[0]!.model).toBe('gemini-2.5-pro')
   })
 })

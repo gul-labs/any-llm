@@ -46,7 +46,7 @@ explicit dependency control. Import names are identical either way.
 `generate()` and `runStructured()` call requires `opts.auth = { apiKey: string }`
 explicitly. `createClient()` itself takes no credentials.
 
-```ts
+```ts no-check
 // WRONG — GenerateOptions.auth is a required field; this will not type-check, and if
 // bypassed with `as any` it throws LlmError({ kind: 'invalid_auth' }) before any I/O.
 const client = createClient({
@@ -83,6 +83,8 @@ import { createClient, composeProviders, googleProvider } from '@gullabs/any-llm
 // (or: composeProviders from '@gullabs/core', googleProvider from '@gullabs/google',
 // if using modular install)
 
+declare const myResolvedGeminiKey: string // however your app resolves the key
+
 const client = createClient({
   ...composeProviders([googleProvider()]),
 })
@@ -113,11 +115,15 @@ throws `LlmError('bad_request')` when the pair is unregistered or the resolved a
 doesn't implement token counting (`ProviderAdapter.countTokens` is optional).
 
 ```ts
+import { createClient, composeProviders, googleProvider } from '@gullabs/any-llm'
+
+const client = createClient({ ...composeProviders([googleProvider()]) })
+declare const myResolvedGeminiKey: string
+
 const count = await client.countTokens(
   {
     provider: 'google',
     model: 'gemini-2.5-flash',
-    system: 'You are a concise summarizer.',
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello!' }] }],
   },
   { auth: { apiKey: myResolvedGeminiKey } },
@@ -128,9 +134,15 @@ console.log(count.details) // optional per-category breakdown, e.g. { cached: 12
 console.log(count.raw) // provider's raw token-count response, verbatim
 ```
 
-`TokenCountRequest` is deliberately narrower than a generate request — no `config`, no
-`output`, no `providerOptions`; token counting only needs `provider`, `model`,
-`system`, and `messages`.
+`TokenCountRequest` is deliberately narrower than a generate request: no `config`, no
+`output`, no `providerOptions`. Token counting takes `provider`, `model`, `messages`, and
+optionally `system` and `tools`. Google counts `messages`, `system` and `tools` (through the
+REST `countTokens`); it does not count a response schema, thinking config or Search, so for a
+generate call that sends those it is a floor. `accuracy` says how far to trust it: Google is
+`'exact'` for the history it counts, and `'estimated'` for a Gemini 3 history with replayed
+function calls (their thought signatures add up to about 110 prompt tokens each, depending on the model, that the count
+cannot include). xAI counts text only (`'lower-bound'`) and rejects `tools` with `bad_request`.
+To budget exactly, read `usage.inputTokens` from a real `generate()` result.
 
 ## Composing multiple providers — xAI Grok example
 
@@ -142,6 +154,8 @@ as `googleProvider()`:
 import { createClient, composeProviders } from '@gullabs/core'
 import { googleProvider } from '@gullabs/google'
 import { xaiProvider } from '@gullabs/xai'
+
+declare const myResolvedXaiKey: string
 
 const client = createClient({
   ...composeProviders([googleProvider(), xaiProvider()]),
@@ -200,8 +214,17 @@ plain text parts, or any `Part` sub-field this library can't losslessly represen
 naming the offending field — nothing is ever silently dropped.
 
 ```ts
-import { geminiContentToMessages } from '@gullabs/google'
+import {
+  createClient,
+  composeProviders,
+  googleProvider,
+  geminiContentToMessages,
+} from '@gullabs/any-llm'
 import type { Content } from '@google/genai'
+
+const client = createClient({ ...composeProviders([googleProvider()]) })
+declare const myResolvedGeminiKey: string
+declare const data: string // base64 image bytes
 
 const contents: Content[] = [
   {
@@ -220,7 +243,12 @@ const { system, messages } = geminiContentToMessages({
 })
 
 const result = await client.generate(
-  { provider: 'google', model: 'gemini-2.5-pro', system, messages },
+  {
+    provider: 'google',
+    model: 'gemini-2.5-pro',
+    ...(system !== undefined ? { system } : {}),
+    messages,
+  },
   { auth: { apiKey: myResolvedGeminiKey } },
 )
 ```
@@ -232,17 +260,26 @@ from `contents`.
 
 Real hosts don't call `createClient()` at call sites — they own a factory module that
 assembles the client once and hand call sites the built client. `@gullabs/testing`'s
-fakes (`makeFakeGemini`, `FakeAdapter`, `RecordingSink`, `FakeClock`, `FakeIds`, ...) are
+fakes (`makeFakeGemini`, `FakeAdapter`, `FakeClient`, `RecordingSink`, `FakeClock`, `FakeIds`, ...) are
 designed to inject through that same host-owned factory unchanged, via injectable
 override parameters with production defaults — not via `vi.mock()`. See
 `packages/testing/README.md` § "Wiring fakes through a host-owned factory" for a
 complete two-file (factory + vitest test) example, including the port-level
-`FakeAdapter` variant for bypassing the Gemini SDK shape entirely.
+`FakeAdapter` variant for bypassing the Gemini SDK shape entirely. Drive time with one
+`FakeClock` passed as both `clock` and `scheduler` (timeouts, deadlines and retry back-off then
+advance with it), build failures with `fakeHttpError` / `fakeProviderError` instead of
+hand-made `{ status }` objects, and build results with `fakeLlmResult`. Host code that takes a
+`Client` can be tested with `FakeClient` (`expectRequest` asserts the request it sent).
 
 ## `defineCallSite` — reusable prompt templates
 
 ```ts
 import { defineCallSite } from '@gullabs/core'
+import type { AuthMaterial, Client } from '@gullabs/core'
+
+declare const client: Client
+declare const auth: AuthMaterial
+declare const text: string
 
 const summarize = defineCallSite({
   id: 'summarize-article', // persisted as callSiteId on every record
@@ -274,6 +311,10 @@ request is built — zero tokens spent:
 
 ```ts
 import { defineCallSite, LlmError } from '@gullabs/core'
+import type { AuthMaterial, Client } from '@gullabs/core'
+
+declare const client: Client
+declare const auth: AuthMaterial
 
 const summarize = defineCallSite({
   id: 'summarize-article',
@@ -301,7 +342,13 @@ valibot, ...) before interpolation runs, so a missing business field surfaces in
 schema's vocabulary instead of as a downstream placeholder violation:
 
 ```ts
+import { defineCallSite } from '@gullabs/core'
+import type { AuthMaterial, Client } from '@gullabs/core'
 import { z } from 'zod'
+
+declare const client: Client
+declare const auth: AuthMaterial
+declare const diff: string
 
 const reviewCallSite = defineCallSite({
   id: 'code-review',
@@ -325,6 +372,15 @@ await client.runStructured(
 path (callers who render their own prompt strings and never touch `CallSite`):
 
 ```ts
+import type { AuthMaterial, Client } from '@gullabs/core'
+import { z } from 'zod'
+
+declare const client: Client
+declare const auth: AuthMaterial
+declare const renderedPrompt: string
+declare const sourceContext: { article: string }
+const myZodSchema = z.object({ article: z.string() })
+
 const result = await client.generate(
   {
     provider: 'google',
@@ -382,7 +438,9 @@ Important distinctions:
 
 - `descriptor.configSchema` is the runtime boundary for request config.
 - `descriptor.configJsonSchema` is derived from that same schema for form generation.
-- `request.output.jsonSchema` is only the output-format hint for structured responses.
+- `request.output.jsonSchema` is standard JSON Schema that constrains the model. The Google and xAI adapters
+  reject a keyword the provider would ignore (and malformed schemas) with `bad_request` before dispatch;
+  the library never validates the result.
 - `providerOptions.google` is a typed provider-extension lane, not a caller-wins
   override lane for `serviceTier`, sampling, reasoning, or response schema.
 
@@ -395,6 +453,8 @@ merging. `@gullabs/google` and `@gullabs/xai` are the two reference implementati
 (`packages/google/src/types.ts`, `packages/xai/src/types.ts`):
 
 ```ts
+import type { GoogleProviderOptions } from '@gullabs/google'
+
 declare module '@gullabs/core' {
   interface ProviderOptionsMap {
     google?: GoogleProviderOptions
@@ -430,13 +490,19 @@ the type augmentation only makes the shape visible to the compiler.
 ## Structured output — auth + validation together
 
 `request.output = { jsonSchema }` (or `callSite.jsonSchema`) is forwarded to the
-provider as a **hint**, not enforced by the library. The engine JSON-parses the
-response and sets `outputParsed`; `result.output` is always `unknown`. **The caller
-owns shape validation** — this library does not validate output shape itself.
+provider as standard JSON Schema. The Google and xAI adapters reject, with
+`bad_request` and the path, a keyword the provider would silently ignore (`const`,
+`oneOf`, `allOf`, ...) and malformed schemas before dispatch; the schema constrains the
+model but the library does not enforce it. The engine JSON-parses the response and sets
+`outputParsed`; `result.output` is always `unknown`. **The caller owns shape
+validation** — this library does not validate output shape itself.
 
 ```ts
 import { createClient, composeProviders, googleProvider } from '@gullabs/any-llm'
 import type { StandardSchemaV1 } from '@gullabs/core'
+
+declare const myResolvedGeminiKey: string
+declare const mySchema: StandardSchemaV1
 
 const client = createClient({
   ...composeProviders([googleProvider()]),
@@ -494,13 +560,21 @@ discriminant (from `packages/core/src/errors.ts`):
 
 ```ts
 import { LlmError } from '@gullabs/core'
+import type { AuthMaterial, Client, LlmRequest } from '@gullabs/core'
+
+declare const client: Client
+declare const request: LlmRequest
+declare const auth: AuthMaterial
+declare function scheduleRetry(afterMs: number | undefined): void
+declare function reportCredentialsError(error: LlmError): void
 
 try {
   const result = await client.generate(request, { auth })
+  console.log(result.text)
 } catch (e) {
   if (e instanceof LlmError) {
     if (e.retryable) scheduleRetry(e.retryAfterMs)
-    else if (e.kind === 'invalid_auth') /* surface a credentials error */
+    else if (e.kind === 'invalid_auth') reportCredentialsError(e)
     else throw e
   } else {
     throw e // never expected — the engine always throws LlmError
@@ -530,7 +604,7 @@ library is telling you the config is invalid, not transiently rejected.
 
 ## Reasoning / thinking budgets
 
-```ts
+```ts no-check
 config: {
   reasoning: { effort: 'medium', includeThoughts: true }
 }
@@ -580,6 +654,11 @@ mirrors the selected model's explicit-caching minimum (1024 on Gemini 3.x;
 
 ```ts
 import { GoogleCacheStore } from '@gullabs/google'
+import type { Content, GoogleGenAI } from '@google/genai'
+
+declare const myResolvedGeminiKey: string
+declare const genaiClient: GoogleGenAI
+declare const myGenaiContents: Content[]
 
 const cacheStore = new GoogleCacheStore({
   auth: { apiKey: myResolvedGeminiKey },
@@ -588,8 +667,15 @@ const cacheStore = new GoogleCacheStore({
     // Receives genai-native Content[]/Content|string — NOT the library's
     // Message[] shape; there is no automatic conversion. Hosts building from
     // Message[] should call client.countTokens separately instead.
-    countTokens: async (payload) => {
-      const result = await genaiClient.models.countTokens(payload)
+    countTokens: async ({ model, contents, systemInstruction, tools }) => {
+      const result = await genaiClient.models.countTokens({
+        model,
+        contents: contents ?? [],
+        config: {
+          ...(systemInstruction !== undefined ? { systemInstruction } : {}),
+          ...(tools !== undefined ? { tools } : {}),
+        },
+      })
       return result.totalTokens ?? 0
     },
   },
@@ -609,7 +695,12 @@ const handle = await cacheStore.create({
 - Pre-send backpressure is a `RateLimiter` port (`ClientConfig.rateLimiter`); default
   is a no-op. `@gullabs/core` ships a dependency-free `inMemoryRateLimiter`, and the
   companion `@gullabs/quota` package provides shared/cross-process quota primitives —
-  see that package's README for setup.
+  see that package's README for setup. The limiter runs once per attempt (inside each
+  retry). Put `providerQuotaMiddleware` inside `retryMiddleware`; `createClient` rejects
+  the other order.
+- A middleware cannot change `provider` or `model` (`bad_request`); route and fall back
+  in the host by making a new call. Correlate host retries with a shared `externalId`;
+  every attempt is its own billed row.
 - Every call computes `result.cost` (micro-USD) via the configured `PricingSource`
   (`geminiPricingSource()`), and, when `sink` is configured on `createClient`, persists
   a full per-attempt record (usage, cost, warnings, error classification) — fail-open,

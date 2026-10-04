@@ -255,7 +255,12 @@ export interface GenConfig {
   topP?: number
   /** Top-k sampling. */
   topK?: number
-  /** Hard cap on generated tokens. */
+  /**
+   * Hard cap on generated tokens. It includes reasoning/thinking tokens on
+   * providers that reason, so a low cap on a reasoning model can be used up
+   * before any answer is produced; the call then ends with
+   * `finishReason: 'length'` and a warning on the result.
+   */
   maxOutputTokens?: number
   /** Stop sequences — generation halts when any string is produced. */
   stopSequences?: string[]
@@ -270,17 +275,30 @@ export interface GenConfig {
    */
   serviceTier?: string
   /**
-   * Overall wall-clock ceiling for the logical call.
+   * Overall time ceiling for the logical call, in milliseconds: a finite
+   * number greater than 0 and at most 2147483647 (`bad_request` otherwise; a
+   * longer timer would fire after 1 ms).
    *
-   * Honored as a **true ceiling across retry attempts** when the retry
-   * middleware is installed: the sum of all attempt windows plus back-off
-   * sleep never exceeds this value.  The middleware enforces this by:
-   * - Refusing to start a new attempt once the budget is exhausted.
-   * - Passing the shrinking remaining budget as the per-attempt timeout.
-   * - Clamping back-off sleep to the remaining budget.
+   * The clock starts when the call starts and is measured on the client's
+   * `clock`, so middleware time (a quota deferral, a store round-trip) counts
+   * against it. It is a **true ceiling across retry attempts** when the retry
+   * middleware is installed: the sum of all attempt windows plus back-off sleep
+   * never exceeds this value. The engine enforces it by:
+   * - Giving each attempt only the time that is left (`attemptTimeoutMs`).
+   * - Refusing to start an attempt once the budget is exhausted.
+   * - Ending a call whose middleware (not an attempt) is taking the time, or
+   *   that is still running after the last attempt failed at the deadline,
+   *   with a `timeout` that carries the last attempt's error as `cause`; when
+   *   that error is itself a `timeout` or carries a provider `retryAfterMs`, it
+   *   is the error surfaced.
+   * - Returning a result an attempt already produced (and billed) rather than
+   *   turning it into a timeout when work after `next()` runs past it.
    *
-   * With no retry middleware it is simply the single-attempt timeout —
-   * the engine arms an `AbortSignal` at exactly this value for the adapter.
+   * The retry middleware shares the same budget (`EngineCtx.deadlineAt`) and
+   * rethrows the failed attempt's own error, without sleeping, when the
+   * back-off would leave the next attempt less than 250 ms.
+   *
+   * With no retry middleware it is simply the single-attempt timeout.
    */
   timeoutMs?: number
   /** Schema-admitted provider extension lanes. Not a raw SDK passthrough. */
@@ -347,19 +365,23 @@ export interface LlmRequest {
   output?: { jsonSchema: JsonValue }
   /** Generation configuration; merged over library defaults and call-site defaults. */
   config?: GenConfig
-  /** Opaque provider continuation state. Forwarded to the adapter but never persisted. */
+  /**
+   * Opaque provider continuation state from a previous result, passed back as
+   * `LlmResult.continuation` says. Provider-scoped and bound to this request's
+   * `model` string; only models that declare `capabilities.providerState` admit
+   * it. Forwarded to the adapter but never persisted.
+   */
   transientProviderState?: JsonValue
   /** Host-supplied metadata anchors persisted verbatim. */
   metadata?: CallMetadata
   /** Optional call-site identifier for direct `generate()` observability grouping. */
   callSiteId?: string
   /**
-   * Optional ledger idempotency key. Attempt 1 uses this exact value as
-   * `attemptId`; in-process library retries suffix later attempts (`key:2`,
-   * `key:3`, ...) so every attempt can keep a distinct durable row.
+   * Optional caller-owned correlation id persisted on every attempt row of the
+   * call. Give every host-level retry of one logical operation the same
+   * `externalId`; each attempt is still its own billed row with its own
+   * `attemptId`, and the library never deduplicates provider calls.
    */
-  idempotencyKey?: string
-  /** Optional caller-owned correlation id persisted on the record. */
   externalId?: string
   /**
    * Optional opt-in input contract for the `generate()` path (D3).
@@ -406,6 +428,25 @@ export interface Citation {
   url: string
   title?: string
   sourceName?: string
+  /**
+   * Whether the answer text itself cites this source: `true` when the provider
+   * ties the source to a span of the text, `false` when the provider reports
+   * citing information and this source is not part of it (it was returned but
+   * no span points at it; Gemini with `groundingSupports`). Absent when the
+   * provider does not say: xAI never sets `false`, because a `0`/`0` annotation
+   * means "no inline marker range reported", not "not cited".
+   */
+  cited?: boolean
+  /**
+   * The span of `LlmResult.text` the provider ties this source to, as UTF-16
+   * code unit offsets (`start` inclusive, `end` exclusive, so
+   * `text.slice(start, end)` is the span). When a source backs several spans
+   * this is the first one; the provider's full mapping stays in
+   * `providerMetadata`. What the span covers is the provider's choice: Gemini
+   * gives the supported sentence, xAI gives its inline citation marker. Absent
+   * when the provider gives no usable span.
+   */
+  textRange?: { start: number; end: number }
 }
 
 /**
@@ -413,11 +454,23 @@ export interface Citation {
  * from succeeding. Warnings are never silently dropped — they appear on the
  * result and record.
  */
-export type Warning = {
-  type: 'other'
-  /** Free-form message for any other advisory. */
-  message: string
-}
+export type Warning =
+  | {
+      type: 'other'
+      /** Free-form message for any other advisory. */
+      message: string
+    }
+  | {
+      /**
+       * The model is announced to shut down ({@link ModelDescriptor.shutdownDate}),
+       * within 90 days or past the date. Emitted once per client and model, on the
+       * first successful call.
+       */
+      type: 'shutdown'
+      message: string
+      /** The announced shutdown date, `YYYY-MM-DD` (UTC). */
+      shutdownDate: string
+    }
 
 /**
  * Per-call token usage.
@@ -509,6 +562,49 @@ export interface Cost {
    * verbatim in the "unpriced" warning.
    */
   unpricedReason?: string
+  /**
+   * The total the provider itself reported billing for this call, in micro-USD,
+   * when it reports one (xAI's `cost_in_usd_ticks`). Informational: `microUsd`
+   * stays the library's own snapshot price and is never replaced by it. It is
+   * present even when `microUsd` is `null`, so a host can use the provider's
+   * figure for a call the snapshot cannot price.
+   *
+   * The engine compares the two totals and adds a warning when they differ by
+   * more than the per-lane rounding of the priced lanes: a drift means the
+   * pricing snapshot is stale or a lane is missing. A provider reports a total
+   * only, so there is no per-lane reconciliation.
+   */
+  providerReported?: { microUsd: number }
+}
+
+/**
+ * What a whole logical call cost across every attempt (retries and billed
+ * failures included), as far as the library could price it.
+ *
+ * - `microUsd` sums the micro-USD of the attempts that were priced. If any
+ *   priced attempt's `Cost.confidence` was `'estimated'` the sum is an
+ *   estimate too (read `Cost.confidence` per attempt on `Telemetry.onAttempt`).
+ * - `attempts` is the number of provider attempts that began.
+ * - `unpricedAttempts` counts attempts that were dispatched but have no priced
+ *   usage: a timeout, abort or connection failure that reported no usage, usage
+ *   the pricing source could not price, or an attempt still in flight when the
+ *   call ended. The provider may have billed them. Attempts known to cost nothing
+ *   (rejected before dispatch, a provider 400/401/429 or other HTTP error answer)
+ *   are not counted, unless the error says the provider had started work
+ *   (`LlmError.mayHaveBilled`).
+ *
+ * `unpricedAttempts > 0` means `microUsd` is a **lower bound**; `0` means every
+ * attempt is accounted for. The SQL sum of `cost_micro_usd` over the call's rows
+ * equals `microUsd` (NULL rows add nothing, and a failure that reported no usage
+ * leaves a row with no cost).
+ */
+export interface CallCost {
+  /** Micro-USD of the priced attempts, summed. */
+  microUsd: number
+  /** Provider attempts that began. */
+  attempts: number
+  /** Attempts dispatched with no priced usage; `> 0` makes `microUsd` a lower bound. */
+  unpricedAttempts: number
 }
 
 /**
@@ -527,6 +623,34 @@ export interface LlmResult {
    * Present only when `request.output.jsonSchema` was supplied.
    */
   outputParsed?: boolean
+  /**
+   * The assistant's output as an ordered message (`role: 'assistant'`): the
+   * representable output parts **in provider order** — text parts kept
+   * separate, tool calls with their id, name and arguments. Provider parts with
+   * no {@link Part} representation (thought parts) are omitted, so part
+   * indices are defined over `message.parts` after that omission. Present on
+   * every successful result; `text` and `toolCalls` are conveniences derived
+   * from the same output.
+   *
+   * Append it to history exactly as returned when {@link continuation} is
+   * `'history'`; never replay it when `'state'` (see {@link continuation}).
+   */
+  message: Message
+  /**
+   * How the next turn of a tool loop is sent, repeated from the model
+   * descriptor's `capabilities.continuation` so a host does not need a registry
+   * lookup:
+   *
+   * - `'history'` — append {@link message} to the history, send the full
+   *   history, and pass {@link transientProviderState} back when present.
+   * - `'state'` — {@link transientProviderState} already holds the provider's
+   *   output; send **only the new messages** plus the state. {@link message}
+   *   is for display and the host's own storage and must not be replayed.
+   *
+   * The next turn goes to the same `provider` and the same `model` string the
+   * host sent (a declared alias stays an alias).
+   */
+  continuation: 'history' | 'state'
   /** Raw text content from the model. */
   text?: string
   /**
@@ -542,7 +666,18 @@ export interface LlmResult {
    * Absent when the model is not in the pricing table.
    */
   cost?: Cost
-  /** The model identifier as returned by the provider (may differ from requested). */
+  /**
+   * What the whole call cost, across every attempt: see {@link CallCost}.
+   * `cost` is the successful attempt alone. Present whenever at least one
+   * attempt ran. When `callCost.unpricedAttempts > 0`, `callCost.microUsd` is a
+   * lower bound. Per-attempt detail is on `Telemetry.onAttempt` and in the ledger.
+   */
+  callCost?: CallCost
+  /**
+   * The model identifier as returned by the provider (may differ from the
+   * requested string, for example a dated snapshot behind an alias). Do not
+   * route on it: send the next turn with the `model` string you sent.
+   */
   model: string
   /** Provider-specific model version string (e.g. `"gemini-2.5-pro-001"`). */
   modelVersion?: string
@@ -577,7 +712,11 @@ export interface LlmResult {
    * Stored as JsonValue to avoid a hard coupling to provider-specific types.
    */
   providerMetadata?: JsonValue
-  /** Opaque provider continuation state. The caller owns secure storage and replay. */
+  /**
+   * Opaque provider continuation state, scoped to the provider and bound to the
+   * requested model. The caller owns secure storage and replay; pass it back
+   * with the next turn as {@link continuation} says.
+   */
   transientProviderState?: JsonValue
   /**
    * Library-assigned stable identifier for this logical call.

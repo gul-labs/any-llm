@@ -3,7 +3,7 @@
  *
  * This module provides `computeCost` — a **pure function** with zero
  * provider/tier vocabulary. Core has no pricing tables and no tier names
- * (`flex`/`standard`/`batch` are Google's, not core's): every provider
+ * (`flex`/`standard` are Google's, not core's): every provider
  * package owns its own rates table and supplies a lookup that already
  * resolved the concrete per-tier {@link ModelRates}. This is the seam that
  * lets a new provider ship pricing with zero core changes — see
@@ -35,7 +35,7 @@
  * @module
  */
 
-import type { Cost, Usage } from './types.js'
+import type { Cost, Usage, Warning } from './types.js'
 import type { ModelRates } from './pricing.js'
 
 /**
@@ -49,8 +49,8 @@ import type { ModelRates } from './pricing.js'
  * never multiplies a standard snapshot by a factor, because some providers
  * publish a cached rate that is not a flat fraction of standard.
  *
- * Provider packages own the actual lookup strategy (exact match, longest-
- * prefix match, etc.) against their own rates table. Core calls this once
+ * Provider packages own the actual lookup against their own rates table: an
+ * exact match on the descriptor's pricing key, never a prefix (ADR-033). Core calls this once
  * on the priced path. On the unpriced path with a defined tier it calls
  * again with `undefined` so an unknown model is not reported as an unknown
  * tier.
@@ -120,7 +120,7 @@ function selectRates(
  * @param model - Model identifier string used for routing (e.g. `"gemini-2.5-pro"`).
  * @param usage - GROSS token usage for the call.
  * @param tier - Opaque, provider-defined service tier string (e.g. `'flex'`,
- *   `'standard'`, `'batch'`). `undefined` means "no tier specified"; the
+ *   `'standard'`). `undefined` means "no tier specified"; the
  *   lookup resolves that to the provider's standard rates. A *defined* tier
  *   the lookup does not price is never mapped to `standard` (reject-don't-map).
  * @param rates - Caller-supplied rates lookup (see {@link CostRatesLookup}).
@@ -185,5 +185,41 @@ export function computeCost(
       output: outputCost,
       tools: 0,
     },
+  }
+}
+
+/**
+ * Compares the library's priced total with the total the provider reported
+ * (`Cost.providerReported`) and returns a warning when they drift apart.
+ *
+ * Only totals are compared: a provider reports no lanes. Each lane is rounded to
+ * whole micro-USD independently, so it can carry up to 0.5 µUSD of rounding even
+ * when it rounded to 0, and the provider's figure is converted with the same
+ * rounding. A lane can carry rounding when it has a non-zero amount or the usage
+ * has tokens for it (billable input, cached input, output); the tolerance is 1 µUSD
+ * for each such lane, minimum 1. A larger gap means the snapshot's rates are stale
+ * or a billed lane is not priced. `undefined` when there is nothing to compare
+ * (unpriced, or the provider reported no total) or the totals agree within that
+ * tolerance.
+ *
+ * @internal
+ */
+export function providerCostDriftWarning(cost: Cost, usage: Usage): Warning | undefined {
+  if (cost.microUsd === null || cost.providerReported === undefined) return undefined
+  const cached = usage.cachedInputTokens ?? 0
+  const lanes =
+    Number(cost.details.input !== 0 || usage.inputTokens - cached > 0) +
+    Number(cost.details.cached !== 0 || cached > 0) +
+    Number(cost.details.output !== 0 || usage.outputTokens > 0) +
+    Number(cost.details.tools !== 0)
+  const tolerance = Math.max(1, lanes)
+  const difference = cost.providerReported.microUsd - cost.microUsd
+  if (Math.abs(difference) <= tolerance) return undefined
+  return {
+    type: 'other',
+    message:
+      `cost drift: the provider reported ${cost.providerReported.microUsd} µUSD but pricing snapshot ` +
+      `${cost.pricingVersion} computed ${cost.microUsd} µUSD (difference ${difference}, tolerance ${tolerance} ` +
+      `for ${lanes} lane${lanes === 1 ? '' : 's'} that can carry rounding); the snapshot's rates may be stale or a billed lane is not priced.`,
   }
 }

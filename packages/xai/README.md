@@ -5,39 +5,42 @@ xAI Grok provider adapter for any-llm. A thin mapping layer over the `openai` np
 ## Install
 
 ```bash
-pnpm add @gullabs/xai @gullabs/core openai  # peer: openai ^6 || ^7
+pnpm add @gullabs/xai @gullabs/core openai  # peer: openai ^7
 ```
 
-**Peer dependency:** `openai ^6 || ^7`
+**Peer dependency:** `openai ^7`
 
 xAI has no first-party TypeScript SDK. xAI's own quickstart recommends using the `openai` npm package with a `baseURL` override pointed at xAI's endpoint — that is the path this adapter takes. `buildXaiClient` is the only place in `packages/xai/src` that imports `openai`, so the rest of the adapter (and its tests) stay decoupled from the real SDK via the structural `XaiClientLike` interface.
 
 ## Key exports
 
-| Export                  | What it is                                                                                                           |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `xaiProvider(opts?)`    | `ProviderPlugin` factory — bundles the adapter, `grok-4.5` / `grok-4.6` / `grok-4.7` descriptors, and pricing source |
-| `xaiAdapter(opts?)`     | Creates the `ProviderAdapter` for xAI                                                                                |
-| `XaiAdapterOptions`     | `{ client?: XaiClientLike }` — inject a pre-built or fake client                                                     |
-| `XaiClientLike`         | Structural interface the adapter depends on (satisfied by real SDK and fakes)                                        |
-| `buildXaiClient(auth)`  | Builds the real `openai`-SDK-backed client from `AuthMaterial`, pointed at xAI's base URL                            |
-| `classifyXaiError(err)` | Classifies a raw thrown error into a typed `LlmError`, including xAI's 400-for-auth quirk                            |
-| `grok45ModelDescriptor` | The `grok-4.5` `ModelDescriptor`                                                                                     |
-| `grok46ModelDescriptor` | The `grok-4.6` `ModelDescriptor`                                                                                     |
-| `grok47ModelDescriptor` | The `grok-4.7` `ModelDescriptor`                                                                                     |
-| `xaiModelDescriptors`   | Every model descriptor this package contributes (`grok-4.5`, `grok-4.6`, `grok-4.7`)                                 |
-| `xaiRegistry`           | Pre-built `ModelRegistry` over `xaiModelDescriptors`                                                                 |
-| `xaiPricingSource()`    | Built-in xAI `PricingSource` port implementation, backed by `XAI_PRICING`                                            |
-| `XAI_PRICING`           | Frozen xAI pricing snapshot (µUSD per million tokens)                                                                |
-| `XaiModelRates`         | Per-model rate entry type (`inputPerM`, `cachedPerM`, `outputPerM`, optional `gt200k`)                               |
-| `Grok45ConfigSchema`    | Strict Zod config schema for `grok-4.5`                                                                              |
-| `Grok46ConfigSchema`    | Strict Zod config schema for `grok-4.6`                                                                              |
-| `Grok47ConfigSchema`    | Strict Zod config schema for `grok-4.7`                                                                              |
-| `XaiProviderOptions`    | Typed `providerOptions.xai` shape for cache key, search tools, tool choice, turn cap, and parallel calls             |
-| `XaiFileStore`          | Files API store: upload (TTL), get, list, idempotent delete, content                                                 |
-| `XaiFileHandle`         | `{ id, filename?, bytes?, expiresAt?, … }` returned by the store                                                     |
-| `FileDeleteOptions`     | `{ failClosed?, signal? }` — opt-in fail-closed delete for durable release gates                                     |
-| `XAI_FILE_TTL_*`        | TTL bounds (`3600`…`2592000` seconds) and `XAI_FILE_MAX_BYTES` (48 MiB)                                              |
+| Export                             | What it is                                                                                                           |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `xaiProvider(opts?)`               | `ProviderPlugin` factory — bundles the adapter, `grok-4.5` / `grok-4.6` / `grok-4.7` descriptors, and pricing source |
+| `xaiAdapter(opts?)`                | Creates the `ProviderAdapter` for xAI                                                                                |
+| `XaiAdapterOptions`                | `{ client?, transport? }` — inject a pre-built or fake client, or a `fetch` transport (proxy, custom fetch)          |
+| `XaiTransport`                     | `{ fetch, fetchOptions? }` — host transport passed to the SDK client (see "Long calls and timeouts")                 |
+| `XAI_DEFAULT_TIMEOUT_MS`           | Request deadline when `timeoutMs` is unset: 3 600 000 ms (one hour)                                                  |
+| `XAI_TIMEOUT_BUFFER_MS`            | Added to `timeoutMs` for the request deadline: 5 000 ms                                                              |
+| `XaiClientLike`                    | Structural interface the adapter depends on (satisfied by real SDK and fakes)                                        |
+| `buildXaiClient(auth, transport?)` | Builds the real `openai`-SDK-backed client from `AuthMaterial`, pointed at xAI's base URL                            |
+| `classifyXaiError(err)`            | Classifies a raw thrown error into a typed `LlmError`, including xAI's 400-for-auth quirk                            |
+| `grok45ModelDescriptor`            | The `grok-4.5` `ModelDescriptor`                                                                                     |
+| `grok46ModelDescriptor`            | The `grok-4.6` `ModelDescriptor`                                                                                     |
+| `grok47ModelDescriptor`            | The `grok-4.7` `ModelDescriptor`                                                                                     |
+| `xaiModelDescriptors`              | Every model descriptor this package contributes (`grok-4.5`, `grok-4.6`, `grok-4.7`)                                 |
+| `xaiRegistry`                      | Pre-built `ModelRegistry` over `xaiModelDescriptors`                                                                 |
+| `xaiPricingSource()`               | Built-in xAI `PricingSource` port implementation, backed by `XAI_PRICING`                                            |
+| `XAI_PRICING`                      | Frozen xAI pricing snapshot (µUSD per million tokens)                                                                |
+| `XaiModelRates`                    | Per-model rate entry type (`inputPerM`, `cachedPerM`, `outputPerM`, optional `gt200k`)                               |
+| `Grok45ConfigSchema`               | Strict Zod config schema for `grok-4.5`                                                                              |
+| `Grok46ConfigSchema`               | Strict Zod config schema for `grok-4.6`                                                                              |
+| `Grok47ConfigSchema`               | Strict Zod config schema for `grok-4.7`                                                                              |
+| `XaiProviderOptions`               | Typed `providerOptions.xai` shape for cache key, search tools, tool choice, turn cap, and parallel calls             |
+| `XaiFileStore`                     | Files API store: upload (TTL), get, list, idempotent delete, content                                                 |
+| `XaiFileHandle`                    | `{ id, filename?, bytes?, expiresAt?, … }` returned by the store                                                     |
+| `FileDeleteOptions`                | `{ failClosed?, signal? }` — opt-in fail-closed delete for durable release gates                                     |
+| `XAI_FILE_TTL_*`                   | TTL bounds (`3600`…`2592000` seconds) and `XAI_FILE_MAX_BYTES` (48 MiB)                                              |
 
 ## Quick example
 
@@ -63,6 +66,11 @@ const result = await client.generate(
 ### Function-calling seam (no agent loop)
 
 ```ts
+import { composeProviders, createClient } from '@gullabs/core'
+import { xaiProvider } from '@gullabs/xai'
+
+const client = createClient({ ...composeProviders([xaiProvider()]) })
+
 const tools = [
   {
     name: 'get_temperature',
@@ -95,17 +103,7 @@ const replay = await client.generate(
     model: 'grok-4.6',
     messages: [
       { role: 'user', parts: [{ kind: 'text', text: 'Temperature in SF?' }] },
-      {
-        role: 'assistant',
-        parts: [
-          {
-            kind: 'tool-call',
-            toolCallId: call.toolCallId,
-            toolName: call.toolName,
-            args: call.args,
-          },
-        ],
-      },
+      first.message, // grok-4.6 continues by history: append the assistant message as returned
       {
         role: 'user',
         parts: [
@@ -125,6 +123,62 @@ const replay = await client.generate(
 // replay.text — model answer after the host dispatched the tool
 ```
 
+**Two continuation rules.** `result.continuation` says which one a model uses, and
+`result.message` is the ordered assistant message (text and calls in provider order; reasoning and
+server-tool items are not in it):
+
+- `'history'` (grok-4.5, grok-4.6): append `result.message` and send the full history, as above.
+- `'state'` (grok-4.7): send **only the new messages** plus `result.transientProviderState`, and do
+  not replay `result.message`. The loop:
+
+```ts
+import { composeProviders, createClient } from '@gullabs/core'
+import type { JsonValue, Message } from '@gullabs/core'
+import { xaiProvider } from '@gullabs/xai'
+
+const client = createClient({ ...composeProviders([xaiProvider()]) })
+const tools = [
+  {
+    name: 'get_temperature',
+    description: 'Get current temperature for a location',
+    inputJsonSchema: { type: 'object', properties: { location: { type: 'string' } } },
+  },
+]
+
+const base = { provider: 'xai', model: 'grok-4.7', tools } as const
+let messages: Message[] = [
+  { role: 'user', parts: [{ kind: 'text', text: 'Temperature in SF?' }] },
+]
+let state: JsonValue | undefined
+
+for (;;) {
+  const result = await client.generate(
+    {
+      ...base,
+      messages,
+      ...(state !== undefined ? { transientProviderState: state } : {}),
+    },
+    { auth: { apiKey: 'YOUR_XAI_API_KEY' } },
+  )
+  if (result.toolCalls === undefined) break // result.text is the answer
+  messages = [
+    {
+      role: 'user',
+      parts: result.toolCalls.map((c) => ({
+        kind: 'tool-result' as const,
+        toolCallId: c.toolCallId,
+        toolName: c.toolName,
+        result: { temperature: 59 }, // run the tool
+      })),
+    },
+  ]
+  state = result.transientProviderState // required for 'state' continuation
+}
+```
+
+`@gullabs/testing`'s `runToolLoop` follows `result.continuation` for you in host tests. Use the same
+`model` string on every turn (an alias included).
+
 ## grok-4.5, grok-4.6, and grok-4.7
 
 The default registry ships three canonical models (500k token context window each). They route through this adapter and support:
@@ -134,10 +188,10 @@ The default registry ships three canonical models (500k token context window eac
   - `grok-4.6` and `grok-4.7`: `admittedReasoningEfforts: ['low', 'medium', 'high', 'xhigh']`. `'none'` is rejected.
 - **Structured output** — native. `output.jsonSchema` maps to the Responses API's `text.format` field with `{ type: 'json_schema', name, schema, strict: true }`, **not** `response_format` — this differs from OpenAI's own convention for the same underlying concept.
 - **Structured output with built-in search** — admitted on all three models (`grok-4.6` in fixture 18; `grok-4.5` and `grok-4.7` live-verified 2026-10-02 in fixture 32). The adapter rejects this combination on descriptors without `structuredOutputWithTools`.
-- **Output schemas are standard JSON Schema.** A nullable field lists `'null'` in `type` (`type: ['string', 'null']`). The adapter rejects the OpenAPI `nullable` keyword and uppercase type names (`STRING`, `OBJECT`) with `bad_request` before dispatch, naming the path, and never rewrites a schema. Live on 2026-10-02 (fixture 34): xAI accepted `nullable: true` and ignored it on all three models, so the model could not return `null` and wrote `""`, `0` or the string `"null"`; uppercase type names failed at xAI with HTTP 400.
-- **`strict: true` performs no OpenAI-style compile-time schema validation, as of the 2026-07-09 live probes.** 2026-07-09 live verification against the real xAI Responses API — 13 single-variant probes plus 1 combined probe (14 calls total, all accepted HTTP 200; the combined probe is recorded as fixture `10-non-strict-schema-accepted.json`) — verified that `text.format` with `strict: true` accepted every one of the following schema shapes that OpenAI's own strict mode rejects at compile time: schemas (root and nested) missing `additionalProperties: false`; properties omitted from `required` (optional properties); `format`, `minLength`, `pattern`, and `default` keywords; `anyOf`; `$defs`/`$ref`; `enum`/`const`; and nullable unions (`type: [T, 'null']`). `strict: false` on the same surface showed no observed behavioral divergence from `strict: true`. This adapter forwards schemas to xAI verbatim — no rewriting, no OpenAI-strict preflight, and no injection of `additionalProperties: false` or `required` completion — so OpenAI-strict schema rewriting (including `@gullabs/codex-cli`'s `toOpenAiStrictOutputSchema` helper) is unnecessary for xai as of that verification date. The one preflight added since is the dialect check in the bullet above. (Reject-don't-map still applies to genuinely invalid input the xai schema/types layer itself rejects; this note is only about strict-mode compile-time schema-shape enforcement.) `packages/xai/src/__fixtures__/10-non-strict-schema-accepted.json` records one live example combining three of these — missing root `additionalProperties: false`, an optional property, and a `format` keyword — in a single accepted call.
-- **Sampling** — `temperature` and `topP` are forwarded verbatim. No `topK`.
-- **`max_output_tokens`** — forwarded only when the caller sets `maxOutputTokens`. The value includes both output and reasoning tokens and defaults to 128,000 when unset (docs read 2026-10-02). Truncation surfaces as `finishReason: 'length'`, not an error.
+- **Output and tool schemas are standard JSON Schema, and only the keywords xAI enforces are accepted (ADR-034).** A nullable field lists `'null'` in `type` (`type: ['string', 'null']`). The adapter rejects the OpenAPI `nullable` keyword, uppercase type names (`STRING`, `OBJECT`), and any keyword xAI would accept but not enforce, with `bad_request` before dispatch, naming the path (`output.jsonSchema...` or `tools[i].inputJsonSchema...`), and never rewrites a schema. Per xAI's structured-outputs guide (read 2026-10-03): `oneOf` behaves as `anyOf` (rejected, use `anyOf`); `allOf`, `not`, `if`/`then`/`else`, `multipleOf`, `uniqueItems`, `patternProperties` and any `propertyNames` other than `{ type: 'string' }` (what `z.record(z.string(), X)` emits; it constrains nothing and is accepted) are rejected; `$ref` / `$defs` are accepted **non-circular only**, so a recursive schema (Zod's recursive type emits `$ref: '#'`) is rejected; `format` is accepted for `date`, `time`, `date-time`, `email`, `uuid`, `ipv4`, `ipv6` and `uri`; `minLength`/`maxLength` up to 2,048, `minItems`/`maxItems` up to 256 and `minProperties`/`maxProperties` up to 64 are enforced and a larger value is rejected; `pattern` must stay inside xAI's regex subset (no lookaround, backreferences, property escapes anywhere including inside a character class such as `[\p{L}]`, word boundaries or inline modifiers); `items: false` (Zod's `z.tuple`) is undocumented and rejected. `const`, `enum`, `anyOf`, `prefixItems`, `exclusiveMinimum`/`exclusiveMaximum` and `additionalProperties` are accepted, and annotations always are. Zod's `z.literal` emits `const`, which xAI accepts; it is outside the portable subset only because Google ignores it. Lint a schema that must also run on Gemini 3.x with `assertPortableJsonSchema` from `@gullabs/core` (it does not cover Gemma's stricter profile). Malformed schemas (a value in a schema position that is not a schema, `maxLength: '3000'`, an invalid `pattern`, a cyclic JavaScript object, nesting deeper than 128) are `bad_request` with the path. Evidence gaps: the guide does not list `properties`, `required`, `items` or `prefixItems` as keywords, and no xAI capture exercised `additionalProperties` as a schema (or Zod's `additionalProperties: {}`); those are forwarded on the strength of the documented types and the `additionalProperties` entry. Zod's `startsWith`, `endsWith` and `includes` emit a non-standard `format` next to a `pattern`; the `format` is rejected, so chain `.meta({ format: undefined })` after the check or write `z.string().regex(...)`. Live on 2026-10-02 (fixture 34): xAI accepted `nullable: true` and ignored it on all three models, so the model could not return `null` and wrote `""`, `0` or the string `"null"`; uppercase type names failed at xAI with HTTP 400.
+- **`strict: true` performs no OpenAI-style compile-time schema validation, as of the 2026-07-09 live probes.** 2026-07-09 live verification against the real xAI Responses API — 13 single-variant probes plus 1 combined probe (14 calls total, all accepted HTTP 200; the combined probe is recorded as fixture `10-non-strict-schema-accepted.json`) — verified that `text.format` with `strict: true` accepted every one of the following schema shapes that OpenAI's own strict mode rejects at compile time: schemas (root and nested) missing `additionalProperties: false`; properties omitted from `required` (optional properties); `format`, `minLength`, `pattern`, and `default` keywords; `anyOf`; `$defs`/`$ref`; `enum`/`const`; and nullable unions (`type: [T, 'null']`). `strict: false` on the same surface showed no observed behavioral divergence from `strict: true`. This adapter forwards schemas to xAI verbatim — no rewriting, no OpenAI-strict preflight, and no injection of `additionalProperties: false` or `required` completion — so OpenAI-strict schema rewriting (including `@gullabs/codex-cli`'s `toOpenAiStrictOutputSchema` helper) is unnecessary for xai as of that verification date. The preflight added since is the dialect and enforced-keyword check in the bullet above; "accepted" in those probes meant HTTP 200, not that xAI enforced the keyword. (Reject-don't-map still applies to genuinely invalid input the xai schema/types layer itself rejects; this note is only about strict-mode compile-time schema-shape enforcement.) `packages/xai/src/__fixtures__/10-non-strict-schema-accepted.json` records one live example combining three of these — missing root `additionalProperties: false`, an optional property, and a `format` keyword — in a single accepted call.
+- **Sampling** — `temperature` (0 to 2, the range xAI documents) and `topP` (0 to 1; xAI documents no range, a probability mass outside it is meaningless) are forwarded verbatim; a value outside the range is rejected by the config schema, never clamped. No `topK`.
+- **`max_output_tokens`** — forwarded only when the caller sets `maxOutputTokens`. The value includes both output and reasoning tokens and defaults to 128,000 when unset (docs read 2026-10-02). Truncation surfaces as `finishReason: 'length'`, not an error. Every model's `limits` are `contextWindow: 500000` (xAI model pages, read 2026-10-03: "Context window: 500,000 tokens") and `maxOutputTokens: null`: xAI documents no output limit, so none is invented and the config schema applies no cap. xAI has accepted far larger values than the window (live: 150,000 on 2026-10-02, 100,000,000 earlier), so the provider decides; `null` does not mean unlimited. Replace it with the real figure when xAI documents one (`BACKLOG.md`).
 - **No penalties/stop** — `presence_penalty`, `frequency_penalty`, and `stop` are not in the config schema at all; xAI hard-rejects these on reasoning models, so the schema never admits them (reject-don't-map).
 - **Service tiers** — all three models admit `serviceTier: 'priority'` (Responses `service_tier: "priority"`, billed at 2×). Grok 4.5 was captured live on 2026-09-25 and Grok 4.6 on 2026-08-12. `'flex'` / `'standard'` / `'batch'` are rejected — xAI silently remaps unknown tiers to `default`, so this library never forwards them.
 
@@ -148,9 +202,13 @@ Thin REST wrapper over xAI Files (`POST/GET/DELETE /v1/files`). Auth is injected
 ```ts
 import { XaiFileStore } from '@gullabs/xai'
 
+declare const pdfBytes: Uint8Array
+declare const db: { markReleased(fileId: string): Promise<void> } // your durable store
+declare const logger: { warn(fields: object, message: string): void }
+
 const store = new XaiFileStore({
   auth: { apiKey: 'YOUR_XAI_API_KEY' },
-  // Optional: onDeleteError, logger, fetch, baseUrl
+  // Optional: onDeleteError, logger, fetch, baseUrl, timeoutMs
 })
 
 const handle = await store.upload({
@@ -189,10 +247,13 @@ try {
 **Hidden input tokens:** grok-4.5, grok-4.6, and grok-4.7 bill about 1.3k hidden input tokens per request (1,532 for a one-line prompt versus 208 in July; cached on repeats).
 
 **grok-4.7 replay:** the adapter sends `store: false`. Each result returns
-`result.transientProviderState`, containing the complete wire input and
-response output in provider order, including opaque `encrypted_content`,
-messages, and server-tool items. Pass that object unchanged as
-`request.transientProviderState` on the next request. This state is not written
+`result.transientProviderState` as `{ xai: { model, input } }`: the complete wire
+input and response output in provider order, including opaque `encrypted_content`,
+messages, and server-tool items, scoped under the provider key and bound to the
+model string you sent. Pass that object unchanged as
+`request.transientProviderState` on the next request. State from another
+provider, or bound to another model string (an alias is a different string from
+its canonical id), is `bad_request`. This state is not written
 to the call ledger. It is returned even for one-shot calls and can contain the
 full prompt, inline media, and encrypted reasoning. Strip it before logging or
 caching a whole result; store it securely only when continuation is needed.
@@ -201,19 +262,19 @@ already contains prior turns. Use the new state returned by each subsequent
 result. The adapter rejects assistant history alongside state, an empty new
 message list, an unknown tool-result id, or a mismatched model. Without state,
 a request starts a fresh conversation and may include text-only assistant
-examples; function-call history requires state. Live fixtures
+examples; function-call history requires state (`continuation: 'state'`). Live fixtures
 `28-grok-4-7-replay.json`, `30-grok-4-7-search-replay.json`, and
 `31-grok-4-7-third-turn.json` cover function replay and follow-ups that replay
 assistant message and web-search items.
 
-**Billing note:** attaching files on Responses implicitly enables xAI's `attachment_search` agentic tool. `web_search_calls` is billed per call. Since 2026-09-21, x_search is billed from `x_posts_fetched` and `x_users_fetched`, not `x_search_calls`. The attachment_search counter is **not** live-pinned (P-X2); a `file-ref` call sets synthetic `usage.details.attachment_search_unpinned = 1` and `Cost.confidence: 'estimated'`. When a required server-tool counter is absent, the snapshot cost is unpriced (`microUsd: null`) rather than understating an unknown fee. The provider's billed `cost_in_usd_ticks` remains in raw usage for separate reconciliation; it is not represented as a rate-snapshot-derived `Cost`.
+**Billing note:** attaching files on Responses implicitly enables xAI's `attachment_search` agentic tool. `web_search_calls` is billed per call. Since 2026-09-21, x_search is billed from `x_posts_fetched` and `x_users_fetched`, not `x_search_calls`. The attachment_search counter is **not** live-pinned (the probe is blocked by a Zero Data Retention key, see `BACKLOG.md`); a `file-ref` call sets synthetic `usage.details.attachment_search_unpinned = 1` and `Cost.confidence: 'estimated'`. Image and X video understanding are token-priced by xAI (pricing page, re-read 2026-10-03: "you will not be charged for the tool invocation itself"; image search is billed as web search) but the page names no counter for them and none has been captured: a counter the snapshot does not know keeps the call `'estimated'`, and when the request enabled image or video understanding the warning says the priced token cost may be complete instead of claiming it understates. When a required server-tool counter is absent, the snapshot cost is unpriced (`microUsd: null`) rather than understating an unknown fee. The provider's billed `cost_in_usd_ticks` remains in raw usage for separate reconciliation; it is not represented as a rate-snapshot-derived `Cost`.
 
 Fixture `19-x-search.json` was captured on 2026-08-24, before the billing
 change. It has only `x_search_calls`; the fixture test retains its actual
 billed total in usage but leaves snapshot cost unpriced.
 Live 2026-09-26 fixtures `26-x-posts.json` and `27-x-users.json` pin both
 item counters, including explicit zero counts, and reconcile snapshot cost to
-the provider's billed ticks. P-X2 attachment counter verification remains
+the provider's billed ticks. Attachment counter verification remains
 blocked: the available Zero Data Retention key returned 403 for file upload
 and 400 for a public URL attachment (`29-attachment-zdr-blocked.json`).
 
@@ -223,8 +284,9 @@ and 400 for a public URL attachment (`29-attachment-zdr-blocked.json`).
 
 All three models accept image input as an `inline-media` or `file-uri` `Part`, and document attachments as a `file-ref` `Part`:
 
-- **`inline-media`** — only `image/jpeg` and `image/png` are accepted; anything else throws `bad_request`. The decoded payload must be at most 20 MiB (xAI's documented inline-image ceiling); larger images throw `bad_request` before the request is sent.
-- **`file-uri`** — only accepted when the URI is a public `http(s)://` URL **and** the declared `mimeType` is jpg/png. A provider-hosted URI from another provider — for example a Gemini Files API URI (`https://generativelanguage.googleapis.com/...`) — is technically `https://` but is not dereferenceable by xAI and is not portable across providers. The adapter rejects it rather than trying to map or proxy it (reject-don't-map).
+- **Admitted types.** `capabilities.inputMimeTypes` is `['image/jpeg', 'image/png']` on every model (xAI's image-understanding page, read 2026-10-03: "jpg/jpeg or png", 20 MiB). WebP, GIF and the non-standard `image/jpg` are `bad_request` naming `messages[i].parts[j]` before dispatch, as is an empty type. The page lists file extensions (`jpg/jpeg`), not media types; the registered types for them are `image/jpeg` and `image/png`, so `image/jpg` is rejected rather than treated as an alias (it was never documented as a media type). The match ignores case and `; parameters` (`IMAGE/PNG` passes) and the string you sent goes to xAI unchanged; nothing is mapped.
+- **`inline-media`** — only the admitted types are accepted; anything else throws `bad_request`. The decoded payload must be at most 20 MiB (xAI's documented inline-image ceiling); larger images throw `bad_request` before the request is sent.
+- **`file-uri`** — only accepted when the URI is a public `http(s)://` URL **and** the declared `mimeType` is an admitted type. A provider-hosted URI from another provider — for example a Gemini Files API URI (`https://generativelanguage.googleapis.com/...`) — is technically `https://` but is not dereferenceable by xAI and is not portable across providers. The adapter rejects it rather than trying to map or proxy it (reject-don't-map).
 - **`file-ref`** — maps to Responses `{ type: 'input_file', file_id }`. Upload first with `XaiFileStore`, then pass `{ kind: 'file-ref', fileId: handle.id }`. Empty ids throw `bad_request`.
 - **Undocumented minimum size** — xAI enforces an undocumented server-side minimum image size (observed ~8px/side, ~512 total px). This adapter does **not** pre-validate pixel dimensions; a too-small image surfaces as a live `bad_request` error from the xAI API itself, classified normally by `classifyXaiError`, not rejected client-side.
 
@@ -242,11 +304,17 @@ xAI caching is automatic — there is no explicit cache-create/cache-store API c
 | `x_posts_fetched`                 | $5 / 1,000 posts     |
 | `x_users_fetched`                 | $10 / 1,000 profiles |
 
-Enable Live Search with `providerOptions.xai.tools` (`web_search` / `x_search`). Citations land on `result.citations`.
+`cost_in_usd_ticks` (1 tick = 1e-10 USD) is xAI's own billed total. It is converted to whole µUSD (the same rounding as each lane) and reported as `Cost.providerReported.microUsd`; `Cost.microUsd` stays this snapshot's price. When the two totals differ by more than 1 µUSD per lane that can carry rounding (a lane with a non-zero amount or with tokens, even one that rounded to zero), the call carries a `cost drift` warning: the snapshot's rates are stale or a billed lane is not priced. Only totals are compared, because xAI reports no lanes. A call the snapshot cannot price keeps `microUsd: null` and still carries `providerReported`. Server-tool counters (`usage.server_side_tool_usage_details`) are classified by an explicit table, not by name shape. A non-zero counter for a tool xAI bills per use that this snapshot has no rate for (`code_interpreter_calls`, `file_search_calls`, `document_search_calls`, `image_generation_calls`), or any counter the table does not know, makes the call `confidence: 'estimated'` with a warning, because xAI may bill it and the snapshot cannot. Token-only tools have no invocation fee, so their tokens are the whole cost and the call stays exact: `mcp_calls` (Remote MCP). xAI's pricing page also lists image understanding and X video understanding as token-only, but no counter for them has been captured (xAI's tools docs name `SERVER_SIDE_TOOL_VIEW_IMAGE` in a different usage field), so none is in the table. Source: https://docs.x.ai/developers/pricing, read 2026-10-03; the page carries no date.
+
+Every result's `providerMetadata.xai` carries `requestId` (the `x-request-id` header; quote it in a support ticket) and `rateLimitRemaining` (the `x-ratelimit-remaining-*` response headers, verbatim, lower-cased names) when the response had them. The built-in client reads them through the SDK's `.withResponse()`; a custom `XaiClientLike` reports them by calling `options.onResponse`, and a client that does not (the fake) leaves the key out. The header names are pinned against real xAI response captures (the `headers` of fixtures 02, 12 and 16 to 23: `x-request-id`, `x-ratelimit-remaining-requests` and `x-ratelimit-remaining-tokens`, beside `x-ratelimit-limit-*`, which is a ceiling and is not kept). A failed call has no `providerMetadata`: its xAI request id is on the thrown error's `cause` (the SDK error, `error.cause.requestID`, with the response `headers`), which a test pins against a stubbed 500.
+
+Enable Live Search with `providerOptions.xai.tools` (`web_search` / `x_search`). Citations land on `result.citations`. An annotation with a non-empty range is an inline citation: `cited: true` and a `textRange` (UTF-16 offsets into `result.text`) that covers xAI's inline `[[N]](url)` marker. xAI indexes each range from the start of the `output_text` part that carries it (every captured message has one part), and the adapter treats the indices as UTF-16 code units; both are checked, because the slice must be exactly `[[N]](<that source's url>)`. When it is not (indices counted another way, for example around emoji, or an unexpected multi-part layout), the range is dropped, the source stays `cited: true`, and the result carries a warning: a `textRange` is never a guess. Whether xAI counts code points or UTF-16 around emoji is not captured, so such an answer may lose its ranges rather than get a wrong one.
+
+`cited` is never `false` on xAI. A zero-width (`0`/`0`) or missing range means xAI reported no inline marker range for that source, which is not the same as the answer not citing it: a captured X Search answer has inline `render_inline_citation` markup in its text while all three annotations are `0`/`0`, and structured answers have only `0`/`0` annotations. Read `cited: true` as "xAI gave an inline range", and a missing `cited` as "unknown", not "uncited". xAI's numeric marker title (`"1"`) is dropped when it equals the label of the source's own marker, so a real title that happens to be numeric (such as `"2024"`) is kept.
 
 ### Controlling the search tools
 
-```ts
+```ts no-check
 config: {
   providerOptions: {
     xai: {
@@ -260,9 +328,10 @@ config: {
 
 - **`toolChoice`** maps to the Responses `tool_choice` for the search tools. Left on `auto`, a model can answer without searching; `required` forces at least one search and `none` disables the declared tools. Live on 2026-10-02 (fixture 32), `required` ran 3 / 2 / 2 searches on grok-4.5 / 4.6 / 4.7 and `none` ran 0. It needs a non-empty `tools`, and the adapter rejects it together with function tools, file attachments or the request-level `toolChoice`: xAI takes one `tool_choice` per request and `required` means "at least one tool", which a function call or the implicit `attachment_search` would satisfy. Send it on every request; nothing carries over between calls.
 - **`maxTurns`** maps to the Responses `max_turns` (integer ≥ 1, needs `tools`). xAI documents it as the cap on agentic tool-calling turns. A turn can run several searches, so it is not a search count. **xAI did not enforce it as of 2026-10-02** (fixture 33): with `max_turns: 1` the three models still ran 10 to 17 searches over several rounds. The option is forwarded verbatim so hosts get the cap when xAI enforces it. Until then, state the search budget in the prompt and assert on the observed count.
-- **Observed count.** `result.usage.details.web_search_calls` is the number of web searches billed; `x_posts_fetched` and `x_users_fetched` are the X Search billing counters (items, not calls). All three persist to the ledger's token details. When no server tool ran, xAI reports `num_server_side_tools_used: 0` and omits the counters; the adapter prices that call exactly with no tool fee.
+- **`searchBudget`** (`{ maxWebSearchCalls?, maxXItems? }`, integers ≥ 1, at least one ceiling, needs `tools`; `maxWebSearchCalls` needs `web_search` and `maxXItems` needs `x_search`) is **never sent to xAI**, which has no per-call search ceiling. The config schema enforces the shape the adapter accepts (at least one ceiling, each ceiling's tool present), so a bad budget is `bad_request` at config validation. After the response the adapter compares xAI's counters with it: `web_search_calls` against `maxWebSearchCalls`, and `x_posts_fetched` plus `x_users_fetched` against `maxXItems`. Over budget, the result carries a warning naming each exceeded line and `usage.details.search_budget_exceeded = 1`; the result is still returned and priced, because the call is already billed. A counter xAI did not report cannot be compared and is never counted as over. It is a report, not a ceiling; keep `maxTurns` (above) and prompt the budget. Stopping a call in flight is later work (`BACKLOG.md`).
+- **Observed count.** `result.usage.details.web_search_requested` is `1` when the request enabled `web_search`, and `result.usage.details.web_search_calls` is the number of web searches billed (the same two names Google reports, ADR-035; an explicit "no server tool ran" reports `0`); `x_posts_fetched` and `x_users_fetched` are the X Search billing counters (items, not calls). All three persist to the ledger's token details. When no server tool ran, xAI reports `num_server_side_tools_used: 0` and omits the counters; the adapter reports `web_search_calls: 0` for a request that enabled `web_search` and prices that call exactly with no tool fee.
 - **Cost.** There is no enforceable search cap, and every search result is fed back as input. One uncapped grok-4.7 research call used 362k input tokens, which crosses the 200k long-context threshold, and cost about $1.07.
-  `countTokens` uses `POST /v1/tokenize-text` and returns `accuracy: 'lower-bound'` (text parts only; media / file parts are `bad_request`).
+  `countTokens` uses `POST /v1/tokenize-text` and returns `accuracy: 'lower-bound'` (text parts only; media / file parts are `bad_request`). It is bounded by `countTokensTimeoutMs` (default 60 s, `XAI_COUNT_TOKENS_TIMEOUT_MS`), after which it fails with a retryable `timeout`; a 429's `Retry-After` becomes `retryAfterMs` and `x-request-id` is in the message.
 
 | Model      | Tier                         | Input   | Cached input | Output   |
 | ---------- | ---------------------------- | ------- | ------------ | -------- |
@@ -275,6 +344,165 @@ config: {
 
 The `gt200k` long-context tier is selected by **gross** `inputTokens` (including cached), not billable input — at or above 200,000 tokens (`long_context_threshold`), as stated on [xAI's pricing page](https://docs.x.ai/developers/pricing). The adapter surfaces the echoed Responses `service_tier` (`'default'` or `'priority'`), so `price()` receives that served value instead of `undefined`. Custom xAI `PricingSource` implementations must price `'default'` at the standard list. Built-in `xaiPricingSource().price()` prices priority at 2× every token type after the cache discount. Fixture `23-grok-4-5-priority.json` confirms Grok 4.5's 2× total, and fixture `12-grok-4-6-xhigh-priority.json` confirms Grok 4.6; cached and `gt200k` legs follow the official 2×-after-cache-discount rule. `fast` is not admitted. Any other defined tier is unpriced (`microUsd: null`). Grok 4.5/4.6 list rates are pinned to `packages/xai/src/__fixtures__/14-v1-models-pricing.json` (live `GET /v1/models` 2026-08-12); Grok 4.7 rates come from the [September 21 release notes](https://docs.x.ai/developers/release-notes).
 
+## Long calls and timeouts
+
+Every call streams internally (ADR-040): `run()` sends `stream: true`, reads the server-sent events to the
+final one and returns the same result a non-streamed call would. While events keep flowing, Node's `fetch`
+(undici) does not hit its 300 s header or body timer on a long reasoning call. Public `stream()` is still on
+the ROADMAP; nothing about the streaming is visible to the caller.
+
+What was measured (live, 2026-10-03, Node's default `fetch` with no custom `Agent`): five streamed
+reasoning runs of 17 to 28 minutes on grok-4.5, grok-4.6 and grok-4.7 all completed, the first event
+arrived in about 2 s, and the **longest gap between events was 15 s**. Node's body timer measures the
+gap between chunks, so a 15 s gap is 5% of its 300 s limit. That is a measurement of synthetic puzzles, not a
+guarantee: only 3 of the 6 captures recorded an SSE comment (one each, at a 15 s gap), so a server heartbeat is
+not established, and a reasoning gap is the model's.
+
+**Not measured: a tool-using call that itself runs past 300 s.** The longest streamed run with
+`web_search` ended at 99 s (also a 15 s worst gap). **If your calls use `tools` and can run past 300 s
+without ANY streamed event, keep an undici transport** (below). For reasoning-only calls you can drop it.
+
+Three timers apply, and the adapter sets the first:
+
+| Timer                                     | Default    | What sets it                                                                              |
+| ----------------------------------------- | ---------- | ----------------------------------------------------------------------------------------- |
+| Request deadline (whole call)             | one hour   | The adapter: `timeoutMs + 5000`, or one hour when `timeoutMs` is unset                    |
+| Idle timer (no bytes at all)              | off        | `transport.idleTimeoutMs`, heartbeat comments included                                    |
+| Node `fetch` (undici) header + body timer | 300 s each | Only the host's `transport` raises them; while a stream sends, the body timer never fires |
+
+**What the deadline means for a stream.** The `openai` SDK's own `timeout` covers a stream only until the
+response headers arrive (checked in the SDK source and pinned by a test). The adapter's client therefore
+applies the same deadline to the rest of the stream with its own timer, so `timeoutMs + 5000` (or one
+hour) still bounds the **whole call**, not the time to first byte. It is not an idle timer: a stream that
+keeps sending is cut at the deadline too. The engine's own `timeoutMs` deadline sits 5 s ahead of it, so
+you see the engine's clean, retryable timeout with no `reason` (see Timeout errors do not retry). A caller `signal` aborts a stream in flight.
+
+**Bounding a half-open connection.** A NAT drop with no reset leaves a stream silent, and the deadline would
+hold it for up to an hour. `transport.idleTimeoutMs` (an integer from 1; off by default) ends a stream that
+sends no bytes for that long, heartbeat comments counted as bytes, as a non-retryable `timeout` with
+`reason: 'transport_timeout'`. Set it above the longest quiet gap you expect (live reasoning runs showed
+15 s; a tool phase can be quieter). It needs a `transport.fetch`; pass `fetch` itself when you only want the
+idle timer.
+
+The `transport` option stays for a proxy, mTLS or an egress policy (your own `fetch`), for the idle timer,
+and for the tool-using case above. **`fetch` must return the request's own `text/event-stream` response**:
+a `fetch` that buffers the answer into a JSON body (a record/replay or caching wrapper, a proxy that rewrites
+the response) fails every call with a non-retryable `bad_request` naming the cause (the call may have
+been billed upstream). To raise undici's timers, pass its own `fetch` with an `Agent`:
+
+```ts no-check
+import { Agent, fetch as undiciFetch } from 'undici' // pnpm add undici
+import { createClient, composeProviders } from '@gullabs/core'
+import { xaiProvider } from '@gullabs/xai'
+
+const client = createClient({
+  ...composeProviders([
+    xaiProvider({
+      transport: {
+        fetch: undiciFetch as unknown as typeof fetch,
+        fetchOptions: {
+          // The body timer is the gap between chunks; with a stream it never fires while events
+          // flow. Raise it above the longest quiet gap of your tool phases, not to the deadline.
+          dispatcher: new Agent({ bodyTimeout: 600_000 }),
+        },
+        idleTimeoutMs: 600_000, // ends a stream that goes completely silent
+      },
+    }),
+  ]),
+})
+```
+
+Notes:
+
+- Use `fetch` and `Agent` from the **same** `undici` package. Node's built-in `fetch` bundles its own
+  undici, and a dispatcher from a different version is not guaranteed to work with it.
+- **With streaming the body timer is moot while events flow**, and `headersTimeout` is moot too (a stream
+  sends its headers at once). Do not raise either to the whole deadline: that removes the only protection a
+  tool-using host has against a silent connection. Keep `bodyTimeout` near the longest quiet gap you
+  measured and use `idleTimeoutMs` to bound half-open connections.
+- `transport` cannot be combined with an injected `client`, and `fetchOptions` cannot carry `headers`,
+  `signal`, `body` or `method`. Both are `bad_request`, as is a `transport` whose `fetch` is not a
+  function, whose `fetchOptions` is not an object or whose `idleTimeoutMs` is not an integer from 1. The
+  adapter copies the transport when it is created, so changing your own object afterwards has no effect.
+- `transport` carries every request the adapter makes: `responses.create` **and** `countTokens`
+  (`POST /v1/tokenize-text`), so a proxy, mTLS or egress policy in your `fetch` covers both.
+  `XaiFileStore` is separate and takes its own `fetch` option. Every `XaiFileStore` call has a deadline
+  of its own (`timeoutMs`, default 60 s, `XAI_FILES_DEFAULT_TIMEOUT_MS`; raise it for a large upload on a
+  slow link) and fails with a retryable `timeout` past it; its errors keep `Retry-After` (`retryAfterMs`)
+  and `x-request-id`, and a file id is encoded as one path segment (`.` and `..` are `bad_request`).
+- `timeoutMs` is at most 2147478647 (Node timers overflow at 2^31 - 1 ms and the request deadline adds
+  5 s); a larger value is `bad_request`, not clamped.
+
+### The streamed response and its final object
+
+xAI's final `response.completed` object can omit output items the stream carried (a live capture of two
+search runs lacked the `reasoning` item). The adapter rebuilds the item list from the events and reconciles
+it with the final object. **Reconciliation is enrichment, never a gate**: once the final event carries a
+response object the call is billed and answered, so the final object wins where both have a field, the
+stream fills what it lacks, an item only the stream completed is rebuilt, and each correction is a `warnings`
+entry on the result. What the stream cannot place (an event without an `output_index`) or disagrees on (an
+item id with two types) is skipped or yields to the final object, with a warning; it never throws the
+answer away. The only malformed shapes that fail a call are a final event with no response object and a body
+that is not event JSON. Frames that are not events (a bare `event: keepalive`, `data: [DONE]`) are skipped.
+
+**A stream that fails after output began is not retried.** A reasoning call burns tokens before its first
+visible event, a retry repeats that spend and cannot resume it, and whether xAI bills a cut call is unknown.
+So a connection cut, a body that ends before the final event, a malformed body, a mid-stream `error` event or
+a terminal `response.failed` that arrives after the first output event is a `server` (or the error code's
+kind) with `retryable: false` and the transport error as `cause`; Node's own timers keep their `timeout`
+kind. A failure before any output event (the connection dropped, an empty body) stays retryable, and so does
+a `response.failed` with a retryable code (`server_error`, `rate_limit_exceeded`) before any output. A
+mid-stream `rate_limit_exceeded` `error` event is never retried. A mid-stream `error` event and a
+`response.failed` are never booked as known-free: unlike an HTTP 429 they arrive inside a run that started,
+so even `rate_limited` and `bad_request` count as an unpriced attempt (`callCost.unpricedAttempts`).
+
+**The usage of a stream that failed after output began is an estimate.** The error carries an estimate, not
+xAI's count: input is the length of the whole wire input divided by 4 (the replayed `'state'` history of a
+`grok-4.7` turn, `instructions`, tool declarations and the output schema included; image data counts
+nothing), output is the characters of text, reasoning summary and arguments received divided by 4
+(`usage.details.usage_estimated = 1`). The cost is priced `'estimated'`, never exact. Its limits: hidden
+reasoning tokens, the provider's own prompt overhead and tool fees are not counted (it usually understates);
+cached input is priced as uncached (it can overstate); characters per token varies with language and with
+JSON syntax. Read it as the order of magnitude of the spend. Usage in a `response.created` /
+`response.in_progress` snapshot is never used (it was `null` in every capture). A failure before output
+carries no usage, so the engine counts that attempt as unpriced, not free. A failure after the final event
+carries the final usage, exact. The estimate also rides on an engine `timeoutMs` deadline or a caller abort
+that stops a call after output began: the attempt is booked `'estimated'`, not unpriced (before any output it
+stays unpriced).
+
+### Testing streamed calls
+
+`makeFakeXai` replaces `client.responses.create`, the seam below which the stream, the reducer and the timers
+live, so a test through `{ client }` never exercises them (a parity test pins that a streamed run of the same
+response gives the same result). To test a streaming failure, stub `transport.fetch` with a `text/event-stream`
+`Response` (a body cut after some events, an `error` event, a silent open body) and run the real adapter.
+
+### Search budgets are not enforced in flight
+
+`providerOptions.xai.searchBudget` is observed after the call. Whether xAI stops its search loop and its
+billing when a stream is aborted could not be tested, so the adapter does not abort a call at a budget.
+
+### Timeout errors do not retry
+
+Three kinds of timeout end an xAI call, and only the transport ones are marked non-retryable:
+
+- **The engine's deadline** (`timeoutMs`). With a `timeoutMs` set it always fires first, because the
+  adapter's own deadline is `timeoutMs + 5000`. It is `kind: 'timeout'`, `retryable: true`, with no
+  `reason`; `retryMiddleware` still makes no further attempt, because the call's budget is spent.
+- **A transport timeout:** `transport.idleTimeoutMs`, an undici header-timer or body-timer, and the
+  adapter's own deadline when `timeoutMs` is unset (one hour). It can fire before or after response headers,
+  or while the stream is open. It is `kind: 'timeout'`, `retryable: false`,
+  `reason: 'transport_timeout'`. Retrying reaches the same limit and repeats the spend, so the retry
+  middleware does not retry it.
+- **The SDK's own timer** (see below) is classified as the transport timeout.
+
+Resubmit from the host if you want to. A connect timeout, an OS `ETIMEDOUT` and a TLS handshake
+timeout (nothing reached xAI) stay retryable. The `openai` SDK wraps all of those as the same
+`APIConnectionTimeoutError`, so the adapter recognises its own SDK deadline by the failure's shape (no
+cause, or only the SDK's own `AbortError`) and by the call having run for the `timeout` it set; the
+exported `classifyXaiError(error, { timeoutMs, elapsedMs })` takes that context, and without it never
+reports an SDK deadline. See ADR-032 in the repository root `DECISIONS.md`.
+
 ## Regions
 
 The grok-4.6 and grok-4.7 model pages list `us-east-1`, `us-west-2`, and `us-central-1` (docs read 2026-10-02). The release notes say Grok 4.5 is available in the API console for EU users (docs read 2026-10-02). This is a hosting/deployment concern for callers, not something this library can route around; it is documented here so consumers are not surprised by data-residency constraints.
@@ -283,22 +511,28 @@ The grok-4.6 and grok-4.7 model pages list `us-east-1`, `us-west-2`, and `us-cen
 
 xAI's own `/v1/models` listing surfaces `grok-4.5-latest` and `grok-build-latest` as aliases of `grok-4.5`. `grok-4.6` has no aliases as of 2026-08-12. Aliases are not registered as `ModelDescriptor`s or `XAI_PRICING` keys. Callers must use the canonical id verbatim — passing an alias resolves to "model not found" (reject-don't-map).
 
-## Explicitly deferred (not built in v1)
+## Explicitly not built
 
-- Server-side agentic tools as an explicit API (`web_search`, `x_search`, `code_interpreter`, collections search, remote MCP) and their per-invocation billing lanes in `computeCost`. Note: **file attachments still auto-enable `attachment_search`** on xAI's side — that implicit tool is documented above, not modeled as a first-class library tool surface.
+- Server-side tools other than `web_search` and `x_search` as a library surface (`code_interpreter`, collections search, remote MCP) and their billing lanes. A call that reports one of their counters is priced `'estimated'` with a warning. **File attachments still auto-enable `attachment_search`** on xAI's side: that implicit tool is documented above, not modeled as a first-class tool.
 - `/v1/chat/completions` (documented by xAI as legacy) and `/v1/messages` (the Anthropic-compatible migration shim) — this adapter only targets `/v1/responses`.
 - Batch API (`grok-4.5` is not eligible at launch) and image generation models.
 - Stateful conversations — `store` is always sent as `false`, and `previous_response_id` is not supported.
-- Streaming — core has no streaming seam at all yet; this is a library-wide gap, not specific to xai.
+- A public streaming API. The adapter streams every call internally (ADR-040) and returns one result; core has no streaming seam to hand the events to a host.
 
 ## What it maps
 
 - `providerOptions.xai.promptCacheKey` → `prompt_cache_key`
+- `providerOptions.xai.parallelToolCalls` → `parallel_tool_calls`; it needs function tools or `providerOptions.xai.tools`, and is `bad_request` without them
 - `reasoning.effort` → `reasoning.effort` (per-model admitted set)
 - `serviceTier: 'priority'` → `service_tier: 'priority'` (all three models)
-- `output.jsonSchema` → `text.format: { type: 'json_schema', name, schema, strict: true }`
+- `output.jsonSchema` → `text.format: { type: 'json_schema', name, schema, strict: true }` (`name` is the schema's `title`, which must match `^[a-zA-Z0-9_-]{1,64}$`: xAI documents no rule for it, so the Responses API's is enforced, and a title outside it is `bad_request`, never rewritten; a schema with no `title` is sent as `structured_output`), and `tools[].inputJsonSchema` → function `parameters`; both are asserted against xAI's enforced keywords first
+- Output items: `reasoningText` joins reasoning summary parts, within an item and across items, with a blank line (`\n\n`). A `function_call` becomes a tool call only on a `completed` response whose call is `completed` with JSON arguments; every call of an `incomplete` (or otherwise not completed) response is dropped from `toolCalls`, `message` and the replayed state, `finishReason` stays `length` (output cap) or `other`, and a warning names the call. A `refusal` content part is a result with no text, `finishReason: 'content_filter'` (`length` wins) and a warning quoting the refusal; a part of any other type without `text` is ignored with a warning naming its type.
 - Usage: `usage.input_tokens` → `inputTokens`, `usage.output_tokens` → `outputTokens` (both already GROSS on xAI, unlike Gemini's sub-field summation); numeric extras (`num_sources_used`, `cost_in_usd_ticks`, etc.) surface into `usage.details` under their raw names, and the full raw payload is always in `usage.raw`
-- Errors: HTTP status is a hint. `classifyXaiError` inspects the STRUCTURED parsed body only — never free-form `Error.message`. Two recorded overlays: HTTP **400** whose body starts with `"Incorrect API key provided"` (prefix only; the SDK may drop `code`) → `invalid_auth`; HTTP **403** whose body starts with `"Content violates usage guidelines"` (e.g. `SAFETY_CHECK_TYPE_*`) → `content_filter`. A bare 403 without that body stays `invalid_auth`. Any other 400, `429`→`rate_limited`, `5xx`→`server`, and timeouts fall through to `@gullabs/core`'s generic `classifyError`.
+- Errors: HTTP status is a hint. `classifyXaiError` inspects the STRUCTURED parsed body only — never free-form `Error.message`. Two recorded overlays: HTTP **400** whose body starts with `"Incorrect API key provided"` (prefix only; the SDK may drop `code`) → `invalid_auth`; HTTP **403** whose body starts with `"Content violates usage guidelines"` (e.g. `SAFETY_CHECK_TYPE_*`) → `content_filter`. A bare 403 without that body stays `invalid_auth`. HTTP **429 or 403** whose body is `Your team <id> has either used all available credits or reached its monthly spending limit...` → `rate_limited`, `retryable: false`, `reason: 'credits_exhausted'` (top up or raise the limit; a retry cannot help). That body is **doc-derived, not captured**: xAI's error reference documents the status codes but no body, so the sentence comes from public reports of the live API. A 200 whose Responses object has `status` `failed` is classified by `error.code` and carries its usage: `server_error` → retryable `server`, `rate_limit_exceeded` → retryable `rate_limited`, `bio_policy` / `misalignment_policy_violation` / `image_content_policy_violation` → `content_filter`, `invalid_prompt` and the `invalid_image*` family → `bad_request`, any other or absent code → `unknown`; only the first two are retried, because a deterministic failure is refused and billed again. `status: 'cancelled'` is `unknown`, not retryable. An `error` object on a completed response is ignored (the answer is kept). These shapes are doc-derived (OpenAI's Responses object; xAI's reference names `error` without its codes), not captured. The credits message omits the team id. Any other 400, `429`→`rate_limited`, `5xx`→`server`, and timeouts fall through to `@gullabs/core`'s generic `classifyError`.
+
+## Fixtures and drift
+
+`src/__fixtures__/*.json` are live captures, so they prove the adapter handled the API as of each file's capture date. `scripts/recapture-fixtures.mjs` (manual, key-gated, never in CI) repeats the captures it knows, redacts them and prints the drift; see [`scripts/README.md`](../../scripts/README.md).
 
 ## Learn more
 

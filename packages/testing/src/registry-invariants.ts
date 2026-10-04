@@ -18,7 +18,7 @@
 
 import assert from 'node:assert/strict'
 
-import { toConfigJsonSchema } from '@gullabs/core'
+import { toConfigJsonSchema, toConfigKeys } from '@gullabs/core'
 import type { ModelDescriptor, PricingSource } from '@gullabs/core'
 
 export interface AssertRegistryInvariantsOptions {
@@ -61,6 +61,12 @@ export interface AssertRegistryInvariantsOptions {
  *   (`configSchema`/`configJsonSchema`/`validateConfig`).
  * - `configJsonSchema` is not stale relative to `configSchema`
  *   (`configJsonSchema === toConfigJsonSchema(configSchema)`).
+ * - `configKeys` equals `toConfigKeys(configSchema)`.
+ * - `limits.contextWindow` is a positive integer and `limits.maxOutputTokens` is
+ *   a positive integer not above it, or `null` (the provider documents no
+ *   output limit). A config schema that has a `maxOutputTokens` field accepts
+ *   exactly up to a numeric limit and rejects one more; under `null` it applies
+ *   no cap.
  * - The registered model-id list matches {@link
  *   AssertRegistryInvariantsOptions.expectedModelIds} exactly, in order.
  * - When a {@link AssertRegistryInvariantsOptions.pricingSource} is given,
@@ -115,6 +121,51 @@ export function assertRegistryInvariants(opts: AssertRegistryInvariantsOptions):
       descriptor.configJsonSchema,
       toConfigJsonSchema(descriptor.configSchema),
       `${model}: configJsonSchema is stale relative to configSchema`,
+    )
+
+    const limits = descriptor.limits as ModelDescriptor['limits'] | undefined
+    assert.ok(limits !== undefined, `${model}: missing required limits`)
+    assert.ok(
+      Number.isSafeInteger(limits.contextWindow) && limits.contextWindow > 0,
+      `${model}: limits.contextWindow must be a positive integer`,
+    )
+    const cap = limits.maxOutputTokens
+    assert.ok(
+      cap === null || (Number.isSafeInteger(cap) && cap > 0),
+      `${model}: limits.maxOutputTokens must be a positive integer, or null when the provider documents no output limit`,
+    )
+    if (cap !== null) {
+      assert.ok(
+        cap <= limits.contextWindow,
+        `${model}: limits.maxOutputTokens is above limits.contextWindow`,
+      )
+    }
+    // A schema without a `maxOutputTokens` field (the CLI providers) has no cap
+    // to check; `configKeys` says whether it has one.
+    if (descriptor.configKeys.includes('maxOutputTokens')) {
+      if (cap === null) {
+        // No documented limit: the schema invents none.
+        assert.ok(
+          descriptor.configSchema.safeParse({ maxOutputTokens: limits.contextWindow + 1 })
+            .success,
+          `${model}: limits.maxOutputTokens is null, so the config schema must not cap maxOutputTokens`,
+        )
+      } else {
+        assert.ok(
+          descriptor.configSchema.safeParse({ maxOutputTokens: cap }).success,
+          `${model}: config schema must accept maxOutputTokens up to limits.maxOutputTokens`,
+        )
+        assert.ok(
+          !descriptor.configSchema.safeParse({ maxOutputTokens: cap + 1 }).success,
+          `${model}: config schema must cap maxOutputTokens at limits.maxOutputTokens`,
+        )
+      }
+    }
+
+    assert.deepStrictEqual(
+      [...descriptor.configKeys],
+      [...toConfigKeys(descriptor.configSchema)],
+      `${model}: configKeys is stale relative to configSchema`,
     )
 
     if (adapterFixtureSet !== undefined) {

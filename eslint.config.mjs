@@ -1,5 +1,6 @@
 import js from '@eslint/js'
 import { defineConfig } from 'eslint/config'
+import { builtinModules } from 'node:module'
 import globals from 'globals'
 import tseslint from 'typescript-eslint'
 
@@ -11,8 +12,7 @@ const nonTypedTsFiles = [
   'vitest.config.ts',
 ]
 const nonTypedJsFiles = ['**/*.{js,mjs,cjs}']
-const focusGuards = [
-  'error',
+const focusGuardOptions = [
   {
     object: 'describe',
     property: 'only',
@@ -29,6 +29,29 @@ const focusGuards = [
     message: 'Focused tests must not be committed.',
   },
 ]
+const focusGuards = ['error', ...focusGuardOptions]
+
+// The packages below run unchanged on runtimes with no Node built-ins (browsers, edge
+// workers, Deno, Bun): their source must not reach for `node:*`, `Buffer` or `process`.
+// `packages/testing`, the CLI runners and the build/test tooling are Node-only by design.
+const runtimeAgnosticSources = [
+  'core',
+  'google',
+  'xai',
+  'quota',
+  'drizzle',
+  'any-llm',
+].map((name) => `packages/${name}/src/**/*.ts`)
+const runtimeAgnosticIgnores = ['**/*.test.ts', '**/*.spec.ts']
+const nodeBuiltinNames = builtinModules.filter((name) => !name.startsWith('_'))
+const nodeOnlyMessage =
+  'This package runs on runtimes without Node built-ins; use a web-standard API.'
+const nodeOnlyGlobals = ['Buffer', 'process', '__dirname', '__filename', 'require'].map(
+  (name) => ({ name, message: `\`${name}\` is Node-only. ${nodeOnlyMessage}` }),
+)
+const nodeBuiltinSource = `/^(node:.*|${nodeBuiltinNames
+  .map((name) => name.replace(/[/.]/g, '\\$&'))
+  .join('|')})$/`
 
 function scopeTypedConfigs(configs) {
   return configs.map((config) => ({
@@ -47,6 +70,8 @@ export default defineConfig(
       '.craftsman/**',
       '.remember/**',
       '.claude/**',
+      '.private/**',
+      '.recapture/**',
     ],
   },
   {
@@ -134,6 +159,36 @@ export default defineConfig(
         },
       ],
       'no-restricted-properties': focusGuards,
+    },
+  },
+  {
+    files: runtimeAgnosticSources,
+    ignores: runtimeAgnosticIgnores,
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: nodeBuiltinNames.map((name) => ({ name, message: nodeOnlyMessage })),
+          patterns: [{ group: ['node:*'], message: nodeOnlyMessage }],
+        },
+      ],
+      'no-restricted-globals': ['error', ...nodeOnlyGlobals],
+      'no-restricted-properties': [
+        'error',
+        ...focusGuardOptions,
+        ...['Buffer', 'process', 'require'].map((property) => ({
+          object: 'globalThis',
+          property,
+          message: `\`globalThis.${property}\` is Node-only. ${nodeOnlyMessage}`,
+        })),
+      ],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: `ImportExpression[source.value=${nodeBuiltinSource}]`,
+          message: nodeOnlyMessage,
+        },
+      ],
     },
   },
   {

@@ -55,4 +55,80 @@ jobs:
       - name: Audit dependencies
         run: pnpm audit:gate
 
+      # The quota package's Redis scripts are tested on a real Lua interpreter
+      # (Redis embeds Lua; the tests need 5.3 or newer for their driver). With
+      # REQUIRE_LUA=1 a missing interpreter fails the run instead of skipping the
+      # tests, so the scripts can never ship unexecuted.
+      - name: Install Lua
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lua5.4
+
       - run: pnpm quality
+        env:
+          REQUIRE_LUA: '1'
+
+  # The packages declare `engines.node >=22.12.0`, so the tests run on that floor and on
+  # the current Node 24, not only on the .nvmrc version `verify` uses. pnpm 11 and the lint
+  # toolchain need a newer Node than the floor, so install and build with the .nvmrc Node,
+  # then switch to the matrix Node and run the checks with `node` directly: the build output
+  # and the tests are what must work on the declared floor, not the package manager.
+  node-matrix:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.12.0', '24.x']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: '.nvmrc'
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm -r build
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Show Node version
+        run: node --version
+
+      # Skips the Redis Lua tests (no interpreter here); `verify` runs them with REQUIRE_LUA=1.
+      - name: Tests
+        run: node node_modules/vitest/vitest.mjs run
+
+      - name: Doc snippets
+        run: node scripts/check-doc-snippets.mjs
+
+      - name: Built packages load without Node built-ins
+        run: node --import ./scripts/runtime-smoke/register.mjs scripts/runtime-smoke/entry.mjs
+
+  # Packs every package and installs the tarballs with pnpm and npm: one core copy,
+  # the example typechecks, and mixed versions are rejected (RELEASING.md,
+  # "Versioning"). Separate from `verify` so it runs in parallel; Release waits for
+  # the whole CI run.
+  packed-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: '.nvmrc'
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm test:packed-install

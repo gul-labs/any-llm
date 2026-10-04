@@ -41,12 +41,14 @@ function makeFakePricingSource(): PricingSource {
 describe('composeProviders', () => {
   it('composes adapters in input order and merges descriptors from both plugins', () => {
     const adapterA = new FakeAdapter('fake-a', {
+      message: { role: 'assistant', parts: [{ kind: 'text', text: 'from a' }] },
       text: 'from a',
       usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
       model: 'model-a',
       warnings: [],
     })
     const adapterB = new FakeAdapter('fake-b', {
+      message: { role: 'assistant', parts: [{ kind: 'text', text: 'from b' }] },
       text: 'from b',
       usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
       model: 'model-b',
@@ -67,12 +69,14 @@ describe('composeProviders', () => {
 
   it('keys pricingSources by adapter id, omitting the key for unpriced plugins', () => {
     const pricedAdapter = new FakeAdapter('priced', {
+      message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
       text: 'ok',
       usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
       model: 'priced-model',
       warnings: [],
     })
     const unpricedAdapter = new FakeAdapter('unpriced', {
+      message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
       text: 'ok',
       usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
       model: 'unpriced-model',
@@ -103,12 +107,14 @@ describe('composeProviders', () => {
 
   it('throws an LlmError(bad_request) on duplicate plugin adapter ids', () => {
     const adapter1 = new FakeAdapter('dup', {
+      message: { role: 'assistant', parts: [{ kind: 'text', text: 'a' }] },
       text: 'a',
       usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
       model: 'm1',
       warnings: [],
     })
     const adapter2 = new FakeAdapter('dup', {
+      message: { role: 'assistant', parts: [{ kind: 'text', text: 'b' }] },
       text: 'b',
       usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
       model: 'm2',
@@ -139,12 +145,14 @@ describe('composeProviders', () => {
 
   it("throws an LlmError(bad_request) when a plugin contributes a descriptor for another plugin's provider", () => {
     const xaiAdapter = new FakeAdapter('xai', {
+      message: { role: 'assistant', parts: [{ kind: 'text', text: 'a' }] },
       text: 'a',
       usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
       model: 'grok',
       warnings: [],
     })
     const googleAdapter = new FakeAdapter('google', {
+      message: { role: 'assistant', parts: [{ kind: 'text', text: 'b' }] },
       text: 'b',
       usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
       model: 'gemini',
@@ -177,6 +185,7 @@ describe('composeProviders', () => {
 
   it("throws an LlmError(bad_request) when a single plugin's descriptor provider does not match its own adapter id", () => {
     const soloAdapter = new FakeAdapter('solo', {
+      message: { role: 'assistant', parts: [{ kind: 'text', text: 'a' }] },
       text: 'a',
       usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
       model: 'm1',
@@ -211,6 +220,7 @@ describe('composeProviders', () => {
 
   it('spreads into createClient and round-trips a generate() call', async () => {
     const adapter = new FakeAdapter('fake', {
+      message: { role: 'assistant', parts: [{ kind: 'text', text: 'hello' }] },
       text: 'hello',
       usage: { inputTokens: 5, outputTokens: 5, details: {}, raw: null },
       model: 'fake-model',

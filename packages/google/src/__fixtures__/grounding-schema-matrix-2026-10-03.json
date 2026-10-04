@@ -1,0 +1,1787 @@
+{
+  "capturedOn": "2026-10-03",
+  "description": "Gemini 3.x with and without responseJsonSchema, each with googleSearch, 4 calls per cell, thinkingLevel LOW. Model answer text and call cost removed; every usage and grounding field kept. Redacted per ADR-013.",
+  "prompts": [
+    "What is the latest stable release of the Node.js runtime and on what date was it published? Use current sources.",
+    "What is the most recent published USD to EUR reference exchange rate, and from which source and date?",
+    "Which team won the most recent Formula 1 Grand Prix and where was it held? Use current sources.",
+    "What is the current stable major.minor version of the PostgreSQL database and its release date?"
+  ],
+  "schema": {
+    "type": "object",
+    "properties": {
+      "answer": {
+        "type": "string"
+      },
+      "source_date": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "answer",
+      "source_date"
+    ],
+    "additionalProperties": false
+  },
+  "summary": [
+    {
+      "model": "gemini-3.1-flash-lite",
+      "withSchema": false,
+      "calls": 4,
+      "http200": 4,
+      "nonOkStatuses": [],
+      "searchRan": 4,
+      "groundingMetadata": 4,
+      "metadataWithQuery": 4,
+      "ruleMet_SearchRanAndMetadataWithQuery_3of4": true,
+      "withToolUseTokens": 0,
+      "meanPromptJumpX": 6.2,
+      "totalQueryOccurrences": 7,
+      "totalUniqueQueries": 7
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "withSchema": true,
+      "calls": 4,
+      "http200": 4,
+      "nonOkStatuses": [],
+      "searchRan": 4,
+      "groundingMetadata": 0,
+      "metadataWithQuery": 0,
+      "ruleMet_SearchRanAndMetadataWithQuery_3of4": false,
+      "withToolUseTokens": 0,
+      "meanPromptJumpX": 6,
+      "totalQueryOccurrences": 0,
+      "totalUniqueQueries": 0
+    },
+    {
+      "model": "gemini-3.1-pro-preview",
+      "withSchema": false,
+      "calls": 4,
+      "http200": 4,
+      "nonOkStatuses": [],
+      "searchRan": 4,
+      "groundingMetadata": 4,
+      "metadataWithQuery": 4,
+      "ruleMet_SearchRanAndMetadataWithQuery_3of4": true,
+      "withToolUseTokens": 0,
+      "meanPromptJumpX": 18.6,
+      "totalQueryOccurrences": 5,
+      "totalUniqueQueries": 5
+    },
+    {
+      "model": "gemini-3.1-pro-preview",
+      "withSchema": true,
+      "calls": 4,
+      "http200": 4,
+      "nonOkStatuses": [],
+      "searchRan": 4,
+      "groundingMetadata": 2,
+      "metadataWithQuery": 2,
+      "ruleMet_SearchRanAndMetadataWithQuery_3of4": false,
+      "withToolUseTokens": 0,
+      "meanPromptJumpX": 8.7,
+      "totalQueryOccurrences": 3,
+      "totalUniqueQueries": 3
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "withSchema": false,
+      "calls": 4,
+      "http200": 4,
+      "nonOkStatuses": [],
+      "searchRan": 4,
+      "groundingMetadata": 4,
+      "metadataWithQuery": 4,
+      "ruleMet_SearchRanAndMetadataWithQuery_3of4": true,
+      "withToolUseTokens": 0,
+      "meanPromptJumpX": 1,
+      "totalQueryOccurrences": 11,
+      "totalUniqueQueries": 11
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "withSchema": true,
+      "calls": 4,
+      "http200": 4,
+      "nonOkStatuses": [],
+      "searchRan": 0,
+      "groundingMetadata": 0,
+      "metadataWithQuery": 0,
+      "ruleMet_SearchRanAndMetadataWithQuery_3of4": false,
+      "withToolUseTokens": 0,
+      "meanPromptJumpX": 1,
+      "totalQueryOccurrences": 0,
+      "totalUniqueQueries": 0
+    },
+    {
+      "model": "gemini-3.7-flash",
+      "withSchema": false,
+      "calls": 4,
+      "http200": 4,
+      "nonOkStatuses": [],
+      "searchRan": 4,
+      "groundingMetadata": 4,
+      "metadataWithQuery": 4,
+      "ruleMet_SearchRanAndMetadataWithQuery_3of4": true,
+      "withToolUseTokens": 0,
+      "meanPromptJumpX": 1.7,
+      "totalQueryOccurrences": 8,
+      "totalUniqueQueries": 8
+    },
+    {
+      "model": "gemini-3.7-flash",
+      "withSchema": true,
+      "calls": 4,
+      "http200": 4,
+      "nonOkStatuses": [],
+      "searchRan": 1,
+      "groundingMetadata": 0,
+      "metadataWithQuery": 0,
+      "ruleMet_SearchRanAndMetadataWithQuery_3of4": false,
+      "withToolUseTokens": 0,
+      "meanPromptJumpX": 2.4,
+      "totalQueryOccurrences": 0,
+      "totalUniqueQueries": 0
+    },
+    {
+      "model": "gemini-3.6-flash",
+      "withSchema": false,
+      "calls": 4,
+      "http200": 4,
+      "nonOkStatuses": [],
+      "searchRan": 4,
+      "groundingMetadata": 4,
+      "metadataWithQuery": 4,
+      "ruleMet_SearchRanAndMetadataWithQuery_3of4": true,
+      "withToolUseTokens": 0,
+      "meanPromptJumpX": 9.2,
+      "totalQueryOccurrences": 9,
+      "totalUniqueQueries": 9
+    },
+    {
+      "model": "gemini-3.6-flash",
+      "withSchema": true,
+      "calls": 4,
+      "http200": 4,
+      "nonOkStatuses": [],
+      "searchRan": 1,
+      "groundingMetadata": 0,
+      "metadataWithQuery": 0,
+      "ruleMet_SearchRanAndMetadataWithQuery_3of4": false,
+      "withToolUseTokens": 0,
+      "meanPromptJumpX": 2.9,
+      "totalQueryOccurrences": 0,
+      "totalUniqueQueries": 0
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "withSchema": false,
+      "calls": 4,
+      "http200": 4,
+      "nonOkStatuses": [],
+      "searchRan": 4,
+      "groundingMetadata": 4,
+      "metadataWithQuery": 4,
+      "ruleMet_SearchRanAndMetadataWithQuery_3of4": true,
+      "withToolUseTokens": 0,
+      "meanPromptJumpX": 1,
+      "totalQueryOccurrences": 7,
+      "totalUniqueQueries": 7
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "withSchema": true,
+      "calls": 4,
+      "http200": 4,
+      "nonOkStatuses": [],
+      "searchRan": 0,
+      "groundingMetadata": 0,
+      "metadataWithQuery": 0,
+      "ruleMet_SearchRanAndMetadataWithQuery_3of4": false,
+      "withToolUseTokens": 0,
+      "meanPromptJumpX": 1,
+      "totalQueryOccurrences": 0,
+      "totalUniqueQueries": 0
+    }
+  ],
+  "calls": [
+    {
+      "model": "gemini-3.1-flash-lite",
+      "withSchema": false,
+      "i": 0,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "latest stable Node.js release current date October 2026",
+        "current Node.js release schedule"
+      ],
+      "queryCount": 2,
+      "uniqueQueryCount": 2,
+      "groundingChunks": 4,
+      "groundingSupports": 3,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 142,
+      "baselinePromptTokens": 25,
+      "promptJumpX": 5.68,
+      "thoughtsTokenCount": 213,
+      "candidatesTokenCount": 141,
+      "totalTokenCount": 496,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "withSchema": false,
+      "i": 1,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "latest ECB USD to EUR reference exchange rate"
+      ],
+      "queryCount": 1,
+      "uniqueQueryCount": 1,
+      "groundingChunks": 2,
+      "groundingSupports": 1,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 130,
+      "baselinePromptTokens": 21,
+      "promptJumpX": 6.19,
+      "thoughtsTokenCount": 200,
+      "candidatesTokenCount": 147,
+      "totalTokenCount": 477,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "withSchema": false,
+      "i": 2,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "2026 F1 race calendar results",
+        "most recent Formula 1 Grand Prix winner before October 3 2026"
+      ],
+      "queryCount": 2,
+      "uniqueQueryCount": 2,
+      "groundingChunks": 5,
+      "groundingSupports": 2,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 135,
+      "baselinePromptTokens": 22,
+      "promptJumpX": 6.14,
+      "thoughtsTokenCount": 250,
+      "candidatesTokenCount": 123,
+      "totalTokenCount": 508,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "withSchema": false,
+      "i": 3,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "current stable postgresql version",
+        "latest postgresql release date"
+      ],
+      "queryCount": 2,
+      "uniqueQueryCount": 2,
+      "groundingChunks": 4,
+      "groundingSupports": 2,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 130,
+      "baselinePromptTokens": 19,
+      "promptJumpX": 6.84,
+      "thoughtsTokenCount": 295,
+      "candidatesTokenCount": 112,
+      "totalTokenCount": 537,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "withSchema": true,
+      "i": 0,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 147,
+      "baselinePromptTokens": 25,
+      "promptJumpX": 5.88,
+      "thoughtsTokenCount": 300,
+      "candidatesTokenCount": 100,
+      "totalTokenCount": 547,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "withSchema": true,
+      "i": 1,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 134,
+      "baselinePromptTokens": 21,
+      "promptJumpX": 6.38,
+      "thoughtsTokenCount": 211,
+      "candidatesTokenCount": 73,
+      "totalTokenCount": 418,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "withSchema": true,
+      "i": 2,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 134,
+      "baselinePromptTokens": 22,
+      "promptJumpX": 6.09,
+      "thoughtsTokenCount": 709,
+      "candidatesTokenCount": 60,
+      "totalTokenCount": 903,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "withSchema": true,
+      "i": 3,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 109,
+      "baselinePromptTokens": 19,
+      "promptJumpX": 5.74,
+      "thoughtsTokenCount": 141,
+      "candidatesTokenCount": 58,
+      "totalTokenCount": 308,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.1-pro-preview",
+      "withSchema": false,
+      "i": 0,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "Node.js latest current version download",
+        "\"Node.js 26\" release date"
+      ],
+      "queryCount": 2,
+      "uniqueQueryCount": 2,
+      "groundingChunks": 6,
+      "groundingSupports": 6,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 285,
+      "baselinePromptTokens": 25,
+      "promptJumpX": 11.4,
+      "thoughtsTokenCount": 844,
+      "candidatesTokenCount": 332,
+      "totalTokenCount": 1461,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.1-pro-preview",
+      "withSchema": false,
+      "i": 1,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "\"USD\" \"EUR\" 2026-10-02 ECB reference"
+      ],
+      "queryCount": 1,
+      "uniqueQueryCount": 1,
+      "groundingChunks": 2,
+      "groundingSupports": 5,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 436,
+      "baselinePromptTokens": 21,
+      "promptJumpX": 20.76,
+      "thoughtsTokenCount": 718,
+      "candidatesTokenCount": 158,
+      "totalTokenCount": 1312,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.1-pro-preview",
+      "withSchema": false,
+      "i": 2,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "\"most recent\" F1 Grand Prix winner OR results 2026"
+      ],
+      "queryCount": 1,
+      "uniqueQueryCount": 1,
+      "groundingChunks": 1,
+      "groundingSupports": 3,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 759,
+      "baselinePromptTokens": 22,
+      "promptJumpX": 34.5,
+      "thoughtsTokenCount": 1189,
+      "candidatesTokenCount": 95,
+      "totalTokenCount": 2043,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.1-pro-preview",
+      "withSchema": false,
+      "i": 3,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "PostgreSQL latest release 2026"
+      ],
+      "queryCount": 1,
+      "uniqueQueryCount": 1,
+      "groundingChunks": 4,
+      "groundingSupports": 3,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 147,
+      "baselinePromptTokens": 19,
+      "promptJumpX": 7.74,
+      "thoughtsTokenCount": 550,
+      "candidatesTokenCount": 114,
+      "totalTokenCount": 811,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.1-pro-preview",
+      "withSchema": true,
+      "i": 0,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 218,
+      "baselinePromptTokens": 25,
+      "promptJumpX": 8.72,
+      "thoughtsTokenCount": 642,
+      "candidatesTokenCount": 110,
+      "totalTokenCount": 970,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.1-pro-preview",
+      "withSchema": true,
+      "i": 1,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "most recent published USD to EUR reference exchange rate October 2026"
+      ],
+      "queryCount": 1,
+      "uniqueQueryCount": 1,
+      "groundingChunks": 1,
+      "groundingSupports": 1,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 147,
+      "baselinePromptTokens": 21,
+      "promptJumpX": 7,
+      "thoughtsTokenCount": 490,
+      "candidatesTokenCount": 63,
+      "totalTokenCount": 700,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.1-pro-preview",
+      "withSchema": true,
+      "i": 2,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 162,
+      "baselinePromptTokens": 22,
+      "promptJumpX": 7.36,
+      "thoughtsTokenCount": 326,
+      "candidatesTokenCount": 69,
+      "totalTokenCount": 557,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.1-pro-preview",
+      "withSchema": true,
+      "i": 3,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "PostgreSQL 18 release date",
+        "site:postgresql.org/docs/ current release"
+      ],
+      "queryCount": 2,
+      "uniqueQueryCount": 2,
+      "groundingChunks": 3,
+      "groundingSupports": 3,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 224,
+      "baselinePromptTokens": 19,
+      "promptJumpX": 11.79,
+      "thoughtsTokenCount": 443,
+      "candidatesTokenCount": 108,
+      "totalTokenCount": 775,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "withSchema": false,
+      "i": 0,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "\"Node.js 24\" \"Latest LTS\" release date",
+        "latest node js release",
+        "node js releases github"
+      ],
+      "queryCount": 3,
+      "uniqueQueryCount": 3,
+      "groundingChunks": 6,
+      "groundingSupports": 5,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 25,
+      "baselinePromptTokens": 25,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 221,
+      "totalTokenCount": 246,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "withSchema": false,
+      "i": 1,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "ECB euro foreign exchange reference rates USD EUR recent"
+      ],
+      "queryCount": 1,
+      "uniqueQueryCount": 1,
+      "groundingChunks": 3,
+      "groundingSupports": 4,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 21,
+      "baselinePromptTokens": 21,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 155,
+      "totalTokenCount": 176,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "withSchema": false,
+      "i": 2,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "most recent Formula 1 Grand Prix winner 2026",
+        "F1 calendar 2026 race results"
+      ],
+      "queryCount": 2,
+      "uniqueQueryCount": 2,
+      "groundingChunks": 2,
+      "groundingSupports": 2,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 22,
+      "baselinePromptTokens": 22,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 94,
+      "totalTokenCount": 116,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "withSchema": false,
+      "i": 3,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "\"PostgreSQL 17.0\" OR \"PostgreSQL 17 released\" site:postgresql.org/about/news",
+        "\"PostgreSQL 17\" \"released on\" postgresql.org",
+        "PostgreSQL release history",
+        "PostgreSQL current stable version release date",
+        "\"PostgreSQL 17.0\" release date postgresql.org"
+      ],
+      "queryCount": 5,
+      "uniqueQueryCount": 5,
+      "groundingChunks": 8,
+      "groundingSupports": 8,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 19,
+      "baselinePromptTokens": 19,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 355,
+      "totalTokenCount": 374,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "withSchema": true,
+      "i": 0,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 25,
+      "baselinePromptTokens": 25,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 105,
+      "totalTokenCount": 130,
+      "searchRan": false,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "withSchema": true,
+      "i": 1,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 21,
+      "baselinePromptTokens": 21,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 73,
+      "totalTokenCount": 94,
+      "searchRan": false,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "withSchema": true,
+      "i": 2,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 22,
+      "baselinePromptTokens": 22,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 65,
+      "totalTokenCount": 87,
+      "searchRan": false,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "withSchema": true,
+      "i": 3,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 19,
+      "baselinePromptTokens": 19,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 55,
+      "totalTokenCount": 74,
+      "searchRan": false,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.7-flash",
+      "withSchema": false,
+      "i": 0,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "Node js latest stable release date",
+        "Node js latest LTS release version date"
+      ],
+      "queryCount": 2,
+      "uniqueQueryCount": 2,
+      "groundingChunks": 5,
+      "groundingSupports": 7,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 25,
+      "baselinePromptTokens": 25,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 278,
+      "totalTokenCount": 303,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.7-flash",
+      "withSchema": false,
+      "i": 1,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "ECB euro foreign exchange reference rates USD EUR",
+        "latest ECB USD EUR reference rate"
+      ],
+      "queryCount": 2,
+      "uniqueQueryCount": 2,
+      "groundingChunks": 4,
+      "groundingSupports": 4,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 21,
+      "baselinePromptTokens": 21,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 164,
+      "totalTokenCount": 185,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.7-flash",
+      "withSchema": false,
+      "i": 2,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "F1 race results September October 2026",
+        "most recent Formula 1 Grand Prix winner 2026"
+      ],
+      "queryCount": 2,
+      "uniqueQueryCount": 2,
+      "groundingChunks": 3,
+      "groundingSupports": 3,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 22,
+      "baselinePromptTokens": 22,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 108,
+      "totalTokenCount": 130,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.7-flash",
+      "withSchema": false,
+      "i": 3,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "PostgreSQL current latest stable version",
+        "PostgreSQL latest release version release notes 2025 2026"
+      ],
+      "queryCount": 2,
+      "uniqueQueryCount": 2,
+      "groundingChunks": 4,
+      "groundingSupports": 4,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 74,
+      "baselinePromptTokens": 19,
+      "promptJumpX": 3.89,
+      "thoughtsTokenCount": 161,
+      "candidatesTokenCount": 135,
+      "totalTokenCount": 370,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.7-flash",
+      "withSchema": true,
+      "i": 0,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 25,
+      "baselinePromptTokens": 25,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 88,
+      "totalTokenCount": 113,
+      "searchRan": false,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.7-flash",
+      "withSchema": true,
+      "i": 1,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 21,
+      "baselinePromptTokens": 21,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 63,
+      "totalTokenCount": 84,
+      "searchRan": false,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.7-flash",
+      "withSchema": true,
+      "i": 2,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 141,
+      "baselinePromptTokens": 22,
+      "promptJumpX": 6.41,
+      "thoughtsTokenCount": 119,
+      "candidatesTokenCount": 70,
+      "totalTokenCount": 330,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.7-flash",
+      "withSchema": true,
+      "i": 3,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 19,
+      "baselinePromptTokens": 19,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 83,
+      "totalTokenCount": 102,
+      "searchRan": false,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.6-flash",
+      "withSchema": false,
+      "i": 0,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "Node js latest stable release version date",
+        "Node js releases latest version 2026"
+      ],
+      "queryCount": 2,
+      "uniqueQueryCount": 2,
+      "groundingChunks": 4,
+      "groundingSupports": 6,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 191,
+      "baselinePromptTokens": 25,
+      "promptJumpX": 7.64,
+      "thoughtsTokenCount": 488,
+      "candidatesTokenCount": 213,
+      "totalTokenCount": 892,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.6-flash",
+      "withSchema": false,
+      "i": 1,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "ECB euro reference exchange rate USD EUR"
+      ],
+      "queryCount": 1,
+      "uniqueQueryCount": 1,
+      "groundingChunks": 1,
+      "groundingSupports": 3,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 21,
+      "baselinePromptTokens": 21,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 105,
+      "totalTokenCount": 126,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.6-flash",
+      "withSchema": false,
+      "i": 2,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "F1 race schedule results September 2026",
+        "most recent Formula 1 Grand Prix winner 2026"
+      ],
+      "queryCount": 2,
+      "uniqueQueryCount": 2,
+      "groundingChunks": 2,
+      "groundingSupports": 4,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 192,
+      "baselinePromptTokens": 22,
+      "promptJumpX": 8.73,
+      "thoughtsTokenCount": 310,
+      "candidatesTokenCount": 94,
+      "totalTokenCount": 596,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.6-flash",
+      "withSchema": false,
+      "i": 3,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "\"PostgreSQL 18\" release date",
+        "latest stable version PostgreSQL release date",
+        "PostgreSQL latest release version",
+        "\"PostgreSQL 17\" release date"
+      ],
+      "queryCount": 4,
+      "uniqueQueryCount": 4,
+      "groundingChunks": 7,
+      "groundingSupports": 5,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 372,
+      "baselinePromptTokens": 19,
+      "promptJumpX": 19.58,
+      "thoughtsTokenCount": 518,
+      "candidatesTokenCount": 197,
+      "totalTokenCount": 1087,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.6-flash",
+      "withSchema": true,
+      "i": 0,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 62,
+      "baselinePromptTokens": 25,
+      "promptJumpX": 2.48,
+      "thoughtsTokenCount": 228,
+      "candidatesTokenCount": 106,
+      "totalTokenCount": 396,
+      "searchRan": false,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.6-flash",
+      "withSchema": true,
+      "i": 1,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 57,
+      "baselinePromptTokens": 21,
+      "promptJumpX": 2.71,
+      "thoughtsTokenCount": 149,
+      "candidatesTokenCount": 86,
+      "totalTokenCount": 292,
+      "searchRan": false,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.6-flash",
+      "withSchema": true,
+      "i": 2,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 80,
+      "baselinePromptTokens": 22,
+      "promptJumpX": 3.64,
+      "thoughtsTokenCount": 143,
+      "candidatesTokenCount": 75,
+      "totalTokenCount": 298,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": true
+      }
+    },
+    {
+      "model": "gemini-3.6-flash",
+      "withSchema": true,
+      "i": 3,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 52,
+      "baselinePromptTokens": 19,
+      "promptJumpX": 2.74,
+      "thoughtsTokenCount": 171,
+      "candidatesTokenCount": 106,
+      "totalTokenCount": 329,
+      "searchRan": false,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "withSchema": false,
+      "i": 0,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "nodejs current release version nodejs org",
+        "nodejs latest stable release date 2026"
+      ],
+      "queryCount": 2,
+      "uniqueQueryCount": 2,
+      "groundingChunks": 3,
+      "groundingSupports": 4,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 25,
+      "baselinePromptTokens": 25,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 172,
+      "totalTokenCount": 197,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "withSchema": false,
+      "i": 1,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "\"1.1225\" ECB USD euro reference exchange rate October 2 2026",
+        "ECB USD to EUR reference exchange rate latest"
+      ],
+      "queryCount": 2,
+      "uniqueQueryCount": 2,
+      "groundingChunks": 2,
+      "groundingSupports": 4,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 21,
+      "baselinePromptTokens": 21,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 142,
+      "totalTokenCount": 163,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "withSchema": false,
+      "i": 2,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "most recent Formula 1 Grand Prix winner 2026",
+        "2026 Formula 1 race calendar results"
+      ],
+      "queryCount": 2,
+      "uniqueQueryCount": 2,
+      "groundingChunks": 2,
+      "groundingSupports": 2,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 22,
+      "baselinePromptTokens": 22,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 72,
+      "totalTokenCount": 94,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "withSchema": false,
+      "i": 3,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": true,
+      "groundingMetadataKeys": [
+        "searchEntryPoint",
+        "groundingChunks",
+        "groundingSupports",
+        "webSearchQueries"
+      ],
+      "webSearchQueries": [
+        "PostgreSQL current stable version major minor release date"
+      ],
+      "queryCount": 1,
+      "uniqueQueryCount": 1,
+      "groundingChunks": 4,
+      "groundingSupports": 3,
+      "hasSearchEntryPoint": true,
+      "promptTokenCount": 19,
+      "baselinePromptTokens": 19,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 114,
+      "totalTokenCount": 133,
+      "searchRan": true,
+      "searchRanEvidence": {
+        "queries": true,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "withSchema": true,
+      "i": 0,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 25,
+      "baselinePromptTokens": 25,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 148,
+      "totalTokenCount": 173,
+      "searchRan": false,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "withSchema": true,
+      "i": 1,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 21,
+      "baselinePromptTokens": 21,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 92,
+      "totalTokenCount": 113,
+      "searchRan": false,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "withSchema": true,
+      "i": 2,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 22,
+      "baselinePromptTokens": 22,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 67,
+      "totalTokenCount": 89,
+      "searchRan": false,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "withSchema": true,
+      "i": 3,
+      "status": 200,
+      "finish": "STOP",
+      "hasGroundingMetadata": false,
+      "groundingMetadataKeys": [],
+      "webSearchQueries": [],
+      "queryCount": 0,
+      "uniqueQueryCount": 0,
+      "groundingChunks": 0,
+      "groundingSupports": 0,
+      "hasSearchEntryPoint": false,
+      "promptTokenCount": 19,
+      "baselinePromptTokens": 19,
+      "promptJumpX": 1,
+      "candidatesTokenCount": 79,
+      "totalTokenCount": 98,
+      "searchRan": false,
+      "searchRanEvidence": {
+        "queries": false,
+        "toolUseTokens": false,
+        "promptJump3x": false
+      }
+    }
+  ],
+  "toolOverheadControl": [
+    {
+      "model": "gemini-3.1-flash-lite",
+      "withSchema": false,
+      "baseline": 8,
+      "promptTokenCount": 8,
+      "queries": [],
+      "status": 200
+    },
+    {
+      "model": "gemini-3.1-flash-lite",
+      "withSchema": true,
+      "baseline": 8,
+      "promptTokenCount": 270,
+      "queries": [],
+      "status": 200
+    },
+    {
+      "model": "gemini-3.1-pro-preview",
+      "withSchema": false,
+      "baseline": 8,
+      "promptTokenCount": 8,
+      "queries": [],
+      "status": 200
+    },
+    {
+      "model": "gemini-3.1-pro-preview",
+      "withSchema": true,
+      "baseline": 8,
+      "promptTokenCount": 8,
+      "queries": [],
+      "status": 200
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "withSchema": false,
+      "baseline": 8,
+      "promptTokenCount": 8,
+      "queries": [],
+      "status": 200
+    },
+    {
+      "model": "gemini-3.8-flash",
+      "withSchema": true,
+      "baseline": 8,
+      "promptTokenCount": 184,
+      "queries": [],
+      "status": 200
+    },
+    {
+      "model": "gemini-3.7-flash",
+      "withSchema": false,
+      "baseline": 8,
+      "promptTokenCount": 8,
+      "queries": [],
+      "status": 200
+    },
+    {
+      "model": "gemini-3.7-flash",
+      "withSchema": true,
+      "baseline": 8,
+      "promptTokenCount": 8,
+      "queries": [],
+      "status": 200
+    },
+    {
+      "model": "gemini-3.6-flash",
+      "withSchema": false,
+      "baseline": 8,
+      "promptTokenCount": 8,
+      "queries": [],
+      "status": 200
+    },
+    {
+      "model": "gemini-3.6-flash",
+      "withSchema": true,
+      "baseline": 8,
+      "promptTokenCount": 8,
+      "queries": [],
+      "status": 200
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "withSchema": false,
+      "baseline": 8,
+      "promptTokenCount": 8,
+      "queries": [],
+      "status": 200
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "withSchema": true,
+      "baseline": 8,
+      "promptTokenCount": 8,
+      "queries": [],
+      "status": 200
+    }
+  ]
+}

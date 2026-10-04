@@ -11,7 +11,8 @@ duplication proves a library helper is warranted. That is why the repo does not 
 - pass auth on every call;
 - let web routes decide whether library retry middleware is appropriate;
 - let Temporal or another orchestrator own external retries;
-- use stable `idempotencyKey` values for externally retried activities;
+- give every external retry of one operation the same `externalId` (the library never deduplicates
+  provider calls, and every attempt is a billed ledger row);
 - persist host-specific typed context in a sidecar keyed by `attemptId` when needed.
 
 ## Application-local metadata helper
@@ -49,15 +50,15 @@ Set `operationId` once for a workflow operation and reuse it on every correlated
 
 ## Shared wiring
 
-```ts
+```ts no-check
 import { createClient, composeProviders, retryMiddleware } from '@gullabs/any-llm'
 import { googleProvider } from '@gullabs/google'
-import { drizzleUsageSink, llmCalls } from '@gullabs/drizzle'
+import { drizzleUsageSink } from '@gullabs/drizzle'
 
 function baseClientConfig(db: DbLike) {
   return {
     ...composeProviders([googleProvider()]),
-    sink: drizzleUsageSink(db, llmCalls),
+    sink: drizzleUsageSink({ db }),
   }
 }
 ```
@@ -66,7 +67,7 @@ function baseClientConfig(db: DbLike) {
 
 HTTP handlers often want short in-process retries for retryable provider failures:
 
-```ts
+```ts no-check
 function makeWebClient(db: DbLike) {
   return createClient({
     ...baseClientConfig(db),
@@ -102,21 +103,23 @@ async function handleRoute(req: Request, db: DbLike) {
 
 ## Temporal worker client
 
-Externally retried activities should usually skip library retry middleware. Let the orchestrator own
-retry timing and hand the library a stable `idempotencyKey` so the ledger deduplicates attempt 1
-rows across activity replays/retries.
+Externally retried activities should usually skip library retry middleware. Let the orchestrator
+own retry timing and give every retry of one activity the same `externalId`. The library never
+deduplicates provider calls: each activity retry is a billed provider call and writes its own ledger
+row with its own freshly minted `attemptId`. Query by `externalId` to see every attempt of one
+operation and what it cost (`select * from llm_calls where external_id = $1 order by created_at`).
 
-### Testing note: RecordingSink does not dedupe
+### Testing note: replay writes new rows
 
-**Important for test correctness:** `RecordingSink` (`packages/testing/src/recording-sink.ts`) pushes
-every record it receives and does not implement `onConflictDoNothing` deduplication.
-`drizzleUsageSink` (`packages/drizzle/src/sink.ts`) only gets dedupe via the `attempt_id` primary key.
-In a test, if you replay a Temporal activity with the same `idempotencyKey`, `RecordingSink` can still
-accumulate multiple rows — so `sink.records.length` after a replay is not a reliable proxy for
-"deduplication happened." Assert on `attemptId` values (or dedupe in the test itself) rather than raw
-record counts when a test exercises replay/retry behavior against `RecordingSink`.
+A replayed or retried activity that calls the library again writes new rows, so
+`sink.records.length` after a replay counts every attempt. `RecordingSink`
+(`packages/testing/src/recording-sink.ts`) pushes every record it receives unless it is built with
+`dedupeOn: 'attemptId'`, which drops a repeat of an `attemptId` as `onConflictDoNothing` does;
+`drizzleUsageSink` (`packages/drizzle/src/sink.ts`) dedupes only a sink re-delivering the same record
+(same `attemptId`, via the `attempt_id` primary key). Use `new RecordingSink({ dedupeOn: 'attemptId' })`
+in a host test to see what the ledger would hold, and assert on `externalId` and row counts accordingly.
 
-```ts
+```ts no-check
 function makeWorkerClient(db: DbLike) {
   return createClient(baseClientConfig(db))
 }
@@ -139,7 +142,6 @@ export async function runReportActivity(
       model: 'gemini-2.5-pro',
       messages: [{ role: 'user', parts: [{ kind: 'text', text: input.prompt }] }],
       callSiteId: 'worker-report',
-      idempotencyKey: input.attemptKey,
       externalId: input.reportId,
       metadata: buildAnyLlmMetadata({
         tenantId: 'tenant_123',
@@ -162,7 +164,7 @@ or on `globalThis`. Downstream code then reads that singleton implicitly instead
 credential as an argument. This is common when a host started with a single API key for a single
 tenant and never needed per-call scoping.
 
-```ts
+```ts no-check
 // startup.ts — runs once at process boot
 let ambientClient: SomeSdkClient | undefined
 
@@ -211,14 +213,15 @@ Do not use library retry middleware when:
 
 - Temporal, a job queue, or another orchestrator already retries the unit of work;
 - you need durable sleeps or calendar-time rescheduling;
-- you want one externally minted `idempotencyKey` to anchor the first ledger row.
+- you want every retry of one operation to share one `externalId` and be counted by the host, not by
+  in-process attempt numbers.
 
 ## Sidecar persistence
 
 If your host needs typed context rows, write them after the call using `result.attemptId` or
 `LlmError.attemptId`:
 
-```ts
+```ts no-check
 await db.insert(llmCallContext).values({
   attemptId: result.attemptId,
   workflowId: input.workflowId,

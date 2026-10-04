@@ -198,7 +198,8 @@ enumerating every version string in the pricing table.
 
 ## ADR-006: `ModelDescriptor` Registry with Exact-ID and Longest-Prefix Resolution
 
-**Status:** Accepted; resolution keying and routing fallbacks superseded by ADR-022
+**Status:** Superseded by ADR-033 (exact ids plus declared aliases; no prefix matching). Resolution
+keying and routing fallbacks were already superseded by ADR-022.
 
 **Context:**
 A model string like `gemini-2.5-pro-001` must route to the `google` adapter, resolve to the
@@ -242,7 +243,8 @@ provider mappings without a library release.
 
 ## ADR-007: Opt-In Middleware Chain; Retry as First-Party Middleware
 
-**Status:** Accepted
+**Status:** Accepted; amended by ADR-037 (a middleware cannot change the provider or model, so
+provider fallback is host-side, not middleware)
 
 **Context:**
 Cross-cutting behaviors like retry, circuit-breaking, and request logging need to wrap the
@@ -268,8 +270,8 @@ one record. The `callId` is stable across all attempts of a logical call.
 
 - Retry policy is configurable without patching the engine: `maxAttempts`, `baseDelayMs`,
   `maxDelayMs`, and a custom `shouldRetry` predicate are all overridable.
-- The middleware contract is simple enough that hosts can implement circuit-breakers, request
-  tracing, or provider-fallback as middleware without forking the library.
+- The middleware contract is simple enough that hosts can implement circuit-breakers or request
+  tracing as middleware without forking the library. Rerouting is not middleware work (ADR-037).
 - Middleware `id` uniqueness is validated at `createClient` construction to catch misconfiguration
   early.
 - The retry sleep is abortable: if the caller fires the abort signal during a backoff window, the
@@ -310,6 +312,11 @@ port is a no-op in that context.
   abort signal, the `Release` fires before the underlying HTTP request finishes, and the slot
   count under-represents actual in-flight requests.
 
+**Amendment (ADR-041):** the port is `acquire(key, signal, hint?): Promise<Release>` with
+`Release = (usage?: Usage) => void`. The engine passes `hint.estimatedInputTokens` and releases with the
+attempt's usage when it has one, so a token-aware limiter can pace and reconcile. The ownership decision is
+unchanged: the library holds no distributed state.
+
 ---
 
 ## ADR-009: Forward-Only JSON Schema for v1 Structured Output
@@ -324,9 +331,15 @@ own.
 
 **Decision:**
 v1 uses a forward-only JSON Schema hint. `LlmRequest.output.jsonSchema` is typed as `JsonValue`;
-the Gemini adapter forwards it as `responseSchema` and JSON-parses the returned text when
-structured output was requested. The engine returns `output: unknown` and `outputParsed`, and never
-validates shape.
+the Gemini adapter forwards it as `responseJsonSchema` (ADR-034; it was `responseSchema`) and
+JSON-parses the returned text when structured output was requested. The engine returns
+`output: unknown` and `outputParsed`, and never validates shape.
+
+**Amended by ADR-034:** the schema is still forwarded verbatim and the engine still never
+validates the _result_, but the adapters now check the _schema_ itself before dispatch. It must be
+standard JSON Schema and may use only keywords the provider enforces. Host-side validation of
+`output` is unchanged and remains the host's job: a schema constrains the model, it does not
+prove the answer.
 
 **Consequences:**
 
@@ -336,6 +349,23 @@ validates shape.
   and callers should not confuse `output.jsonSchema` with `descriptor.configJsonSchema`.
 - Callers own validation, retry, and acceptance policy for `output`.
 - Malformed or empty structured output is a successful provider call with `outputParsed:false`.
+
+**Amendment (2026-10-03): `runStructured` option parity.** `RunStructuredOptions` gains `externalId`,
+`attachments?: Part[]` (appended to the rendered user message), `history?: Message[]` (prepended) and
+`transientProviderState`, with the same meaning and validation as on `generate`, so a host that uses call
+sites no longer drops to `generate` to correlate a retry, attach a file, or send text or media history. A
+rendered user message that is empty or whitespace only, with no attachments, is `bad_request` before any
+request is built (row-less, like the other prologue checks); attachments alone are a valid message and
+no empty text part is sent. Every `attachments` element must be a part object and every `history`
+element a `{ role, parts }` message of known part kinds, else `bad_request` naming the path
+(`attachments[0]`, `history[1].parts[0].kind`); `generate` applies the same shape check to `messages`.
+A call site declares no tools, so `tool-call` and `tool-result` parts in `attachments` or `history` are
+`bad_request`: a tool loop belongs to `generate`. `history` is sent as given: a history that ends in a
+user message is followed by the rendered user message as a second consecutive user turn, and turns are
+never merged. `transientProviderState` is admitted only by models that declare `providerState`, and
+lets a follow-up structured call reuse what the provider returned with the earlier result. Output
+validation is unchanged: none of these options makes the library validate `output`, and a host that
+wants a validated answer still validates and retries itself.
 
 ---
 
@@ -469,7 +499,8 @@ The Gemini adapter sets `config.httpOptions.timeout` on every request according 
    deadline in this case.
 4. **`serviceTier === 'standard'`, no `timeoutMs`** — transport timeout = `STANDARD_DEFAULT_TIMEOUT_MS`
    (currently 300 000 ms, 5 minutes), backed by a client-side `AbortController` so the ceiling is a
-   real client-side cutoff rather than only an SDK transport hint.
+   real client-side cutoff rather than only an SDK transport hint. A call that reaches it (or the SDK's
+   own timer) is a non-retryable `timeout` with `reason: 'transport_timeout'` (ADR-036 Amendment B).
 
 The computed `httpOptions` is built from the computed base and then the caller's value is spread on
 top, so extra keys in a caller-supplied `httpOptions` object are preserved alongside any fields the
@@ -477,7 +508,8 @@ adapter sets.
 
 **Deliberately not built:** automatic Flex → Standard fallback when a Flex call times out. Such a
 fallback is a disguised retry that crosses tier boundaries without the caller's awareness. Retry
-and fallback logic belongs in the middleware chain where it is explicit and auditable.
+logic belongs in the middleware chain where it is explicit and auditable; routing and fallback
+belong in the host (ADR-037).
 
 **Consequences:**
 
@@ -493,7 +525,7 @@ and fallback logic belongs in the middleware chain where it is explicit and audi
 
 ## ADR-013: Grounding via Typed Provider Extensions; Exact Guard for Structured Output + Tools
 
-**Status:** Accepted
+**Status:** Accepted; amended by ADR-035 (search usage facts, grounding cost is estimated)
 
 **Context:**
 Google Search grounding is a Gemini capability that attaches live search results to the model's
@@ -528,6 +560,16 @@ When grounding is active, the adapter captures `candidate.groundingMetadata` fro
 and includes it in `result.providerMetadata` alongside any `promptFeedback`. The host reads
 grounding attribution from `result.providerMetadata['groundingMetadata']` as `JsonValue`; the
 library does not model the grounding metadata structure as a typed field.
+
+**Amendment (2026-10-03):** "Admit the combinations Google documents" was too generous. Live probes
+(`docs/grounded-structured.md`) showed Gemini 3.x accepting `googleSearch` plus a response schema while
+Flash-Lite models skipped Search and no model returned `groundingMetadata` with `responseSchema`. An
+accepted request is not evidence the tool ran, so all six Gemini 3.x descriptors now set
+`structuredOutputWithTools: false`. The combination fails with `bad_request` before dispatch, naming the
+two-call recipe (grounded research without a schema, then structured synthesis). A host may opt in per
+call with `providerOptions.google.allowSchemaWithSearch`; the search facts in usage, the grounding price
+and the `requireGrounding` fail-closed check are ADR-035, which replaces the synthetic
+`google_search_requested` marker this amendment first introduced.
 
 **Consequences:**
 
@@ -783,6 +825,10 @@ and `runStructured()` call. `auth` is required; there is no default and no fallb
 Vertex AI auth is removed entirely for this version. It will return when an explicit, non-ADC
 credential shape is designed (see ROADMAP.md).
 
+The guarantee covers the library's own code (core and the API adapters). The CLI adapters run a local CLI that
+resolves its own login, and their runners forward an allowlisted copy of the host environment to it, including a
+few ambient credential variables (ADR-046, which states them); the library reads none of them.
+
 A CI source-invariant test asserts:
 
 1. No file under `packages/core/src` or `packages/google/src` reads `process.env`.
@@ -876,7 +922,7 @@ expiry handling, and resolver-failure classification. See the JSDoc on `requireA
 
 ## ADR-021: Observability — Leveled Fail-Open Logging, Per-Attempt Records, and Consumer-Owned Metrics/OTel/Traceparent
 
-**Status:** Accepted
+**Status:** Accepted; Amendment A below (host callbacks may be `async`, the record is total)
 
 **Context:**
 As the engine gained retry middleware and per-attempt record persistence, the observability surface
@@ -898,19 +944,20 @@ The library ships three observability primitives:
 2. **`Telemetry` port** (`onStart` / `onSuccess` / `onError`, all optional) for OTel / Sentry /
    PostHog integration. Events fire once per logical call; `onStart` may return an opaque span
    handle that is forwarded to the terminal hooks. Hook failures are swallowed fail-open and emit a
-   `debug` breadcrumb (`llm.telemetry.hook.failed`).
+   `debug` breadcrumb (`llm.hook.failed`, Amendment A).
 
 3. **Per-attempt `LlmCallRecord`** with `callId` (stable across retries), `attemptId`
-   (idempotency key), `attemptNumber` (1-based ordinal), `latencyMs`, token counts, `costMicroUsd`,
+   (minted per attempt; it only absorbs an at-least-once sink re-delivering the same record, ADR-031), `attemptNumber` (1-based ordinal; `0` on a refusal row written before any attempt ran, ADR-025), `latencyMs`, token counts, `costMicroUsd`,
    `errorKind`, and verbatim `metadata`. Records are written via `UsageSink` (fail-open). Secret
-   redaction (`redactSecrets`) is applied before persistence to `errorMessage`,
-   `generationConfig.providerOptions`, and `generationConfig.httpOptions.headers`. Standard
+   redaction (`redactSecrets`) is applied before persistence to `errorMessage` and
+   `generationConfig.providerOptions` (the Google adapter admits only `httpOptions.timeout`, so no
+   headers are stored). Standard
    generation knobs and host-supplied `metadata` are not scanned.
 
 The following are **explicitly deferred as consumer concerns**:
 
 - First-party OTel package (the `Telemetry` port is the seam; publish an integration example).
-- W3C `traceparent` propagation (hosts inject headers today via `providerOptions`).
+- W3C `traceparent` propagation (needs a per-call header option no adapter has; see ROADMAP.md).
 - In-library metrics runtime, `/metrics` endpoint, cache-hit gauges (derive from records +
   `Telemetry`).
 - Error sampling/dedup, persisted stack traces, typed provider-error schema.
@@ -932,11 +979,39 @@ handle) so a one-file wrapper is all a host needs to bridge it to any APM system
   infrastructure dependency from the library.
 - `LlmCallRecord` fields are sufficient to derive dashboards, cost aggregations, retry rates, and
   error-kind breakdowns at the sink level.
-- Hosts that need `traceparent` propagation pass it today via
-  `providerOptions.google.httpOptions.headers` — no library change required.
+- Hosts that need `traceparent` propagation have no per-call header option today:
+  `providerOptions.google.httpOptions` admits only `timeout`. xAI's `transport.fetch` is per client, so a
+  host can wrap `fetch` there. Per-call headers are listed in ROADMAP.md.
 - The `metadata` field is the caller's domain anchor (tenantId, runId, traceId, etc.) and is
   stored verbatim; it must not contain secrets.
 - Items listed as deferred are tracked in ROADMAP.md under "Deferred observability."
+
+### Amendment A (2026-10-03): host callbacks may be `async`; the record is total
+
+1. **One guard for every host callback that must not affect a call.** Telemetry hooks, the logger's four
+   methods, a limiter's `Release`, and the `@gullabs/quota` handlers (`onEvent`, `onReconcileError`,
+   `onWindowChecksSkipped`) are called through `guardHostCall`, which absorbs a synchronous throw and attaches
+   a rejection handler to a returned promise. `async onError(e) { await flush() }` is the natural way to write
+   a hook and TypeScript accepts it for a `=> void` member; a guard that only caught a throw left its
+   rejection unhandled, which ends the process on Node's default after a call that was already billed.
+   `onStart`'s return value is still the span, a rejected promise included, with its rejection handled.
+   `Scheduler.clearTimeout` is guarded the same way (a throw never leaves a call half cleaned up).
+   `shouldRetry` must return a boolean synchronously (a promise would be truthy for every error): a promise is
+   `bad_request`, with the judged error as `cause`. `payloads.include` and `payloads.redact` already had to
+   be synchronous and already handled a returned promise.
+2. **The failure is one stable `debug` event, `llm.hook.failed`,** with `callId`, `phase` (`onStart`,
+   `onAttempt`, `onSuccess`, `onError`, `release`, `logger.<method>`) and the redacted error. It replaces
+   `llm.telemetry.hook.failed` (greenfield: no alias). The logger's own failures are reported through the same
+   logger once and that report is guarded silently, so a logger that always fails cannot recurse.
+3. **`buildRecord` is total over host JSON.** `metadata`, the generation config, tool-call arguments,
+   citations, provider metadata and `rawUsage` are projected through a bounded copy before the record is
+   built: a circular reference, nesting past 64 levels, more than 100,000 values, a getter or `toJSON` that
+   throws, a `bigint`, function or symbol each become a short marker (`[circular]`, `[too deep]`, `[truncated]`,
+   `[unreadable]`, `[unserializable]`) with one warning on the row naming the lane. This is not mapping input:
+   the call is not refused, because a billed attempt must always get its row ("callId => the final error is in
+   the ledger"), and ordinary data is stored as the same object with no warning. Before this, a circular
+   `metadata` lost a billed result, its row and `onError`.
+4. **A billed failure keeps its usage-clamp warnings** on its row, as a success does.
 
 ---
 
@@ -959,7 +1034,7 @@ Identity is the explicit pair (`provider`, `model`) — structured fields, never
 - `LlmRequest` and `CallSite` carry a required top-level `provider`; `model` stays the bare
   provider-native string, forwarded verbatim to the SDK/CLI.
 - `ModelRegistry.resolve(provider, model)`; descriptors rename `id` → `model` and are keyed by
-  the pair. Longest-prefix matching is scoped within one provider. The same bare `model` under
+  the pair. Matching is exact within one provider (ADR-033 removed prefix matching). The same bare `model` under
   different providers is allowed; duplicate exact pairs throw.
 - Routing is always `adapterMap.get(req.provider)`. `deriveProvider()`, the slash-convention
   parse, the `'unknown'` fallback, and the single-adapter bypass are deleted. After any router
@@ -1189,7 +1264,8 @@ details?: Record<string, number>; raw: JsonValue }`. The engine (`packages/core/
 retryable: false })`. Implemented for Google via `@google/genai`'s `models.countTokens`
    (`packages/google/src/adapter.ts`), sharing `mapMessagesToGeminiContents` with `run()` so both
    code paths map messages identically — a divergence here would make a token count unrepresentative
-   of the actual generation call it is meant to estimate.
+   of the actual generation call it is meant to estimate. (Google rejects `system` and `tools`; see
+   ADR-029 item 9.)
 
 2. **`GoogleCacheStore` token pre-flight.** `GoogleCacheStoreOptions.preflight` (`packages/google/src/
 cache-store.ts`) is an optional `{ minTokens: number; countTokens: (payload) => Promise<number> }`
@@ -1224,6 +1300,9 @@ the configured minimum of M...', { kind: 'bad_request', retryable: false })` bef
    `inlineData`/`fileData.displayName`, `mediaResolution.numTokens`, and any `mediaResolution.level`
    value outside `MEDIA_RESOLUTION_LOW`/`MEDIUM`/`HIGH` — throws `LlmError('bad_request')` naming the
    offending field or key instead of silently dropping it.
+   _Amended by the ADR-029 addendum:_ `functionCall`, `functionResponse` and `thoughtSignature` are
+   no longer rejected; they convert to `tool-call` / `tool-result` parts and an imported signature
+   overlay. The rest of the list still throws.
 
 4. **Provider-payload error-taxonomy correction.** `packages/google/src/cache-store.ts`'s `create()`
    and `packages/google/src/file-store.ts`'s `upload()` previously classified a malformed-provider-
@@ -1261,13 +1340,13 @@ countTokens` (`packages/google/src/client.ts`) is a REQUIRED addition to the str
 
 ## ADR-025: Input Contracts — Strict Interpolation, Callsite/Request Input Validation, Pre-Dispatch Ledger Rows
 
-**Status:** Accepted
+**Status:** Accepted; its `idempotencyKey` rule is superseded by ADR-031 (ledger rows are per attempt)
 
 **Context:**
 `any-llm` enforces OUTPUT contracts thoroughly (`outputJsonSchema`, structured-output retry,
 strict per-model config schemas per ADR-009/ADR-010) but enforced zero INPUT contracts — nothing
 in `packages/core` checked whether the business content of a request was complete or sane before
-dispatch. A live incident (a host application, 2026-07-09/10, `docs/input-validation-middleware-proposal.md`)
+dispatch. A live incident (a host application, 2026-07-09/10, `docs/archive/input-validation-middleware-proposal.md`)
 dispatched a prompt template filled from a request object carrying only 2 of ~9 expected context
 fields; the rendered prompt reached the provider with literal blank template labels and null-filled
 JSON, and two different providers returned schema-valid-but-degenerate responses. Three LLM calls
@@ -1288,7 +1367,7 @@ and quota refusals produced no row at all.
 
 **Decision:**
 Four settled rulings from the proposal's maintainer ruling, then the reshaped engine-level design
-implementing them (`docs/input-contracts-plan.md`, codex-approved):
+implementing them (`docs/archive/input-contracts-plan.md`, codex-approved):
 
 1. **Middleware shape withdrawn — validation is engine-level.** The middleware seam sees only the
    post-render `ResolvedRequest` and never the raw inputs that break; input contracts are checked
@@ -1351,20 +1430,17 @@ Implementing surfaces:
   started, the engine writes one synthetic `LlmCallRecord`: `status` via the existing
   `errorKindToStatus` mapping (no new status value, `recordSchemaVersion` stays `1`), all-zero
   usage, `cost` omitted (the existing "nothing was priced" convention, not a new `cost: 0` literal),
-  `attemptNumber: 0`. `attemptId` follows the EXISTING first-attempt idempotency rule
-  verbatim — `request.idempotencyKey` when supplied, a freshly minted id otherwise — so a
-  caller-retried refused call with the same `idempotencyKey` upserts the same row instead of
-  accumulating duplicates. `record.ts`'s `attemptNumber`/`attemptId` doc contracts are rewritten:
-  `attemptNumber` is documented as "0 = refused before any attempt ran; real attempts are 1-based";
-  `attemptId` on `attemptNumber: 0` is documented as derived by the attempt-1 rule and remaining the
-  idempotency key. **Deliberate telemetry divergence:** `CallErrorEvent.attemptId` stays absent when
+  `attemptNumber: 0`. `attemptId` is a freshly minted id (ADR-031 deleted `idempotencyKey`; the
+  original first-attempt idempotency rule no longer exists). `record.ts`'s `attemptNumber`/`attemptId`
+  doc contracts are rewritten: `attemptNumber` is documented as "0 = refused before any attempt ran;
+  real attempts are 1-based". **Deliberate telemetry divergence:** `CallErrorEvent.attemptId` stays absent when
   no attempt ran (its existing documented semantics, unchanged) — the synthetic record's minted
   `attemptId` has no telemetry counterpart, and this divergence is intentional, not an oversight.
   **Quota-refusal observability consequence:** this is the same code path that covers
   `@gullabs/quota` refusals with zero quota-package changes — refusals that previously left no
   ledger row now appear as `error_kind: 'rate_limited'`, `attemptNumber: 0`, zero-usage rows.
 
-**Row-less prologue boundary** (§3 of `docs/input-contracts-plan.md`):
+**Row-less prologue boundary** (§3 of `docs/archive/input-contracts-plan.md`):
 
 | Failure                                          | Where it throws                      | Ledger row                     |
 | ------------------------------------------------ | ------------------------------------ | ------------------------------ |
@@ -1618,7 +1694,7 @@ mutations stay non-retryable); issue
 
 ## ADR-029: Function-calling seam — tools in, parts out, no agent loop
 
-**Status:** Accepted
+**Status:** Accepted; Addendum below (ordered assistant message, continuation rules, thought signatures)
 
 **Context:**
 Both Google and xAI support client-side function calling. Without a generic
@@ -1649,9 +1725,12 @@ policy would be framework magic this library explicitly refuses.
    replayed `function_call` + `function_call_output` with `store: false`.
    Named `tool_choice` uses the flat Responses form
    `{ type: 'function', name }` (nested chat-completions form 422s).
-9. **`countTokens`:** `TokenCountRequest.tools` is forwarded by Google
-   (`accuracy: 'exact'`). xAI `bad_request`s `tools` (tokenize-text cannot
-   represent declarations).
+9. **`countTokens`:** Google counts `system` and `tools` through the REST `countTokens`
+   with a full `generateContentRequest`, because the SDK's Developer API method
+   cannot carry them (ADR-036 item 16). xAI `bad_request`s `tools` (tokenize-text
+   cannot represent declarations). (This item once said Google forwarded `tools` through
+   the SDK; that never worked, and a short-lived `bad_request` for both was replaced by
+   the REST form.)
 10. **`parallelToolCalls`** is xAI-only (`providerOptions.xai`).
 
 **Consequences:**
@@ -1660,11 +1739,128 @@ policy would be framework magic this library explicitly refuses.
 - DESIGN.md un-reserves `tool-call` / `tool-result`.
 - P0 no-legacy: `FinishReason` widens without an alias.
 
+### Addendum (2026-10-03): ordered assistant message, continuation rules, Gemini 3 thought signatures
+
+**Context.** The seam returned `text` and `toolCalls` separately, so a host could not rebuild the
+model turn in provider order, and it did not say how the next turn is sent. Gemini 3.x makes both
+matter. Live capture (2026-10-03, all six registered 3.x models, fixture
+`packages/google/src/__fixtures__/thought-signatures-2026-10-03.json`): the model returns an opaque
+`thoughtSignature` on the **first** `functionCall` of each model turn (the other calls of a parallel
+set carry none) and sometimes on the final text part; a replayed turn whose first call lost its
+signature is HTTP 400 `INVALID_ARGUMENT` ("Function call is missing a thought_signature"), for a
+single call, for a parallel set, and for either step of a two-step chain; a replay with the
+signature on a text part removed is accepted. Google's documented dummy signature
+(`skip_thought_signature_validator`) was accepted on every call, which proves only that it bypasses
+validation. xAI grok-4.7 already needs a different rule: its provider state holds the model's own
+output and the adapter rejects assistant messages sent beside it.
+
+**Decision.**
+
+11. **`LlmResult.message`.** Every successful result carries the assistant output as an ordered
+    `Message` (`role: 'assistant'`): the representable parts in provider order, text parts kept
+    separate, tool calls with id, name and arguments. Parts with no `Part` representation (thought
+    parts, xAI reasoning and server-tool items, superseded xAI message items) are omitted, and
+    indices are defined over `message.parts` after the omission. `text` and `toolCalls` remain as
+    conveniences derived from the same output. `AdapterResult.message` is **required** on every
+    adapter, including the CLI adapters and the `@gullabs/testing` fakes: the engine does not build
+    one from `text` and `toolCalls` (only the adapter knows the provider's interleaving, and a
+    guessed order would be replayed). A result whose provider output has nothing representable (a
+    thought-only response, for example when the output cap was spent on reasoning) has
+    `message.parts === []`; a host must not append it, and an assistant message with no parts is
+    `bad_request` on the next request (reject, don't map: the library does not skip it). The engine
+    gives the host a copy of `toolCalls`, so editing `toolCalls[i].args` cannot change the
+    arguments in `message`, which a signature hashes.
+12. **`capabilities.continuation` and `LlmResult.continuation`.** The descriptor declares how the
+    next turn is sent, and every result repeats it so a host needs no registry lookup. `'history'`
+    (the default; Gemini, grok-4.5/4.6, every provider without replay state): append
+    `result.message`, send the full history, pass `result.transientProviderState` back when present.
+    `'state'` (grok-4.7): send **only the new messages** plus the state; `result.message` is for
+    display and storage and must not be replayed. `capabilities.providerState: true` is what lets
+    the engine forward `transientProviderState` at all; `continuation: 'state'` requires it
+    (`createModelRegistry` rejects the combination otherwise). `statelessReasoningReplay` is
+    deleted. With `'state'`, tool-result pairing is checked by the adapter against the state; with
+    `'history'` the engine still requires a prior tool call in the messages.
+13. **State is provider-scoped and bound to the host's model string.** `{ google: … }` and
+    `{ xai: … }`; each adapter rejects another provider's key. The xAI state becomes
+    `{ xai: { model, input } }` (it was the bare `{ model, input }`). The next turn goes to the same
+    `provider` and the same `model` string the host sent, an alias included: the engine never
+    rewrites an alias to the canonical id (ADR-033), state is bound to that string, and
+    `LlmResult.model` stays the id the provider returned and is not for routing.
+14. **Gemini 3.x signatures are an overlay on the host's history, not a copy.**
+    `transientProviderState` is `{ google: { signatures: [{ messageIndex, partIndex, kind, model,
+partSha256, signature }] } }`. `kind` (`'text'` or `'tool-call'`) is the signed part's kind and
+    decides whether a stale entry is fatal (below). `messageIndex` is relative to the messages the
+    adapter receives. The adapter builds every part from `request.messages`; the
+    overlay only says which built part gets which signature. `partSha256` is the SHA-256 of the
+    part's RFC 8785 canonical JSON (text: `{kind, text}`; tool call: `{kind, toolCallId, toolName,
+args}`), so an edited text or argument is detected, and key order does not matter, which keeps
+    history stored in Postgres `jsonb` verifiable. `canonicalJson` is exported from core (about 120
+    lines, no dependency); its domain is `JsonValue` and anything else (non-finite numbers, lone
+    surrogates, cycles, nesting deeper than 1000 levels, symbol keys, non-plain objects; plain
+    objects from another realm are accepted) is `bad_request`. `-0` is serialised as `0`, as RFC
+    8785 and `JSON.stringify` do, so a value hashes the same before and after a JSON round trip.
+    - Producing: the result's state is the verified incoming overlay plus one entry for each part
+      of `result.message` the model signed, with `messageIndex = request.messages.length` and the
+      model string the request named. Signatures on omitted parts are dropped with a warning; an
+      unsigned first function call also warns. A call that was billed is never failed for a part
+      that cannot be hashed (a lone surrogate in provider output): the result is returned without
+      that entry, with a warning naming the part.
+    - Consuming: each entry must name an assistant message whose part at `partIndex` hashes to
+      `partSha256`, and its `model` must equal the request's model string. A stale
+      **function-call** entry (edit, reorder, removal, out-of-range index, another model), a
+      duplicate, a host part outside the JSON domain, or a malformed overlay is `bad_request`
+      before dispatch. A stale **text** entry is dropped with a warning and not carried forward:
+      Google treats text signatures as optional (the capture shows replays without them are
+      accepted), so dropping loses nothing required. An assistant message that replays tool calls
+      must have an entry for its **first** tool-call part (matching the capture: only that call is
+      signed, and each sequential step needs its own); history produced by another provider fails
+      this check, naming the first `toolCallId`. The rule is stricter than Google's: a live probe
+      (2026-10-03, `gemini-3.1-pro-preview`, `gemini-3.8-flash`) found an unsigned call in an
+      older turn accepted, because Google validates the current turn only. The library keeps the
+      strict rule so unsigned history never reaches Google by accident. Google's dummy signature
+      is **not** offered (BACKLOG).
+    - Trimming: indices address the host's messages, so removing messages needs the entries of
+      the removed messages gone and the later `messageIndex`es shifted down.
+      `@gullabs/google` exports `dropMessagesFromSignatureState(state, indices)` for that; the rule
+      is whole turns only, and a message that holds a function call is never kept without its
+      entry.
+    - `geminiContentToMessages({ contents, model })` imports signatures from model text and
+      `functionCall` parts into the same overlay instead of rejecting them; a signature on any other
+      part, or without `model`, is `bad_request`.
+15. **Tool results are objects on the Gemini wire.** `functionResponse.response` must be an object:
+    an error result is `{ error }`, a non-object result is `{ output }`, an object passes through.
+    Tool-call ids: Gemini returns `functionCall.id` (`call_<number>`, live capture 2026-10-03) and
+    the adapter uses and replays it. When a response has none the adapter synthesizes
+    `anyllm_call_<name>_<n>`, unique among the ids already in the request's history, and never
+    sends it: a response pairs with its call by name and order, which is what Gemini documents (a
+    replay with provider ids, without ids, with synthesized ids and with one id repeated across
+    steps was accepted on every probed model, fixture
+    `packages/google/src/__fixtures__/function-call-ids-2026-10-03.json`).
+16. **`@gullabs/testing` `runToolLoop(client, req, tools, { auth })`** follows `result.continuation`
+    after every turn so host tests exercise the right contract. The library still runs no loop. A
+    tool that throws becomes an `isError` tool result and the loop continues; a call to a tool with
+    no implementation is `bad_request`.
+
+**Consequences.**
+
+- Breaking, pre-1.0: `LlmResult` gains required `message` and `continuation`; the xAI state shape
+  changes; `capabilities.statelessReasoningReplay` is replaced by `continuation` + `providerState`;
+  Gemini 3.x requests that replay tool calls need the overlay (previously they failed at Google
+  with 400); non-object tool results are wrapped instead of sent bare.
+- `countTokens` sends no signatures: it counts the messages as built without the overlay. The
+  endpoint accepts function calls without signatures and returns the same count with or without
+  them (live capture 2026-10-03), but `generate()` can bill up to about 110 prompt tokens per replayed
+  signature (model-dependent, 0 on some models), so a history with function calls on a Gemini 3 model is reported as
+  `accuracy: 'estimated'` (new `TokenCount.accuracy` value: the count is below what the real call
+  bills by an unreported amount). Without function calls, or on Gemini 2.5, it stays `'exact'`.
+- The overlay is not secret prompt text but is opaque provider data; it is never written to the
+  ledger.
+
 ---
 
 ## ADR-030: xAI server-side search controls — `toolChoice`, `maxTurns`, zero-search accounting, strict-schema dialect
 
-**Status:** Accepted (2026-10-02)
+**Status:** Accepted (2026-10-02); Amendment below (`searchBudget`, observed after the call)
 
 **Context:**
 A host running grounded calls on `grok-4.5` saw the model skip the search on
@@ -1710,6 +1906,8 @@ three neighbouring problems, all confirmed live on 2026-10-02 against
    string `"null"`. Uppercase type names fail at xAI with HTTP 400. The
    adapter rejects both before dispatch, at JSON Schema keyword positions
    only, naming the path. A nullable field lists `'null'` in `type`.
+   ADR-034 moves this check into core (`assertStandardJsonSchema`) and extends it to the
+   keywords xAI does not enforce and to tool schemas.
 5. **Search + structured output is admitted on all three Grok models.**
    `structuredOutputWithTools` was set only on `grok-4.6`; live calls with
    forced search and a strict schema returned valid JSON on 4.5 and 4.7 too.
@@ -1728,3 +1926,2288 @@ three neighbouring problems, all confirmed live on 2026-10-02 against
   xAI. The library offers no converter.
 - Fixture 33 pins the non-enforcement evidence. When a re-recorded fixture
   shows enforcement, update the README and this ADR.
+- ADR-035 adds the provider-neutral `usage.details.web_search_requested`, and a
+  known zero for `web_search_calls` when xAI states that no server tool ran.
+
+### Amendment (2026-10-03): `searchBudget`, observed after the call
+
+`providerOptions.xai.searchBudget: { maxWebSearchCalls?, maxXItems? }` (integers >= 1, at least one
+ceiling; `maxWebSearchCalls` needs a `web_search` tool and `maxXItems` an `x_search` tool; all need
+`tools`) is **never sent to xAI**, which has no per-call search ceiling (`maxTurns` is not enforced,
+item 2). After the response the adapter compares xAI's counters with it: `web_search_calls` against
+`maxWebSearchCalls`, `x_posts_fetched` plus `x_users_fetched` against `maxXItems`. Over budget: a
+warning naming each exceeded line and `usage.details.search_budget_exceeded = 1`; the result is
+returned and priced as usual, because the call is already billed. A counter xAI did not report cannot be
+compared and is never counted as exceeded. It is a report, not a ceiling. ADR-040 streams the call but
+does not turn this into an in-flight ceiling: whether xAI stops billing an aborted stream was not
+testable, so the observed-after-the-call budget stays the only budget control. `maxTurns` stays and is
+re-probed at every model refresh.
+
+---
+
+## ADR-031: Ledger rows are per attempt; correlation is `externalId`
+
+**Status:** Accepted (2026-10-03). Supersedes the `idempotencyKey` rule of ADR-025 and the
+"idempotency key" wording of the `attemptId` contract.
+
+**Context:**
+`LlmRequest.idempotencyKey` became attempt 1's `attemptId`, and the drizzle sink inserts with
+`onConflictDoNothing` on `attempt_id`. The docs recommended reusing the key across host-level retries
+(a workflow activity retry, a job-queue redelivery). That is a second billed provider call whose row
+is silently dropped, so every host that followed the docs under-reported spend. Two tenants that
+picked the same key would also collide.
+
+**Decision:**
+
+1. **Delete `LlmRequest.idempotencyKey`.** `attemptId` is always minted by the engine, one per
+   attempt, including the synthetic `attemptNumber: 0` refusal row.
+2. **`externalId` is the correlation id.** It is persisted on every attempt row (indexed in
+   `@gullabs/drizzle`) and is deliberately not unique. A host gives every retry of one logical
+   operation the same `externalId`.
+3. **The library never deduplicates provider calls.** Every attempt is a billed row. The sink's
+   `onConflictDoNothing` on `attempt_id` stays, but it now only absorbs an at-least-once sink
+   re-delivering the same record.
+
+**Consequences:**
+
+- Spend is complete: a host retry that reuses an `externalId` shows up as extra rows under it, each
+  with its own cost.
+- Hosts with history keyed on old key-derived `attemptId`s (`key`, `key:2`, ...) must join on
+  `externalId` going forward. Existing rows are not rewritten.
+- A host that wants to avoid a duplicate provider call must check its own state before calling.
+
+---
+
+## ADR-032: xAI transport and timeout
+
+**Status:** Accepted (2026-10-03). Twin of ADR-012, which covers the same problem for Gemini.
+Amended by ADR-040 (the adapter streams) and by Amendment A below.
+
+**Context:**
+A non-streamed xAI reasoning or agentic call can run for many minutes before the first response
+byte, because the Responses API sends nothing until the answer is complete. Two independent timers
+sit between the host and xAI:
+
+1. The `openai` SDK's own deadline (`timeout`), which defaults to 10 minutes.
+2. Node's `fetch` (undici), which has a header timer and a body timer of 300 s each. These are not
+   controlled by the SDK `timeout`.
+
+`buildXaiClient` set neither, and per-request options carried only `signal`. A call past 300 s died
+in undici, the SDK reported it as a timeout, the adapter classified it `timeout` with
+`retryable: true`, and the retry middleware ran it twice more. Each retry died at the same limit and
+the spend repeated.
+
+**Decision:**
+
+1. **SDK deadline per request.** The adapter passes `timeout` in the per-request options:
+   `config.timeoutMs + XAI_TIMEOUT_BUFFER_MS` (5 000 ms) when `timeoutMs` is set, otherwise
+   `XAI_DEFAULT_TIMEOUT_MS` (3 600 000 ms, one hour). The buffer keeps the engine's own deadline,
+   armed at exactly `timeoutMs`, ahead of the SDK's, as in ADR-012. `XaiClientLike.responses.create`
+   options widen to `{ signal?: AbortSignal; timeout?: number }`.
+2. **Host-supplied transport.** `xaiAdapter({ transport: { fetch, fetchOptions? } })` (also reachable
+   through `xaiProvider`) is passed to the SDK client unchanged. The SDK timeout alone does **not**
+   lift undici's 300 s header timer. Only a matching undici `fetch` with
+   `new Agent({ headersTimeout, bodyTimeout })` in `fetchOptions.dispatcher` does. The README shows
+   the setup. The library does not build the agent itself: it has no undici dependency and the
+   dispatcher must come from the same undici the host's `fetch` comes from. ADR-040 (xAI calls stream
+   internally) removes the need for long reasoning calls and says exactly which calls still need it.
+3. **Reject, don't map.** `transport` combined with an injected `client` is `bad_request` (the client
+   owns its transport). `transport.fetchOptions` may not carry `headers`, `signal`, `body` or `method`;
+   those belong to the request and are `bad_request`.
+4. **Classification.** An undici header or body timeout (matched by `UND_ERR_HEADERS_TIMEOUT` /
+   `UND_ERR_BODY_TIMEOUT`, or the class name, anywhere in the `.cause` chain), and the SDK's own
+   deadline (`APIConnectionTimeoutError`), classify as `kind: 'timeout'`, `retryable: false`,
+   `reason: 'transport_timeout'` (ADR-036). A retry reaches the same limit and repeats the spend. This is the
+   transport's own timer; the engine's deadline (`timeoutMs`, which fires 5 s before the adapter's) is a
+   retryable `timeout` with no `reason`, and the retry middleware does not retry it because the budget is spent.
+   A connect timeout (`UND_ERR_CONNECT_TIMEOUT`), an OS `ETIMEDOUT` and a TLS handshake timeout are
+   not matched: nothing reached xAI, so they stay retryable. The `openai` SDK wraps every fetch
+   failure whose text mentions "timed out" as `APIConnectionTimeoutError`, so the class alone is not
+   the SDK deadline. The adapter treats it as the SDK deadline only when the error has no cause or
+   only the `AbortError` of the SDK's own controller, and the call ran at least as long as the
+   `timeout` the adapter set; `classifyXaiError(error, { timeoutMs, elapsedMs })` takes that context
+   and never reports an SDK deadline without it. The engine's own `timeoutMs` deadline is unchanged.
+5. **Transport scope and validation.** `transport` also carries `countTokens`
+   (`POST /v1/tokenize-text`) so a host's proxy or egress policy covers every request the adapter
+   makes. The adapter validates it once (a `fetch` function, an object `fetchOptions` without the
+   reserved keys) and copies it, so later mutation of the host's object cannot bypass the check.
+   `timeoutMs` above 2147478647 (`2^31 - 1` minus the 5 s buffer) is `bad_request` in the grok
+   config schemas: the SDK's timer would overflow and fire after 1 ms.
+
+**Deliberately not built:** a library-owned undici agent; an automatic retry with a longer timer;
+reading a request-level header timeout from `providerOptions`. Streaming internally is the
+long-term fix and is a separate decision.
+
+**Consequences:**
+
+- Hosts that run xAI calls longer than 300 s had to pass a `transport` (Amendment A: ADR-040 removes the
+  need for long reasoning calls); without it a non-streamed call failed at 300 s, as a single
+  non-retryable `timeout` with `reason: 'transport_timeout'` instead of three billed attempts.
+- `XAI_DEFAULT_TIMEOUT_MS` and `XAI_TIMEOUT_BUFFER_MS` are exported.
+- Whether xAI bills a call aborted by a timeout, and what usage a timed-out attempt reports, is not
+  decided here; it needs a live probe.
+
+### Amendment A (2026-10-03): streaming changes what the timeout and the transport are for
+
+ADR-040 sends every xAI call as a stream. Two statements above change:
+
+- **The SDK `timeout` bounds a stream only until the response headers arrive** (openai 7.25.0:
+  `fetchWithTimeout` clears its timer when `fetch` resolves, and `parseResponseWithTimeout` returns a
+  streaming response unbounded). The deadline the adapter computes (decision 1) is therefore applied
+  twice by the real client: as the SDK `timeout` for the header wait, and as the client's own timer over
+  the rest of the stream, so it still bounds the whole call. A stream that outlives it ends as the same
+  non-retryable `timeout` with `reason: 'transport_timeout'`. There is no separate idle timer.
+- **The transport is no longer required for long reasoning calls.** Node's body timer is an inactivity
+  timer, and a stream is never quiet for 300 s; the host transport remains for a proxy, mTLS or egress
+  policy, and for the tool-using case ADR-040 names.
+
+---
+
+## ADR-033: Exact model ids plus declared aliases
+
+**Status:** Accepted (2026-10-03). Supersedes ADR-006.; Amendments A, B and C below
+
+**Context:**
+ADR-006 resolved a model string by exact match, then longest prefix. A request for
+`gemini-2.5-flash-image`, `gemini-2.5-pro-preview-tts` or a live-audio variant resolved to the text
+model's descriptor and was validated, adapted and priced as that text model, exact-looking and
+wrong. Both adapters also guarded `descriptor.model === req.model`, so any attempt to repair this
+with an alias list would have been rejected on its first call.
+
+**Decision:**
+
+1. **Exact match only.** `ModelRegistry.resolve(provider, model)` matches a descriptor's canonical
+   `model` or one of its declared `ModelDescriptor.aliases?: readonly string[]` (real version
+   suffixes). The prefix walk is deleted. An alias is unique within its provider and may not equal
+   any canonical id or other alias; the registry throws at construction otherwise.
+2. **Unknown ids are rejected** with `bad_request` naming the closest registered ids of that
+   provider (edit distance, canonical ids and aliases).
+3. **Adapters accept aliases through one core helper,**
+   `assertModelMatchesDescriptor(req, descriptor, adapterProvider)`: `descriptor.provider` must
+   equal both `req.provider` and the adapter's provider id, and `req.model` must be the descriptor's
+   canonical id or a declared alias. The Google and xAI adapters use it.
+4. **The request string is never rewritten.** It is forwarded to the provider unchanged and
+   recorded on the ledger row as the host sent it. Pricing and the rate-limiter key use the
+   canonical descriptor (`pricingFamily ?? model`), so a model and its aliases are priced alike and
+   share a limiter bucket.
+5. No built-in alias is declared without evidence of the provider serving it (ADR-013).
+
+**Consequences:**
+
+- Hosts that relied on prefix resolution (a dated or `-latest` suffix) must name a registered id or
+  add the suffix as an alias in a custom registry.
+- A new model variant is unpriced-by-mistake no more: it fails closed until it is registered.
+- The Claude and Codex CLI adapters keep their own exact-id guards; they declare no aliases.
+
+### Amendment A (2026-10-03): descriptor limits and admitted input media types
+
+_Points 1, 2 and 4 are revised by Amendment C below: a `null` output limit, no exact-string media
+matching, no `vision` / `audioInput` flags._
+
+**Context:**
+A host learned a model's output cap, window and image formats from a 400 after dispatch: xAI rejects
+WebP, Gemini rejects `maxOutputTokens` above 65,536, and neither fact was on the descriptor.
+
+**Decision:**
+
+1. **`ModelDescriptor.limits: { contextWindow; maxOutputTokens }` is required.** There is no optional
+   form and no default: every descriptor (built-in, CLI, host-authored, test fixture) states them.
+   `createModelRegistry` rejects a descriptor whose limits are missing, not positive integers, or
+   whose `maxOutputTokens` exceeds `contextWindow`. `maxOutputTokens` counts reasoning tokens on
+   providers that reason.
+2. **Values come from the provider's own documentation,** with the page and the read date in a source
+   comment next to the table (ADR-013): Google model pages and the Gemma 4 model card, xAI model
+   pages, Anthropic and OpenAI model pages, all read 2026-10-03. Where a provider documents no
+   separate output limit (Gemma 4, xAI Grok 4.x), `maxOutputTokens` equals `contextWindow`: output is
+   bounded by the window and the provider rejects what it cannot serve. This replaces the earlier
+   "no artificial ceiling" wording for xAI, whose schemas accepted any positive integer.
+3. **Config schemas cap `maxOutputTokens` at `limits.maxOutputTokens`,** from the same constant the
+   descriptor uses, so they cannot drift. `assertRegistryInvariants` (`@gullabs/testing`) checks every
+   descriptor: valid limits, and a schema with a `maxOutputTokens` field accepts exactly the limit and
+   rejects one more. The CLI providers expose no output-size knob, so their schemas have no such field
+   and their limits are informational.
+4. **`capabilities.inputMimeTypes?: readonly string[]` lists the IANA types a model accepts in
+   `inline-media` and `file-uri` parts.** Absent or empty means no media input. Adapters call one core
+   helper, `assertInputMimeTypesAdmitted(messages, descriptor, adapterProvider)`, before dispatch
+   (and in `countTokens`); the match is exact on the string the host sent (no case folding, no
+   parameters, no `image/jpg` for `image/jpeg`) and a miss is `bad_request` naming
+   `messages[i].parts[j]` and the admitted types. xAI admits `image/jpeg` and `image/png` (WebP is not
+   listed in xAI's image-understanding page); Gemini admits the image, audio, video, PDF and plain-text
+   document types its documentation lists; Gemma 4 admits PNG and JPEG (the types its vision examples
+   use; its pages list none); the CLI providers are text-only and list none.
+
+**Consequences:**
+
+- Every host-authored descriptor must add `limits` (and `inputMimeTypes` if it takes media).
+- A host sending a media type the provider does not document now fails before dispatch with the type
+  in the message instead of a provider 400 (or silently, where the provider ignores it). xAI no longer
+  accepts the non-standard `image/jpg`.
+- A `maxOutputTokens` above the documented limit fails config validation instead of reaching the
+  provider; for xAI that bound is the 500,000-token window.
+
+### Amendment B (2026-10-03): registry introspection
+
+**Context:**
+A host that keeps provider-neutral call-site config, or routes a model string to a provider, had no way
+to ask the registry what it knows: `resolve` needs the provider already, `listDescriptors` was optional
+(so `strictPricing` failed on a custom registry that lacked it), and a model's accepted config keys
+lived only inside its Zod schema.
+
+**Decision:**
+
+1. **`ModelRegistry.findByModel(model)`** returns every descriptor whose canonical id or declared alias
+   equals `model`, across providers, in registration order (empty when none). The same bare id can
+   exist under several providers (ADR-022), so it returns all of them and never picks one. Exact match,
+   like `resolve`; a defensive copy.
+2. **`ModelRegistry.listDescriptors()` is required** (a copy, registration order). The optional form and
+   the `strictPricing` error for registries without it are deleted; `createClient` throws `bad_request`
+   when `modelRegistry` lacks `resolve`, `findByModel` or `listDescriptors`.
+3. **`ModelDescriptor.configKeys: readonly string[]`** is a required, derived artifact beside
+   `configJsonSchema`: the sorted, de-duplicated top-level keys the schema names across all branches of
+   a union (`toConfigKeys(configSchema)`, exported). It names keys only; a key can be admitted on one
+   branch and not another, so the schema stays the authority for a given config. `createModelRegistry`
+   rejects a descriptor with missing or stale `configKeys`, and `assertRegistryInvariants` checks it
+   against `configSchema`.
+4. **No pruning helper.** A host that keeps provider-neutral config builds each target's config
+   explicitly (ADR-037: hosts route and fall back); `configKeys` is what it checks that against.
+
+**Consequences:**
+
+- Custom `ModelRegistry` implementations must add `findByModel` and `listDescriptors`; custom
+  descriptors must add `configKeys` (use `toConfigKeys(configSchema)`).
+
+### Amendment C (2026-10-03): honest limits, normalised media-type admission, snapshot registry
+
+**Context:**
+An audit of Amendments A and B found a figure no provider publishes, an admission rule stricter than
+the providers, and registry answers that could drift: `limits.maxOutputTokens` was set to the context
+window for xAI and Gemma 4 (neither documents an output limit), which also made the schema reject
+500,001 where xAI had been live-verified to accept 100,000,000; media types were matched as exact
+strings, so `IMAGE/PNG`, `text/plain; charset=utf-8` or an empty type had no accepted spelling and
+Gemini's open-ended document list (`TXT, Markdown, HTML, XML, etc.`) was cut to four types; a file
+uploaded with `GoogleFileStore` could be refused later by `generate`; `vision` and `audioInput` could
+disagree with `inputMimeTypes`; `configKeys` was checked against the declared JSON Schema, not the
+schema; shared `limits` objects were writable; `listDescriptors` was live while `resolve` was a snapshot.
+
+**Decision (supersedes Amendment A points 1, 2 and 4 where they differ):**
+
+1. **`limits.maxOutputTokens: number | null`.** A number is a figure the provider documents. `null`
+   means the provider documents no output limit for the model: no figure is invented, the config schema
+   applies no cap, and the provider decides. `null` is not "unlimited" and not the context window. It is
+   required (an omitted value is refused, not read as `null`); `contextWindow` stays a required positive
+   integer. The schema helper `maxOutputTokensSchema(limits)` caps only for a number, and
+   `assertRegistryInvariants` checks both cases. xAI Grok 4.x and Gemma 4 are `null`; the live-verified
+   acceptance of very large xAI values is restored. Every other model's figures were re-read against the
+   cited pages on 2026-10-03.
+2. **Media-type admission is one function, `assertMediaTypeAdmitted`,** used by
+   `assertInputMimeTypesAdmitted` (every adapter, `countTokens` included) and by
+   `GoogleFileStore.upload`, so a file that uploads can be used. The check reads the type
+   case-insensitively with `; parameters` stripped; the string sent to the provider is never changed
+   (admission is not a rewrite). An empty or malformed type is `bad_request` with its own message. An
+   `inputMimeTypes` entry is a lower-case `type/subtype` or a family wildcard `type/*` (registry-checked,
+   frozen). Aliases are still not mapped: `image/jpg` is not `image/jpeg`.
+3. **Per provider.** xAI admits exactly `image/jpeg` and `image/png`: its image page lists the
+   extensions "jpg/jpeg or png", not media types, and `image/jpg` is not a registered type, so it stays
+   rejected. Gemini admits `application/pdf` and the families `text/*`, `image/*`, `audio/*`, `video/*`:
+   Google lists image, audio and video types but, for documents, only "TXT, Markdown, HTML, XML, etc.";
+   a type inside a family that Google does not accept is Google's error to give. `application/json` and
+   other `application/*` types stay rejected. Gemma 4 admits `image/*` and `video/*`: its model card lists
+   image input and video as frames (no media types are named), and audio is for other Gemma sizes. That
+   the Gemini API's Gemma endpoint accepts a video part is not probed.
+4. **The `vision` and `audioInput` capability flags are deleted.** `inputMimeTypes` is the single
+   statement of multimodal support; `isMediaTypeAdmitted(type, list)` answers "does it take images".
+5. **`createModelRegistry` trusts no declared artifact.** `configKeys` and `configJsonSchema` are compared
+   with what `configSchema` yields, and `toConfigKeys` follows local `$ref`s into `$defs` (a schema with
+   `.meta({ id })`) and reports an unrepresentable schema as `LlmError('bad_request')`. The registry freezes
+   each descriptor's `limits`, `inputMimeTypes`, `aliases` and `configKeys`, and answers `resolve`,
+   `findByModel` and `listDescriptors` from one copy of the descriptor list taken at construction.
+
+**Consequences:**
+
+- A custom descriptor sets `maxOutputTokens: null` when its provider documents none, and drops
+  `vision` / `audioInput` for `inputMimeTypes`.
+- `GoogleFileStore.upload` throws `bad_request` for an empty or unadmitted type before any bytes are sent.
+- Descriptors whose `configJsonSchema` was hand-written must use `toConfigJsonSchema(configSchema)`.
+
+---
+
+## ADR-034: One JSON Schema dialect, fail closed
+
+**Status:** Accepted (2026-10-03)
+
+**Context:**
+`output.jsonSchema` and `tools[].inputJsonSchema` reached the two providers in different
+dialects. The Google adapter sent the output schema as `responseSchema`, the OpenAPI-flavoured
+field: the SDK rewrote it, passed `$schema`, `const`, `$ref` and `$defs` through untouched,
+left `$defs` types lowercase and ordered keys alphabetically. Tool parameters switched dialect on
+the presence of `$schema`. xAI takes standard JSON Schema and rejects the OpenAPI dialect
+(ADR-030). One schema could not serve both.
+
+Worse, both providers accept every keyword and silently ignore the ones they do not enforce. A
+live probe (P3, 2026-10-03, every Gemini and Gemma model the key could reach, no tools,
+`responseJsonSchema`) asked the model to violate each keyword in turn. `const`, `allOf`,
+`exclusiveMinimum`, `multipleOf` and `uniqueItems` were ignored on every model, and `oneOf` was
+read as `anyOf` (an overlapping branch returned a value a true `oneOf` forbids). No request was
+rejected. A host that writes `z.literal('x')` gets a schema Google accepts and does not enforce.
+
+The same probe showed the other half: `$ref` / `$defs` (recursive too), `anyOf`, `items: false`,
+`prefixItems` and `additionalProperties` are enforced on every model, and key order is preserved.
+
+**Decision:**
+
+1. **Contract.** `output.jsonSchema` and `tools[].inputJsonSchema` are standard JSON Schema
+   (2020-12 subset). The Google and xAI adapters enforce it (they run the checks below before
+   dispatch). `claude-cli` passes `--json-schema` to the CLI untouched and `codex-cli` runs its
+   own OpenAI-strict preflight (`output-schema.ts`), so neither rejects `nullable` or uppercase
+   types; this ADR covers the HTTP providers. `@gullabs/core` exports
+   `assertStandardJsonSchema(schema, path)` (moved from `@gullabs/xai`): it rejects `nullable`,
+   uppercase or unknown `type` names, `items` as an array, boolean subschemas
+   (`additionalProperties` and `items` may be boolean), a value in a schema position that is not
+   a schema (`properties: { a: 'string' }`), a malformed keyword value (a string `maxLength`, a
+   negative or fractional count, a non-numeric `minimum`, a `required` that is not a list of
+   names, a `pattern` that is not a valid regular expression), and a cyclic or more than
+   128-deep object (recursion is `$ref` / `$defs`, never a cyclic JavaScript object). Only schema
+   positions are inspected; `enum`, `const`, `default` and `examples` values and property names
+   are data. Only the 2020-12 spellings are accepted: xAI says Draft-07 also works, but
+   `definitions`, `dependencies` and `$anchor` are rejected with a hint (`$defs`, host-side
+   validation, a `$defs` pointer) so one schema reads the same on Google and xAI. Error paths
+   bracket-quote names that contain `.`, `[`, `]`, `"` or `\` (`properties["a.b"]`).
+2. **Three keyword classes.**
+   - **Annotations** (`$schema`, `$id`, `$comment`, `title`, `description`, `examples`,
+     `default`, `deprecated`, `readOnly`, `writeOnly`) constrain nothing. Accepted by every
+     profile and passed through.
+   - **Applicators and assertions** are checked against a profile each adapter declares: the
+     keywords it enforces, from the provider's own documentation (read date in the adapter) and
+     live probes. Anything outside the profile is `LlmError('bad_request')` with the path
+     (`output.jsonSchema.properties.kind`, `tools[1].inputJsonSchema...`) before dispatch.
+     Nothing is rewritten: `const` is not turned into a one-value `enum`; the host writes the
+     `enum`.
+   - A keyword a provider documents as **reinterpreted** counts as not enforced. Both Google and
+     xAI read `oneOf` as `anyOf`, losing the exclusive-match rule, so `oneOf` is in neither
+     profile.
+
+   **When a keyword is "enforced".** A keyword is in a profile when the provider documents it as
+   enforced or live probes show it constraining the output. It is outside the profile when the
+   provider ignores it: for the live probe, violated in at least 6 of 7 samples on every model of
+   the family. A keyword that is supported but violated less often is **soft** (probabilistic),
+   stays accepted and is documented as soft; the library never validates the result (ADR-009).
+   `pattern`, `minLength` and `maxLength` are the soft keywords on Gemini (worst cell 4 of 7).
+   So the accurate statement is: no keyword the provider ignores is accepted, and a soft keyword
+   is a hint the host must still validate.
+
+3. **Profiles** (`assertJsonSchemaProfile(schema, path, profile)` in core; the Google profile in
+   `@gullabs/google`, the xAI profile in `@gullabs/xai`). Besides the keyword list a profile
+   declares the enforced `format` values, numeric limits (`maxLength` etc.), whether recursive
+   `$ref` is supported, whether `items: false` is enforced and whether `pattern` is held to the
+   regex subset (no backreferences, property escapes anywhere including inside a character
+   class, word boundaries, lookaround or inline modifiers). `$ref` must be local (`#` or
+   `#/...`) and must resolve to a schema (not to data such as `#/properties` or `#/enum/0`); a
+   chain of `$ref`s that never reaches a schema is rejected everywhere; where recursion is
+   unsupported every cycle is rejected (the error names the `$ref` that closes it, and a cyclic
+   `$defs` entry nothing points at is found too). A `type` array is accepted only as one type
+   plus `'null'`; other unions use `anyOf`. An empty `enum` or `anyOf` is rejected.
+   `propertyNames: { type: 'string' }` constrains nothing (JSON keys are strings), is what
+   `z.record(z.string(), X)` emits and is accepted by every profile and sent verbatim; any other
+   `propertyNames` is rejected.
+4. **The portable subset** is the intersection of the **Gemini 3.x and xAI** profiles. Core
+   exports it as `PORTABLE_JSON_SCHEMA_KEYWORDS` (plus `PORTABLE_JSON_SCHEMA_FORMATS`; both
+   frozen) and `assertPortableJsonSchema(schema, path?)`, so a host can lint every call site in a
+   build-time test. It is **not** "every provider", and a schema that passes is not guaranteed
+   enforced everywhere:
+   - **Gemma 4** has a stricter profile: it additionally rejects `format`, `minLength` and
+     `maxLength` (it ignored them), so a portable schema can still be `bad_request` on a Gemma
+     model.
+   - **`claude-cli` and `codex-cli`** do not run these checks (see §1).
+   - **`pattern`, `minLength` and `maxLength` are soft** on Gemini (§2): the portable check says
+     both providers accept them, not that the model always obeys them.
+
+   A test in `@gullabs/any-llm` keeps every field of the portable profile (`keywords`, `formats`,
+   `limits`, `circularRefs`, `booleanItems`, `patternSubset`) equal to what the Gemini 3.x
+   profile of every registered Gemini 3.x model and the xAI profile imply. Adapters do not call
+   the portable check; they enforce their own profile.
+
+5. **Google sends `responseJsonSchema` and `functionDeclarations[].parametersJsonSchema`, always.**
+   `GeminiSchema`, `responseSchema` and `parameters` are deleted. The schema reaches the wire
+   verbatim and in the host's key order (the wire tests assert the exact serialisation), so a
+   host can put `reasoning` before `answer`. xAI runs the same assertion on tool schemas as on
+   output schemas. The Gemma profile is chosen from the resolved descriptor's canonical model
+   (`gemma-` prefix), never from the request string, so a declared alias still gets it.
+6. **Per-provider evidence.**
+   - Google's set comes from its structured-output guide (read 2026-10-03: types incl.
+     `["T", "null"]`, `properties`, `required`, `additionalProperties`, `enum`, `format`,
+     `minimum`/`maximum`, `items`, `prefixItems`, `minItems`/`maxItems`) plus P3 for `anyOf`,
+     `$ref` / `$defs`, `items: false`, `pattern`, `minLength`, `maxLength`. P3 exercised the
+     `format` values `date-time`, `date` and `email` only; `time` is named in the guide but no
+     capture exercised it, so it is rejected until one does. Gemma 4 violated `format` on 7 of 7
+     samples on both models and `minLength`/`maxLength` on 7 of 7 and 6 of 7, so the adapter
+     rejects those three keywords for Gemma models (`pattern` was violated 0 of 7 and 4 of 7:
+     soft, kept). P3 probed one simple pattern, so Google's `pattern` is held to the regex subset
+     too until a capture shows lookaround or `\b` enforced.
+   - **Tool schemas on Google.** P3 ran `responseJsonSchema` only. The `parametersJsonSchema`
+     live evidence is P2's trivial schemas (an object with one string property and
+     `additionalProperties: false`, and an empty `properties`) on the six 3.x models. `$schema`,
+     `$ref` / `$defs`, `anyOf`, `items: false` and type arrays are verified for output schemas
+     only; the same profile is applied to tools on that basis. Treat tool-schema acceptance
+     beyond trivial schemas as resting on the output-schema probe until a tool-path probe runs.
+   - xAI's set comes from its structured-outputs guide (read 2026-10-03): `$ref` / `$defs` are
+     documented as non-circular only, so recursion is rejected; `format` is enforced for date,
+     time, date-time, email, uuid, ipv4, ipv6 and uri; `minLength`/`maxLength` up to 2,048,
+     `minItems`/`maxItems` up to 256 and `minProperties`/`maxProperties` up to 64 are enforced
+     and a larger value is rejected; `pattern` is a regex subset; `allOf` is enforced for a
+     single subschema only and is rejected outright; `not`, `if`/`then`/`else` and unlisted
+     formats are best-effort and rejected. `items: false` is undocumented and rejected. The
+     guide does not list `properties`, `required`, `items` or `prefixItems` as keywords (it
+     names `properties` and `prefixItems` in its 400 list), so those four rest on the listed
+     `object` and `array` types. `additionalProperties` as a schema (and Zod's
+     `additionalProperties: {}`) is forwarded on the strength of the guide's `additionalProperties`
+     entry; no xAI capture exercised it.
+
+| Keyword                                                               | Google (Gemini)                        | xAI                                                 | Portable                          |
+| --------------------------------------------------------------------- | -------------------------------------- | --------------------------------------------------- | --------------------------------- |
+| `type` (incl. `['T', 'null']`), `properties`, `required`              | yes                                    | yes                                                 | yes                               |
+| `additionalProperties` (boolean or schema)                            | yes                                    | yes                                                 | yes                               |
+| `enum`, `anyOf`                                                       | yes                                    | yes                                                 | yes                               |
+| `$ref` / `$defs` (local)                                              | yes, recursive too                     | yes, non-circular                                   | non-circular                      |
+| `items`, `prefixItems`, `minItems` / `maxItems`                       | yes                                    | yes (up to 256)                                     | yes (up to 256)                   |
+| `minimum` / `maximum`                                                 | yes                                    | yes                                                 | yes                               |
+| `format`                                                              | date-time, date, email                 | date, time, date-time, email, uuid, ipv4, ipv6, uri | date-time, date, email            |
+| `pattern`, `minLength` / `maxLength`                                  | yes, soft; `pattern` is a regex subset | yes (up to 2,048; `pattern` is a regex subset)      | yes (same limits), soft on Gemini |
+| `propertyNames: { type: 'string' }` only                              | yes (no-op)                            | yes (no-op)                                         | yes (no-op)                       |
+| `items: false` (closed tuple)                                         | yes                                    | no                                                  | no                                |
+| `const`                                                               | no (ignored)                           | yes                                                 | no                                |
+| `exclusiveMinimum` / `exclusiveMaximum`                               | no (ignored)                           | yes                                                 | no                                |
+| `minProperties` / `maxProperties`                                     | not probed                             | yes (up to 64)                                      | no                                |
+| `oneOf`                                                               | no (read as `anyOf`)                   | no (read as `anyOf`)                                | no                                |
+| `allOf`                                                               | no (ignored)                           | no (single only)                                    | no                                |
+| `multipleOf`, `uniqueItems`                                           | no (ignored)                           | undocumented                                        | no                                |
+| `not`, `if`/`then`/`else`, other `propertyNames`, `patternProperties` | no                                     | no                                                  | no                                |
+
+The table is for Gemini; Gemma additionally drops `format`, `minLength` and `maxLength`.
+
+**Consequences:**
+
+- Breaking. Schemas using the OpenAPI dialect, `const`, `oneOf`, `allOf`, `exclusiveMinimum`,
+  `multipleOf`, `uniqueItems`, a constraining `propertyNames` or an unlisted `format` are
+  rejected before dispatch on the provider that would ignore them, and so are malformed schemas.
+  The changeset says what hosts change.
+- Zod: `z.toJSONSchema` emits `const` for `z.literal('x')` (use `z.enum(['x'])`; `z.literal(['a',
+'b'])` already emits `enum`), `oneOf` for `z.discriminatedUnion` (model the variants with
+  `z.union`, which emits `anyOf`), `items: false` for `z.tuple`, a multi-type `type` array for a
+  union of primitives, and a recursive `$ref: '#'` for a recursive type. `z.record(z.string(),
+X)` emits the no-op `propertyNames: { type: 'string' }` and works; `z.record(z.enum([...]), X)`
+  and `z.record(z.string().regex(...), X)` emit a constraining `propertyNames` and are rejected.
+  `reused: 'ref'` emits `$defs`/`$ref`, which both providers accept. Zod's `startsWith`,
+  `endsWith` and `includes` (and `z.iso.duration()`) emit a non-standard `format` next to a
+  `pattern`; the format is rejected (it is not enforced anywhere). For the first three, keep the
+  pattern and drop the format with `.meta({ format: undefined })` after the check, or write
+  `z.string().regex(...)` directly; `z.iso.duration()`'s pattern uses lookahead and is outside
+  the regex subset, so validate durations host-side. The pinned fixture
+  `packages/core/src/__fixtures__/zod-4.6.5-json-schemas.json` records the output and the
+  verdict per provider and for the portable subset (including both workarounds); a Zod upgrade
+  that changes the output fails its test. Re-pinning (`PIN_ZOD_FIXTURES=1`) is refused when `CI`
+  is set.
+- Hosts that need a schema one provider rejects either change the schema or validate that
+  constraint themselves. The library offers no converter.
+- The Codex and Claude CLI adapters keep their own schema rules (codex-cli's strict preflight;
+  claude-cli forwards the schema untouched); this ADR covers the HTTP providers.
+- Fixtures: `packages/google/src/__fixtures__/response-json-schema-2026-10-03.json` (P3 counts per
+  keyword and model), `packages/xai/src/__fixtures__/structured-output-schema-docs-2026-10-03.json`
+  (the documented rules), and the Zod fixture above (ADR-013).
+
+---
+
+## ADR-035: Search usage facts; grounding cost is estimated
+
+**Status:** Accepted (2026-10-03). Amends ADR-013 and ADR-030; replaces the `google_search_requested`
+marker.
+
+**Context:**
+A pricing source sees only `(model, usage, tier)`. The first fix for unpriced Gemini grounding
+(ADR-013's 2026-10-03 amendment) had the adapter write a Google-only synthetic key into `usage.details` so
+the pricing source could mark the cost estimated. That key said that Search was requested, nothing about
+whether it ran or how often, and the cost still left out the fee. xAI already reported a search count
+(`web_search_calls`) and a separate `server_tools_requested` flag, under names a host cannot share with
+Google. A host that wants to know "did Search run, and what did it cost" read a different place per provider.
+
+Live evidence (2026-10-03):
+
+- **P4**, every Gemini 3.x model with and without a response schema, `googleSearch` on, four calls each:
+  without a schema every model returned `groundingMetadata` with at least one query on 4 of 4 calls. With a
+  schema, 3.1 Pro returned it on 2 of 4 and the other five models on 0 of 4 (a prompt-token jump with no
+  metadata appeared on some, so some schema calls probably searched without saying so). No model reached the
+  3-of-4 bar this record set for turning the pair on by default.
+- **P5**, a grounded Gemini 2.5 call told to repeat one query three times: `webSearchQueries` held three
+  identical entries (3 occurrences, 1 unique) and `usageMetadata` carried `toolUsePromptTokenCount`
+  (77 on Flash, 141 on Pro), counted in `totalTokenCount` but not in `promptTokenCount`. Gemini 3.x
+  deduplicated its queries on 14 of 14 attempts and reported no tool-use tokens. Whether Google bills a
+  repeated query, or bills tool-use tokens as input, could not be reconciled: the billing export was not
+  available.
+
+**Decision:**
+
+1. **Two normalised facts, on every provider.** `usage.details.web_search_requested` is `1` when the
+   request enabled web search and absent otherwise. `usage.details.web_search_calls` is the observed
+   number of searches, absent when the response does not say; an explicit zero is a known zero. xAI
+   already emitted the count; it now also sets `web_search_requested`, and reports `0` when xAI states that
+   no server tool ran. Google counts **occurrences** in `groundingMetadata.webSearchQueries` (a repeated
+   query counts each time); `webSearchQueries` absent or metadata absent means the count is unknown. The
+   Google-only `google_search_requested` key and its exported constant are deleted.
+2. **Occurrences, always estimated.** Occurrences are the conservative count: nothing measured shows a
+   repeat is free. Because the free daily allowance Google publishes is shared across a project's calls, no
+   single call can know it was free, so every grounding fee is charged in full and a call that ran Search
+   is always `confidence: 'estimated'`. A known zero (Search requested, response reports zero queries) did
+   not run it and prices exactly.
+3. **The `tools` lane.** The Google pricing source adds the grounding fee to `Cost.details.tools`
+   (`microUsd` stays the sum of four lanes): Gemini 3 charges per query, `web_search_calls x 14_000` uUSD;
+   Gemini 2.5 charges per grounded prompt, `35_000` uUSD once however many queries ran. Rates are from
+   Google's pricing page, read 2026-10-03, and carry `pricingVersion` `gemini-2026-10-03`. Requested with the
+   count unknown: the lane stays `0`, the cost is estimated and the adapter warns that the fee is not
+   included. Gemma has no token price in the snapshot, so it has no grounding price.
+4. **Warnings.** A call that requested Search and whose response has no `groundingMetadata`, or metadata
+   with no `webSearchQueries`, carries a warning saying so, on the result and on the attempt's row, also
+   when the attempt fails after billing.
+5. **`requireGrounding` fails closed.** `providerOptions.google.requireGrounding: true` passes only on
+   positive evidence: `groundingMetadata` present and `web_search_calls >= 1`. Anything else throws
+   `LlmError` kind `server`, `retryable: true`, reason `grounding_missing`, with the attempt's usage
+   attached so the billed tokens reach the ledger. It needs `googleSearch` in the same request
+   (`bad_request` otherwise). It is off by default except as item 6 says.
+6. **Schema plus Search is an opt-in.** `structuredOutputWithTools` stays `false` on all six Gemini 3.x
+   descriptors (P4). `providerOptions.google.allowSchemaWithSearch: true` admits the pair on such a model
+   and turns `requireGrounding` on unless the host passes `requireGrounding: false`, so the default for an
+   opted-in call is to fail rather than return an unsearched answer. The flag needs `googleSearch` and
+   `output.jsonSchema` in the request, and a model with `capabilities.grounding`. A descriptor may set
+   `structuredOutputWithTools: true` only on evidence of at least 3 of 4 schema calls returning metadata
+   with a query.
+7. **Tool-use tokens and inconsistent totals.** `usage.details.tool_use_prompt` records
+   `toolUsePromptTokenCount` whenever Google reports it; it is not added to input and not priced.
+   Core's `normalizeUsage` compares `totalTokens` with `inputTokens + outputTokens`: a larger total adds a
+   warning and the engine reports the call's cost as `'estimated'`, for any provider. A Gemini 2.5 grounded
+   call trips it.
+8. **Citations.** `Citation.cited` and `Citation.textRange` (UTF-16 offsets into `LlmResult.text`) come
+   from Gemini `groundingSupports` (chunk referenced by a support; first supported segment, converted from
+   the UTF-8 byte offsets Google documents) and from xAI `url_citation` annotations (a non-empty range is an
+   inline citation and covers xAI's inline marker; a zero-width annotation is a source that is not cited
+   inline). xAI no longer reports a numeric-only title (its marker number) as a title. Google's
+   `searchEntryPoint`, which Google requires a grounded answer to display, is also on
+   `providerMetadata.google.searchEntryPoint`. The `googleSearch` options (`excludeDomains`,
+   `timeRangeFilter`) stay out of the strict schema until a probe shows what they do (BACKLOG).
+
+**Consequences:**
+
+- Breaking. `GOOGLE_SEARCH_REQUESTED_DETAIL` and the `google_search_requested` detail are gone: read
+  `web_search_requested` (and `web_search_calls`). Grounded Gemini rows now carry a priced `tools` lane in
+  `cost.details`; `cost_micro_usd` includes it. The ledger has no confidence column yet, so a row that ran
+  Search is still recognised by `token_details->>'web_search_requested' = '1'`; treat its cost as an
+  estimate that can overstate (free allowance) or understate (unpriced tool-use tokens, unknown counts).
+- **Open question, recorded rather than guessed:** whether Google bills repeated queries, and whether it
+  bills `toolUsePromptTokenCount` as input. Both can only be settled against a billing export. Until then
+  occurrences are counted and tool-use tokens are recorded unpriced, and the cost stays estimated.
+- Schema plus Search on Gemini 3.x is possible but not default. The measured rates are in
+  `docs/grounded-structured.md`.
+- Fixtures (ADR-013): `packages/google/src/__fixtures__/grounding-schema-matrix-2026-10-03.json` (P4) and
+  `grounding-usage-fields-2026-10-03.json` (P5), redacted: model answer text and call cost removed. Amendment A adds
+  `grounding-supports-2026-10-03.json`, one full grounded response with `groundingSupports` (Japanese and
+  emoji answer, thought parts), redacted to distinct redirect placeholders.
+- Request-side search intent (one option that means "search" on every provider) is deferred to its own
+  decision.
+
+### Amendment A (2026-10-03, grounding audit)
+
+An adversarial audit of the grounding release found money and correctness defects. Item 5, item 6 and the xAI
+`cited: false` half of item 8 above are replaced by the rules here; everything else stands.
+
+1. **`grounding_missing` retryability depends on the schema.** With an output schema attached the error
+   is `retryable: false`: the capture shows the same schema + Search request missing on every call of
+   five of six Gemini 3 models (0 of 4), so a retry repeats a billed failure, the argument ADR-036 made for
+   `transport_timeout`. Without a schema it stays `retryable: true`: the same models grounded on 4 of 4
+   calls. A retry middleware therefore makes one attempt and writes one billed row for the schema case.
+   A host that wants more attempts overrides `shouldRetry` and accepts the spend. `LlmResult.cost` of a
+   retried success covers only the final attempt; the earlier attempts' spend is in the ledger rows.
+2. **`requireGrounding` is judged after the finish reason.** Only a candidate that finished normally
+   (`STOP`, or no finish reason) is checked for evidence. A `SAFETY`, `RECITATION`, `BLOCKLIST`,
+   `PROHIBITED_CONTENT` or `IMAGE_SAFETY` candidate with no evidence throws `content_filter`,
+   `retryable: false`, usage attached, instead of `grounding_missing`; a filter block is deterministic and
+   the host must see it. A filtered candidate that does carry evidence, and any other non-`STOP` finish
+   (`MAX_TOKENS` is `length`), is returned as it is without the flag.
+3. **Schema + Search opt-in only where it was measured.** `structuredOutputWithTools: false` means a
+   capture showed Search missing and the host may opt in per call. Absent means nothing was measured:
+   the pair is rejected with or without `allowSchemaWithSearch`. Gemini 2.5 and Gemma have no capture
+   (P4 probed Gemini 3.x only), so both reject, with a message saying so. A non-boolean
+   `allowSchemaWithSearch` or `requireGrounding` is a `bad_request` that names the field and the received
+   type, checked before any other rule.
+4. **Queries are non-empty strings.** `web_search_calls` and the `requireGrounding` evidence count only
+   non-empty strings in `webSearchQueries`. An empty array is a known zero; a non-empty array that names
+   no query is unknown (the cost is estimated with an empty `tools` lane and `requireGrounding` fails).
+5. **Tool-use prompt tokens stay unpriced.** `usage.details.tool_use_prompt` is recorded and not priced; a
+   Gemini 2.5 grounded call is therefore understated by those tokens at the input rate (about 176 uUSD on
+   the P5 Pro sample). Whether Google bills them is the open billing question above; no upper bound is
+   guessed into the price.
+6. **xAI `cited` and ranges.** `cited` is never `false` on xAI: a `0`/`0` annotation means no marker range
+   was reported, and a captured X Search answer (fixture 19) shows inline citation markup in its text with
+   only `0`/`0` annotations, as do the structured answers (fixtures 18, 27, 32), so `cited` stays absent
+   there. A non-empty range is `cited: true` and is checked: the slice of the joined text must be exactly
+   `[[label]](<the annotation's url>)`, indexed UTF-16 from the start of its `output_text` part; otherwise
+   the range is dropped with a warning and the source stays `cited: true`. A title is dropped only when it
+   equals that marker's label, so a numeric real title survives. Whether xAI counts code points or UTF-16
+   around emoji, and how it indexes a multi-part message, is not in any capture; the check makes a wrong
+   assumption lose a range instead of emitting a wrong one.
+7. **Gemini `textRange` is verified, not assumed.** A live capture (Japanese answer with emoji, two thought
+   parts before the answer; fixture `grounding-supports-2026-10-03.json`) showed that `startIndex` and
+   `endIndex` are UTF-8 bytes into the answer part, and that `partIndex` does not count thought parts (the
+   answer sat at parts index 2 and its segments omitted `partIndex`). The adapter indexes non-thought parts
+   and checks every range against `segment.text`: when the answer at the converted range is not exactly
+   that text the range is dropped, the source stays `cited: true`, and the result carries a warning. A
+   segment without `text` is accepted on the offsets alone.
+8. **`searchEntryPoint` is stored once,** at `providerMetadata.google.searchEntryPoint`; the raw
+   `providerMetadata.groundingMetadata` omits it. The HTML is kilobytes and persisted on every grounded row.
+   It is untrusted markup (Google's CSS plus model-chosen query strings): the README says to render it in
+   a sandboxed iframe.
+9. **`pricingVersion` `gemini-2026-10-03` marks the new grounding lane,** not a token re-read: token rates
+   were last verified 2026-09-25. A row priced under the older version has no `tools` lane.
+
+---
+
+## ADR-036: Retry honours provider delays; errors carry typed reasons
+
+**Status:** Accepted (2026-10-03). Part 1 (reasons), the core half of Part 2 (retry, deadline, sink,
+classification) and the adapter items (10-20) are implemented. Amendments below (`spend_ceiling`
+preflight, Google's billed repeats).
+
+### Part 1 — Error reasons are a closed, typed vocabulary
+
+**Context:**
+`LlmErrorKind` and `retryable` say what class of failure happened and whether a retry may help, but
+several distinct causes share one kind: a local quota window, a provider daily quota and an account
+out of credits are all `rate_limited, retryable: false`, and a host reacts to each differently
+(reschedule, alert, top up). Hosts were left matching message text.
+
+**Decision:**
+
+1. **`LlmError.reason?: LlmErrorReason`,** a closed union exported from `@gullabs/core`. Members:
+   `transport_timeout`, `quota_window`, `daily_quota`, `credits_exhausted`, `spend_ceiling`,
+   `grounding_missing`, `cache_not_found` (and `quota_store_unavailable`, added by
+   ADR-041 Amendment A; `search_budget_exceeded` was reserved here and deleted by ADR-040). `kind` and `retryable` stay
+   authoritative; `reason` only says why within a kind, and is absent when no named cause applies.
+   `retryable` follows whether a retry can change the outcome: `grounding_missing` is `retryable: true`
+   only when no output schema is attached (a schema + Search call keeps missing, ADR-035 Amendment A).
+2. **The union is closed on purpose,** so adapters cannot invent reasons. Adding a member is a core
+   minor release under the lockstep versioning in `RELEASING.md` (pre-1.0, so a minor may break an
+   exhaustive `switch`). The changeset lists the new members and hosts keep a `default` branch. There is no
+   namespaced extension form: a provider-specific condition that needs a reason gets a core member.
+3. **The reason is persisted and observable.** `LlmCallRecord.errorReason` (absent on success and when
+   the error has no reason), the `error_reason` text column of `llm_calls`, and
+   `CallErrorEvent.reason`. It is written on provider-attempt rows and on refusal rows
+   alike (ADR-037 item 6).
+4. **The database column has no CHECK constraint.** The vocabulary lives in the TypeScript union; a new
+   member must never need SQL. A host that wants database-side validation can add its own constraint and
+   owns keeping it in step with the changeset notes.
+5. **SQL ships with the column.** `@gullabs/drizzle` ships `sql/install.sql` (fresh install),
+   `sql/upgrades/0001-add-error-reason.sql` (from the 0.7.2 shape, idempotent) and a migration test
+   that proves the upgraded table equals a fresh install and keeps existing rows. A
+   `recordSchemaVersion` bump alone would migrate nothing, and the record version stays `1`: the field is
+   additive and optional. (ADR-039 later moved the record to version `2` together with its own columns.)
+6. **Wrappers keep the reason.** Adapter overlays that rebuild an `LlmError` (`classifyGoogleError`) copy
+   `reason`; an adapter or middleware that throws a reasoned `LlmError` is persisted as thrown.
+
+**Consequences:**
+
+- Hosts branch on `error.reason` (or the `error_reason` column) instead of message text.
+- Existing rows keep `error_reason` NULL. Hosts using `@gullabs/drizzle` apply
+  `sql/upgrades/0001-add-error-reason.sql` before upgrading the sink, or inserts fail on the missing
+  column. The sink stays fail-open (ADR-002) and has no compatibility path for the old shape, so
+  the failure is made loud instead: every dropped row is logged at `error` as the stable event
+  `llm.call.sink.failed` (with `callId`, `attemptId`, `attemptNumber`, `provider`, `model`), and
+  `assertLlmCallsSchema(db)` lets a host check the table from a deploy step, readiness endpoint or
+  boot without a running client.
+- Some members are declared before every emitter ships; the changesets say which release emits which
+  reason.
+
+### Part 2 — Retry honours provider delays; the engine bounds its own waits
+
+**Context:**
+Several waits in the engine had no bound, or undercut one a provider asked for. `retryMiddleware`
+clamped a provider `Retry-After` to `maxDelayMs` and retried early; a retry whose backoff outlasted
+the `timeoutMs` budget slept the whole budget away and then threw a synthetic, non-retryable
+`timeout` that hid the real failure; a sink that never answered held a billed result past `timeoutMs`
+and ignored abort; middleware time was never counted against `timeoutMs`; a limiter slot leaked when
+`acquire` resolved after a timeout won; `countTokens` had no timeout; `classifyError` read the message
+before the status, so an `HTTP 400` whose text said "timeout" was retried and a refused connection
+was a non-retryable `unknown`.
+
+**Decision (core):**
+
+1. **A valid provider delay is honoured, never undercut.** `computeBackoffMs` treats the provider's
+   `retryAfterMs` (positive and finite; `NaN`, zero and negative values are not delays) as a floor and
+   adds jitter on top (at most 10 % of it, at most 1 s), so workers limited together do not retry in
+   the same millisecond. When the failed attempt carries a delay longer than `maxDelayMs`, or one that
+   leaves the next attempt no usable window before the deadline, `retryMiddleware` stops and rethrows
+   that attempt's own error with `retryAfterMs` intact, so an orchestrator can schedule the work. This
+   holds whatever a custom `shouldRetry` says. There is no clamp option: a retry before the provider's
+   delay is refused again and billed again. `maxDelayMs` caps only the computed backoff; its default is
+   60 s, equal to `@gullabs/quota`'s `maxDeferMs`, so a per-minute quota deferral is slept and retried.
+   `maxAttempts` must be a positive integer and `baseDelayMs` / `maxDelayMs` finite numbers from 0 to
+   2^31 - 1 (`bad_request` at construction).
+2. **The retry shares the engine's budget and rethrows the attempt's own error.** The engine puts the
+   end of the call's budget on `EngineCtx.deadlineAt` (on the client's `Clock`); retry measures against
+   it, never against the time it was entered, so middleware time before it counts. It does not sleep
+   into, and does not start an attempt in, a window shorter than 250 ms (a request that short cannot
+   complete and only adds a billed row): it rethrows the error of the attempt that just failed, the
+   same object with `cause` and `retryAfterMs` intact, never a synthetic one. The engine's own deadline
+   errors (the gate, a refused attempt) carry the last attempt's error as `cause`, and surface that
+   error itself when it is a `timeout` or carries a provider delay. `timeout` is retryable wherever
+   Core produces it (the engine's timer, a 408, the deadline); an adapter may mark a specific
+   transport timeout non-retryable with `reason: 'transport_timeout'` (xAI does).
+3. **The logical-call deadline starts with the call.** `runPipeline` arms `timeoutMs` before the
+   middleware chain, so middleware time counts against it, and merges it into `EngineCtx.signal`.
+   An attempt's window is what the deadline has left, measured on the injected `Clock` (the timers
+   that enforce it are monotonic `setTimeout`s). While no attempt is in flight the deadline rejects
+   the call with `timeout` (`timeout` wins over any abort error a cooperative middleware throws in
+   reaction), and an orphaned continuation of a middleware that wakes later is refused before it can
+   dispatch or write a row. While an attempt is in flight, including its sink write, the attempt
+   enforces the deadline itself and records the failure as its own row; the deadline waits and, one
+   macrotask after the attempt ends, ends the call if it is still pending, so an outer middleware that
+   hangs after a failed attempt cannot hold `generate()`. If the attempt produced a result, that
+   billed result is returned, not turned into a timeout, including when work after `next()` runs past
+   the deadline or hangs (only that work's changes to the result are lost). Caller abort is still
+   enforced by each attempt, as before; a middleware that ignores the signal is not interrupted by
+   abort, only by the deadline. A signal that is already aborted never starts a call or dispatches an
+   attempt (the call fails with `aborted` and one refusal row; `countTokens` calls no adapter).
+   `config.timeoutMs` must be a finite number greater than 0 and at most 2^31 - 1 (`bad_request`
+   before any row), as must `sinkTimeoutMs` and `countTokens`' `timeoutMs`: a longer timer fires after
+   1 ms. The gemini and grok config schemas cap `timeoutMs` at 2^31 - 1 minus the 5 s SDK buffer, since
+   the SDK's own deadline is `timeoutMs` plus that buffer.
+4. **The sink write is bounded by `sinkTimeoutMs` (default 5 s) and by abort and the deadline.** On
+   expiry the engine logs `llm.call.sink.timeout` at `error` (`callId`, `attemptId`, `attemptNumber`,
+   `provider`, `model`, `timeoutMs`), abandons the write (a late rejection is swallowed) and carries
+   on. The wait also ends 100 ms after the caller aborts or the deadline timer fires
+   (`llm.call.sink.interrupted`, same fields plus `graceMs`); the write is always started, a healthy
+   sink still has the grace to land its row, and a hung one no longer holds an abort or the deadline
+   for `sinkTimeoutMs` per row. This extends ADR-002's fail-open rule to a sink that does not fail but
+   does not answer.
+5. **A late `acquire` is released.** When a timeout or abort wins the race against
+   `rateLimiter.acquire`, the engine calls the `Release` that `acquire` resolves with later. `acquire`
+   must still honour the signal; this only stops a limiter that cannot cancel from leaking a slot.
+6. **`classifyError` weighs structured evidence first.** Order: `LlmError`, `AbortError`, an HTTP
+   status (an integer 100-599, or a three-digit numeric string, as `status`, `statusCode`, `code` or
+   under `response` / `error`, on the error or any error on its `cause` chain), `TimeoutError` by
+   name, a transport failure, then the message heuristic last. `isTransportError` is exported from
+   core and is the one matcher, with `causeChain` as the shared bounded, cycle-safe walk: a `code`
+   of `ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`, `EAI_AGAIN`, `EPIPE`, `ENOTFOUND`, `ENETUNREACH`,
+   `EHOSTUNREACH` or an undici connection code (`UND_ERR_CONNECT_TIMEOUT`, `_HEADERS_TIMEOUT`,
+   `_BODY_TIMEOUT`, `_SOCKET`, `_RES_CONTENT_LENGTH_MISMATCH`; undici's programming errors are not
+   transport failures), or an error whose whole message is `fetch failed`, `connection error` or
+   `socket hang up` (or a Node syscall failure such as `connect ECONNREFUSED 127.0.0.1:443`). Adapters
+   call `classifyError` and overlay what a structured body proves; none keeps its own matcher. A
+   transport failure is a retryable `server` error, except undici's own deadlines
+   (`UND_ERR_*_TIMEOUT`), which stay retryable `timeout`. `classifyHttpStatus` maps 404 and 413 to
+   `bad_request` (not retryable), leaves 409 `unknown`, and carries the provider's delay on every
+   retryable status (408, 429, 5xx). A provider overlay can still reclassify from a structured body
+   (ADR-028).
+7. **`parseRetryAfter(headers, now)`** reads `retry-after-ms`, `retry-after` (delta-seconds with
+   decimals, an HTTP-date, or a duration such as `6m0s`) and the reset headers (`x-ratelimit-reset`,
+   `-requests`, `-tokens`, `ratelimit-reset`; above 1e9 a Unix timestamp in seconds, above 1e12 in
+   milliseconds). Several values of `retry-after` (an array, or comma-joined duplicates) give the
+   longest. The reset headers say when each limit resets, not which one refused the call (OpenAI
+   sends `x-ratelimit-reset-tokens: 1s` beside `x-ratelimit-reset-requests: 6m0s`), so the delay is
+   the longest reset among windows whose `-remaining` is 0 and otherwise the shortest reset of all: the
+   earliest moment a retry can succeed, never a delay that stops the retry because an unrelated
+   window is long. A value that is not a positive delay is ignored, results round up, and the cap is
+   24 hours. It is exported, and `classifyError` uses it for `retryAfterMs` (from `headers` or
+   `response.headers`).
+8. **`countTokens` uses the cancellation race and takes `timeoutMs`.** `CountTokensOptions` adds an
+   optional `timeoutMs` (finite, greater than 0 and at most 2^31 - 1, `bad_request` otherwise; no
+   default). Abort and the timeout end the call even when the adapter ignores its signal.
+   `countTokens` has no limiter and writes no row.
+9. **`generate`, `runStructured` and `countTokens` reject only with `LlmError`.** Anything else
+   thrown on the way (a host registry, a middleware, a bug) is passed through `classifyError` and the
+   original is kept as `cause`. A caller abort keeps `AbortSignal.reason` as `cause`, including when a
+   cooperative adapter or middleware throws that reason itself.
+
+**Reconciled with earlier work:** the middleware boundary guard (ADR-037) is unchanged; the quota
+`maxDeferMs` cap stays, the retry middleware's `maxDelayMs` default (60 s) equals it so a per-minute
+deferral is slept and retried, and a deferral longer than a smaller `maxDelayMs` ends the retry with
+the deferral error instead of waking early; xAI's non-retryable
+`transport_timeout` classification runs before `classifyError` and is unchanged; the
+`llm.call.sink.failed` event is unchanged and `llm.call.sink.timeout` and
+`llm.call.sink.interrupted` are its siblings.
+
+**Decision (adapters):** structured errors read from the parsed body only, never the message text
+(ADR-028).
+
+10. **Google error overlays** (`classifyGoogleError`, over core's `classifyError`):
+    - `RetryInfo.retryDelay` (a protobuf Duration, `"34s"`) becomes `retryAfterMs`, read through core's
+      `parseRetryAfter` so rounding and the 24-hour cap are shared. The SDK's `ApiError` keeps no
+      headers, so the body is the only source.
+    - A `QuotaFailure` violation whose `quotaId` contains `PerDay` is `rate_limited`,
+      `retryable: false`, `reason: 'daily_quota'`, with no `retryAfterMs` (the delay in the body is the
+      per-minute one and would mislead a scheduler).
+    - `ErrorInfo.reason` `API_KEY_INVALID` or `API_KEY_EXPIRED` is `invalid_auth`. Google sends the
+      invalid-key case as HTTP 400, which read as a caller bug.
+    - A 403 whose body message starts `CachedContent not found` is `bad_request`,
+      `reason: 'cache_not_found'`. Google gives no structured reason for it, so this is the one
+      overlay keyed on a body message; a real permission failure cannot be told apart from it
+      (the message itself says "or permission denied"), and a genuine 403 with any other message
+      stays `invalid_auth`.
+    - `retryDelay` must be a protobuf Duration: decimal seconds with an `s` suffix (`"34s"`,
+      `"0.847655010s"`), or an object `{ seconds, nanos }` rendered to the same text. Anything else
+      (`"3"`, `"1h"`, `"6m0s"`) is ignored, and a zero delay is not a delay, so the caller's own back-off
+      applies.
+    - Evidence: the invalid key and stale-cache bodies are live captures (probe P6, 2026-10-03,
+      `__fixtures__/error-bodies-2026-10-03.json`). `API_KEY_EXPIRED` could not be produced (an expired
+      key cannot be fabricated), and **no Gemini 429 body survives**: the probe log (P3) records that
+      Gemma answered HTTP 429 with the words "exceeded your current quota" on 22 of 92 calls at 8-way
+      concurrency, but those bodies were overwritten, so it is unverified whether a real 429 carries a
+      `QuotaFailure` or `RetryInfo`. The expired-key, per-minute and per-day bodies are therefore
+      **doc-derived**: only structure, taken from the field names of `google.rpc.ErrorInfo`, `RetryInfo`
+      and `QuotaFailure` in googleapis' `error_details.proto` (read 2026-10-03), with no message text
+      and no quota values (a `quotaId` is an illustrative name that exercises the `PerDay` substring
+      match). The fixture says so. The overlays read those details only when present; the `PerDay`
+      match should be re-checked against a real capture.
+    - `GoogleFileStore` and `GoogleCacheStore` classify every SDK failure (upload, polling, delete, cache
+      create) through the same function, so a bad key on an upload is `invalid_auth`, a per-day quota is
+      `daily_quota` and is not retried (the bytes are not sent again), and the stores' errors carry
+      `provider: 'google'`. Only a malformed payload after a successful call stays `server`, not retryable
+      (the resource may exist).
+    - A transport failure is core's job (item 6): the local Google and xAI regex copies and the
+      Google model-not-found overlay (now core's 404 rule) are deleted. xAI keeps only the `openai` SDK
+      `APIConnectionError` class match, which a caller-chosen message can hide from core, and its
+      undici timeout rules, which run first and stay non-retryable.
+11. **An output-side filter stop is a failure.** A candidate whose `finishReason` is `SAFETY`,
+    `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_SAFETY`, `IMAGE_PROHIBITED_CONTENT`
+    or `IMAGE_RECITATION` and that has no non-thought text and no tool call throws `content_filter`,
+    `retryable: false`, with the billed usage (and `servedServiceTier`) attached; the message names the
+    raw reason, a bounded `finishMessage` and the safety ratings (`category=probability`, `(blocked)`
+    for the one that blocked), and `cause` carries the raw `finishReason`, `finishMessage` and
+    `safetyRatings`. Error rows store only the message, so the blocking category reaches the ledger. A
+    blocked prompt names `promptFeedback.safetyRatings` the same way. A stop that kept partial text or a call is a success with
+    `finishReason: 'content_filter'`. The check runs before `requireGrounding` is judged, so a filtered
+    empty candidate is never reported as `grounding_missing` (ADR-035); the existing rule that a
+    filtered candidate with partial text and no grounding evidence throws `content_filter` is kept.
+    `providerMetadata.google.candidate` carries the candidate's raw `finishReason`, `finishMessage`,
+    `safetyRatings`, `citationMetadata` and `urlContextMetadata` when present, so `'other'` (a malformed
+    function call, a language refusal) is distinguishable. Every successful row therefore carries at
+    least the raw finish reason. The copy is bounded because it is persisted on every row and
+    `finishMessage` can hold the model's own malformed call text: `finishMessage` is cut at 512
+    characters, a list at 50 entries, a string at 2048 characters and nesting at 8 levels, with a
+    warning when anything was cut.
+12. **Flex capacity is HTTP 503 only.** `isGeminiCapacityError(err)` is true for HTTP 503. Google's Flex
+    page (dated 2026-09-23) lists 503 and 429 for "no capacity" but names no field that tells a capacity
+    429 from a quota 429, and no real 429 body was captured (item 10), so no 429 is inferred to be
+    capacity. A Flex 429 is the ordinary rate limit: the `RetryInfo` delay is honoured by
+    `retryMiddleware`, no Standard call is dispatched at once (it would undercut the delay, add a call to
+    a rate-limited project and bill the logical call at the Standard rate), and the engine does not pin
+    the tier. Revisit only with a captured capacity 429 that carries a structured marker. The old
+    message regexes and the short-lived `RESOURCE_EXHAUSTED`-without-`QuotaFailure` inference are
+    deleted; nothing reads the message text.
+13. **xAI credits exhausted.** HTTP 429 or 403 whose structured body text matches
+    `Your team <id> has either used all available credits or reached its monthly spending limit` is
+    `rate_limited`, `retryable: false`, `reason: 'credits_exhausted'`; the error message omits the team id
+    (an account identifier that would reach logs and ledger rows) and the id stays on `cause`.
+    **This body is doc-derived, not a capture:** probe P7 could not exhaust the account, xAI's error reference
+    (`docs.x.ai/docs/key-information/debugging`, read 2026-10-03) lists 403 and 429 with no body, and
+    the sentence comes from public bug reports of the live API (one reports a 429, one a 403). The code
+    comment, the fixture's `_note` and this item say so; replace the fixture with a capture when one
+    exists. A bare 403 stays `invalid_auth`, and the sentence in free text never matches.
+14. **A 200 that reports failure is an error.** A Responses object with `status` `failed` throws,
+    classified by `error.code`, with the response's usage attached when it reports token counts:
+    `server_error` is a retryable `server` error, `rate_limit_exceeded` a retryable `rate_limited`;
+    `bio_policy`, `misalignment_policy_violation` and `image_content_policy_violation` are
+    `content_filter`; `invalid_prompt`, `data_residency_mismatch` and the `invalid_image*` family are
+    `bad_request`; any other or missing code is `unknown`. Only the first two are retried: a
+    deterministic failure is refused and billed again. `status: 'cancelled'` is `unknown`, not
+    retryable (a cancel is deliberate). An `error` object beside a completed response is **not** a
+    failure: it is not a documented shape (`error` is set only on a failed response, and live captures
+    carry `error: null`), and the billed answer is kept. Provenance: xAI's API reference
+    (docs.x.ai/docs/api-reference, read 2026-10-03) lists `status` `completed`, `in_progress` and
+    `incomplete` and names an `error` object without its codes; `failed`, `cancelled` and the codes
+    come from OpenAI's Responses object as typed in the openai SDK (`ResponseError.code`), which
+    xAI's API is compatible with. None was captured (doc-derived fixture, placeholder messages). `incomplete_details.reason: 'content_filter'` is **not** mapped to
+    `finishReason: 'content_filter'`: no fixture shows that reason, so it stays `'other'` until one does.
+15. **`parallelToolCalls` needs a tool.** `providerOptions.xai.parallelToolCalls` with neither function
+    tools nor `providerOptions.xai.tools` is `bad_request` before dispatch (same rule as `toolChoice`).
+16. **Google `countTokens` carries `system` and `tools`.** The SDK's Developer API `countTokens` throws on
+    both, so with either present `buildGoogleClient` sends the REST `countTokens` with a
+    `generateContentRequest` (`model` as `models/<id>`, `contents`, `systemInstruction`, `tools`; the
+    request form excludes top-level `contents`, per `ai.google.dev/api/tokens`, dated 2026-08-17). A
+    non-2xx response is thrown as the SDK's own `ApiError`, so it classifies exactly like a
+    `generateContent` failure; the body is read once, a structured `{ error }` body is passed on as
+    sent, anything else (an HTML proxy page, an unparseable JSON body) is wrapped with its text cut to
+    500 characters and classified by status, and a 200 whose body is not a JSON object is a retryable
+    `server` error. **This REST form has not been checked against a live call** (probe P2c counted
+    `contents` only; the wire tests stub `fetch`), so its exact accuracy with `system` and `tools` is
+    unproven. An empty `system` string is absent in `countTokens`, `generate()` and the `cachedContent`
+    conflict check. A messages-only count still goes through the SDK. The tool schemas are
+    held to the same JSON Schema profile as `generate()`. The earlier rule stands: function calls in the
+    history of a Gemini 3 model keep `accuracy: 'estimated'` (replayed signatures are billed and the
+    count carries none). Wire tests run the real SDK with only `fetch` stubbed. This replaces the
+    short-lived `bad_request` for these fields.
+17. **`cachedContent` excludes `system` and `tools`.** Gemini rejects a request that sets
+    `system_instruction`, `tools` or `tool_config` together with `cachedContent`, so that combination
+    (including `providerOptions.google.tools`) is `bad_request` before dispatch, with an `issues` entry
+    per field. `GoogleCacheStore.create` and `getOrCreate` accept `tools` and `toolConfig`, and the
+    pre-flight token count sees the tools, so a tool-calling call can use an explicit cache.
+18. **`safetySettings` values are enumerated.** `category` is one of the six `HarmCategory` values the API
+    reference lists as supported (`HARM_CATEGORY_HARASSMENT`, `_HATE_SPEECH`, `_SEXUALLY_EXPLICIT`,
+    `_DANGEROUS_CONTENT`, `_CIVIC_INTEGRITY`, `_JAILBREAK`) and `threshold` one of
+    `HARM_BLOCK_THRESHOLD_UNSPECIFIED`, `BLOCK_LOW_AND_ABOVE`, `BLOCK_MEDIUM_AND_ABOVE`,
+    `BLOCK_ONLY_HIGH`, `BLOCK_NONE`, `OFF`. Sources, read 2026-10-03: `ai.google.dev/api/generate-content`
+    and `ai.google.dev/gemini-api/docs/safety-settings` (dated 2026-09-17), cross-checked against the SDK
+    enums; the SDK's `HARM_CATEGORY_IMAGE_*` members are marked unsupported in the Gemini API and are not
+    admitted. The one list (`safety-settings.ts`) feeds the adapter check and every model's config
+    schema, so a typo fails before a round trip and the derived JSON Schema shows the choices.
+19. **CLI runners.** Both runners add a `stdin` `error` listener (a CLI that exits early made the write
+    raise an unhandled `EPIPE` that crashed the host), decode stdout and stderr with a `StringDecoder`
+    (a multibyte character split across chunks was corrupted), cap stdout at 32 MiB (past it the process
+    is killed and the call rejects with an `OutputLimitError`; stderr keeps its last 1 MiB), and
+    `codex exec` receives the prompt on stdin with `-` as the positional argument instead of one argv
+    entry (Linux caps one argument at 128 KiB, so a large history failed with `E2BIG`). Each CLI is
+    spawned `detached` (its own process group on POSIX) and a timeout, abort or cap kill signals the
+    group (`SIGTERM`, then `SIGKILL` after 5 s, then the runner closes its pipe ends), so a grandchild
+    that inherited the pipes cannot hold `close` open past the deadline (a repro with a 0.5 s timeout
+    settled after 12 s before). The CLI no longer receives the host's Ctrl-C.
+20. **File upload and size limits.** `GoogleFileStore.upload` passes `signal` to the SDK and also races
+    the wait against it, because `@google/genai` 2.25.0 does not act on `abortSignal` in `files.upload`
+    (an abort releases the caller; the bytes may still be stored). A `FAILED` file keeps the provider's
+    `File.error` (message in the text, the status as `cause`), and follows its `google.rpc.Code`:
+    `DEADLINE_EXCEEDED` (4), `INTERNAL` (13) and `UNAVAILABLE` (14) are a retryable `server` error (the
+    failure is the provider's; a fresh upload can succeed), any other code or none is a non-retryable
+    `bad_request`. A polling timeout is `kind: 'server'`, `retryable: false`, not `timeout`: this item
+    and the table in `docs/architecture.md` give `timeout` one retryability rule (retryable), and the
+    upload already succeeded, so a retry would upload the bytes again and orphan the first file
+    (ADR-024); `server` non-retryable is the existing shape for a resource-creating call that must not
+    be repeated (a malformed upload or cache-create payload).
+    The adapter rejects before dispatch an inline PDF over 50 MB or a request whose inline data and text
+    certainly exceed 100 MB (`ai.google.dev/gemini-api/docs/files` and `/file-input-methods`, both dated
+    2026-09-23; MB read as MiB, the looser reading), pointing at `GoogleFileStore`.
+
+**Delay against the default retry policy:** `retryMiddleware`'s default `maxDelayMs` is 60 s. A typical
+Gemini per-minute `retryDelay` (about 30 to 40 s) is slept in full and retried; a longer one (a delay over
+60 s) stops the retry and surfaces the 429 with `retryAfterMs` for a scheduler (item 1), so a host that wants
+to wait longer in process raises `maxDelayMs`. xAI and the other providers go through the same rule.
+
+**Reconciled with earlier work (adapters):** ADR-029 item 9 is corrected; ADR-035's `requireGrounding`
+ordering is kept (item 11); ADR-028's rule that overlays read structured bodies is followed, with the
+stale-cache message as the one documented exception.
+
+**Consequences:**
+
+- Hosts that relied on the retry middleware sleeping a clamped `Retry-After` now see the 429 surface
+  with `retryAfterMs` set after the first attempt when the delay exceeds `maxDelayMs`. Raise
+  `maxDelayMs` to wait longer in process, or reschedule from `retryAfterMs`.
+- A call with `timeoutMs` and a backoff that cannot fit now fails with the provider's error (for
+  example `server`, `retryable: true`) rather than a `timeout`. Hosts matching on the synthetic
+  message must match on `kind`.
+- `retryMiddleware` no longer takes a `now` option (it reads `EngineCtx.clock` and `deadlineAt`), and
+  rejects invalid `maxAttempts`, `baseDelayMs` and `maxDelayMs` at construction. Its default
+  `maxDelayMs` is 60 s.
+- `EngineCtx.signal` can now abort with an `LlmError('timeout')` reason; middleware that waits should
+  honour it.
+- A host that passed `opts.timeoutMs` to nothing before can pass it to `countTokens`.
+- 404 and 413 stop being retried or treated as unknown: they are `bad_request`.
+- Google: a per-minute 429 now waits the provider's `retryDelay`; a per-day quota is `daily_quota`
+  and not retried; a bad key is `invalid_auth`; a stale `cachedContent` is `bad_request` with
+  `cache_not_found` (the host drops the handle and recreates the cache); the file and cache stores
+  classify the same way; a Flex 429 follows the rate-limit path (only a 503 falls back to Standard); an empty filtered candidate
+  throws `content_filter` instead of returning an empty success; `countTokens` accepts `system` and
+  `tools`; `cachedContent` with `system` or `tools` and an unlisted `safetySettings` value are
+  `bad_request`; a `GoogleFileStore` polling timeout is a non-retryable `server` error.
+- xAI: a team out of credits is `credits_exhausted` and not retried (hosts alert instead of
+  rotating keys); a failed 200 is classified by its `error.code` with its usage (only `server_error` and
+  `rate_limit_exceeded` retry; `invalid_prompt` is `bad_request`, policy codes `content_filter`, a cancel
+  and unknown codes `unknown`);
+  `parallelToolCalls` without tools is `bad_request`.
+- `codex exec` gets the prompt on stdin; a host that inspected the argv for the prompt must read the
+  runner's `input` instead.
+
+### Amendment: advisory spend preflight emits `spend_ceiling` (2026-10-03)
+
+`spendPreflightMiddleware({ limitMicroUsd, key, spentSoFar })` in `@gullabs/core` is the first emitter of
+`reason: 'spend_ceiling'`. The host supplies `spentSoFar(key)` from its own ledger; at or above
+`limitMicroUsd` the call fails before dispatch with `rate_limited`, `retryable: false`, `reason:
+'spend_ceiling'`, so the retry middleware does not sleep on it, and a refusal row is written
+(ADR-037 item 6). It is **advisory**: the read and the dispatch are not atomic, so concurrent calls can
+each pass and overshoot; the call that crosses the ceiling is allowed; and billed calls with unknown
+usage (`microUsd: null`) count only if the host's `spentSoFar` counts them. A ceiling that holds needs atomic
+reservation and reconciliation, an own design tracked in `BACKLOG.md`. It sets no `Middleware.role`:
+it is correct inside or outside retry (outside: once per logical call; inside: re-read per attempt), so
+the quota-inside-retry rule does not apply to it. Placed inside retry, a provider failure followed by a
+ceiling hit leaves the caller with the `spend_ceiling` error; the provider's error stays in the earlier
+attempt's sink row.
+
+A ledger that cannot be read fails the call closed with `server`, `retryable: false` and the ledger's
+error as `cause` (not `rate_limited`: no ceiling was reached; not `unknown`; not retryable: the retry
+would read the same ledger, and a host that falls back to another provider on `server` should not take
+a ledger outage for a provider fault). An invalid reading is `bad_request`.
+
+**`search_budget_exceeded` was reserved and is now deleted (ADR-040).** It was held back for a streaming
+release that would abort a call once an xAI search counter crossed the budget. That release streams the
+call but does not abort it (whether xAI stops billing an aborted stream could not be tested), so nothing
+emits the reason, and a closed union holds only members that are emitted. The xAI `searchBudget` option
+(ADR-030 amendment) observes the budget after a billed call and reports it as a warning and
+`usage.details.search_budget_exceeded`, never an error. A later in-flight abort adds the member back with
+its emitter.
+
+### Amendment B (2026-10-03, engine audit): Google's billed repeats are not retried
+
+xAI's `transport_timeout` rule ("the same limit again, the same spend again", ADR-032) did not reach Google,
+and two Google paths repeated a billed call under the default `retryMiddleware` (three attempts).
+
+1. **The adapter's own tier ceiling and the SDK's transport timer.** When no `timeoutMs` is set the adapter arms
+   a client-side ceiling (5 minutes standard, 25 minutes flex, ADR-012). When it fires, or when the SDK's own
+   timer aborts its request (the SDK aborts with a plain `AbortError` and no reason) while neither the
+   caller nor the engine's deadline has aborted `ctx.signal`, the error is `timeout`, `retryable: false`,
+   `reason: 'transport_timeout'` (`classifyGoogleError` also does this for any `TimeoutError` or undici timer
+   that carries no HTTP status). Three tries of a 5-minute ceiling were 15 minutes of possibly billed
+   generation (a Flex call, 75), booked as `unpricedAttempts: 3`; now it is one attempt and one `timeout` row.
+   An HTTP 408 or 504 is an answer from Google and keeps core's rule; an already-classified `LlmError` is not
+   second-guessed; the caller's own abort stays `aborted`.
+2. **A candidate-less 200 that billed reasoning tokens** (`thoughtsTokenCount > 0`, no block reason) is the cap
+   spent on thinking: the same request with the same `maxOutputTokens` fails the same way and is billed
+   again. It is `server`, `retryable: false`, usage attached. A candidate-less 200 with no reasoning evidence
+   keeps `retryable: true`. A host that wants a retry with a higher cap does it itself.
+
+---
+
+## ADR-037: Middleware cannot reroute
+
+**Status:** Accepted (2026-10-03). Amends ADR-007.
+
+**Context:**
+ADR-007 described middleware as a way to build provider fallback. The engine let a middleware change
+`provider` or `model` on the request, but validated, priced and authenticated with the original call's
+descriptor and auth. A Google-to-xAI switch sent Gemini's `serviceTier: 'flex'` to xAI and recorded
+`microUsd: null`; a same-provider switch was priced at the original model's rates with no warning.
+The owner decided hosts own routing and fallback; the library offers neither.
+
+**Decision:**
+
+1. **Boundary check.** The engine wraps the `next` it hands to every middleware and compares
+   `req.provider` and `req.model` with the call's values at that boundary. A difference fails with
+   `bad_request` ("middleware may not change the provider or model; route in the host and make a
+   new call") with an `issues` entry per changed field. The offender is caught as it calls `next`,
+   before anything inside it runs, so quota middleware inside it consumes nothing. A middleware
+   outside the offender has already run and is not refunded. The rejection writes a zero-usage
+   refusal row: `attemptNumber: 0` when no attempt had run yet, otherwise the number of the refused
+   attempt (see item 6).
+2. **Call identity.** At call start (synchronously at the top of `generate()` / `runStructured()`,
+   before any `await`, so a host reusing and reassigning one request object cannot change it) the engine records `{ provider, requestedModel, descriptor }`:
+   the provider, the exact model string the host sent (a declared alias stays an alias, ADR-033) and
+   the descriptor object it resolved. `runAttempt` dispatches, validates config, prices, routes and
+   authenticates with these and never reads `provider`, `model` or `modelDescriptor` from the
+   request it receives. The boundary also overwrites a swapped `modelDescriptor` with the
+   pinned one before an inner middleware sees it, so a quota policy that reads the descriptor counts
+   under the model that is dispatched.
+3. **Scope.** The library does not copy or freeze requests or descriptors to defend against a
+   middleware that mutates nested data in place after calling `next`. That is a host bug the
+   boundary check cannot see, and guarding it needs deep copies and frozen descriptors, which break
+   `AbortSignal`, functions and Zod schemas. The middleware contract says: treat the request as
+   immutable once passed to `next`; to change data, pass a new object.
+4. **No rerouting API, no fallback middleware.** A host that wants fallback catches the error and
+   calls `generate` again with the other target's config and auth: a separate logical call with its
+   own `callId`, priced and recorded correctly by construction. Hosts link the two with the same
+   `externalId`.
+5. **Quota placement.** `Middleware` gains a readonly `role?: 'retry' | 'quota'`, set by
+   `retryMiddleware` and `providerQuotaMiddleware` and not configurable. `createClient` rejects, with
+   `bad_request`, a client that puts a quota middleware before a retry middleware: quota accounts
+   one unit per provider dispatch, which needs it inside retry. The check reads `role`, never `id`,
+   runs over a copy of the list frozen at `createClient` (reordering the host's array afterwards
+   changes nothing), and cannot see a wrapper or composed middleware that does not carry the inner
+   one's `role`.
+6. **Refusal rows.** The call's final error is always in the ledger. When it did not come out of
+   `runAttempt` (input-contract refusal, boundary refusal, quota deferral, retry budget exhausted,
+   abort during back-off) the engine writes one zero-usage, unbilled row with the error's kind and
+   `reason`: `attemptNumber: 0` when no attempt had run, otherwise the refused attempt's number (never
+   below the last real attempt + 1). An attempt a middleware refused and a later attempt re-ran
+   leaves no row, so a gap in attempt numbers means "refused before dispatch".
+7. **The engine re-checks the registry (ADR-033).** After `registry.resolve`, `generate`,
+   `runStructured` and `countTokens` verify that the descriptor belongs to the provider and that the
+   requested string is its canonical id or a declared alias, so a host registry that prefix-matches
+   or falls back is refused instead of mispricing.
+
+**Consequences:**
+
+- ADR-007's statement that provider fallback is implementable as middleware is deleted.
+- Hosts that rerouted in middleware move that logic outside `generate`; see the README "Fallback"
+  section.
+- Middleware can still pass a new request object with changed config, messages or metadata to
+  `next`.
+
+### Amendment A (2026-10-03): the whole call identity is pinned; the host's objects are not shared
+
+1. **`callId` is the engine's own.** `runAttempt` stamps rows, results and attempt events with the id the
+   call minted, not with `ctx.callId` of whatever context a middleware passed down, so `start`, `attempt`,
+   `success` and refusal rows cannot disagree. `ctx.signal` and `ctx.clock` stay the middleware's to wrap.
+2. **One snapshot of the request per call.** `generate` takes a shallow copy of the `LlmRequest` before its
+   first await; `runStructured` does the same for the call site and the options. A host that reassigns
+   `request.metadata` or `externalId` while an async `validateConfig` runs changes nothing. Nested objects
+   (`messages`, `tools`, `metadata`, tool schemas) are shared: **a host must not mutate them while a call is in
+   flight** (the payload snapshot, ADR-038, copies what it stores at dispatch).
+3. **A host's error object is never re-stamped.** An `LlmError` that is an abort reason, or that an adapter
+   throws from several calls, may be shared across calls. `abortedError` and the cooperative-abort path copy a
+   host `LlmError` reason (same kind, retryability, reason, status, delay, usage, warnings and issues, the
+   original as `cause`); the engine's own deadline error passes through. `attachCallContext` copies an error
+   that already carries another call's `callId` instead of stamping it, so no call throws another's ids and a
+   stale `attemptId` can no longer suppress a refusal row.
+4. **`signal` is validated by shape, before any timer.** A value that is not an `AbortSignal` is
+   `bad_request` (`issues[0].path` `signal`), and the call takes the usual refusal path (one row, `onError`):
+   the signal is never touched and no deadline timer is armed. The deadline is built inside the `try` that
+   owns its cleanup, after the signal check and with its signals merged before its timer is armed.
+5. **`failedAttemptCostsNothing` needs a 4xx or 5xx status.** A 1xx-3xx status on a failure that reported no
+   usage no longer proves the provider answered with an error, so the attempt stays in `unpricedAttempts`.
+
+---
+
+## ADR-038: Opt-in payload storage
+
+**Status:** Accepted (2026-10-03). Extends ADR-002 (fail-open sinks), ADR-027 and ADR-039 (the ledger). Amended
+2026-10-03 after the payload audit: bounded, linear-time redaction; payload built after the outcome inside the sink
+budget; a truthful statement of what `llm_calls` holds; reused transaction handles; batched purge; a stricter
+upgrade guard.
+
+**Context:**
+`llm_calls` stores usage, cost, configuration, metadata, citations, tool calls and reasoning text, but not the
+prompt and not the model's answer. A host that has to debug or audit a call (what exactly was sent, what exactly
+came back, why a structured output failed to parse) builds its own payload table and wires the write by hand
+at every call path, each with its own redaction, size limit and retention. The stored text can hold customer
+data, so the library must not store the full prompt and response by default, and a payload write must never cost
+a ledger row or fail a call.
+
+The ledger row is not text-free, and that is the existing contract (ADR-027, ADR-039): it carries the model's
+tool-call arguments, its reasoning text, the error message of a failed attempt, citations and the host's
+`metadata`. The payload opt-in does not change that and does not govern it. This ADR says so, and the table in
+decision 3 lists every text-bearing place.
+
+**Decision:**
+
+1. **Opt-in per client.** `ClientConfig.payloads?: { redact?, maxChars?, include? }`. Absent, nothing is
+   captured and the sink is called exactly as before. Present, every attempt that entered the adapter, success
+   or failure, gets one payload, unless `include(request)` returns anything but `true` or the call opts out.
+   `payloads` without a `sink` is `bad_request` at `createClient`, as is an unknown key, a non-function or
+   `async` `redact` / `include` (detected by the function's type, plus a thenable returned at run time, which
+   drops the payload with a warning), or a `maxChars` that is not an integer of at least 1,000 (below that the
+   JSON skeleton alone does not fit). The config is copied and frozen at `createClient`. The sink must declare
+   `UsageSink.acceptsPayloads: true` (`drizzleUsageSink` and `RecordingSink` do); otherwise `createClient` logs
+   one `llm.config.payloads.sink_ignores_payloads` warning and no payload is built, so a sink that would drop
+   the second argument costs no capture work. An attempt refused before the adapter (a middleware refusal, a config
+   failure, routing, a limiter that rejected) sent nothing and has no payload. "Entered the adapter" is exact:
+   an attempt the adapter itself rejects before any network call (a media type, a schema keyword or stale
+   signature state, `bad_request`) is booked as an attempt, with a zero-token row and no cost, and gets a payload
+   for a request that was never sent. The payload says what the engine handed the adapter, not what went on the
+   wire.
+2. **Per-call opt-out on both entrypoints.** `generate(request, { auth, storePayload })` and
+   `runStructured(callSite, vars?, { auth, storePayload })`. `false` skips the payload for the call; `true` or
+   absent follows the client; `true` never switches storage on for a client that did not enable it. Any
+   non-boolean is `bad_request`. `runStructured` builds its request internally, so the option cannot live on
+   the request.
+3. **What is captured, and what is not.** The payload is `{ request, response }`. Request, as the adapter
+   received it (after middleware), snapshotted at dispatch so that a host changing its request during the call
+   changes nothing stored: `system`, every message as `{ role, parts }`, text verbatim, tool-call arguments and
+   tool-result values as JSON, an inline media part as `{ kind, mimeType, bytes, sha256 }` (decoded size and
+   SHA-256, never the bytes; above 20 MiB decoded it is `{ bytes, sha256: null, skipped: 'too_large' }`, and
+   data that is not valid base64 is `{ bytes: null, sha256: null, skipped: 'invalid_base64' }`, dropping only
+   that part), a `file-uri` as scheme, host and path only (userinfo, query string and fragment are removed: a
+   signed URL is a credential), a `file-ref` as its id, and tools as `{ name, schemaSha256 }` (SHA-256 of the
+   canonical JSON of `inputJsonSchema`; descriptions are not stored). Response: the raw model text, or the raw
+   JSON text of a structured output when the adapter returned only the parsed value, and the attempt's error
+   message when it failed. `transientProviderState` is never stored. Reasoning text and the model's tool calls
+   are not repeated in the payload; they are on the ledger row.
+
+   What holds text, and what governs it:
+
+   | Where                                                  | What it holds                                                                                                                                                          | Core secret patterns                                          | Governed by `payloads` / `include` / `storePayload` / purge and delete |
+   | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------- |
+   | `llm_calls.reasoning_text`                             | The model's reasoning text, when the provider returns it (16 KiB cap)                                                                                                  | Yes                                                           | No                                                                     |
+   | `llm_calls.tool_calls`                                 | The tool calls the model made: id, name, arguments as JSON                                                                                                             | Yes: every string, and the value of a key named like a secret | No                                                                     |
+   | `llm_calls.error_message`                              | The error text of a failed attempt (provider error text, which can echo part of a request; 16 KiB cap)                                                                 | Yes                                                           | No                                                                     |
+   | `llm_calls.metadata`                                   | The host's `CallMetadata` bag, verbatim                                                                                                                                | No, never scanned                                             | No                                                                     |
+   | `llm_calls.citations`                                  | Source URL, title and source name of a grounded answer                                                                                                                 | No                                                            | No                                                                     |
+   | `llm_calls.provider_metadata`, `raw_usage`, `warnings` | Provider-reported JSON and engine diagnostics                                                                                                                          | No                                                            | No                                                                     |
+   | `llm_calls.generation_config`                          | The call's settings; `providerOptions` is scrubbed (the Google adapter admits only `httpOptions.timeout`, so no headers are ever in it)                                | Partly                                                        | No                                                                     |
+   | `llm_call_payloads.request`                            | The system prompt; every message part (text, tool-call arguments, tool-result values); media as type, size and SHA-256; file references; tools as name and schema hash | Yes, then the host's `redact`                                 | Yes                                                                    |
+   | `llm_call_payloads.response`                           | The raw model text, or the attempt's error message                                                                                                                     | Yes, then the host's `redact`                                 | Yes                                                                    |
+
+   `storePayload: false`, `include` and the off-by-default setting govern the payload table only; they never
+   keep the `llm_calls` text columns out of the ledger, and `purgeLlmCallPayloads` / `deleteLlmCallPayloads` do
+   not touch them. There is no second opt-out for the ledger columns (the ledger contract is unchanged): a host
+   that needs no text in the ledger wraps the sink and drops those columns before delegating, and a tenant
+   deletion also updates or deletes the `llm_calls` rows.
+
+4. **Bound, redact, cap, in that order, on every string.** (a) U+0000 and unpaired surrogates are stripped,
+   so a secret split by U+0000 is recognised and redacted whole (`buildRecord` does the same for the ledger
+   row). (b) A string longer than `maxChars + 256` is cut to that window, and the unbroken token at the cut
+   edge is dropped, so the work of every later step is bounded by the cap and a secret cut in half cannot
+   survive as a fragment too short to match; such a string ends in `[truncated]`. (c) Core's `redactSecrets`,
+   which runs in time linear in the string (bounded key names, no backtracking), and, for tool-call arguments
+   and tool-result values, replacement of the value of an object key named like `password`, `secret`, `token`,
+   `api_key`, `authorization`, `credential` or `private_key` (any case, as a substring) with `[REDACTED]`. The
+   covered credential shapes are listed in the `@gullabs/core` README; they are credentials, not personal data.
+   (d) The host's `redact(payload)`, synchronous, on a copy it may change, returning the payload to store.
+   (e) The caps, last, so a redactor cannot push stored text over the limit: every string over `maxChars`
+   (default 200,000 characters) is cut and ends in `[truncated]`, and the serialized payload is capped at
+   `4 x maxChars` by replacing the strings that save the most serialized space (an escaped control character counts as its escape), then the largest tool arguments and results, with
+   `[dropped: over the payload size cap]` until it fits. (f) U+0000 and unpaired surrogates are stripped again
+   (Postgres cannot store them, as in ADR-039, and a host redactor can add them). A payload that still does not
+   fit is dropped. A throwing or non-payload-returning `redact`, a throwing `include`, a payload that cannot be
+   capped, a payload not built before the sink wait ends and a request that cannot be copied drop the payload
+   and log `llm.call.payload.dropped` at `warn` with the `stage`, a fixed `category` (`include_threw`, `redactor_threw`, `snapshot_threw`, `build_threw`), the thrown
+   value's type (`error`, `non_error` or `unreadable`, from an `instanceof` check that cannot throw) and a fixed
+   sentence. Nothing the host supplied is logged or even read: an error's `name`, `message` and `stack` can hold the
+   payload (a redactor controls them), and a getter on them can throw, so reporting a dropped payload cannot throw
+   and a failed payload job always proceeds to the ledger write. The call is never failed.
+5. **Persistence, and what bounds the work.** `UsageSink.record(record, { payload?, logger? })`. The context is
+   passed only when there is a payload, and `logger` is the client's, for a sink that recovers from a payload
+   problem. The request is snapshotted at dispatch (containers copied, tool arguments and results deep-copied,
+   strings and media data shared), and `include` is called then, once per attempt. The payload is built after
+   the attempt's outcome is known and inside the bounded sink write: `recordToSink` races the build against the
+   `sinkTimeoutMs` timer and the abort and deadline interrupts, and the build checks for abandonment and yields
+   to the event loop (the client's scheduler, `setTimeout(0)`) every 4 million characters or bytes of work.
+   When the wait ends first, the build stops at its next step, the payload is dropped with a warning and the
+   ledger row is still written. Two things are not interruptible: a single synchronous step (one string is at
+   most `maxChars + 256` characters of linear work, a 1 MiB hashing chunk) and the host's synchronous `redact`;
+   what bounds the total is the pre-redaction cap, not a timer. Media is hashed with `node:crypto` in 1 MiB
+   chunks of base64 (about 1 MiB of extra memory per part at a time, not a decoded copy) with a yield between
+   chunks.
+6. **`drizzleUsageSink({ db, transaction? })`.** BREAKING: the sink took a structurally typed
+   `drizzleUsageSink(db, table?)` with only `insert`; that option shape is deleted (no shim, no `table`
+   argument, and `assertLlmCallsSchema` / `assertLlmCallPayloadsSchema` lose theirs). `db` is a Drizzle
+   Postgres database (`PgDatabase`); one without `transaction()` and without a `transaction` helper is
+   `bad_request` at construction, with no fallback. A record **without** a payload is one `INSERT ... ON
+CONFLICT (attempt_id) DO NOTHING` on `db`: no transaction, one round trip, and it works on a driver without
+   transactions. A record **with** a payload runs in one transaction: the ledger insert, then, behind a
+   `SAVEPOINT` named uniquely per write, the payload insert (`ON CONFLICT DO NOTHING`) [the hand-written
+   savepoint and the per-write names are replaced by Drizzle's nested `transaction()`: ADR-045]. A payload failure is
+   rolled back to the savepoint, logged as `llm.call.payload.failed` (the driver error under Drizzle's query
+   error, bounded to 300 characters, because Drizzle's own message carries the statement's parameters, which
+   here are customer text) and the transaction commits. A ledger-row failure aborts the transaction, so there
+   is no orphan payload, and `record` rejects (`llm.call.sink.failed`). `transaction?` is a host helper
+   `(fn) => Promise` that receives the handle, for databases whose standard routes every transaction through its
+   own helper; when given it takes over every write. The helper must open a transaction per call; if it hands
+   every call the same ambient handle, the sink serializes its writes per handle (a queue keyed by the handle),
+   because Drizzle's own nested transaction names every savepoint alike and concurrent writes on one connection
+   would roll each other back. A rollback of such a host transaction takes the ledger rows with it. A write the
+   engine stopped waiting for keeps its connection until the database finishes it; hosts set
+   `idle_in_transaction_session_timeout` and `statement_timeout` for the sink's role.
+7. **Schema and SQL.** `llm_call_payloads(attempt_id TEXT PRIMARY KEY REFERENCES llm_calls(attempt_id) ON
+DELETE CASCADE, request JSONB NOT NULL, response JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT
+now())` with an index on `created_at`; `created_at` is the record's timestamp. `sql/install.sql` creates it;
+   `sql/upgrades/0004-llm-call-payloads.sql` adds it to a table at the previous shape. The upgrade is one
+   transaction with a transaction-local `lock_timeout`, and it refuses (with an error) to run over a table that
+   already has the name unless that table has exactly the four columns with these types, nullability and
+   default, the primary key on `attempt_id` and the foreign key to `llm_calls(attempt_id)` with `ON DELETE
+CASCADE` under the expected name, so a host's own `llm_call_payloads` is renamed first rather than silently
+   adopted. `assertLlmCallPayloadsSchema(db)` is the `assertLlmCallsSchema` counterpart.
+8. **Retention and deletion are the host's.** The library never deletes on its own.
+   `purgeLlmCallPayloads(db, { olderThan, batchSize? })` deletes payloads older than a cutoff in batches (the
+   `created_at` index finds them, the primary key deletes them; 5,000 rows per statement by default, each
+   statement returning a count and never the ids) and returns the total; `deleteLlmCallPayloads(db, { callIds })`
+   deletes the payloads of the given calls and returns the count (a sparse or non-string list is `bad_request`).
+   There is deliberately no delete by `externalId`: it is host-supplied, not unique, and can repeat across
+   tenants, so such a helper could delete another tenant's payloads. `callId` is minted by the engine and
+   globally unique; a host resolves a tenant's calls through its own scoping and passes the resulting ids.
+   Neither helper touches `llm_calls`, so a subject deletion also updates or deletes the ledger rows' text
+   columns (decision 3). `llm_call_payloads` has no tenant column: hosts read it through `llm_calls` and write
+   row-level security as an `exists` over `llm_calls`. Drizzle's query logger and Postgres statement logging
+   record bound parameters, which for a payload insert is the payload.
+9. **Testing.** `RecordingSink.payloads` is a `Map` of `attemptId` to payload, and `RecordingSink` declares
+   `acceptsPayloads`.
+
+**Consequences:**
+
+- Hosts that call `drizzleUsageSink(db, table)` change to `drizzleUsageSink({ db })`; a custom table object
+  is no longer accepted. Their `db` must have `transaction()`. A record without a payload stays a single
+  INSERT; only a payload write opens a transaction.
+- Hosts with a custom `UsageSink` that wants payloads set `acceptsPayloads: true` and read the second argument.
+- Hosts that turn on `payloads` apply `sql/upgrades/0004-llm-call-payloads.sql` first. Without the table every
+  payload insert fails, is logged as `llm.call.payload.failed`, and the ledger rows still commit.
+- The ledger row now redacts `tool_calls` arguments and `reasoning_text` with core's patterns, and strips
+  U+0000 before redacting `error_message`, `reasoning_text` and `provider_options`. The columns themselves are
+  unchanged.
+- Stored payloads can contain customer data. Core's patterns are best-effort, not DLP: a host that stores
+  payloads supplies its own `redact`, a retention job and a tenant deletion path, and a wrapping sink if no text
+  may reach `llm_calls`.
+- `maxChars` below 1,000, an `async` `redact` / `include`, a sink without `acceptsPayloads` and a `db` without
+  `transaction()` are now refused or warned about at construction.
+- Node-postgres coverage runs only where a server is available (`ANY_LLM_TEST_POSTGRES_URL`); CI runs the
+  same behaviour on PGlite. The suites create and drop databases, so one shared test-setup helper
+  (`test-postgres-target.ts`) refuses any URL whose effective libpq target (the URL host, `host` and `hostaddr`
+  parameters, `PGHOST`, `PGHOSTADDR`, a `service` parameter) is not loopback, before either driver connects; there is
+  no override.
+
+---
+
+## ADR-039: Ledger v2: cost confidence and lanes are persisted
+
+**Status:** Accepted (2026-10-03). Extends ADR-027 and ADR-035.; Amendment A below
+
+**Context:**
+The engine computed `Cost.confidence`, the four-lane `Cost.details` and `Cost.unpricedReason` for every
+call, and `buildRecord` dropped all three. A row that priced a call from guessed or missing web-search counters
+was indistinguishable in SQL from an exact one, the tool-fee lane could not be separated from token spend,
+and the reason a row had no cost lived only in the free-text `warnings` column. The ledger schema also had
+no index on `created_at`, no CHECK on its closed `status` and `error_kind` vocabularies, and no cap on
+`reasoning_text` / `error_message` although the SPEC said they were truncated. Cost accuracy had four
+gaps: Gemini audio was priced at the text rate and marked exact, xAI's own billed total was never compared
+with the snapshot, a non-zero xAI tool counter with no rate left the call exact, and `claude-cli` usage
+dropped both cache lanes and thinking.
+
+**Decision:**
+
+1. **Record version 2.** `LlmCallRecord.recordSchemaVersion` is `2`. New optional fields:
+   `costConfidence` (`'exact' | 'estimated'`, present whenever a `Cost` was computed), `costDetails`
+   (`{ input, cached, output, tools }`, present only when priced) and `costUnpricedReason` (present with
+   `costMicroUsd` `null` for an unpriced model, tier or counter, or with `costMicroUsd` absent as `no_usage_reported` for a
+   dispatched attempt that failed without usage; see ledger.md). Refusal rows, which have no cost, carry none. `@gullabs/drizzle` adds
+   `cost_confidence` (text), `cost_details` (jsonb) and `cost_unpriced_reason` (text). Rows written before
+   version 2 keep NULL: their confidence was never stored and is not backfilled.
+2. **Schema hygiene.** Indexes `llm_calls_created_at_idx (created_at)` and
+   `llm_calls_call_site_created_at_idx (call_site_id, created_at)`. CHECK constraints on `status` and
+   `error_kind` (the closed core unions; the Drizzle schema fails to compile if core adds a member, and a new
+   member ships with SQL). **No CHECK on `error_reason`** (ADR-036 item 4 stands). The `drizzle-orm` peer
+   range is `>=0.36 <1`.
+3. **Truncation.** `buildRecord` caps `reasoningText` and `errorMessage` at 16 KiB of UTF-8, marker included,
+   cutting on a code point and ending in `…[truncated]`, and adds a warning. `errorMessage` is redacted
+   before it is cut. The live result and the thrown error keep the full text.
+4. **SQL ships with the schema.** `sql/install.sql` is the fresh table; `sql/upgrades/0002-ledger-v2.sql`
+   takes the previously published shape (0.7.2 plus upgrade 0001) forward, is idempotent, validates existing
+   rows against the CHECKs, and notes that index builds lock a very large table. The migration test runs both
+   on PGlite and proves the upgraded table, indexes and checks equal a fresh install.
+5. **Per-attempt and per-call cost.** `Telemetry.onAttempt?(AttemptEvent)` fires once per provider attempt,
+   after its row went to the sink, with usage, cost and, on failure, kind, reason and `retryable` (refusal
+   rows that never reached an attempt emit none). `LlmResult.callCost?: { microUsd, attempts }` sums every
+   attempt's priced amount (retries and billed failures included) and counts attempts that ran; it is absent
+   when nothing was priced or any attempt that reported usage was unpriced, because a sum with a hole is not
+   reported. `CallErrorEvent` gains `usage` and `cost` of the last failing attempt (when it reported usage)
+   and the same `callCost`.
+6. **Provider-reported total.** `Cost.providerReported?: { microUsd }` carries the total a provider says it
+   billed. For xAI it is `usage.cost_in_usd_ticks` (1 tick = 1e-10 USD) rounded to whole µUSD like each
+   priced lane; it is present even when the snapshot cannot price the call. `Cost.microUsd` stays the
+   snapshot price; the provider's figure never replaces it. Only totals are compared, because xAI reports no
+   lanes. The engine adds a `cost drift` warning when the totals differ by more than 1 µUSD per priced
+   (non-zero) lane, minimum 1: the snapshot is stale or a billed lane is missing. (The audit proposed 2 µUSD
+   per lane; with whole-µUSD rounding on both sides, 1 per lane is the bound.)
+7. **Fail closed on unpriced xAI tools.** A non-zero `*_calls` counter that is neither `web_search_calls`
+   nor the superseded `x_search_calls` makes the call `'estimated'` and the adapter warns. The priority tier
+   with a warm cache is pinned by fixture `35-priority-warm-cache.json` (live probe, 2026-10-03; all three
+   models reconcile to billed ticks, the cached lane at 2x its standard rate); fixture 33's five usages are
+   reconciled to ticks, which also pins that the long-context band applies to the summed agentic input.
+8. **Gemini input is priced per modality where the page does.** Gemini 2.5 Flash, 2.5 Flash-Lite and 3.1
+   Flash-Lite publish a separate audio input and cached-audio rate (standard and flex); every other model
+   lists one rate for all modalities. The adapter records `promptTokensDetails` / `cacheTokensDetails` as
+   `details.input_<modality>` / `cached_<modality>`; the pricing source bills audio tokens at the audio
+   rates and the rest at the text rate. When audio was sent and the response reports no audio tokens, or
+   cached tokens sit beside audio with no cached split, the cost is `'estimated'`. Rates are from
+   https://ai.google.dev/gemini-api/docs/pricing, read 2026-10-03 (page last updated 2026-10-01); the
+   earlier statement that per-modality lanes are unneeded (SPEC) and the "deferred seam" comment
+   (`pricing.ts`) are both removed.
+9. **No batch tier.** The Batch API has no path in this library and no schema admits a batch tier, so the
+   unreachable `batch` rates are deleted from the snapshot; `'batch'` is an unpriced tier.
+   `GoogleCacheHandle.totalTokenCount` returns the create response's `usageMetadata.totalTokenCount` so a host
+   can price cache storage (per token-hour).
+10. **claude-cli usage follows Anthropic's accounting.** `input_tokens` excludes both cache lanes, so
+    `inputTokens = input + cache_read + cache_creation`, `cachedInputTokens = cache_read`,
+    `details.cacheWrite = cache_creation`, `thinkingTokens = output_tokens_details.thinking_tokens`. The
+    adapter stays unpriced.
+11. **xAI response metadata.** The built-in client reads the response through the SDK's `.withResponse()`
+    and reports `x-request-id` and the remaining-quota headers (`x-ratelimit-remaining-*`,
+    `ratelimit-remaining*`) to the adapter, which puts `requestId` and `rateLimitRemaining` on
+    `providerMetadata.xai`. Headers of a failed call are not captured. No capture of xAI's real
+    rate-limit header names exists in the evidence, so the header match is by prefix and the values are kept
+    verbatim; the names are not asserted against a live response.
+
+**Consequences:**
+
+- Hosts using `@gullabs/drizzle` apply `sql/upgrades/0002-ledger-v2.sql` before deploying this version; the
+  sink writes every column, so without it every insert fails (logged as `llm.call.sink.failed`;
+  `assertLlmCallsSchema` detects it).
+- Hosts that wrote their own sink or table add the three cost columns (all optional) and read
+  `recordSchemaVersion: 2`.
+- Dashboards can separate tool fees from token spend and exact from estimated spend in SQL.
+- `Telemetry` implementers may add `onAttempt`; no existing hook changes meaning.
+- A host that switched on the three-member `GEMINI_PRICED_TIERS` loses `'batch'`.
+
+### Amendment A (2026-10-03): ledger and cost audit fixes
+
+An adversarial audit of ADR-039's implementation found four P2 and nine P3 defects. This amendment
+supersedes the items below where they differ. Numbering follows the ADR's items.
+
+**Item 7 (xAI tool counters).** The `*_calls` suffix rule is replaced by an explicit table,
+`XAI_SERVER_TOOL_COUNTERS` (`packages/xai/src/pricing.ts`), over the members of
+`usage.server_side_tool_usage_details`: `priced` (`web_search_calls`, `x_posts_fetched`,
+`x_users_fetched`), `superseded` (`x_search_calls`), `fee_unpriced` (`code_interpreter_calls`,
+`file_search_calls`, `document_search_calls`, `image_generation_calls`: xAI charges per use and the
+snapshot has no rate) and `token_only` (`mcp_calls`). A non-zero `fee_unpriced` or unknown counter makes
+the call `estimated` with a warning; a `token_only` counter does not, because the tokens already priced
+are the whole cost. The sources are xAI's pricing page (https://docs.x.ai/developers/pricing, read
+2026-10-03, no date on the page): code execution $5/1k calls, file attachments $5/1k, collections search
+$2.50/1k, image generation at Imagine API rates, and Remote MCP, image understanding and X video
+understanding token-only. The last two are not in the table because no counter for them has been
+captured (xAI's tools docs name `SERVER_SIDE_TOOL_VIEW_IMAGE` in another usage field). Unknown counters are
+found in the nested counters object, because `usage.details` also flattens unrelated numeric usage fields.
+No fixture has a non-zero MCP counter; the tests for it are synthetic and say so.
+
+**Item 4 (migration 0002).** The upgrade is hardened for a table that cannot be locked for a scan:
+
+- It starts with `SET lock_timeout = '3s'` (reset at the end), so a statement that cannot get its lock fails
+  instead of queueing behind an analytics query and blocking every sink insert behind it. The sink is
+  fail-open, so a stalled migration would otherwise drop billed rows.
+- The `status` / `error_kind` CHECKs are added `NOT VALID`, guarded by a `pg_catalog.pg_constraint` check in a
+  `DO` block: new and updated rows are enforced at once, no table scan runs under ACCESS EXCLUSIVE, and a
+  re-run neither drops nor re-adds a constraint. Every statement in the file is idempotent on its own, so a
+  run that stops partway is finished by running the file again, in one transaction or statement by statement
+  (the previous drop-and-add left a window with no constraint and re-scanned the table on each run).
+- Validation is a separate file, `sql/upgrades/0003-validate-checks.sql` (`VALIDATE CONSTRAINT`, SHARE UPDATE
+  EXCLUSIVE, writes continue). Rows that `@gullabs/core` 0.2.0 wrote (`status` and `error_kind` =
+  `parse_error`; no later release wrote a value outside the vocabularies) make validation fail. The file
+  documents the query that finds them and one suggested `UPDATE` that keeps the original values in
+  `metadata`. The library never rewrites history; the constraints may stay `NOT VALID` indefinitely.
+- Index creation keeps plain `CREATE INDEX IF NOT EXISTS` (SHARE lock for the build) and documents the
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS` alternative for large tables, which cannot run in a transaction,
+  and how to find and drop an INVALID index a failed concurrent build leaves.
+- Migration tests compare column, index (`pg_get_indexdef`) and CHECK (`pg_get_constraintdef`) definitions of
+  the upgraded table with a fresh install, and `schema.ts` with `install.sql`, instead of names; they run the
+  file statement by statement twice, with violating rows present. The `drizzle-orm` peer floor (0.36) is
+  declared and not tested (only the dev-dependency version can be installed).
+
+**Item 5 (`callCost`).** The shape is `{ microUsd, attempts, unpricedAttempts }` (exported as `CallCost`).
+`microUsd` sums only the attempts that were priced. `unpricedAttempts` counts attempts that were dispatched
+but have no priced usage: a timeout, abort or connection failure that reported no usage, usage the pricing
+source could not price, and an attempt still in flight when a deadline ended the call. The provider may have
+billed them, so `unpricedAttempts > 0` means `microUsd` is a lower bound. The previous rule, which dropped
+`callCost` when an attempt reported usage that could not be priced, reported two timeouts followed by a
+success as the success alone, presented as complete. Attempts known to cost nothing are not counted: one that
+ended before dispatch (waiting on the rate limiter), kinds providers do not bill (`bad_request`,
+`invalid_auth`, `rate_limited`), and any other HTTP error answer that is not a timeout or abort. `callCost` is
+present whenever an attempt ran (absent only for a refusal before any attempt), so a call whose attempts were
+all unpriced reports `{ microUsd: 0, attempts, unpricedAttempts }`. It is added to `CallSuccessEvent`
+(an `onSuccess`-only metrics hook could not read it) as well as `CallErrorEvent` and `LlmResult`. The ledger
+statement that the SQL sum equals `callCost` now holds as stated: `SUM(cost_micro_usd)` over the call's rows
+equals `microUsd`. A row with no cost used to say nothing about why, so a timeout (possibly billed) and a 401
+(known free) were the same NULL. A dispatched attempt that failed without reporting usage and is not known to
+cost nothing now carries `cost_unpriced_reason = 'no_usage_reported'` (no cost, confidence or lanes); a failure
+known to cost nothing keeps no cost and no reason. The reason marks the failed part of `unpricedAttempts`.
+
+**Item 8 (Gemini audio confidence).** Four corrections to when an audio-priced call is `'estimated'`:
+
+- A request with audio and a response that reports `{ AUDIO, 0 }` is estimated, exactly like an absent AUDIO
+  entry (audio always has tokens, so a zero is the same missing information). The adapter's warning and the
+  pricing source read one predicate (`audioTokensReported`), and the modality is compared after
+  `mapUsage` lower-cases it (the warning compared the upper-case spelling).
+- Cached tokens beside new audio are exact when the cached part is provably audio-free: a
+  `cacheTokensDetails` that lists no audio and whose entries sum to at least `cachedContentTokenCount` makes
+  the adapter record `details.cached_audio = 0`. A listing that covers fewer tokens than were cached leaves
+  the remainder unknown (estimated), as before. Previously every audio call with a text cache was estimated
+  although its amount was right.
+- Audio inside a `cachedContent` is invisible to the request (the adapter sees only the cache name), so the
+  `audio_input_requested` marker cannot cover it. The response decides instead: on a model with an audio rate,
+  cached tokens with neither `promptTokensDetails` nor `cacheTokensDetails` make the call estimated and warn,
+  because the cached text rate would understate a cache that holds audio. A response that splits the
+  prompt and shows no audio proves the cache holds none and stays exact. No capture with cached tokens
+  exists in the evidence; the rule is fail-closed on a split Google documents as optional.
+- A reported `cacheTokensDetails` AUDIO count is priced at the cached audio rate even when
+  `promptTokensDetails` is absent: cached audio is part of the prompt audio, so it raises the prompt audio to
+  at least that count (previously it was ignored and the call priced exact, an understatement). The pricing
+  source splits the prompt into four lanes (uncached and cached, audio and other) that always sum to
+  `promptTokenCount` (`promptLanes`, one function for the price, the confidence and the warnings). The cost
+  is `'estimated'` whenever the response leaves the audio share unknown (audio sent and none reported;
+  cached tokens whose audio share nothing rules out, which now includes a partial cache listing that names
+  no audio and a prompt split that shows audio beside no cached split) or contradicts itself (cached audio
+  above the cache or above the prompt audio, uncached audio plus cache above the prompt); the counts are
+  clamped into the lanes and the adapter warns.
+
+**Postgres-safe text and the drift tolerance.** `buildRecord` removes U+0000 and replaces each unpaired
+surrogate with U+FFFD in every string and object key of the record, once, last (redaction and the byte cap
+see the original text), and adds a warning when it changed anything. Postgres `text` cannot hold U+0000 and
+`jsonb` rejects both it and an unpaired surrogate (which `JSON.stringify` writes as an escape), so such a
+string used to fail the insert and the fail-open sink dropped the billed row. The cleaning is copy-on-write,
+so a clean record aliases its inputs as before and the caller's data is never mutated. The drift tolerance
+(item 6) counts the lanes that can carry rounding, 1 µUSD each, minimum 1: a lane with a non-zero amount or
+tokens for it (billable input, cached input, output), not only lanes whose rounded amount is non-zero. A lane
+that rounds to 0 can still hold up to 0.5 µUSD, so four sub-µUSD lanes and a rounded provider total could
+differ by 2 against a tolerance of 1 and raise a false drift warning.
+
+**Item 11 (xAI response headers).** The claim that no capture of xAI's real header names exists was wrong:
+fixtures 02, 12 and 16 to 23 store the `headers` of real responses. They carry `x-request-id`,
+`x-ratelimit-remaining-requests` and `x-ratelimit-remaining-tokens` (and the `x-ratelimit-limit-*` ceilings,
+which are not kept). A test reads every such fixture through `readXaiResponseMeta` and pins the request id
+and exactly the remaining headers. The `ratelimit-remaining*` prefix, which no capture has, is removed from the match. A failed call has no `providerMetadata`, and `LlmError` has no request
+id field; the id of a failed call is `error.cause.requestID` (the SDK error keeps the response headers),
+which a stubbed-500 test pins. No new field is added.
+
+---
+
+## ADR-040: xAI adapter streams internally
+
+**Status:** Accepted (2026-10-03). Amends ADR-032 (the transport and the SDK deadline) and ADR-036 (deletes
+`search_budget_exceeded`). Amended by Amendment A below (failure handling, usage estimates, the idle timer,
+real event captures), which supersedes decisions 2 (the failing disagreement), 3 (retry and usage of a
+failed stream) and 4 (no idle timer).
+
+**Context:**
+A non-streamed xAI call sends nothing until the answer is complete, so a reasoning or agentic call waits
+past Node's 300 s header timer (ADR-032). Streaming keeps the connection busy. Live probes on 2026-10-03
+(fixture `36-streamed-responses.json`, real xAI, Node's default `fetch`, no custom undici `Agent`):
+
+- **P12.** Five streamed reasoning runs of 999 to 1,705 s (grok-4.5 high, grok-4.6 xhigh x3, grok-4.7
+  xhigh) all completed with `response.completed`, first event in about 2 s, and a **maximum gap between
+  events of 15.0 s** (5% of the 300 s body timer). No `error` or `response.failed` event.
+- **P12b.** A streamed grok-4.6 xhigh call with 20 `web_search` calls ended at 99 s (max gap 15 s).
+- **P9a.** The streamed `response.completed` carries the same `usage` keys, `cost_in_usd_ticks` and
+  `server_side_tool_usage_details` as the non-streamed object, and the ticks reconcile with
+  `computeXaiCost` within rounding on all 8 responses. **But the streamed final object lacked the
+  `reasoning` item in 2 of 2 search runs** (`[web_search_call, message]` against the non-streamed
+  `[web_search_call, reasoning, message]`), and the stream announced no reasoning item either.
+- **P9b** (does xAI stop billing an aborted stream) **could not be tested**: no console billing access.
+
+**Decision:**
+
+1. **`run()` always streams.** The real client (`buildXaiClient`) sends `stream: true` with
+   `Accept: text/event-stream` and reads the events to the terminal one. There is no non-streamed path
+   and no flag. `XaiClientLike.responses.create` still resolves to one response object, so fakes
+   (`@gullabs/testing`) and the adapter's mapping are unchanged. A public `stream()` stays on the ROADMAP;
+   the streaming is internal to `run()`.
+2. **The output item list is rebuilt from the events and reconciled with the final object.** The final
+   `output` is what the assistant message, citations, annotations and the `'state'` continuation
+   (ADR-029: the provider's own output items, encrypted reasoning included) are built from, and P9a showed
+   it can be incomplete. `XaiStreamReducer` folds `response.output_item.added/done`, content-part, text,
+   annotation, reasoning-summary and function-argument events into items, then:
+   - matches items by `id` **and occurrence**: live fixtures carry two `message` items with one `msg_` id
+     and two `reasoning` items with one `rs_` id, so an id alone is not a key; an item without an id is
+     matched to the same type's n-th id-less item;
+   - treats the final object as authoritative for an item it carries, fills a field it lacks from the
+     completed (`done`) event, and keeps the final's value, with a warning naming the field, when both carry
+     different values;
+   - inserts an item the stream completed and the final object lacks at its `output_index`;
+   - assembles an item the stream never completed and the final object lacks from the deltas, marks it
+     finished (`incomplete` when the response is), and says so in a warning (a replayed `in_progress` item
+     would not be valid);
+   - ~~fails with `server`, `retryable: true` when events and final object disagree~~ **Superseded by
+     Amendment A:** reconciliation never fails a call once the final event carries a response object. A
+     delta for an item the stream never opened is ignored: a lost delta must not fail a billed call.
+     The warnings are `{ type: 'other' }` entries on the result; a stream whose events and final object agree
+     adds none. What the stream never announced cannot be rebuilt: when xAI emits no reasoning item at all
+     (the P9a shape), the state replays without it; the library does not warn, because billed reasoning
+     with no reasoning item is not by itself a stream artifact.
+3. **Terminal and error events map as the non-streamed path does.** `response.completed` and
+   `response.incomplete` go through the mapping unchanged (`incomplete` + `max_output_tokens` is
+   `finishReason: 'length'`). `response.failed` becomes a response with `status: 'failed'` and goes through
+   the failed-response rule (the `error.code` table, billed usage attached). An `error` event or `event:
+error` frame goes through the same `error.code` table: `server_error` and `rate_limit_exceeded` are
+   retryable, policy codes are `content_filter`, prompt and image codes are `bad_request`, anything else
+   is `unknown` and not retryable. A stream that ends without a terminal event, or whose body is not
+   valid event JSON, is `server`; **Amendment A** makes it retryable only while no output event arrived,
+   and replaces the snapshot usage by a lower-bound estimate after output began. An attempt with no usage
+   is unpriced (ADR-039, `callCost.unpricedAttempts`), never zero.
+4. **Deadlines and aborts.** The adapter still computes `timeoutMs + 5 000`, or one hour (ADR-032). The
+   openai SDK `timeout` covers a stream only until the response headers arrive, so the client applies the
+   same deadline to the rest of the stream with its own timer: a stream that outlives it ends as
+   `kind: 'timeout'`, `retryable: false`, `reason: 'transport_timeout'` (the retry reaches the same limit
+   and repeats the spend). That is the adapter's deadline, which is the whole call only when `timeoutMs` is
+   unset: with a `timeoutMs` the engine's own timer fires 5 s earlier and ends the call as `kind: 'timeout'`,
+   `retryable: true`, no `reason` (`retryMiddleware` still makes no further attempt, because the budget is
+   spent). ~~There is no idle timer~~ (Amendment A adds the optional `idleTimeoutMs`); a
+   stream that keeps sending is cut at the deadline too.
+   The SDK ends a stream quietly when its request is aborted, so the client checks the caller's signal
+   afterwards and throws the abort (an `LlmError` abort reason, the engine's deadline, reaches the caller
+   unchanged). A transport failure or Node's body timer mid-stream classifies as before (ADR-032).
+5. **The transport.** P12 shows streaming removes the need for the ADR-032 undici transport for **long
+   reasoning calls**: the connection was never quiet for more than 15 s. **A tool-using call that itself
+   runs past 300 s was not tested**: the longest tool run (P12b) ended at 99 s. A host with tool-using
+   calls expected to run past 300 s without any streamed event should keep the transport. The `transport`
+   option stays for proxies, mTLS, egress policy and custom `fetch`, and still carries `countTokens`.
+6. **No in-flight search-budget enforcement.** P9b could not be run, so there is no evidence that aborting
+   a stream stops xAI's search loop or its billing; an abort that saves nothing would only lose the
+   result. The observed-after-the-call `searchBudget` (ADR-030 amendment) stays the only budget control.
+   `LlmErrorReason` loses `'search_budget_exceeded'` (ADR-036): nothing emits it, and the closed union holds
+   only members that are emitted. In-flight abort is a BACKLOG item that needs P9b first.
+
+**Deliberately not built:** a public `stream()`; in-flight search-budget abort; an idle-gap timer; a
+non-streamed fallback or a flag to choose; a library-owned undici agent; rebuilding an item the stream
+never announced.
+
+**Consequences:**
+
+- A host with reasoning-only xAI calls can drop the undici transport. A host with tool-using calls that
+  can run past 300 s without streamed events keeps it.
+- `XaiResponseMeta.streamNotes` carries what reconciliation did; the adapter reports each note as a
+  warning.
+- `countTokens` is untouched (`POST /v1/tokenize-text`, not a stream).
+- **Evidence and what is synthetic (ADR-013).** The probes kept event-type counts, usage, output item
+  types and timings, not event bodies. The real P9a usage objects and event types are pinned in
+  `36-streamed-responses.json`. The event sequences in the tests are synthesised from the recorded
+  non-streamed fixtures with the OpenAI Responses streaming grammar (`test-sse.ts`) and labelled synthetic;
+  a test pins the synthetic event types to the real ones. **Amendment A pins real event bodies** (fixture
+  `37-streamed-events.json`) and the field-level equality of a streamed `done` item with the final
+  object's. Not tested against a live stream: any stream longer than 300 s that runs server tools.
+- Re-probe when xAI changes streaming: P9b (aborted-stream billing), a tool run past 300 s, and whether
+  the streamed final object keeps its reasoning item.
+
+### Amendment A (2026-10-03): failures, estimates, the idle timer and real captures
+
+An adversarial audit of the first implementation (every point reproduced against the real `openai` SDK
+with a stubbed `fetch`) and a live run of every streamed path through the built adapter (2026-10-03,
+about US$0.46 over two passes; fixture `37-streamed-events.json`, raw event text; the second pass reran
+every feature class through the rebuilt client of this amendment, plus an idle timer that tripped and one
+that did not) changed seven rules.
+
+**What the live bodies showed** (the earlier probes kept event types only). Every item event and delta
+carries an integer `output_index`. `output_item.done` equals the final object's item field for field, except
+a `web_search_call`: the final object reports `action.sources` cumulatively for the whole run on every
+search call. A function call streams its whole argument string in one `function_call_arguments.delta`; an
+X search streams as a `custom_tool_call` with `custom_tool_call_input.delta/.done`. `response.incomplete`
+(`max_output_tokens`) arrives with no `*.done` event at all. The snapshots carry `usage: null`. A strict
+schema came back as one message item. The `'state'` replay built from a real stream is, field for field, the
+input of the request xAI accepted. Nothing broke (no P0), but the first implementation warned about a
+disagreement on every web search because of the cumulative `sources`.
+
+1. **Reconciliation is enrichment, never a gate.** Once the terminal event carries a response object the
+   call is billed and answered. A type disagreement keeps the final object's item (warning); an event with
+   no integer `output_index` or typed item is skipped (warning); a final `output` that is not an array of
+   objects is replaced by the items the events built (warning); a frame with no `data`, `[DONE]` and a typeless
+   JSON frame are skipped. A divergence is reported only for the item types the adapter reads (`message`,
+   `reasoning`, `function_call`): server-tool items replay verbatim from the final object. Items are matched
+   by id and occurrence, aligned from the start or the end of a group, whichever pairs more identical
+   items; an unmatched item whose content (ignoring id and status) equals an unmatched final item is that item,
+   not a second one. `response.incomplete` is incomplete whatever its response object says, as
+   `response.failed` is failed. The only malformed shapes that fail a call are a terminal event without a
+   response object and a body that is not JSON.
+2. **A stream that fails after output began is not retried.** Retry is safe only while nothing was
+   generated: a reasoning call burns tokens before its first visible event, a retry repeats spend that
+   cannot be resumed, and whether xAI bills a cut call is unknown (P9b); this is ADR-032's reasoning for
+   timeouts. Before the first output event (or an HTTP status error, or a connect failure) a failure stays
+   retryable and unpriced. After it, a cut connection, an early end, a malformed body and an `error` event
+   are `retryable: false` with the transport error as `cause`; Node's own timers keep `kind: 'timeout'`.
+   A mid-stream `rate_limit_exceeded` is never retried, and `server_error` only before output.
+3. **Usage of a failed stream is an estimate, never exact.** After the terminal event it is the terminal
+   usage (exact, ticks included). After output began, before it, the error carries a lower bound: request
+   length over 4 for input (core's `estimateInputTokens`), received characters over 4 for output, marked
+   `usage.details.usage_estimated = 1`, which the xAI pricing source reports as `confidence: 'estimated'`.
+   No `cost_in_usd_ticks` is attached and snapshot usage is never used. It understates (hidden reasoning,
+   the provider's prompt overhead and tool fees are not counted); a failure before output has no usage and
+   stays an unpriced attempt.
+4. **A mid-stream `error` event is never known-free.** `LlmError.mayHaveBilled` (core, additive) says the
+   provider had started work; `failedAttemptCostsNothing` returns false for it whatever the kind, so
+   `rate_limited` and `bad_request` events count as an unpriced attempt (an HTTP 429 or 400 still does not).
+   The audit's alternative, a check on the cause's type, would have put an xAI class in core.
+5. **`transport.idleTimeoutMs`** (optional, off by default): bytes of any kind, heartbeat comments included,
+   reset it; silence for that long ends the stream as a non-retryable `timeout`, `reason: 'transport_timeout'`.
+   The client reads the response body itself (`asResponse()` plus a small SSE reader, `sse.ts`) because the
+   SDK's iterator hides comments from any idle timer and throws a `SyntaxError` on a bare `event:` frame.
+   The SDK still sends the request and turns an HTTP error status into its `APIError`. The advice to raise
+   undici's `bodyTimeout` and `headersTimeout` to the whole deadline is withdrawn: while events flow the
+   body timer is moot and a stream sends headers at once, so raising them only removed a tool-using host's
+   protection against a half-open connection.
+6. **`transport.fetch` must return the request's `text/event-stream` response.** A `Response` whose
+   content type is anything else (a record/replay or caching wrapper that buffers the answer) fails
+   non-retryably as `bad_request` naming the cause, and is booked as possibly billed.
+7. **A terminal response without token counts** is a typed non-retryable `server` error naming the response
+   id (it was a `TypeError`). Any other failure to map a complete response (a shape this version did not
+   expect) is the same kind of error and carries the response's exact usage, ticks included.
+
+`makeFakeXai` still replaces `responses.create`, below which the stream lives, so a test through `{ client }`
+does not exercise the reducer or the timers: `@gullabs/testing` has no dependency on `@gullabs/xai` to
+build a stream, and a fake that reimplements the SSE path would be a second implementation. A parity test pins
+that a streamed run of the same response gives the same result; a streaming failure is tested by stubbing
+`transport.fetch` with a `text/event-stream` body (documented in the package README).
+
+**Not built:** resuming a cut stream (nothing is resumable: `store: false`); billing a cut stream as free or
+as exact; a public `stream()`.
+
+**Evidence.** Real: the 10 raw streams of fixture 37 (event bodies, one per feature class), asserted
+through the reducer, the real SDK and the adapter, including the request body and `'state'` replay. Still
+synthetic: error events, cuts and the idle case (injected through a stubbed `fetch`). Not measured: a tool
+call past 300 s, billing of a cut or aborted stream (P9b), and an `error` event's real shape.
+
+### Amendment B (2026-10-03, final audit): one policy for every way a started run can end
+
+A final audit of `@gullabs/xai` (each point reproduced against the real SDK with a stubbed `fetch`) found
+that the rules of Amendment A were applied to some endings of a started run and not to others. Decisions
+(they supersede Amendment A where they differ):
+
+1. **A terminal `response.failed` obeys point 2 and point 4.** It is not retried once output events arrived
+   before it (`retryable: mapped.retryable && !outputBegan`; before any output the code keeps its own
+   retryability), and a failed response is always `mayHaveBilled`: the provider had started work, so
+   `rate_limited` and `bad_request` codes without usage are an unpriced attempt, not known-free. The client
+   reports whether output began as `XaiResponseMeta.streamProgressed`.
+2. **An engine deadline or a caller abort keeps the estimate.** The client turns an abort that arrives after
+   output began into an `XaiStreamError` of kind `aborted` (the abort reason as `cause`); the adapter returns
+   an error with the reason's own kind and `reason` (an `LlmError` reason is copied, anything else is
+   `aborted`) carrying the usage estimate. Before any output the plain abort error is thrown, no usage, an
+   unpriced attempt, as before. The engine ends an attempt the moment its deadline or the caller's signal
+   wins the race, before the adapter has seen the signal, and used to discard the adapter's failure that
+   followed. **Core change:** after a timeout or abort wins over a dispatched adapter call, the engine waits
+   up to 64 microtask turns (no timer, so a fake clock cannot stall it) for the adapter's own failure and
+   adopts its `usage` and `servedServiceTier` onto the cancellation error, which stays the error. An adapter
+   that needs I/O to wind down is not waited for. Every adapter benefits; xAI is the first that returns
+   usage on an abort.
+3. **The estimate counts what was sent.** Input is the JSON length of the whole wire input over 4:
+   `input` (a replayed `'state'` history, every encrypted reasoning blob and search item, included),
+   `instructions`, `tools` and `text.format`. It replaces core's `estimateInputTokens(req)`, which counts only
+   the new messages and by contract not opaque state. Inline image data URLs count nothing. Limits, stated
+   on the estimate: hidden reasoning, tool fees and the provider's prompt overhead are not counted; cached
+   input is priced as uncached; characters per token varies with language and JSON syntax. It is the order of
+   magnitude of the spend, not a bill, and it is no longer called a lower bound.
+4. **Stream indices are bounded.** An `output_index`, `content_index`, `summary_index` or `annotation_index`
+   above 10,000 is a malformed stream (a typed non-retryable `server` error after output, with the estimate):
+   a single `content_index: 4000000000` made the reducer iterate a four-billion-entry sparse array for 91 s.
+   A negative or fractional index on a delta is skipped and noted. The SSE reader is linear in the bytes
+   (only new chunks are scanned; the pieces of an open line are joined once), and one listener serves every
+   read.
+5. **Smaller rules.** A typed `error` event with a nested `error` object keeps its code and message, like the
+   same body without a type. A 200 that is not an event stream carries up to 500 characters of the body,
+   secrets redacted, in the error's `cause`. The client's own whole-call timer reports "client deadline" and
+   the timeout the caller configured, not the SDK's timer and not the value plus the 5 s buffer.
+
+6. **An output that did not complete is not a tool call.** Every `function_call` of a response whose status
+   is not `completed` (an output-cap cut, any abnormal end), and any call whose own status is not
+   `completed`, is dropped from `toolCalls`, `message` and the replayed state: its arguments may stop
+   mid-string, and a call beside an abnormal stop is not one the model finished. `finishReason` keeps the
+   response's reason (`length` for `max_output_tokens`, else `other`; it was rewritten to `tool_calls`) and a
+   warning names the call, as the Gemini adapter does (ADR-044). A completed call whose arguments are not
+   JSON is a non-retryable `server` error carrying the usage. A message content part without `text` no
+   longer throws: a `refusal` part is text-less with `finishReason: 'content_filter'` and a warning, any other
+   type is ignored with a warning; a billed answer is never discarded for its shape.
+7. **Files and `countTokens` have the same edges as the call.** Their errors keep the response headers
+   (`Retry-After` becomes `retryAfterMs`, `x-request-id` is in the message), each call has a deadline
+   (60 s by default, `timeoutMs` on the store, `countTokensTimeoutMs` on the adapter; a retryable `timeout`),
+   a file id is one encoded path segment, and a 2xx body that is not JSON is a typed `server` error.
+8. **What the pricing snapshot does not know is not claimed to understate.** xAI lists image understanding
+   and X video understanding as token-priced with no invocation fee (pricing page, re-read 2026-10-03) and
+   names no counter for them; none was captured, so none is added to the table. A non-zero counter the table
+   does not know keeps the call `'estimated'`, and when the request enabled image or video understanding the
+   warning says the token cost may be complete instead of saying it understates. A known per-use counter
+   (code execution) still understates. A file attachment gets one warning for `document_search_calls`, not two.
+9. **Request limits and names.** `temperature` is 0 to 2 (xAI documents "between 0 and 2") and `topP` 0 to 1
+   (no range is documented; a probability mass outside it is meaningless): outside is rejected by the config
+   schema. The structured-output `name` is the schema `title` and must match `^[a-zA-Z0-9_-]{1,64}$` (xAI
+   documents no rule; the Responses API's is enforced): an invalid title is `bad_request`, never rewritten, a
+   schema with no title is `structured_output`. Reasoning summary parts are joined with a blank line. The
+   adapter's test seams (client factory, `countTokens` fetch) moved out of `XaiAdapterOptions` into an
+   unexported `xaiAdapterWithSeams`, as in the Gemini adapter, so no seam is in a shipped type.
+
+---
+
+## ADR-041: Quota windows, token pacing, the scheduler port and the test package
+
+**Status:** Accepted (2026-10-03). Extends ADR-008 and ADR-036.; Amendment A below
+
+**Context:**
+`@gullabs/quota` limited requests per minute and per UTC day only. Google resets its daily request quota at
+midnight Pacific time, so a UTC bucket was offset by 7 or 8 hours from the provider's window. Both Gemini and
+xAI enforce input tokens per minute, which the library could not pace, and the `RateLimiter` port carried no
+token estimate and got no usage back. The only store was Upstash, so a single-node host or any test suite
+hand-wrote a store, and the middleware refused to run without one. A slow store call was unbounded: the
+engine starts the attempt timer only after middleware returns, so a hung store held a call past its
+`timeoutMs`. `@gullabs/testing` could not reproduce failures (no error factories, timers on real time, a
+sink that did not dedupe like the ledger, a `FakeAdapter` that turned a mistyped result into a thrown value).
+
+**Decision:**
+
+1. **The day boundary is a time zone.** `ProviderQuotaRule.dayBoundary?: { timeZone }` (an IANA name,
+   resolved with `Intl.DateTimeFormat`, no dependency). Both stores key the per-day counter by the local date
+   and the zone name, and set its TTL to the time until the next local midnight. The boundary is found by
+   searching for the first instant whose local date is later, so it is right on 23- and 25-hour days and in a
+   zone whose DST change skips midnight; it is never `now + 24h`. An unknown zone is `bad_request`. Without a
+   boundary the day is the UTC day, as before.
+2. **Gemini's default is Pacific time, and the source is cited.** `quotaPolicyForGemini` sets
+   `dayBoundary: { timeZone: 'America/Los_Angeles' }`. Google's rate-limits page,
+   https://ai.google.dev/gemini-api/docs/rate-limits, re-read on 2026-10-03, states that requests-per-day
+   (RPD) quotas reset at midnight Pacific time, that limits apply per project and not per API key, and names
+   three dimensions (RPM, input TPM, RPD). It gives no per-model numbers.
+3. **`quotaPolicy` is the builder; the presets sit on it.** `quotaPolicy({ provider, models, defaults,
+dayBoundary?, scope? })`; `quotaPolicyForGemini` and `quotaPolicyForXai` call it (their `defaultLimits`
+   option is now `defaults`, one name). The xAI preset carries **no numbers**: xAI's rate-limits page,
+   https://docs.x.ai/developers/rate-limits, re-read on 2026-10-03, publishes limits per tier and model, but a
+   team's tier follows its cumulative spend and changes automatically, so the host passes its own
+   (`rpm`, `tpm`). xAI states requests per second and tokens per minute and documents no daily limit, so the
+   preset has no `rpd` and no boundary.
+4. **Tokens per minute, estimated and reconciled.** `ProviderQuotaRule.tpm` (a positive integer).
+   `RateLimiter.acquire(key, signal, hint?: RateLimitHint)` (`{ estimatedInputTokens?, nowMs? }`; see Amendment B) and `Release = (usage?: Usage) =>
+void` (ADR-008's port, widened). The engine hands `acquire` `estimateInputTokens(effectiveReq)` on every
+   attempt and calls `Release` with the attempt's normalized usage when there is one (a success, a billed
+   failure) and with none otherwise. `estimateInputTokens` is exported from core: the characters of system,
+   text parts, tool calls, tool results, tool declarations and the output schema over 4, rounded up. It is a floor for a
+   request with media or file parts (they carry no text) and exists to pace, never to bill or refuse, so the
+   real usage corrects it. The store reserves the estimate in the minute's counter under the same atomic
+   check-and-consume as the request windows (the request-window semantics are unchanged: a denied call consumes nothing; one
+   call larger than the whole window passes into an empty window rather than waiting for a window it can
+   never fit) and `QuotaStore.adjustTokens({ scope, nowMs, tokens })` adds `actual - reserved` to the
+   acquire minute's counter, floored at 0, leaving a window that has ended alone. An attempt that ends
+   with no usage keeps its reservation (the provider may have counted it). A reconciliation failure is a
+   `backend_error` event, never a call failure, and the correction is started without being awaited
+   (Amendment A). `adjustTokens` is required on `QuotaStore` (greenfield: a store that enforces no `tpm`
+   implements it as a no-op).
+5. **`inMemoryQuotaStore({ clock })`.** The same windows and rule in a `Map`. The clock is the store's own
+   time source for counter expiry, as a Redis server's clock is, while the window a call falls in is named by
+   the `nowMs` the caller passes; tests pass the client's `FakeClock`.
+6. **The middleware runs without a store.** `providerQuotaMiddleware` with no `store` still evaluates
+   rules: `rpd: 0` denies with `provider_disabled` and a `deny` event. Windows cannot be checked and are
+   skipped with one `warn` (`llm.quota.windows_skipped`) per instance and scope. The consume-only-on-allow
+   semantics, the role-order rule (quota inside retry) and `maxDeferMs` (60 s default) are unchanged.
+7. **Store failure is a stated choice, and a store call is bounded.** `onStoreError: 'fail-open' |
+'fail-closed'` has no default on the middleware, the rate limiter and `enforceProviderQuota` when they have
+   a store (missing or unknown is `bad_request`). A caller abort or deadline that interrupts the store call
+   is never fail-open. `upstashQuotaStore({ url, token, timeoutMs? })` bounds each call (default 2 000 ms),
+   passes the caller's signal, and takes a `scheduler` for the timer. The Lua check takes
+   `(limit, ttl, cost)` per window and `INCRBY`; a second script corrects a token counter. Found in a host
+   sign-off on 2026-10-03: a hung store call was unbounded.
+8. **A `Scheduler` port.** `ClientConfig.scheduler?: { setTimeout, clearTimeout }`, default the platform's
+   timers, runs every wait the engine owns (the attempt timeout, the logical-call deadline, the sink waits).
+   It is on `EngineCtx.scheduler`, which `retryMiddleware`'s default sleep uses (its `sleep` option remains
+   a way to observe delays), and on `AdapterCtx.scheduler`, which `FakeAdapter` and `SignalAwareFakeAdapter`
+   delays use. `FakeClock` implements both `Clock` and `Scheduler`; `advance` fires due timers in order and
+   `advanceAsync` lets promise continuations run between them. The deadline stays measured on the
+   `clock` (ADR-036: the engine owns the call deadline, `ctx.deadlineAt` is on `ctx.clock`, and
+   `retryMiddleware` reads `ctx.clock.now` and has no separate `now` option), and the scheduler
+   enforces it, so a scheduler on a different time scale than the clock is a misconfiguration.
+9. **`@gullabs/testing` reproduces failures.** Error factories (`fakeHttpError`, `fakeNetworkError`,
+   `fakeBilledFailure`, `fakeProviderError('google' | 'xai', scenario)`): the provider scenarios build the
+   real `@google/genai` `ApiError` and `openai` `APIError.generate(...)` from the bodies pinned in the
+   provider packages' fixtures (copied into the package, with a test that fails if a copy drifts; the
+   captured and doc-derived scenarios are listed on the types and in the README, ADR-013). The SDKs are
+   optional peer dependencies loaded with `require`, so the class is the SDK's CommonJS build. Also
+   `RecordingSink({ dedupeOn: 'attemptId' })`, `RecordingTelemetry`, `RecordingLogger`, `fakeLlmResult`,
+   `FakeClient` (request capture, `expectRequest`), `FakeGoogleFileStore`, `FakeGoogleCacheStore`,
+   `FakeCliRunner`. `FakeAdapter` and `SignalAwareFakeAdapter` throw `TypeError` at construction for an
+   entry that is neither an `Error` nor a complete `AdapterResult`; a plain `{ status: 429 }` is no longer
+   thrown as an error. What a factory error becomes in a whole-adapter fake is Amendment A.
+
+**Consequences:**
+
+- Hosts that build a quota middleware, rate limiter or `enforceProviderQuota` call with a store add
+  `onStoreError`. Hosts with their own `QuotaStore` add `adjustTokens`. `defaultLimits` is `defaults`.
+- A host that implements `RateLimiter` ignores the new `hint` and `usage` arguments to keep its behaviour.
+  A host `EngineCtx` literal (a middleware unit test) adds `scheduler`.
+- Gemini RPD buckets move from the UTC day to the Pacific day: counters keyed the old way are not reused.
+- Test suites replace `{ status: 429 }` entries with `fakeHttpError(429)` and drive time with one
+  `FakeClock` passed as both `clock` and `scheduler`.
+- A request with media is under-estimated for `tpm`; the reconciliation corrects the counter after the call,
+  not before it.
+
+### Amendment A (quota and testing audit, 2026-10-03)
+
+An adversarial audit of this decision's implementation found five behaviours that contradicted the
+intent. Each is fixed; the contract is now:
+
+1. **A fail-closed store outage is a quota-store failure, not a provider failure.** Every store failure
+   under `onStoreError: 'fail-closed'` (a timeout, an HTTP failure, a transport failure, a malformed reply,
+   a store that throws its own `rate_limited`) is one `LlmError`: `kind: 'server'`, `retryable: false`,
+   `reason: 'quota_store_unavailable'`, the store's error as `cause`. `quota_store_unavailable` is a new
+   member of the closed `LlmErrorReason` union (ADR-036 item 2: a new member is a core minor; hosts keep a
+   `default` branch). It is not retryable on purpose: the audit reproduced a store timeout classified
+   `timeout` by message text, retried three times (three store calls, 6 s, load on an already degraded
+   store) and written to the ledger as a provider timeout for a call that never reached the provider. Now
+   there is one store call per dispatch and one refusal row (`server` / `quota_store_unavailable`). `server`
+   is otherwise retryable; this is the one non-retryable exception, kept by `retryable: false`, which stays
+   authoritative. A caller abort or deadline that interrupts the store call is still the abort or the
+   timeout, never a store failure, and never fail-open. A `backend_error` event is emitted once per failed
+   call.
+2. **Reconciliation never delays or masks a call.** `providerQuotaMiddleware` starts `adjustTokens` when the
+   attempt ends and does not await it (as `providerQuotaRateLimiter`'s `Release` already did), on a result
+   and on an error alike. It is at-most-once: a process that ends first loses the correction and the
+   reservation stays, which over-counts until the minute ends (the safe side). `Release` and
+   `QuotaAdmission.reconcile` correct once however often they are called. A failure is the `backend_error`
+   event plus an `llm.quota.reconcile_failed` warning. The store bounds its own call
+   (`upstashQuotaStore`'s `timeoutMs`); a custom store must too.
+3. **The shipped Lua runs on a real interpreter in CI.** The CI quality job installs `lua5.4` and sets
+   `REQUIRE_LUA=1`; with it set a missing interpreter fails the run, otherwise the real-Lua tests skip
+   locally. They cover both scripts and the Upstash store end to end (rpm, a time-zone rpd, tpm, the
+   adjust script). Redis embeds Lua 5.1 and the shim is not Redis; that stays a stated limitation.
+4. **`0` means disabled for every window.** `rpm: 0`, `rpd: 0` and `tpm: 0` all deny with
+   `provider_disabled`, with or without a store; a negative or fractional limit is `bad_request`. (Before,
+   `rpm: 0` meant unlimited and `tpm: 0` was `bad_request`.) The policy builders reject an unknown option or
+   limit key (`defaultLimits`, a misspelt `rpmm`, `rpd` on the xAI preset) instead of dropping it.
+   `onStoreError` is validated when the middleware or limiter is built.
+5. **Day counters are keyed by the canonical zone.** `US/Pacific` and `America/Los_Angeles` share a counter,
+   and UTC spelled any way is the same window as no boundary. The skipped-windows warning's message is the
+   event name `llm.quota.windows_skipped` (fields `callId`, `provider`, `model`, `scope`) once per scope.
+   `estimateInputTokens` now counts the output schema. `upstashQuotaStore` releases the timer and listener
+   when a custom `invoke` throws synchronously and cancels the body of a non-OK response.
+
+**The test package.** A provider-shaped error thrown by a whole-adapter fake behaves as the real adapter's
+does. `fakeProviderError` still returns the raw SDK error (the SDK-level fakes hand it to the real adapter,
+which classifies it) and marks it; `FakeAdapter`, `SignalAwareFakeAdapter` and `FakeClient` run a marked error
+through `classifyGoogleError` / `classifyXaiError` (loaded from `@gullabs/google` / `@gullabs/xai`, now
+optional exact-version peer dependencies of `@gullabs/testing`; `classifyGoogleError` and
+`GEMINI_INPUT_MIME_TYPES` are exported from `@gullabs/google` for this) before throwing, so a per-day quota
+stops a retry loop, exhausted xAI credits are `credits_exhausted`, a bad Gemini key is `invalid_auth`, and
+the error is an `LlmError` of the host's copy of core (fields carried over when the classifier came from the
+other module format). Tests run the same scenario through a `FakeAdapter` and through the real adapter
+over `makeFakeGemini` / `makeFakeXai` and require identical results. `FakeClient` rejects only with
+`LlmError`: it classifies an `Error` entry with core's `classifyError`. Smaller: `FakeClock`'s methods work
+detached (`Clock.now` and `Scheduler.*` are `this: void`) and `advance` rejects `NaN`, infinite and negative
+amounts and is re-entrant; concurrent delayed `FakeAdapter` calls each take their own entry;
+`FakeGoogleFileStore` applies the shared media-type admission and `failUpload`, `FakeGoogleCacheStore` takes
+`failCreate`, `preflight` and `coalesce`; `fakeLlmResult` is unpriced by default and numbers its ids;
+`fakeProviderError('xai', ...)` takes response `headers`; `fakeNetworkError` names the syscall and errno of
+its code. `GoogleFileStore` takes a `scheduler` for the poll wait and the Gemini flex/standard client-side
+ceiling runs on `ctx.scheduler`, so a `FakeClock` fires both (a CLI runner's process timers are not on the
+port). The packed-install check imports `@gullabs/testing` and runs a fake call and a classified provider
+error in ESM and CommonJS under pnpm and npm.
+
+**Consequences:** hosts that matched `reason` exhaustively add `quota_store_unavailable`; a host that
+relied on `rpm: 0` as "unlimited" omits `rpm` instead; a test that threw a `fakeProviderError` through a
+`FakeAdapter` now sees the real classification; `@gullabs/testing` peers on the provider packages at the
+release version.
+
+### Amendment B (2026-10-03, final audit): limits are checked when the policy is built, the limiter reads the engine clock, and the fakes copy errors whole
+
+1. **`quotaPolicy` validates its limits at construction.** Every `rpm`, `rpd` and `tpm` of `defaults` and of each
+   `models` entry must be a non-negative integer, else `bad_request` naming the entry. `Number(process.env.X)`
+   gone `NaN` is a startup error, not the first request's. The presets build on `quotaPolicy`, so they inherit it.
+   A host's own `ProviderQuotaPolicy` is still checked per call.
+2. **A `deny` is a typed error.** The thrown `LlmError` stays `rate_limited`, `retryable: false`, and now carries
+   `reason: 'quota_window'` (a local quota rule keeps the call from being sent). The decision and the `deny`
+   event keep `provider_disabled`. No `LlmErrorReason` member is added; the member's description now says a
+   limit of `0` is one of its causes.
+3. **`RateLimitHint.nowMs`.** The engine hands every `acquire` its clock reading, and `providerQuotaRateLimiter`
+   names windows by `now`, else `hint.nowMs`, else the system clock (a direct `acquire` with no hint). A client
+   built with a `FakeClock` therefore needs no `now` option on the limiter.
+4. **One list of an error's fields.** `llmErrorOptionsOf(error)` in core returns every `LlmErrorOptions` field of
+   an error-shaped value. The engine's own copy (`cloneLlmError`) and `@gullabs/testing`'s adoption of an error
+   built by another copy of core both use it, so a field added to `LlmErrorOptions` (`mayHaveBilled` was missed
+   once) is carried everywhere. A test builds an error with every option and compares.
+5. **Test fakes follow the real sinks and loops.** `RecordingSink({ dedupeOn: 'attemptId' })` de-duplicates the
+   payload on its own, as the Drizzle payload table does: the first payload for an `attemptId` wins, including
+   one that arrives with a repeat of a record that had none. `runToolLoop` looks tools up by own property (a
+   model call named `toString` is a missing tool) and rejects a `maxTurns` that is not an integer of at least 1.
+   `FakeCliRunner` accepts `{ timeout: true }`. `fakeStreamFailure()` is the error an adapter throws for an
+   error event inside an open stream (`mayHaveBilled`, not retried), and `fakeXaiResponse` can build
+   `function_call` items.
+
+---
+
+## ADR-042: Runtimes, the Node floor and the release checks
+
+**Status:** Accepted (2026-10-03).; Amendment A below
+
+**Context:**
+The audit found four gaps in what the packages promise. CI ran one Node version while `engines` said
+`>=22.12.0` and the SPEC said "Node ≥20". Every `exports` map served the ESM `.d.ts` to `require`
+(are-the-types-wrong: "masquerading as ESM"), and nothing linted the packed manifests. `@gullabs/core`
+imported `node:crypto`, so the entry failed to load on any runtime without Node built-ins, and the
+supported runtimes were not written down. The README and doc examples were not compiled, and
+`examples/basic.ts` no longer ran.
+
+**Decision:**
+
+1. **One Node floor, `>=22.12.0`, tested.** It is the `engines.node` of every published package, the
+   README and SPEC figure, and the CI matrix floor. The code needs no newer Node: no API later than 22
+   is used, and the dependencies' floors are lower (`openai` `>=22.0.0`, `@google/genai` `>=20`). The
+   repository's own tooling needs Node 24 (pnpm 11 requires `>=22.13`, ESLint 10 `^22.13`), so the root
+   `engines` stays `>=24` and the `node-matrix` CI job installs and builds with the `.nvmrc` Node, then
+   switches to 22.12.0 and 24.x and runs the tests, the doc snippets and the built-ins check with `node`
+   directly. A test pins `engines`, the README, the SPEC and the CI matrix to the same figure.
+2. **Nested `exports` conditions.** `import` carries `{ types: index.d.ts, default: index.js }` and
+   `require` carries `{ types: index.d.cts, default: index.cjs }`. `publint --strict` and
+   `attw --pack` (pinned dev dependencies) run for every package in `pnpm quality` (`check:packages`);
+   attw was red for `require` before and is green for node10, node16 from CJS, node16 from ESM and
+   bundler now.
+3. **No Node built-in in the runtime-agnostic packages.** `core`, `google`, `xai`, `quota`, `drizzle` and
+   `any-llm` import no `node:` module and use neither `Buffer` nor `process`. Ids come from
+   `globalThis.crypto.randomUUID()`. The two synchronous hashes (a history part's canonical JSON for the
+   Gemini signature overlay, ADR-029; inline media and tool schemas in a payload, ADR-038) use
+   `sha256Hex` / `Sha256` in core, a dependency-free SHA-256 tested against `node:crypto` at every
+   padding boundary and on large inputs. `sha256Hex` is exported next to `canonicalJson`. WebCrypto was
+   rejected because it is asynchronous and one-shot, and the signature hash sits in synchronous code.
+   `claude-cli` and `codex-cli` spawn processes and `testing` imports `node:os`, `node:module` and `node:assert/strict`, so
+   those three are Node only.
+4. **The claim is tested, and bounded.** `pnpm test:runtime` loads the built ESM entry of each
+   runtime-agnostic package under a module-resolution hook that fails any built-in import, then removes
+   `Buffer` and `process` and runs a full `generate()` with a payload and an inline media part. It is in
+   `pnpm quality` and in the Node matrix. Amendment A extends it. By hand under Deno 2.4.1 every check
+   passed except the first, which asserts that `node:crypto` is blocked and only holds under the Node hook
+   (Deno has its own `node:` built-ins and `Buffer`/`process` globals). No
+   Bun, Cloudflare Workers, Vercel Edge or browser runtime was available, so those are documented as not
+   tested, not as supported; the wrapped SDKs (`@google/genai`, `openai`) set their own runtime support.
+   `@edge-runtime/vm` is not installed, so the hook test stands in for it.
+5. **Docs compile.** `pnpm check:docs` extracts every `ts` fence in the READMEs, `CONTRIBUTING.md` and
+   the live docs and typechecks it against the built packages (the workspace packages symlinked as
+   `node_modules`, so the real `exports` maps resolve). A fence that is deliberately a fragment says
+   `ts no-check`. ADRs, plans and audits are history and are not checked. `examples/**` is part of
+   `pnpm typecheck`. The script has its own test (extraction, and a bad fence fails with `file:line`).
+6. **`VERSION` is deleted.** `export const VERSION = '0.0.0'` read `0.0.0` while core was at 0.15 and was
+   re-exported by the facade; a version constant that nothing keeps current is removed, not sourced.
+
+**Consequences:** hosts that imported `VERSION` read their own `package.json`. A host on a runtime other
+than Node and Deno must run its own smoke test, and must not rely on this repository for it.
+`pnpm quality` needs a Node with `node --import` (22.12 has it) and the built packages.
+
+### Amendment A (2026-10-03): the runtime claim is guarded, and the rest of the audit's hygiene findings
+
+An adversarial audit of the release checks found that "no `Buffer`, no `process`" held only as a
+snapshot, and several smaller gaps. What changed:
+
+1. **Lint guards the claim.** ESLint (`no-restricted-imports`, `no-restricted-globals`,
+   `no-restricted-properties`, `no-restricted-syntax`) rejects `node:*` and every bare Node built-in
+   (static, type and dynamic imports), `Buffer`, `process`, `__dirname`, `__filename`, `require` and
+   `globalThis.Buffer|process|require` in the non-test `src/**` of `core`, `google`, `xai`, `quota`,
+   `drizzle` and `any-llm`. Reintroducing each violation in a scratch copy fails `pnpm lint`.
+2. **The smoke executes the adapters.** After `Buffer` and `process` are removed, `pnpm test:runtime`
+   also runs a fake-backed `generate()` through the Gemini adapter (a signed thought, so the signature
+   hash runs; the payload goes through the drizzle sink to a fake database), one through the xAI adapter
+   (the inline-image size check, including the over-20 MiB rejection) and a `quota` store check. A
+   `Buffer` or `process` reference reintroduced in each of those four packages fails it.
+3. **The Deno statement is what ran.** Under Deno 2.4.1 every check passes except the first, which asserts
+   that `node:crypto` is blocked and only holds under the Node hook.
+4. **`check:docs` finds its files.** It walks the root `*.md`, `docs/` (not `docs/archive/`) and
+   `packages/<name>/**`, so the shipped `SKILL.md`, `SPEC.md` and `DESIGN.md` are checked; changelogs and
+   `DECISIONS.md` are history and are not. Fences that were broken or leaned on prose variables now compile
+   or say `ts no-check` (`SPEC.md`'s type listings redefine the library's own types and are `no-check`).
+   Plans and proposals that describe removed behaviour moved to `docs/archive/`.
+5. **Payload hashing yields every 2 MiB of base64.** The dependency-free hash is about 18 times slower
+   than `node:crypto` (20 MiB: 140 ms against 7.5 ms, Node 24), so a yield every 4 million characters left
+   stretches of about 27 ms. The cadence is now 2,097,152 units (about 10 ms), pinned by a test on a fake
+   scheduler. WebCrypto stays rejected (one-shot, asynchronous).
+6. **`./package.json` is exported** by every package (bundlers and license scanners read it).
+7. **The CJS build stays, and the hazard is documented.** `require` consumers and `.d.cts` need it. Two
+   copies of a package, one loaded through `import` and one through `require`, hold two `LlmError`
+   classes, so the README says to use one module format per process and to branch on `kind` and
+   `retryable` where that cannot be guaranteed.
+8. **A runtime without `crypto.randomUUID` fails at `createClient`** with `bad_request` (pass
+   `ClientConfig.ids`), not with a `TypeError` on the first call.
+9. xAI's inline-image size ignores base64 line breaks, and Gemini's request-size check no longer allocates
+   an encoded copy of each text part.
+
+---
+
+## ADR-043: Model lifecycle: `shutdownDate`
+
+**Status:** Accepted (2026-10-03).; Amendment A below (a typed advisory, once per client and model)
+
+**Context:**
+Google's deprecations page (https://ai.google.dev/gemini-api/docs/deprecations, "Page last updated"
+2026-10-01, read 2026-10-03) lists a May 7, 2027 shutdown for `gemini-3.1-flash-lite`, with
+`gemini-3.5-flash-lite` as the replacement. The descriptor carried no lifecycle data, so a host found out
+when the provider began to answer 404, and the only record was a prose note. Separately, both Gemma 4
+descriptors declared `grounding: true` with no capture behind it.
+
+**Decision:**
+
+1. **`ModelDescriptor.shutdownDate?: string` (`YYYY-MM-DD`, UTC).** `createModelRegistry` rejects anything
+   that is not a real calendar date (`2027-02-30`, `2027-5-7`, a prose date) with `bad_request`.
+2. **A warning, never a refusal.** A successful call whose clock reads within 90 days of the date
+   (`SHUTDOWN_WARNING_DAYS`), on the day or after it, carries one `warnings` entry naming the model, the
+   date and the days left or gone by. Amendment A below makes it typed and once per client and model. The engine uses its injected clock, so a test advances a `FakeClock`.
+   The provider decides what it still serves, and a model that is gone fails with the provider's own error;
+   the library does not guess. An error path carries no advisory: the call did not succeed.
+3. **`gemini-3.1-flash-lite` is the only descriptor with a date.** Gemini 2.5 access is limited to existing
+   users on the same page with no date, and Gemma 4 is not listed, so none is set. Removing the model
+   after the date is a dated BACKLOG item (delete it, no alias to the replacement).
+4. **Gemma `grounding: true` stays, on a capture.** Live, 2026-10-03: three Search prompts on each Gemma 4
+   model returned `groundingMetadata` on all 5 calls that completed; the sixth ended at `MAX_TOKENS` with an
+   empty answer (thinking used the 800-token cap) and says nothing either way (5 of 6 in all). The fixture
+   `gemma-grounding-2026-10-03.json` is a derived summary (flags, query lists, chunk counts, usage; no answer
+   text and no raw `groundingMetadata`), labelled as such, and a test checks it against itself and the
+   descriptors (ADR-013). It cannot detect a wrong capture; re-probe before relying on it for more.
+
+**Consequences:** a host that alerts on warnings sees the advisory 90 days ahead of the shutdown. Host
+descriptors may carry a date too. Nothing about a model without `shutdownDate` changes.
+
+### Amendment A (2026-10-03): a typed advisory, once per client and model
+
+1. **`Warning` gains a typed member.** `{ type: 'shutdown', message, shutdownDate }` (the closed set was
+   `type: 'other'` alone), so a host matches on the type and the date instead of a regex.
+2. **Once per client and model.** The engine attaches the advisory to the first successful call per
+   `(provider, model)` on a client and not again, so it no longer lands in every ledger row for 90 days. A
+   new client warns once for itself. An attempt that fails after it chose the advisory gives it back, so the
+   next success carries it (an outer middleware that discards a result cannot be seen from here).
+3. **Wording follows the date.** Before: "is scheduled to shut down on D (in N days); move to a model without
+   a shutdown date before then". On the day: "today". After: "was scheduled to shut down on D (N days ago)
+   and may stop being served at any time". A clock that is not a finite number yields no warning (it read
+   "NaN days ago").
+4. **The Gemma fixture says what it is.** `gemma-grounding-2026-10-03.json` is a derived summary of six calls
+   (flags, query lists, chunk counts, usage; no answer text, no raw `groundingMetadata`), labelled so in the
+   file with the counts spelled out: metadata on 5 of 5 completed calls, the sixth a `MAX_TOKENS` truncation
+   that proves nothing (5 of 6 in all). Its test checks the fixture against itself (counts add up, token
+   arithmetic reconciles) and the descriptors; it cannot detect a wrong capture.
+
+---
+
+## ADR-044: Google edges: Search in a cache, incomplete calls, unknown usage, the retry pin
+
+**Status:** Accepted (2026-10-03).
+
+**Context:**
+An audit of `@gullabs/google` found five places where a call's record said less than what Google did.
+Search held in a `cachedContent` cache sends no tool in the request, so the fee was billed nothing and the cost
+was `exact`. A function call beside a `SAFETY` or `MAX_TOKENS` stop was returned as `tool_calls`, so a tool loop
+would run a call Google had stopped. A 200 without `usageMetadata` was an exact $0. A retry pinned an untiered
+call to `standard`, which arms the adapter's 300-second ceiling and a transport timeout the first attempt never
+had, and a failed attempt's ledger row lost the tier it asked for.
+
+**Decision:**
+
+1. **Search in a cache is priced from what is known.** `GoogleCacheHandle.toolKinds` records the kinds of tool
+   the cache was created with. `providerOptions.google.cachedContent` takes the cache name or
+   `{ cacheName, toolKinds }`; the request sent to Google carries the name only. A handle that lists
+   `googleSearch` marks `web_search_requested` like a sent tool. When the request declares no search (a bare
+   cache name, or no cache), grounding metadata in the response is the evidence: `web_search_requested` is set,
+   `web_search_calls` is the observed query count, the fee is priced from it and the cost is `estimated` with a
+   warning. A cost is never `exact` when grounding metadata exists and the request did not declare search; when
+   the metadata names no query the tools lane is empty and the cost is still `estimated`.
+   **Schema plus Search through a cache.** Search declared by a handle (`toolKinds` lists `googleSearch`) is
+   judged by the same rule as an inline `googleSearch` (ADR-035): on a descriptor with
+   `structuredOutputWithTools: false` a call with `output.jsonSchema` is `bad_request` without
+   `allowSchemaWithSearch`, and with it `requireGrounding` is on, so a response without proof that Search ran
+   is `grounding_missing` (not retryable). A descriptor without the flag has nothing to opt into and rejects
+   the pair. `allowSchemaWithSearch` and `requireGrounding` accept a search handle in place of `tools` (a cache
+   and `tools` cannot be sent together). A bare cache name is not blocked: its contents are unknown and a cache
+   of documents with a schema is a legitimate common call. The response is the evidence instead: a schema call
+   on such a model that declared no Search whose response reports search queries is returned (priced from the
+   observed queries, never `exact`) with a warning that says Search ran unchecked under a schema, which is
+   unreliable, and names the two ways to make it checked (a handle with `toolKinds` plus the opt-in, or the
+   two-call recipe).
+2. **A function call is complete only on a normal stop.** With a finish other than `STOP` (or none) the call is
+   dropped from `toolCalls` and from the assistant message and a warning names it; `finishReason` is `length`,
+   `content_filter` or `other`. A filter stop with no text and no complete call is the `content_filter`
+   failure. A call is never exposed half-made, and a host never executes a call Google stopped.
+3. **Missing usage is unknown, not zero.** A 200 with no `usageMetadata` sets `usage.details.usage_missing = 1`
+   and a warning; the pricing source returns an unpriced, `estimated` cost with an `unpricedReason`.
+4. **A retry sends the request the first attempt sent.** Core pins a retry to the served tier only when the
+   request named a tier. A failed attempt's row keeps the requested tier in `serviceTier` and the served tier in
+   `servedServiceTier`. A flex call the adapter sends again at standard carries a warning, naming the 300 s
+   ceiling when no `timeoutMs` is set.
+5. **Transport timeouts that cannot work are rejected.** `httpOptions.timeout` above 2^31 - 1 ms, or below
+   `timeoutMs + 5000` when `timeoutMs` is set, is `bad_request`. The SDK client is built with the Developer API
+   base URL pinned, which the REST `countTokens` shares; the SDK's `GOOGLE_GEMINI_BASE_URL` override is not read.
+6. **Options a model cannot honour are rejected where they are declared.** Gemma has no caching capability, so
+   its schema omits `cachedContent` and the adapter rejects it; the Gemini 2.5 and Gemma schemas omit
+   `allowSchemaWithSearch`; a schema for a model without native structured output is `bad_request`, not dropped.
+7. **A fenced Gemma answer is named, not repaired.** Gemma fenced 67 of 162 schema answers (41%) in the
+   2026-10-03 probe. The adapter returns the text as sent (`outputParsed: false`) and warns `gemma_fenced_json`;
+   stripping the fence would be mapping (reject, don't map). The README gives the host recommendation.
+8. **Delete is idempotent for a gone resource.** `GoogleFileStore.delete` and `GoogleCacheStore.delete` treat
+   HTTP 404, `NOT_FOUND` and the 403 that says the resource is not found or "may not exist" as success. The
+   cache wording is a live capture; the Files API wording is quoted from public bug reports and is not
+   captured here (ADR-013: the fixture entry says so).
+9. Smaller: the inline-PDF cap matches the media type as admission does; `groundingMetadata` and
+   `promptFeedback` are bounded like the other copied metadata; `GEMINI_PRICING` is deep-frozen; a cache's
+   `ttlSeconds` must be a positive integer, an unparseable `expireTime` falls back to now plus the TTL, and
+   `getOrCreate` evicts an expired entry; `GoogleFileStore.upload` observes its abort promise and removes its
+   listener; the client-factory test seam is out of the shipped types.
+
+**Consequences:** a host with a Search cache sees the fee and the `estimated` mark; a tool loop sees `length` or
+`content_filter` and no call on a stopped candidate; a usage-less 200 is visible as unpriced. The ledger gains
+no column.
+
+---
+
+## ADR-045: Drizzle sink on every driver, and the ledger shape it needs
+
+**Status:** Accepted (2026-10-03). Amends ADR-038 decision 6 and the SQL of ADR-039.
+
+**Context:**
+An audit ran the sink on a real postgres-js driver for the first time (ADR-038's tests were PGlite and
+node-postgres). A payload-insert failure rolled back the whole transaction there, so the billed ledger row was
+lost and `record` rejected: postgres-js fails a transaction in which any statement failed, even when a
+hand-written `ROLLBACK TO SAVEPOINT` followed. `purgeLlmCallPayloads` threw on every call there because a raw
+`Date` bound into a `sql` template is not serialised by that driver. With `db` set to a transaction handle,
+concurrent payload records crossed their savepoints (Drizzle names a nested savepoint by nesting level) and left
+the host's transaction aborted. The ledger-failure log carried Drizzle's query error: the statement and every
+bound parameter, which here is reasoning text, tool arguments and `metadata`. A client `Clock` returning
+fractions (`performance.now()`) wrote fractional milliseconds into INTEGER columns and dropped every row.
+
+**Decision:**
+
+1. **The payload is written in Drizzle's nested `transaction()`**, not a hand-written `SAVEPOINT`. A failed
+   payload insert undoes only the nested transaction, is logged as `llm.call.payload.failed`, and the outer
+   transaction commits: the ledger row survives on node-postgres, postgres-js and PGlite (the new
+   `drivers.integration.test.ts` runs the same cases on all three). The per-handle queue stays.
+2. **A transaction handle is a supported `db`.** When `db` is a transaction handle (it has `rollback`), or a host
+   `transaction` helper hands every call one ambient handle, every write, with or without a payload, runs one at a
+   time on a queue keyed by the handle, inside a nested transaction of its own. Concurrent records all succeed and
+   a failing write never aborts the host's transaction; the host owns commit and rollback, and a rollback takes the
+   sink's rows with it. A pool `db` keeps the one-INSERT and one-transaction paths and no queue.
+3. **A failed ledger insert throws the driver's message, not Drizzle's.** The sink rethrows
+   `llm_calls insert failed for attempt <id>: <driver message> (SQLSTATE <code>)`, capped at 300 characters and
+   redacted, with a pointer to `assertLlmCallsSchema` and `sql/upgrades/` for `42703`, `42P01` and `23502`. It has
+   no `cause`: the Drizzle error holds the parameters and the driver's `detail` holds the row. A query error with
+   no driver error under it is reduced to a fixed text. The payload-failure log uses the same extraction.
+4. **`purgeLlmCallPayloads` binds the cutoff as an ISO string cast `::timestamptz`**, which every driver encodes
+   alike.
+5. **Whole milliseconds.** `buildRecord` rounds `latencyMs` and `queueDelayMs`; `Clock` documents that it may
+   return fractions. Token counts and micro-USD come from providers and the pricing rounding as integers.
+6. **`assertLlmCallsSchema(db)` reads nullability.** After the `LIMIT 0` select it reads `pg_attribute` for a NOT
+   NULL column without a default (and not identity or generated) that the sink does not write, or a NOT NULL column,
+   default or not, that the schema allows to be NULL (the sink writes NULL explicitly, which a default does not
+   replace). A table made by 0.1.1 to 0.4.0 has `raw_usage NOT NULL`, which rejects every error row; the
+   check names the column and the one-line fix. There is no upgrade script and no compatibility path for those
+   shapes. `assertLlmCallsSchema` and `assertLlmCallPayloadsSchema` take a `PostgresDb`; the `SelectableDb` type is
+   deleted.
+7. **SQL.** The upgrade files are numbered uniquely and in order: `0001-add-error-reason`, `0002-ledger-v2`,
+   `0003-validate-checks` (optional; it fails on `parse_error` rows), `0004-llm-call-payloads` (the migrations were
+   never published, so renumbering is safe). `cost_micro_usd` is `BIGINT` (drizzle `mode: 'number'`), so one
+   attempt cannot overflow 2^31 micro-USD; its upgrade rewrites the table and is documented as skippable. Partial
+   indexes on `error_reason` and `auth_key_id` (`WHERE ... IS NOT NULL`) serve the two queries the ledger guide
+   advertises. While the CHECKs are `NOT VALID` any `UPDATE` of a legacy row fails; the validate file and the guide
+   quote the error and the cleanup. `schema.ts` is for typed queries and `drizzle-kit push`; the SQL files are the
+   authority, and `drizzle-kit generate` is documented as unsupported for these tables.
+8. **Drivers.** node-postgres, postgres-js and PGlite are tested. `neon-http` is documented as not tested (it has
+   no transactions, so no payloads). The package ships the repository `LICENSE` and `NOTICE`.
+
+**Consequences:**
+
+- Hosts that call `assertLlmCallsSchema` pass a Drizzle database (they already did); the `SelectableDb` type is
+  gone. A table with a NOT NULL column the sink does not write now fails the check.
+- Hosts upgrade a table by applying `0002-ledger-v2.sql` again (it is idempotent) to get `BIGINT` and the two
+  indexes; the validate and payload files are renamed `0003` and `0004`.
+- An ambient transaction costs two extra statements per write (`SAVEPOINT`, `RELEASE`), and a payload write on it
+  four. A pool `db` pays nothing extra for a record without a payload.
+- The ledger-failure log line is shorter and names the cause; it no longer contains the statement.
+
+---
+
+## ADR-046: The CLI children get an allowlisted environment
+
+**Status:** Accepted (2026-10-03). Extends ADR-026 (CLI session auth) and ADR-019 (no ambient auth).
+
+**Context:**
+`@gullabs/claude-cli` and `@gullabs/codex-cli` run a local CLI on its saved login and record the call as unpriced.
+Both runners started the child with the whole host environment. Claude Code's documentation says
+`ANTHROPIC_API_KEY` "is used instead of your Claude Pro, Max, Team, or Enterprise subscription even if you are
+logged in. In non-interactive mode (`-p`), the key is always used when present", and the adapter always runs
+`-p`. A host with that key exported for an Anthropic SDK would have every CLI call billed to it while the ledger
+said "unpriced" and nothing in the result said money was spent. `codex exec` reads `CODEX_API_KEY` ("to use a
+different API key for a single run") and the OpenAI SDK's `OPENAI_API_KEY`; OpenAI does not document which wins
+over the saved login. The cost is invisible to the library's own ledger, which is its reason to exist.
+
+**Decision:**
+
+1. **The child gets an allowlisted copy of `process.env`.** The real runners pass `spawn` an `env` built from:
+   `PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LANGUAGE`, `LC_*`, `TERM`, `TZ`, `TMPDIR`/`TEMP`/`TMP`, `SHELL`,
+   `XDG_*`, the Windows profile variables, the proxy variables (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`,
+   `NO_PROXY`, either case), `SSL_CERT_FILE`, `SSL_CERT_DIR`, and each CLI's own documented settings for its login:
+   `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN` (the long-lived subscription token), the Claude mTLS variables
+   and `NODE_EXTRA_CA_CERTS`; `CODEX_HOME` and `CODEX_CA_CERTIFICATE`. Credential and provider-routing variables
+   (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/
+   `_FOUNDRY`, `CODEX_API_KEY`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, everything else) are not on it. It is an
+   allowlist, not a denylist, so a variable a CLI adds later is not inherited by accident.
+2. **`env` is the explicit opt-in.** `claudeCliAdapter({ env })` and `codexCliAdapter({ env })` take a record of
+   string values, validated at construction (`bad_request` for a non-string, an empty or `=`-bearing name, a NUL),
+   copied and frozen, handed to the runner as `ClaudeCliRunOptions.env` / `CodexCliRunOptions.env`, and merged over
+   the allowlisted copy (on Windows, where names are case-insensitive and the OS passes the child the first
+   match, a host name replaces the inherited one whatever its case). A host that wants a key used passes it there, and then the billing is its decision.
+3. **This is a scrub, not a credential read, but some ambient credentials still reach the child.** The library never
+   interprets a credential from the environment: the one `process.env` read is the runner's filter, the permanence
+   test allows exactly that call, and no value is parsed or logged. The allowlist does keep variables the CLI
+   treats as credentials, so a host that exports them is using them: for `claude-cli`, `CLAUDE_CODE_OAUTH_TOKEN`
+   (the subscription token) and the mTLS variables `CLAUDE_CODE_CLIENT_CERT`, `CLAUDE_CODE_CLIENT_KEY` and
+   `CLAUDE_CODE_CLIENT_KEY_PASSPHRASE`; for both, the proxy variables (a proxy URL can carry credentials), and
+   `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, which point the CLI at the login it reads from disk. `codex-cli` keeps no
+   token variable. `env` adds to the allowlisted copy and cannot remove from it, so a host that does not want the
+   ambient Claude token or client key used unsets them before the call. The ledger row stays unpriced; ADR-026's
+   `cliSession` auth is unchanged. ADR-019's guarantee (no read of a credential from the environment) holds for
+   core, `google` and `xai`; for the CLI adapters it is this ADR.
+4. **Related runner fixes.** A call waits for a semaphore slot before it makes its scratch directory and leaves the
+   queue on abort. The adapters classify failure text with word-anchored patterns (an explicit rate-limit signal
+   wins over an incidental "auth"). A `codex` process ended by a signal with no `turn.completed` is a `server`
+   error, never a result built from a streamed message. After a timeout, abort or output-cap kill, the runner
+   sends one more SIGKILL to the process group when the leader closes, so a member that ignored SIGTERM and holds
+   none of the pipes does not outlive the call. The `claude-cli` descriptor limits are what the CLI reports for its
+   own run (Fable 5.1 64 000 and Haiku 4.5 32 000 output tokens).
+
+**Consequences:**
+
+- A host that relied on the CLI inheriting some other variable (a custom `HOME` is kept; a proxy is kept; a
+  corporate `SSL_CERT_FILE` is kept) loses only what is not listed, and adds it with `env`.
+- `ANTHROPIC_API_KEY` in the host environment no longer changes which account a `claude-cli` call uses.

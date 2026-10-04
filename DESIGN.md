@@ -13,7 +13,8 @@ forward-compatibility decisions that don't fit cleanly in either of the above.
 **P1 — The host owns the world; the library owns the contract.**
 Everything environmental (DB, logger, telemetry sink, clock, id generation, secrets) is a port
 the host implements. Credentials are no exception: the caller passes `auth` on every call; the
-library never reads from `process.env` or any ambient source. The core is pure and deterministic
+library never reads from `process.env` or any ambient source (the CLI runners' allowlist filter is the one
+read, and it forwards some ambient credentials to the CLI child; ADR-046). The core is pure and deterministic
 given its ports.
 
 **P2 — Typed core + raw passthrough + raw capture.**
@@ -65,13 +66,16 @@ providers with different config schemas.
 ## Auth and Credentials
 
 **No-ambient-reads invariant.** The library never reads credentials from `process.env`, a
-credentials file, an instance metadata service, or any other ambient source. There is no
+credentials file, an instance metadata service, or any other ambient source. The CLI adapters are the one
+exception to state: their runners forward an allowlisted copy of the host environment to the local CLI, which
+includes `CLAUDE_CODE_OAUTH_TOKEN` and the `CLAUDE_CODE_CLIENT_*` variables for `claude-cli` (ADR-046); the
+library interprets none of them. There is no
 `envAuth()` helper and no `AuthProvider` port. The `AuthMaterial` type is
 `{ apiKey: string, keyId?: string }` (plus the `{ cliSession: true }` variant below).
 
 **Per-call model.** `auth` is a required option on every `generate()` and `runStructured()` call:
 
-```ts
+```ts no-check
 client.generate(request, { auth: { apiKey } })
 client.runStructured(callSite, { auth: { apiKey }, vars: { ... } })
 ```
@@ -109,7 +113,7 @@ the `google` key only appears on the type once `@gullabs/google` is imported.
 This is not an unbounded forwarding lane, either: `GoogleProviderOptions` is a strict allowlist
 (`cachedContent`, `safetySettings`, `tools`, `httpOptions`, `flexFallback`) enforced per-model by
 each Gemini/Gemma descriptor's own `configSchema` (see
-[`docs/model-config-strict-schema-design.md`](./docs/model-config-strict-schema-design.md)) —
+[`docs/archive/model-config-strict-schema-design.md`](./docs/archive/model-config-strict-schema-design.md)) —
 reserved fields such as `temperature`, `serviceTier`, or `thinkingConfig` are rejected inside
 `providerOptions.google` rather than silently forwarded, and the adapter maps allowlisted fields
 one-by-one instead of `Object.assign`-ing the raw object onto the SDK call. A brand-new SDK
@@ -131,7 +135,8 @@ raw object as JSONB) are always written, even when the hot typed fields (`inputT
 
 ### `LlmCallRecord.recordSchemaVersion`
 
-Always `1` in this release. Increment on any breaking schema change to the record shape. Sinks
+Always `2` in this release (version 2 added `costConfidence`, `costDetails` and `costUnpricedReason`,
+ADR-039). Increment on any breaking schema change to the record shape. Sinks
 should check this field before deserializing records written by an older or newer engine version.
 
 ---
@@ -157,8 +162,12 @@ When both `effort` and `budgetTokens` are set for a `'budget'` model, `budgetTok
 `LlmRequest.output` is `{ jsonSchema: JsonValue }` — already a plain JSON Schema value, not a Zod
 schema. When the resolved model's `capabilities.nativeStructuredOutput` is not explicitly `false`,
 the adapter sets `responseMimeType: 'application/json'` and forwards `req.outputJsonSchema`
-straight through as the Gemini `responseSchema` (a cast, not a conversion — there is no
-schema-conversion step).
+straight through as the Gemini `responseJsonSchema` (a cast, not a conversion — there is no
+schema-conversion step). The schema is standard JSON Schema (ADR-034): before it is sent the
+adapter checks it against the keywords Google enforces and rejects any other (`const`, `oneOf`,
+`allOf`, …) with `bad_request` and the path, because Google would accept and silently ignore
+them. Tools are the same: `inputJsonSchema` becomes `parametersJsonSchema`, checked the same way.
+There is no `responseSchema` / `parameters` (OpenAPI dialect) path.
 
 On the response side, the adapter `JSON.parse`s the model's text output into
 `AdapterResult.rawStructured` when structured output was requested and parsing succeeds. The
@@ -179,11 +188,18 @@ recommended `validateStructuredResult` + Standard Schema v1 pattern.
 Grounding is requested via `providerOptions.google.tools: [{ googleSearch: {} }]`.
 The adapter validates this strict allowlist before dispatch; `googleSearchRetrieval`
 is not admitted. With `req.outputJsonSchema`, the descriptor must set
-`structuredOutputWithTools`. All six registered Gemini 3.x models set that flag
-after the 2026-09-26 live probes. A successful structured response does not
-guarantee Search ran: those probes did not return `groundingMetadata` when
-Search was requested. When present, `candidate.groundingMetadata` is captured
-alongside `promptFeedback` in `result.providerMetadata`.
+`structuredOutputWithTools`. No registered Google model sets that flag: the six Gemini
+3.x descriptors set it to `false`, because an accepted structured request with
+`googleSearch` does not show that Search ran (see `docs/grounded-structured.md`), so
+the combination fails with `bad_request` and hosts use the two-call recipe, unless the call
+sets `providerOptions.google.allowSchemaWithSearch: true` (ADR-035), which also turns
+`requireGrounding` on. When present, `candidate.groundingMetadata` is captured alongside
+`promptFeedback` in `result.providerMetadata`, and `searchEntryPoint` is moved to
+`providerMetadata.google.searchEntryPoint` (stored once). The adapter reports `usage.details.web_search_requested`
+and `web_search_calls`; the pricing source prices the grounding fee on the `tools` lane and marks a
+call that ran Search `estimated` (ADR-035). `requireGrounding: true` fails the call with a
+`grounding_missing` error (retryable only without an output schema) unless the response proves Search
+ran.
 
 ### Transport Timeout
 
@@ -255,10 +271,11 @@ have `sampling: 'fixed'` and reject `temperature`, `topP`, `topK` at call time.
 
 **Grounding.** Requested via `providerOptions.google.tools: [{ googleSearch: {} }]`. The adapter
 captures `candidate.groundingMetadata` into `result.providerMetadata`. Grounding plus
-`output.jsonSchema` is admitted only when `structuredOutputWithTools` is set
-(all six registered Gemini 3.x models). Other models fail with `bad_request`
-before the SDK call. A successful structured response may omit grounding
-metadata, so callers needing auditable citations must check it explicitly.
+`output.jsonSchema` is admitted only when `structuredOutputWithTools` is set (no
+registered Google model sets it) or the call opts in with `allowSchemaWithSearch`. Every
+other call fails with `bad_request` before the SDK call. A successful grounded response may
+omit grounding metadata; callers needing auditable citations set `requireGrounding` or check
+`usage.details.web_search_calls` (ADR-035).
 
 **Flex transport timeout.** The adapter sets `config.httpOptions.timeout` automatically:
 1 500 000 ms (25 minutes) for Flex calls without `timeoutMs`, and `timeoutMs + 5 000 ms` when
@@ -268,7 +285,10 @@ metadata, so callers needing auditable citations must check it explicitly.
 canonical and is the only value persisted.
 
 **Function calling.** Shipped as a seam only (ADR-029). The `Part` union includes
-`tool-call` and `tool-result`. `LlmRequest.tools` / `toolChoice` in; no agent loop.
+`tool-call` and `tool-result`. `LlmRequest.tools` / `toolChoice` in; no agent loop. Each result
+carries the ordered assistant `message` and a `continuation` rule (`'history'`: append the message and
+resend history; `'state'`: send only new messages plus `transientProviderState`); Gemini 3.x thought
+signatures are an overlay on the host's history in that state (ADR-029 addendum).
 
 ## Planned Seams (not yet)
 
@@ -318,7 +338,7 @@ Packages:
 | `@gullabs/core`       | Engine, types, ports, `ProviderPlugin`/`composeProviders`, generic model-registry machinery (`ModelDescriptor`, `ModelRegistry`, `createModelRegistry`), record builder, generic cost computation (`computeCost`). No provider SDK imports, no provider-specific model descriptors, schemas, or pricing tables. |
 | `@gullabs/google`     | Gemini/Gemma adapter over `@google/genai`, plus everything provider-specific: model descriptors and strict per-model config schemas (`geminiModelDescriptors`, `gemmaModelDescriptors`, `defaultGeminiRegistry`), `GoogleProviderOptions`, and pricing (`GEMINI_PRICING`, `geminiPricingSource`).               |
 | `@gullabs/drizzle`    | Reference Postgres schema (`llm_calls` table) and `drizzleUsageSink`.                                                                                                                                                                                                                                           |
-| `@gullabs/testing`    | `FakeClock`, `FakeIds`, `RecordingSink`, `makeFakeGemini`. No network in tests.                                                                                                                                                                                                                                 |
+| `@gullabs/testing`    | `FakeClock` (clock and scheduler), `FakeIds`, `RecordingSink`, `FakeClient`, `fakeLlmResult`, error factories, `makeFakeGemini`. No network in tests.                                                                                                                                                           |
 | `@gullabs/claude-cli` | **Dev-only.** Adapter over the local `claude` CLI. Not published to prod consumers' deps.                                                                                                                                                                                                                       |
 | `@gullabs/codex-cli`  | **Dev-only.** Adapter over the local `codex` CLI. Not published to prod consumers' deps.                                                                                                                                                                                                                        |
 
@@ -348,7 +368,8 @@ type AuthMaterial = { apiKey: string; keyId?: string } | { cliSession: true }
 This is the union anticipated by the "Additional providers" planned seam (see above), realized
 here instead of for OAuth/bearer tokens. It preserves P1: the caller still declares auth
 explicitly on every call, and the library still never reads `process.env` or a keychain — the
-CLI binary owns and resolves its own credentials out of band. The Google adapter narrows to
+CLI binary owns and resolves its own credentials out of band (its runner forwards an allowlisted copy of
+the host environment, ambient `CLAUDE_CODE_OAUTH_TOKEN` included; ADR-046). The Google adapter narrows to
 `{ apiKey }` and throws `invalid_auth` if absent; the CLI adapters narrow to `{ cliSession: true }`
 and throw `invalid_auth` (with a message pointing at the CLI login command) otherwise.
 

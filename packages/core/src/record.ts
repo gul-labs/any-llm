@@ -17,9 +17,9 @@ import type {
   Cost,
   Citation,
 } from './types.js'
-import type { LlmErrorKind, LlmError } from './errors.js'
+import type { LlmErrorKind, LlmErrorReason, LlmError } from './errors.js'
 import { assertNever } from './assert.js'
-import { redactSecrets } from './redact.js'
+import { cleanText, redactJsonValue, redactSecrets, setOwn } from './redact.js'
 
 // ---------------------------------------------------------------------------
 // Record interface
@@ -35,21 +35,20 @@ import { redactSecrets } from './redact.js'
  * on any breaking schema change.
  */
 export interface LlmCallRecord {
-  /** Schema version — always `1` for this release. */
-  recordSchemaVersion: 1
+  /**
+   * Schema version — always `2` for this release. Version 2 added
+   * `costConfidence`, `costDetails` and `costUnpricedReason` (ADR-039).
+   */
+  recordSchemaVersion: 2
 
   // --- identity ---
   /** Unique ID for the logical call (shared across retries). */
   callId: string
   /**
-   * Unique ID for this specific attempt — the idempotency key.
-   *
-   * On `attemptNumber: 0` (a pre-attempt refusal — see below), this is
-   * derived by the same rule as attempt 1: `request.idempotencyKey` when
-   * supplied, a freshly minted id otherwise. It remains the idempotency key
-   * in that case too — a caller-retried refused call with the same
-   * `idempotencyKey` upserts the same row rather than accumulating
-   * duplicates.
+   * Unique ID for this specific attempt, always minted by the engine — also
+   * for `attemptNumber: 0` refusal rows. It only de-duplicates an at-least-once
+   * sink re-delivering the same record; it is never derived from host input.
+   * Correlate host retries of one operation through `externalId`.
    */
   attemptId: string
   /**
@@ -60,6 +59,11 @@ export interface LlmCallRecord {
    * or any other `LlmError` a middleware throws before the engine's
    * innermost handler begins). Real attempts are 1-based: `1` = first
    * attempt, `2` = first retry, and so on.
+   *
+   * A refusal after an earlier attempt ran (a quota deferral or boundary
+   * refusal on attempt 2, say) is a zero-usage row numbered with the refused
+   * attempt. An attempt a middleware refused and a later attempt re-ran leaves
+   * no row, so a gap in attempt numbers means "refused before dispatch".
    */
   attemptNumber: number
   /** Optional call-site identifier for grouping by prompt template. */
@@ -111,9 +115,9 @@ export interface LlmCallRecord {
   finishReason?: FinishReason
   /** Whether JSON.parse succeeded for a structured-output request. */
   outputParsed?: boolean
-  /** Wall-clock latency in milliseconds from dispatch to response. */
+  /** Latency in whole milliseconds from dispatch to response (rounded from the clock). */
   latencyMs: number
-  /** Time spent waiting in the configured RateLimiter before provider dispatch. */
+  /** Whole milliseconds spent waiting in the configured RateLimiter before provider dispatch. */
   queueDelayMs?: number
 
   // --- usage (typed hot fields) ---
@@ -136,6 +140,29 @@ export interface LlmCallRecord {
   costMicroUsd?: number | null
   /** Pricing snapshot identifier (e.g. `"gemini-2026-06-27"`). */
   pricingVersion?: string
+  /**
+   * Whether `costMicroUsd` is exact (`'exact'`) or approximate or absent
+   * (`'estimated'`: a web-search fee that is an upper bound or unknown, an
+   * unpriced model or tier, tokens the usage fields do not carry). Present
+   * whenever a `Cost` was computed; absent on refusal rows and when the provider
+   * has no pricing source.
+   */
+  costConfidence?: Cost['confidence']
+  /**
+   * The cost split into lanes in micro-USD (`{ input, cached, output, tools }`,
+   * summing to `costMicroUsd`), so tool fees can be separated from token spend
+   * in SQL. Present only when the call was priced (`costMicroUsd` is not null).
+   */
+  costDetails?: Cost['details']
+  /**
+   * Why the attempt has no price: an unknown model, an unpriced tier or tool
+   * counter (with `costMicroUsd` `null`), or `no_usage_reported` (no
+   * `costMicroUsd` at all): a dispatched attempt that failed without reporting
+   * usage (a timeout, an abort, a network failure, a stream cut before its usage),
+   * which the provider may have billed. A failure known to cost nothing has
+   * neither a cost nor a reason.
+   */
+  costUnpricedReason?: string
 
   // --- forward-compat JSONB lanes ---
   /** Open token-type detail map from `Usage.details` (JSONB). */
@@ -178,14 +205,26 @@ export interface LlmCallRecord {
   /**
    * Thought-summary text returned by the provider.
    * Present only when `config.reasoning.includeThoughts` was `true` and the
-   * provider returned thought text.  Truncated to a cap in the engine.
+   * provider returned thought text. Truncated by `buildRecord` to
+   * {@link RECORD_TEXT_CAP_BYTES} (UTF-8) with a `…[truncated]` marker and a
+   * warning; the live result keeps the full text.
    */
   reasoningText?: string
 
   // --- postmortem (diagnostics on failure) ---
   /** Error kind from the classified `LlmError` (absent on success). */
   errorKind?: LlmErrorKind
-  /** Truncated error message (absent on success). */
+  /**
+   * Typed reason from the classified `LlmError`, from the closed
+   * {@link LlmErrorReason} set. Absent on success and whenever the error
+   * carries no reason; `errorKind` stays authoritative.
+   */
+  errorReason?: LlmErrorReason
+  /**
+   * Redacted error message (absent on success), truncated by `buildRecord` to
+   * {@link RECORD_TEXT_CAP_BYTES} (UTF-8) with a `…[truncated]` marker and a
+   * warning; the thrown `LlmError` keeps the full message.
+   */
   errorMessage?: string
 
   // --- host anchors ---
@@ -231,6 +270,11 @@ export interface BuildRecordInput {
   usage: Usage
   /** Computed cost (absent when model is unpriced or cost failed). */
   cost?: Cost
+  /**
+   * Why a dispatched attempt has no cost although the provider may have billed
+   * it (it reported no usage). Ignored when `cost` is present.
+   */
+  costUnpricedReason?: string
   /** Wall-clock latency in milliseconds. */
   latencyMs: number
   /** Time spent waiting in the configured RateLimiter before provider dispatch. */
@@ -318,9 +362,16 @@ export { errorKindToStatus }
 export function normalizeUsage(usage: Usage): {
   usage: Usage
   warnings: Warning[]
+  /**
+   * `true` when the provider's `totalTokens` is larger than `inputTokens +
+   * outputTokens`: it counted tokens the usage fields do not carry (tool-use
+   * prompt tokens, say), so a cost computed from the fields can undercount and
+   * the engine reports it as `'estimated'`.
+   */
+  estimated: boolean
 } {
-  const { usage: normalized, clampWarnings } = sanitizeUsage(usage)
-  return { usage: normalized, warnings: clampWarnings }
+  const { usage: normalized, clampWarnings, estimated } = sanitizeUsage(usage)
+  return { usage: normalized, warnings: clampWarnings, estimated }
 }
 
 // ---------------------------------------------------------------------------
@@ -439,6 +490,8 @@ interface SanitizeUsageResult {
   usage: Usage
   /** Warnings emitted for each violation that was corrected. */
   clampWarnings: Warning[]
+  /** `totalTokens` exceeds `inputTokens + outputTokens`: some billed tokens are uncounted. */
+  estimated: boolean
 }
 
 /**
@@ -523,6 +576,7 @@ function sanitizeUsage(usage: Usage): SanitizeUsageResult {
     needsRebuild = true
   }
 
+  let estimated = false
   if (usage.totalTokens !== undefined) {
     const expected = inputTokens + outputTokens
     if (usage.totalTokens < expected) {
@@ -531,6 +585,17 @@ function sanitizeUsage(usage: Usage): SanitizeUsageResult {
         message:
           `totalTokens (${usage.totalTokens}) is less than ` +
           `inputTokens + outputTokens (${expected}); recorded as-is`,
+      })
+    } else if (usage.totalTokens > expected) {
+      // The provider counted tokens the usage fields do not carry, for example
+      // tool-use prompt tokens. A cost built from the fields can undercount.
+      estimated = true
+      warnings.push({
+        type: 'other',
+        message:
+          `totalTokens (${usage.totalTokens}) is greater than ` +
+          `inputTokens + outputTokens (${expected}); the provider counted tokens the ` +
+          `usage fields do not include, so cost.confidence is "estimated"`,
       })
     }
   }
@@ -553,7 +618,7 @@ function sanitizeUsage(usage: Usage): SanitizeUsageResult {
   }
 
   if (!needsRebuild) {
-    return { usage, clampWarnings: warnings }
+    return { usage, clampWarnings: warnings, estimated }
   }
 
   // Rebuild Usage with clamped values — exactOptionalPropertyTypes-safe.
@@ -567,8 +632,213 @@ function sanitizeUsage(usage: Usage): SanitizeUsageResult {
     ...(usage.totalTokens !== undefined ? { totalTokens: usage.totalTokens } : {}),
   }
 
-  return { usage: clampedUsage, clampWarnings: warnings }
+  return { usage: clampedUsage, clampWarnings: warnings, estimated }
 }
+
+// ---------------------------------------------------------------------------
+// Text cap
+// ---------------------------------------------------------------------------
+
+/**
+ * Largest `reasoningText` / `errorMessage` a record carries, in UTF-8 bytes,
+ * marker included. Both are provider-controlled and unbounded; a ledger row must
+ * not grow with them.
+ */
+export const RECORD_TEXT_CAP_BYTES = 16 * 1024
+
+const TRUNCATION_MARKER = '…[truncated]'
+
+function utf8Length(codePoint: number): number {
+  if (codePoint < 0x80) return 1
+  if (codePoint < 0x800) return 2
+  if (codePoint < 0x10000) return 3
+  return 4
+}
+
+/**
+ * Caps `text` at {@link RECORD_TEXT_CAP_BYTES} UTF-8 bytes. A longer text is cut
+ * at a code-point boundary and ends with `…[truncated]`, so the result never
+ * exceeds the cap.
+ */
+function capRecordText(text: string): { text: string; truncated: boolean } {
+  // UTF-16 length * 3 bounds the UTF-8 length from above.
+  if (text.length * 3 <= RECORD_TEXT_CAP_BYTES) return { text, truncated: false }
+  let total = 0
+  for (const ch of text) {
+    total += utf8Length(ch.codePointAt(0) as number)
+    if (total > RECORD_TEXT_CAP_BYTES) break
+  }
+  if (total <= RECORD_TEXT_CAP_BYTES) return { text, truncated: false }
+  let budget = RECORD_TEXT_CAP_BYTES
+  for (const ch of TRUNCATION_MARKER) budget -= utf8Length(ch.codePointAt(0) as number)
+  let used = 0
+  let end = 0
+  for (const ch of text) {
+    const bytes = utf8Length(ch.codePointAt(0) as number)
+    if (used + bytes > budget) break
+    used += bytes
+    end += ch.length
+  }
+  return { text: text.slice(0, end) + TRUNCATION_MARKER, truncated: true }
+}
+
+// ---------------------------------------------------------------------------
+// Postgres-safe text
+// ---------------------------------------------------------------------------
+
+/**
+ * Deep copy-on-write {@link cleanText} over every string and object key in a
+ * record value. A subtree with nothing to clean is returned as the same
+ * object, so the caller's data is never mutated and clean records alias their
+ * inputs exactly as before. `changed` is set when anything was cleaned.
+ */
+export function cleanDeep<T>(value: T, state: { changed: boolean }): T {
+  if (typeof value === 'string') {
+    const cleaned = cleanText(value)
+    if (cleaned !== value) state.changed = true
+    return cleaned as T
+  }
+  if (Array.isArray(value)) {
+    let copy: unknown[] | undefined
+    value.forEach((item: unknown, index) => {
+      const cleaned = cleanDeep(item, state)
+      if (cleaned !== item) {
+        copy ??= value.slice()
+        copy[index] = cleaned
+      }
+    })
+    return (copy ?? value) as T
+  }
+  if (typeof value === 'object' && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>)
+    let copy: Record<string, unknown> | undefined
+    entries.forEach(([key, item], index) => {
+      const cleanedKey = cleanText(key)
+      const cleaned = cleanDeep(item, state)
+      if (cleaned !== item || cleanedKey !== key) {
+        if (cleanedKey !== key) state.changed = true
+        // Rebuild in order so a key that collapses keeps its place.
+        copy ??= Object.fromEntries(
+          entries.slice(0, index).map(([k, v]) => [k, v] as const),
+        )
+        setOwn(copy, cleanedKey, cleaned)
+      } else if (copy !== undefined) {
+        setOwn(copy, key, item)
+      }
+    })
+    return (copy ?? value) as T
+  }
+  return value
+}
+
+// ---------------------------------------------------------------------------
+// Bounded JSON (host-supplied and provider-supplied JSON lanes)
+// ---------------------------------------------------------------------------
+
+/** Deepest nesting a JSON lane of a record keeps; deeper is replaced by a marker. */
+const RECORD_JSON_MAX_DEPTH = 64
+
+/** Most values (objects, arrays, scalars) one JSON lane of a record keeps. */
+const RECORD_JSON_MAX_NODES = 100_000
+
+/**
+ * A copy-on-write, bounded projection of a JSON lane of a record, total over
+ * any input: a circular reference, nesting deeper than
+ * {@link RECORD_JSON_MAX_DEPTH}, more than {@link RECORD_JSON_MAX_NODES} values,
+ * a getter or `toJSON` that throws, and a `bigint`, function or symbol are each
+ * replaced by a short marker string, and one human-readable line per kind of
+ * replacement is appended to `notes`. A value with nothing to replace is
+ * returned as the same object, so ordinary data aliases its input.
+ *
+ * A billed call must always produce its ledger row, and `metadata` (and the
+ * provider options inside the generation config) are host input that no
+ * validator has seen.
+ */
+function boundJson(value: unknown, lane: string, notes: string[]): unknown {
+  const budget = { nodes: 0 }
+  const ancestors = new Set<object>()
+  const note = (why: string, marker: string): void => {
+    const line = `The ledger record's ${lane} held ${why}; it was replaced with "${marker}".`
+    if (!notes.includes(line)) notes.push(line)
+  }
+  const walk = (node: unknown, depth: number): unknown => {
+    switch (typeof node) {
+      case 'bigint':
+        note('a bigint', '[unserializable]')
+        return '[unserializable]'
+      case 'function':
+      case 'symbol':
+        note(`a ${typeof node}`, '[unserializable]')
+        return '[unserializable]'
+      case 'object':
+        break
+      default:
+        return node
+    }
+    if (node === null) return node
+    if (ancestors.has(node)) {
+      note('a circular reference', '[circular]')
+      return '[circular]'
+    }
+    if (depth >= RECORD_JSON_MAX_DEPTH) {
+      note(`nesting deeper than ${RECORD_JSON_MAX_DEPTH} levels`, '[too deep]')
+      return '[too deep]'
+    }
+    budget.nodes += 1
+    if (budget.nodes > RECORD_JSON_MAX_NODES) {
+      note(`more than ${RECORD_JSON_MAX_NODES} values`, '[truncated]')
+      return '[truncated]'
+    }
+    ancestors.add(node)
+    try {
+      const toJSON = (node as { toJSON?: unknown }).toJSON
+      if (typeof toJSON === 'function') {
+        return walk((toJSON as () => unknown).call(node), depth + 1)
+      }
+      if (Array.isArray(node)) {
+        let copy: unknown[] | undefined
+        for (let i = 0; i < node.length; i += 1) {
+          const item: unknown = node[i]
+          const bounded = walk(item, depth + 1)
+          if (bounded !== item) {
+            copy ??= node.slice()
+            copy[i] = bounded
+          }
+        }
+        return copy ?? node
+      }
+      const pairs: Array<readonly [string, unknown]> = []
+      let changed = false
+      for (const key of Object.keys(node)) {
+        let item: unknown
+        let bounded: unknown
+        try {
+          item = (node as Record<string, unknown>)[key]
+          bounded = walk(item, depth + 1)
+        } catch {
+          item = undefined
+          bounded = '[unreadable]'
+          note('a property that could not be read', '[unreadable]')
+        }
+        if (bounded !== item) changed = true
+        pairs.push([key, bounded])
+      }
+      if (!changed) return node
+      const out: Record<string, unknown> = {}
+      for (const [key, bounded] of pairs) setOwn(out, key, bounded)
+      return out
+    } catch {
+      note('a value that could not be read', '[unreadable]')
+      return '[unreadable]'
+    } finally {
+      ancestors.delete(node)
+    }
+  }
+  return walk(value, 0)
+}
+
+const CLEANED_TEXT_WARNING =
+  'the ledger record held U+0000 or an unpaired surrogate, which Postgres cannot store; U+0000 was removed and each unpaired surrogate replaced with U+FFFD.'
 
 // ---------------------------------------------------------------------------
 // buildRecord
@@ -601,8 +871,83 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
   // Validate and clamp usage subset invariants (fail-open: clamp + warn).
   const { usage, clampWarnings } = sanitizeUsage(input.usage)
 
-  // Merge caller warnings with any clamp warnings.
-  const allWarnings: Warning[] = [...(input.warnings ?? []), ...clampWarnings]
+  // Every JSON lane is bounded first: this function is total, so a billed
+  // attempt always gets its row whatever the host put in `metadata`.
+  const jsonNotes: string[] = []
+
+  // Merge caller warnings with any clamp warnings. The engine normalises usage
+  // once and passes its warnings in; re-sanitising the same usage must not
+  // repeat them.
+  const callerWarnings = input.warnings ?? []
+  const allWarnings: Warning[] = [
+    ...callerWarnings,
+    ...clampWarnings.filter(
+      (w) => !callerWarnings.some((known) => known.message === w.message),
+    ),
+  ]
+
+  // Postgres-unsafe text (U+0000, unpaired surrogates) is cleaned BEFORE
+  // redaction: a secret split by a NUL (`AIza\0Sy...`) is only recognisable
+  // once the NUL is gone, and redacting first would let the strip reassemble it.
+  // `state.changed` still drives the record warning.
+  const state = { changed: false }
+  const clean = (text: string): string => {
+    const cleaned = cleanText(text)
+    if (cleaned !== text) state.changed = true
+    return cleaned
+  }
+
+  // Provider-controlled free text is redacted, then capped; the live result and
+  // error keep the full text. Redaction runs first so a secret cannot be cut in
+  // half and survive as an unrecognisable fragment.
+  const reasoning =
+    input.reasoningText !== undefined
+      ? capRecordText(redactSecrets(clean(input.reasoningText)))
+      : undefined
+  const errorText =
+    input.error !== undefined
+      ? capRecordText(redactSecrets(clean(input.error.message)))
+      : undefined
+  if (reasoning?.truncated === true) {
+    allWarnings.push({
+      type: 'other',
+      message: `reasoningText was truncated to ${RECORD_TEXT_CAP_BYTES} bytes in the ledger record.`,
+    })
+  }
+  if (errorText?.truncated === true) {
+    allWarnings.push({
+      type: 'other',
+      message: `errorMessage was truncated to ${RECORD_TEXT_CAP_BYTES} bytes in the ledger record.`,
+    })
+  }
+
+  // The model's tool-call ids, names and arguments are redacted like any stored
+  // text: secret patterns in every string, and the value of a key named like a
+  // secret. Ids and names are provider-returned strings, so they are cleaned,
+  // redacted and bounded like the other free text.
+  const toolCallText = { truncated: false }
+  const cleanCallText = (text: string): string => {
+    const capped = capRecordText(redactSecrets(clean(text)))
+    if (capped.truncated) toolCallText.truncated = true
+    return capped.text
+  }
+  const toolCalls =
+    input.toolCalls !== undefined && input.toolCalls.length > 0
+      ? input.toolCalls.map((call) => ({
+          ...call,
+          toolCallId: cleanCallText(call.toolCallId),
+          toolName: cleanCallText(call.toolName),
+          args: redactJsonValue(
+            cleanDeep(boundJson(call.args, 'toolCalls', jsonNotes) as JsonValue, state),
+          ) as JsonValue,
+        }))
+      : undefined
+  if (toolCallText.truncated) {
+    allWarnings.push({
+      type: 'other',
+      message: `Tool-call ids and names were truncated to ${RECORD_TEXT_CAP_BYTES} bytes in the ledger record.`,
+    })
+  }
 
   // C1: Scoped provider extension redaction.
   // Only secret-bearing provider lanes are redacted; all standard generation knobs
@@ -610,13 +955,16 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
   // through untouched. We shallow-copy before redacting so the caller's original
   // config object is never mutated.
   let gcMut: Record<string, unknown> = {
-    ...(input.generationConfig as unknown as Record<string, unknown>),
+    ...(boundJson(input.generationConfig, 'generationConfig', jsonNotes) as Record<
+      string,
+      unknown
+    >),
   }
   if (gcMut['providerOptions'] !== undefined) {
     gcMut = {
       ...gcMut,
       providerOptions: JSON.parse(
-        redactSecrets(JSON.stringify(gcMut['providerOptions'])),
+        redactSecrets(JSON.stringify(cleanDeep(gcMut['providerOptions'], state))),
       ) as unknown,
     }
   }
@@ -629,10 +977,22 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
   // Record<string, number> is a valid JSON object when all values are numbers.
   const tokenDetails = usage.details as unknown as JsonValue
 
+  const metadata = boundJson(input.metadata, 'metadata', jsonNotes) as JsonValue
+  const citations =
+    input.citations !== undefined && input.citations.length > 0
+      ? (boundJson(input.citations, 'citations', jsonNotes) as Citation[])
+      : undefined
+  const providerMetadata =
+    input.providerMetadata !== undefined
+      ? (boundJson(input.providerMetadata, 'providerMetadata', jsonNotes) as JsonValue)
+      : undefined
+  const rawUsage = boundJson(usage.raw, 'rawUsage', jsonNotes) as JsonValue
+  for (const message of jsonNotes) allWarnings.push({ type: 'other', message })
+
   // Build the record using conditional spreads for every optional property so
   // `exactOptionalPropertyTypes` is satisfied (we never assign `undefined`).
   const record: LlmCallRecord = {
-    recordSchemaVersion: 1,
+    recordSchemaVersion: 2,
     callId: input.callId,
     attemptId: input.attemptId,
     attemptNumber: input.attemptNumber,
@@ -650,8 +1010,12 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
     status,
     ...(input.finishReason !== undefined ? { finishReason: input.finishReason } : {}),
     ...(input.outputParsed !== undefined ? { outputParsed: input.outputParsed } : {}),
-    latencyMs: input.latencyMs,
-    ...(input.queueDelayMs !== undefined ? { queueDelayMs: input.queueDelayMs } : {}),
+    // Whole milliseconds: a `Clock` may return fractions (`performance.now()`), and
+    // the ledger columns are integers.
+    latencyMs: Math.round(input.latencyMs),
+    ...(input.queueDelayMs !== undefined
+      ? { queueDelayMs: Math.round(input.queueDelayMs) }
+      : {}),
     // Usage hot fields — always present since Usage.inputTokens/outputTokens are required.
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
@@ -667,40 +1031,54 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
       ? {
           costMicroUsd: input.cost.microUsd,
           pricingVersion: input.cost.pricingVersion,
+          costConfidence: input.cost.confidence,
+          ...(input.cost.microUsd !== null ? { costDetails: input.cost.details } : {}),
+          ...(input.cost.unpricedReason !== undefined
+            ? { costUnpricedReason: input.cost.unpricedReason }
+            : {}),
         }
-      : {}),
+      : input.costUnpricedReason !== undefined
+        ? { costUnpricedReason: input.costUnpricedReason }
+        : {}),
     // JSONB lanes.
     tokenDetails,
-    rawUsage: usage.raw,
-    ...(input.citations !== undefined && input.citations.length > 0
-      ? { citations: input.citations }
-      : {}),
-    ...(input.toolCalls !== undefined && input.toolCalls.length > 0
-      ? { toolCalls: input.toolCalls }
-      : {}),
+    rawUsage,
+    ...(citations !== undefined ? { citations } : {}),
+    ...(toolCalls !== undefined ? { toolCalls } : {}),
     ...(input.toolNames !== undefined && input.toolNames.length > 0
       ? { toolNames: input.toolNames, toolCount: input.toolNames.length }
       : {}),
-    ...(input.providerMetadata !== undefined
-      ? { providerMetadata: input.providerMetadata }
-      : {}),
+    ...(providerMetadata !== undefined ? { providerMetadata } : {}),
     ...(allWarnings.length > 0 ? { warnings: allWarnings } : {}),
     generationConfig,
     // Reasoning capture.
-    ...(input.reasoningText !== undefined ? { reasoningText: input.reasoningText } : {}),
+    ...(reasoning !== undefined ? { reasoningText: reasoning.text } : {}),
     // Postmortem — only on failure.
     // errorMessage is redacted before persistence so secrets in provider error
     // text (API keys in URLs, Bearer tokens) are not written to the audit record.
     // The live LlmError thrown to the caller is NOT modified.
-    ...(input.error !== undefined
+    ...(input.error !== undefined && errorText !== undefined
       ? {
           errorKind: input.error.kind,
-          errorMessage: redactSecrets(input.error.message),
+          ...(input.error.reason !== undefined
+            ? { errorReason: input.error.reason }
+            : {}),
+          errorMessage: errorText.text,
         }
       : {}),
-    metadata: input.metadata,
+    metadata,
     createdAt: input.createdAt,
   }
 
-  return record
+  // Provider-controlled text can carry what Postgres cannot store; clean the whole
+  // record once, last (the free text above was cleaned before redaction).
+  const cleaned = cleanDeep(record, state)
+  if (!state.changed) return record
+  return {
+    ...cleaned,
+    warnings: [
+      ...((cleaned.warnings ?? []) as JsonValue[]),
+      { type: 'other', message: CLEANED_TEXT_WARNING },
+    ],
+  }
 }

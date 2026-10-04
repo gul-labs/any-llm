@@ -32,6 +32,29 @@ Registry provenance validation is not exercised by `npm publish --dry-run`. A re
 
 `release.yml` runs on `workflow_run`, which executes in the base repository with secrets even when the triggering CI run came from a fork PR. The job therefore only runs when the CI run succeeded **and** was a `push` event **and** came from this repository **and** from `main`. Top-level permissions are `contents: read`; the write grants are scoped to the release job. Do not loosen any of these conditions.
 
+## Versioning: one version for every package
+
+All nine packages are one changesets [`fixed` group](./.changeset/config.json) and always publish at the same version. Any changeset that bumps one of them bumps all of them, including packages with no code change in that release. The compatibility rule is therefore "same version number", and it is the whole compatibility matrix: **mixed versions are unsupported and untested.** Core contracts change on most minors, so a companion built against one core is not known to work with the next, and a per-package peer range would need mixed-version testing on every release.
+
+`@gullabs/core` is an **exact-version `peerDependency`** of every other package (`workspace:*` in `peerDependencies`; pnpm replaces it with the exact release version when packing) and a `devDependency` for builds. It is never a regular dependency. Consequences:
+
+- A host that installs any package needs `@gullabs/core` at the same version. npm 7+ and pnpm install a missing peer automatically; `pnpm add @gullabs/core @gullabs/xai openai` is the explicit form.
+- Two copies of core cannot coexist silently, so `instanceof LlmError` and the other cross-package contracts stay sound. There is deliberately no `Symbol.hasInstance` brand: it would only exist to support the unsupported mixed install.
+- Mixing versions, patch releases included, is a peer-dependency error under pnpm's `strictPeerDependencies` and an `ERESOLVE` error under npm 7+ (unless `--legacy-peer-deps` is set, which is outside the contract).
+- Pre-1.0, a breaking change anywhere in the group is a `minor` for the whole group.
+
+Do not add a new `@gullabs/*` package that depends on core without adding it to the `fixed` group and giving it the same peer + devDependency shape; `packages/core/src/lockstep-manifests.test.ts` fails otherwise.
+
+### Packed-install checks
+
+`scripts/packed-install.mjs` (`pnpm test:packed-install`, CI job `packed-install`) packs every package exactly as publishing does, serves the tarballs from a throwaway registry on `127.0.0.1` (the `@gullabs` scope only; third-party dependencies come from the real registry, nothing is published), and installs them into temp projects with pnpm (strict peers) and npm:
+
+1. a direct provider set (every package except the facade),
+2. the facade alone,
+3. the facade plus a direct provider (`@gullabs/xai`).
+
+Each must install, resolve exactly one `@gullabs/core` copy, load under ESM and CJS, and typecheck an example. Every tarball must ship `LICENSE` and `NOTICE` equal to the repository's (Apache-2.0 4(d); each package directory holds a copy, kept equal by `package-metadata.test.ts`). The drizzle tarball must ship `sql/install.sql` and the upgrade files, and `@gullabs/drizzle/sql/*` must resolve through both `require.resolve` and `import.meta.resolve`. The negative cases install this tree's own companion tarballs next to core re-registered at a different patch and at a different minor (no network needed for them); pnpm strict peers must reject both (npm's behaviour is printed for information). A tarball of the previous release is not fetched, so that comparison stays a manual pre-release check. The script needs the real npm registry for third-party packages (`@google/genai`, `openai`, `drizzle-orm`, `typescript` and their dependencies), so a registry outage fails the CI job: re-run it. On success, failure and Ctrl-C it removes its temp directory, closes the throwaway registry and kills every child process group. Once no changesets are pending, the script also asserts that all packages share one version, which is what the "Version Packages" PR must satisfy. Run it locally after `pnpm -r build`.
+
 ## How it works
 
 1. **Add a changeset** while you work — which packages, which semver bump, what changed.
@@ -40,6 +63,8 @@ Registry provenance validation is not exercised by `npm publish --dry-run`. A re
 4. **Changesets decides whether to version or publish:**
    - Pending `.changeset/*.md` files → `changesets/action` opens a "Version Packages" PR.
    - Versions already bumped and no pending changesets → `changesets/action` runs `pnpm release` and publishes unpublished versions (trusted publishing via OIDC, `NPM_TOKEN` as fallback).
+
+The changelog generator is `.changeset/changelog.mjs`: the default one, except that a dependent package gets no "Updated dependencies [hash]" line. The nine packages are one fixed group with an exact core peer, so every changeset "updates" every package, and a line per changeset that names no change would bury the real entries.
 
 Do not block a normal CI release on local `npm whoami`. Local npm auth is only for the emergency manual path.
 

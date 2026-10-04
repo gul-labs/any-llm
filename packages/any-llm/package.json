@@ -14,22 +14,34 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
-    }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
-    "skills"
+    "skills",
+    "NOTICE"
   ],
   "scripts": {
     "build": "tsup"
   },
   "dependencies": {
     "@google/genai": "^2.24.0",
-    "@gullabs/core": "workspace:*",
     "@gullabs/google": "workspace:*"
+  },
+  "peerDependencies": {
+    "@gullabs/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@gullabs/core": "workspace:*"
   },
   "engines": {
     "node": ">=22.12.0"

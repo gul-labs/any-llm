@@ -24,3 +24,35 @@ describe('@gullabs/testing package surface: FakeXaiFileStore', () => {
     expect(typeof FakeXaiFileStore).toBe('function')
   })
 })
+
+describe('@gullabs/testing package surface: runToolLoop', () => {
+  it('runToolLoop is a function reachable from the package root', async () => {
+    const { runToolLoop } = await import('./index.js')
+    expect(typeof runToolLoop).toBe('function')
+  })
+})
+
+describe('@gullabs/testing package surface: scripted-error and clock helpers', () => {
+  it('every one of these helpers is reachable from the package root', async () => {
+    const api = await import('./index.js')
+    for (const name of [
+      'FakeClock',
+      'FakeClient',
+      'FakeAdapter',
+      'FakeGoogleFileStore',
+      'FakeGoogleCacheStore',
+      'FakeCliRunner',
+      'RecordingSink',
+      'RecordingTelemetry',
+      'RecordingLogger',
+      'fakeLlmResult',
+      'fakeHttpError',
+      'fakeNetworkError',
+      'fakeBilledFailure',
+      'fakeStreamFailure',
+      'fakeProviderError',
+    ] as const) {
+      expect(typeof api[name], name).toBe('function')
+    }
+  })
+})

@@ -4,8 +4,8 @@
  * Core carries no pricing tables of its own — engine-level integration tests
  * still need a real (if synthetic) `PricingSource` to exercise the cost
  * pipeline end-to-end. This helper builds one from a caller-supplied rates
- * table via `computeCost`, mirroring the exact-then-longest-prefix lookup
- * strategy a provider package (e.g. `@gullabs/google`) would implement.
+ * table via `computeCost`, with the exact-id lookup a provider package (e.g.
+ * `@gullabs/google`) implements: no prefix matching.
  *
  * Sibling to `test-model-descriptor.ts` — both are non-`.test.ts` helpers
  * kept in `src/` because they're imported across multiple test files.
@@ -50,16 +50,5 @@ export function makeTestPricingSource(
 }
 
 function lookupKey<T>(table: Readonly<Record<string, T>>, model: string): T | undefined {
-  const exact = Object.hasOwn(table, model) ? table[model] : undefined
-  if (exact !== undefined) return exact
-
-  let bestKey = ''
-  let best: T | undefined
-  for (const key of Object.keys(table)) {
-    if (model.startsWith(key) && key.length > bestKey.length) {
-      bestKey = key
-      best = table[key]
-    }
-  }
-  return best
+  return Object.hasOwn(table, model) ? table[model] : undefined
 }

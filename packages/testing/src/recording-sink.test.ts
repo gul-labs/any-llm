@@ -4,7 +4,7 @@ import type { LlmCallRecord } from '@gullabs/core'
 
 function makeRecord(overrides: Partial<LlmCallRecord> = {}): LlmCallRecord {
   return {
-    recordSchemaVersion: 1,
+    recordSchemaVersion: 2,
     callId: 'call_1',
     attemptId: 'attempt_1',
     attemptNumber: 1,
@@ -89,8 +89,74 @@ describe('RecordingSink', () => {
     })
   })
 
+  describe('payloads', () => {
+    const payload = {
+      request: { messages: [{ role: 'user' as const, parts: [] }] },
+      response: { text: 'hi' },
+    }
+
+    it('keeps the payload that came with a record, by attemptId, and none for a record without one', async () => {
+      const sink = new RecordingSink()
+      await sink.record(makeRecord({ attemptId: 'a1' }), { payload })
+      await sink.record(makeRecord({ attemptId: 'a2' }))
+      expect(sink.payloads.get('a1')).toBe(payload)
+      expect(sink.payloads.has('a2')).toBe(false)
+    })
+
+    it('dedupeOn de-duplicates the payload on its own, as the ledger’s payload table does: the first payload wins', async () => {
+      const other = { request: { messages: [] }, response: { text: 'other' } }
+      const deduped = new RecordingSink({ dedupeOn: 'attemptId' })
+      await deduped.record(makeRecord({ attemptId: 'a1' }))
+      // The repeat's record is dropped, its payload is kept: none was held yet.
+      await deduped.record(makeRecord({ attemptId: 'a1' }), { payload })
+      expect(deduped.records).toHaveLength(1)
+      expect(deduped.duplicates).toHaveLength(1)
+      expect(deduped.payloads.get('a1')).toBe(payload)
+      // A second repeat with another payload does not replace it.
+      await deduped.record(makeRecord({ attemptId: 'a1' }), { payload: other })
+      expect(deduped.payloads.get('a1')).toBe(payload)
+    })
+
+    it('a failed write stores no payload', async () => {
+      const failing = new RecordingSink({ failOnRecord: true })
+      await expect(failing.record(makeRecord(), { payload })).rejects.toThrow()
+      expect(failing.payloads.size).toBe(0)
+    })
+  })
+
   it('satisfies the UsageSink interface structurally', () => {
     const sink: import('@gullabs/core').UsageSink = new RecordingSink()
     expect(typeof sink.record).toBe('function')
+  })
+
+  describe("dedupeOn: 'attemptId'", () => {
+    it('keeps the first record of an attemptId and counts the repeat, as the ledger does', async () => {
+      const sink = new RecordingSink({ dedupeOn: 'attemptId' })
+      const first = makeRecord({ attemptId: 'a1', status: 'api_error' })
+      const repeat = makeRecord({ attemptId: 'a1', status: 'ok' })
+
+      await sink.record(first)
+      await sink.record(repeat)
+      await sink.record(makeRecord({ attemptId: 'a2' }))
+
+      expect(sink.records.map((r) => r.attemptId)).toEqual(['a1', 'a2'])
+      expect(sink.records[0]).toBe(first)
+      expect(sink.duplicates).toEqual([repeat])
+    })
+
+    it('without the option every record is kept, which is what hides a double write', async () => {
+      const sink = new RecordingSink()
+      await sink.record(makeRecord({ attemptId: 'a1' }))
+      await sink.record(makeRecord({ attemptId: 'a1' }))
+      expect(sink.records).toHaveLength(2)
+      expect(sink.duplicates).toEqual([])
+    })
+
+    it('a failed write does not claim the attemptId', async () => {
+      const sink = new RecordingSink({ dedupeOn: 'attemptId', failOnRecord: true })
+      await expect(sink.record(makeRecord({ attemptId: 'a1' }))).rejects.toThrow()
+      expect(sink.records).toEqual([])
+      expect(sink.duplicates).toEqual([])
+    })
   })
 })

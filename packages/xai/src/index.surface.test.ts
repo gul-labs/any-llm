@@ -14,6 +14,8 @@ import { describe, it, expect } from 'vitest'
 import {
   buildXaiClient,
   requireApiKey,
+  XAI_DEFAULT_TIMEOUT_MS,
+  XAI_TIMEOUT_BUFFER_MS,
   xaiAdapter,
   classifyXaiError,
   Grok45ConfigSchema,
@@ -44,6 +46,11 @@ describe('@gullabs/xai package surface: commit 1', () => {
 
   it('requireApiKey is a function reachable from the package root', () => {
     expect(typeof requireApiKey).toBe('function')
+  })
+
+  it('exposes the transport timeout constants', () => {
+    expect(XAI_DEFAULT_TIMEOUT_MS).toBe(3_600_000)
+    expect(XAI_TIMEOUT_BUFFER_MS).toBe(5_000)
   })
 })
 

@@ -39,13 +39,16 @@ vi.mock('@google/genai', () => {
 })
 
 describe('buildGoogleClient', () => {
-  it('constructs GoogleGenAI with exactly { apiKey } from auth material', async () => {
+  it('constructs GoogleGenAI with the auth key and the pinned Developer API base URL, nothing else', async () => {
     constructorCalls.length = 0
 
     await buildGoogleClient({ apiKey: 'test-key' })
 
     expect(constructorCalls).toHaveLength(1)
-    expect(constructorCalls[0]).toEqual({ apiKey: 'test-key' })
+    expect(constructorCalls[0]).toEqual({
+      apiKey: 'test-key',
+      httpOptions: { baseUrl: 'https://generativelanguage.googleapis.com/' },
+    })
   })
 
   it('models.generateContent delegates to the underlying SDK client and returns its result unchanged', async () => {

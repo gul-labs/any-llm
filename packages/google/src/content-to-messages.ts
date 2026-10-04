@@ -15,7 +15,10 @@
  * Validation is an exhaustive own-key scan: the set of defined keys on each
  * `Part` must be EXACTLY one of the recognized combinations (`['text']`,
  * `['inlineData']`, `['inlineData', 'mediaResolution']`, `['fileData']`,
- * `['fileData', 'mediaResolution']`). Any other key — including unknown
+ * `['fileData', 'mediaResolution']`), plus `functionCall` / `functionResponse`.
+ * A `thoughtSignature` on a model text or `functionCall` part is imported into
+ * `transientProviderState` (see {@link GeminiContentToMessagesInput.model});
+ * on any other part it throws. Any other key — including unknown
  * future SDK fields — or any combination outside that set throws. Keys whose
  * value is `undefined` are treated as absent (genai types are all-optional;
  * only defined values count).
@@ -27,6 +30,8 @@ import { LlmError } from '@gullabs/core'
 import type { JsonValue, Message, Part } from '@gullabs/core'
 import type { Content, Part as GenaiPart } from '@google/genai'
 import { reserveProviderToolCallIds, resolveToolCallId } from './tool-call-id.js'
+import { signatureEntry } from './thought-signatures.js'
+import type { GoogleSignatureEntry } from './thought-signatures.js'
 
 /**
  * Input accepted by {@link geminiContentToMessages}.
@@ -40,6 +45,12 @@ export interface GeminiContentToMessagesInput {
    * non-text part throws).
    */
   systemInstruction?: Content | string
+  /**
+   * The model string the converted history will be sent to. Required when any
+   * part carries a `thoughtSignature`: signatures are bound to the model that
+   * issued them and are never replayed on another one.
+   */
+  model?: string
 }
 
 /**
@@ -50,6 +61,13 @@ export interface GeminiContentToMessagesResult {
   system?: string
   /** Normalized any-llm messages, one per input `Content`. */
   messages: Message[]
+  /**
+   * The thought signatures found on model parts, as the overlay a Gemini 3.x
+   * request takes as `transientProviderState`. Present only when at least one
+   * part carried a `thoughtSignature`. Send it with `messages` unedited and the
+   * same `model`.
+   */
+  transientProviderState?: JsonValue
 }
 
 function badRequest(message: string): LlmError {
@@ -128,11 +146,12 @@ function convertMediaResolution(
  *
  * The defined-key set of the part must be exactly one of: `['text']`,
  * `['inlineData']`, `['inlineData', 'mediaResolution']`, `['fileData']`,
- * `['fileData', 'mediaResolution']`. Anything else — function calling,
- * executable code, tool results, thought-flagged parts, `thoughtSignature`,
- * `videoMetadata`, `partMetadata`, unknown future SDK fields, `text`
- * combined with any other key, or a part with zero recognized fields —
- * throws `LlmError('bad_request')` naming the offending key(s).
+ * `['fileData', 'mediaResolution']` (or a lone `functionCall` / `functionResponse`).
+ * Anything else — executable code, thought-flagged parts, `videoMetadata`,
+ * `partMetadata`, unknown future SDK fields, `text` combined with any other
+ * key, or a part with zero recognized fields — throws `LlmError('bad_request')`
+ * naming the offending key(s). `thoughtSignature` is not a content key here: it
+ * is read by {@link convertPartWithSignature}.
  */
 function convertPart(
   part: GenaiPart,
@@ -140,7 +159,7 @@ function convertPart(
   nameCounts: Map<string, number>,
   reservedIds: Set<string>,
 ): Part {
-  const keys = definedKeys(part)
+  const keys = definedKeys(part).filter((key) => key !== 'thoughtSignature')
   const baseKeys = keys.filter(
     (key) => key === 'text' || key === 'inlineData' || key === 'fileData',
   )
@@ -276,6 +295,35 @@ function convertPart(
   throw badRequest(`${location}: Part has no recognized fields set.`)
 }
 
+/**
+ * {@link convertPart} plus the part's `thoughtSignature`, which is importable
+ * only from a model text or `functionCall` part: those are the parts Gemini 3.x
+ * signs and a message can represent.
+ */
+function convertPartWithSignature(
+  part: GenaiPart,
+  location: string,
+  role: 'user' | 'assistant',
+  nameCounts: Map<string, number>,
+  reservedIds: Set<string>,
+): { part: Part; signature?: string } {
+  const converted = convertPart(part, location, nameCounts, reservedIds)
+  const signature = part.thoughtSignature
+  if (signature === undefined) return { part: converted }
+  if (typeof signature !== 'string' || signature.length === 0) {
+    throw badRequest(`${location}: Part.thoughtSignature must be a non-empty string.`)
+  }
+  if (
+    role !== 'assistant' ||
+    (converted.kind !== 'text' && converted.kind !== 'tool-call')
+  ) {
+    throw badRequest(
+      `${location}: Part.thoughtSignature can only be imported from a model text or functionCall part.`,
+    )
+  }
+  return { part: converted, signature }
+}
+
 // ---------------------------------------------------------------------------
 // Role mapping (no inference)
 // ---------------------------------------------------------------------------
@@ -395,6 +443,7 @@ export function geminiContentToMessages(
       }),
     ),
   )
+  const signatures: GoogleSignatureEntry[] = []
   const messages: Message[] = input.contents.map((content, contentIndex) => {
     const location = `contents[${contentIndex}]`
     const envelopeExtraKeys = definedKeys(content).filter(
@@ -407,11 +456,41 @@ export function geminiContentToMessages(
       )
     }
     const role = convertRole(content.role, location)
-    const parts = (content.parts ?? []).map((part, partIndex) =>
-      convertPart(part, `${location}.parts[${partIndex}]`, nameCounts, reservedIds),
-    )
+    const parts = (content.parts ?? []).map((part, partIndex) => {
+      const partLocation = `${location}.parts[${partIndex}]`
+      const converted = convertPartWithSignature(
+        part,
+        partLocation,
+        role,
+        nameCounts,
+        reservedIds,
+      )
+      if (converted.signature !== undefined) {
+        if (input.model === undefined) {
+          throw badRequest(
+            `${partLocation}: Part.thoughtSignature requires the \`model\` input; a signature is bound to the model that issued it.`,
+          )
+        }
+        signatures.push(
+          signatureEntry(
+            contentIndex,
+            partIndex,
+            input.model,
+            converted.part,
+            converted.signature,
+          ),
+        )
+      }
+      return converted.part
+    })
     return { role, parts }
   })
 
-  return { ...(system !== undefined ? { system } : {}), messages }
+  return {
+    ...(system !== undefined ? { system } : {}),
+    messages,
+    ...(signatures.length > 0
+      ? { transientProviderState: { google: { signatures } } }
+      : {}),
+  }
 }

@@ -1,8 +1,21 @@
 # Caller-owned structured-output validation
 
-`@gullabs/core` intentionally treats `output.jsonSchema` as a **provider hint** and not a contract that
-the engine enforces. It parses JSON when possible, sets `outputParsed`, and leaves business-level shape
-validation to callers.
+`output.jsonSchema` is standard JSON Schema that the Google and xAI adapters **check and forward**
+(ADR-034): they reject dialect mistakes, malformed schemas and keywords the provider would silently
+ignore (`const`, `oneOf`, `allOf`, …) before dispatch, then send the schema verbatim. (`claude-cli`
+forwards the schema untouched and `codex-cli` runs its own OpenAI-strict preflight.) It is still not
+a contract the engine enforces on the _result_: the engine parses JSON when possible, sets
+`outputParsed`, and leaves shape validation to callers. A schema constrains the model; some keywords
+(`pattern`, `minLength`, `maxLength` on Gemini) are only obeyed probabilistically, so validate what
+you rely on.
+
+To keep a schema inside what both Gemini 3.x and xAI enforce, lint it at build time with
+`assertPortableJsonSchema` from `@gullabs/core`, for example from Zod:
+`assertPortableJsonSchema(z.toJSONSchema(schema))`. Zod's `z.literal('x')` emits `const` (use
+`z.enum(['x'])`), `z.discriminatedUnion` emits `oneOf` (use `z.union`), and `z.record(z.enum([...]),
+X)` emits a constraining `propertyNames`; the portable check names each one. (`z.record(z.string(),
+X)` is fine.) The portable subset does not cover Gemma, whose profile additionally rejects `format`,
+`minLength` and `maxLength`.
 
 Use this helper after any structured-output call:
 
@@ -43,7 +56,7 @@ async function validateStructuredResult<T>(
 
 Use any Standard-Schema implementation. This example uses two hand-rolled schemas to show portability:
 
-```ts
+```ts no-check
 const summarySchema: StandardSchemaV1 = {
   '~standard': {
     version: 1,
@@ -93,7 +106,7 @@ in `docs/archive/ADOPTION-FEEDBACK.md`.
 
 ## Example usage
 
-```ts
+```ts no-check
 // Pick the schema from something you already know — e.g. which `output.jsonSchema`
 // you requested — never by introspecting `result.output`, which is `unknown` until
 // a schema has validated it.

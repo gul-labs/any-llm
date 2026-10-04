@@ -20,11 +20,14 @@
  */
 
 export type {
+  GoogleCachedContentRef,
   GoogleSafetySetting,
   GoogleSearchTool,
   GoogleProviderOptions,
 } from './types.js'
 export { geminiAdapter } from './adapter.js'
+export { classifyGoogleError } from './errors.js'
+export type { ClassifyGoogleErrorExtra } from './errors.js'
 export type { GeminiAdapterOptions } from './adapter.js'
 export { googleProvider } from './provider.js'
 export {
@@ -36,10 +39,11 @@ export { geminiPricingSource } from './cost.js'
 export {
   GEMINI_PRICING,
   GEMINI_PRICED_TIERS,
+  GEMINI_GROUNDING_PRICING,
   pricingVersion,
   resolveGeminiRates,
 } from './pricing.js'
-export type { GeminiPricedTier, GeminiTierRates } from './pricing.js'
+export type { GeminiGroundingRate, GeminiPricedTier, GeminiTierRates } from './pricing.js'
 export type {
   GeminiClientLike,
   GeminiCountTokensParams,
@@ -53,6 +57,7 @@ export {
   TRANSPORT_TIMEOUT_BUFFER_MS,
 } from './client.js'
 export { isGeminiCapacityError } from './flex-fallback.js'
+export { GEMINI_INPUT_MIME_TYPES } from './model-limits.js'
 export type {
   GoogleFileHandle,
   GoogleFileStoreOptions,
@@ -67,6 +72,12 @@ export type {
   GeminiCachesClientLike,
 } from './cache-store.js'
 export { GoogleCacheStore } from './cache-store.js'
+export { dropMessagesFromSignatureState } from './thought-signatures.js'
+export type {
+  GoogleSignatureEntry,
+  GoogleSignatureState,
+  GoogleSignedKind,
+} from './thought-signatures.js'
 export { geminiContentToMessages } from './content-to-messages.js'
 export type {
   GeminiContentToMessagesInput,

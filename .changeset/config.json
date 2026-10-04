@@ -1,8 +1,20 @@
 {
   "$schema": "https://unpkg.com/@changesets/config@3.1.4/schema.json",
-  "changelog": "@changesets/cli/changelog",
+  "changelog": "./changelog.mjs",
   "commit": false,
-  "fixed": [],
+  "fixed": [
+    [
+      "@gullabs/core",
+      "@gullabs/google",
+      "@gullabs/xai",
+      "@gullabs/quota",
+      "@gullabs/drizzle",
+      "@gullabs/testing",
+      "@gullabs/claude-cli",
+      "@gullabs/codex-cli",
+      "@gullabs/any-llm"
+    ]
+  ],
   "linked": [],
   "access": "public",
   "baseBranch": "main",

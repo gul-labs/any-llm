@@ -1,28 +1,76 @@
 # Grounded -> Structured on Gemini
 
-The Google adapter admits `googleSearch` plus `output.jsonSchema` on all six
-registered Gemini 3.x models. The 2026-09-26 live probes returned structured
-JSON, but did not return `groundingMetadata` even when prompted to search.
-Treat the combination as an accepted request shape, not proof that Search ran
-or a source of normalized citations. If a workflow needs auditable citations,
-use the two-call recipe below and check the first call's grounding metadata.
+The Google adapter rejects `googleSearch` plus `output.jsonSchema` on every
+registered Gemini model (`structuredOutputWithTools: false` on all six Gemini 3.x
+descriptors) with `bad_request`, before any network call. The error message points
+here. The provider accepts the request shape, but an accepted request is not proof
+that Search ran: the live probes below show models that skipped Search or returned no
+`groundingMetadata` when a schema was attached. The default is the two-call recipe
+below: a grounded call without a schema, then a structured call over its text.
 
-Live re-probe on 2026-10-02 (Developer API, one grounded question per model, with
-`responseSchema` and with `responseJsonSchema`):
+A host that wants one call can opt in with
+`providerOptions.google.allowSchemaWithSearch: true`. The call is then sent as asked, and
+`requireGrounding` is turned on for it (override with `requireGrounding: false`): unless
+`groundingMetadata` with at least one non-empty `webSearchQueries` entry comes back, the call fails
+with a `server` error, reason `grounding_missing`, and the attempt's usage is recorded. With a schema
+attached that error is **not retryable**: the same request misses again (rates below), so a retry
+middleware would pay for every attempt and fail each time. The error is retryable only on a call
+without a schema, which grounded on 4 of 4 captured calls. The measured rates below say how often to
+expect the failure.
 
-| model                    | Search ran with a schema?                        | `groundingMetadata` returned?  |
-| ------------------------ | ------------------------------------------------ | ------------------------------ |
-| `gemini-3.1-pro-preview` | yes                                              | only with `responseJsonSchema` |
-| `gemini-3.8-flash`       | yes (prompt tokens rose from 267 to 3.7k–5.2k)   | no                             |
-| `gemini-3.7-flash`       | probably (prompt tokens rose from 33 to 144–353) | no                             |
-| `gemini-3.6-flash`       | probably (prompt tokens rose from 33 to 216–532) | no                             |
-| `gemini-3.5-flash-lite`  | no (prompt tokens stayed at 33)                  | no                             |
-| `gemini-3.1-flash-lite`  | no on 3 of 4 calls                               | no                             |
+The opt-in exists only for models with a measured negative result (the six Gemini 3.x models). Gemini
+2.5 and Gemma have no capture of schema plus Search, so that combination is rejected there with or
+without the flag; use the two-call recipe.
 
-The same question without a schema returned `groundingMetadata` with four or five search
-queries. The adapter sends `responseSchema`. On the Flash-Lite models an accepted request
-with a schema usually means Search did not run at all, so do not attach a schema to a
-grounded call there. `BACKLOG.md` tracks the two open decisions.
+A filtered candidate (`SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `IMAGE_SAFETY`) with no
+grounding evidence throws `content_filter` (not retryable), not `grounding_missing`.
+
+Every call that sends `googleSearch` reports `usage.details.web_search_requested` and, when the
+response says, `web_search_calls`. The grounding fee is priced on the `tools` lane, and a call that
+ran Search is `cost.confidence: 'estimated'` (ADR-035). Search held in a `cachedContent` cache sends no
+tool in the request: a handle that lists `googleSearch` in `toolKinds` counts as a Search call, and with
+a bare cache name any `groundingMetadata` in the response is taken as evidence that Search ran
+(ADR-044).
+
+A handle that lists `googleSearch` is held to the same schema rule as an inline `googleSearch`: with
+`output.jsonSchema` on a Gemini 3.x model it needs `allowSchemaWithSearch: true` (which turns on
+`requireGrounding`), and Gemini 2.5 and Gemma reject the pair. A bare cache name is not blocked, because
+what the cache holds is unknown and a cache of documents with a schema is an ordinary call. If such a call's
+response reports search queries, it is returned, priced from the queries as `estimated`, with a warning that
+Search ran unchecked under a schema; declare the tool with a handle plus the opt-in, or use the two calls.
+
+## Measured: schema plus Search on Gemini 3.x (live, 2026-10-03)
+
+Four distinct current-events prompts per cell, `responseJsonSchema`, `thinkingLevel: LOW`, Developer
+API. "Metadata with a query" means `groundingMetadata` with at least one `webSearchQueries` entry,
+the only evidence `requireGrounding` accepts. All 48 calls returned HTTP 200 with well-formed
+output. Fixture: `packages/google/src/__fixtures__/grounding-schema-matrix-2026-10-03.json`.
+
+| model                    | no schema: metadata with a query | with schema: metadata with a query | with schema: unexplained prompt-token jump |
+| ------------------------ | -------------------------------- | ---------------------------------- | ------------------------------------------ |
+| `gemini-3.1-pro-preview` | 4 of 4                           | **2 of 4**                         | 2 of 4                                     |
+| `gemini-3.8-flash`       | 4 of 4                           | **0 of 4**                         | 0 of 4                                     |
+| `gemini-3.7-flash`       | 4 of 4                           | **0 of 4**                         | 1 of 4                                     |
+| `gemini-3.6-flash`       | 4 of 4                           | **0 of 4**                         | 4 of 4                                     |
+| `gemini-3.5-flash-lite`  | 4 of 4                           | **0 of 4**                         | 0 of 4                                     |
+| `gemini-3.1-flash-lite`  | 4 of 4                           | **0 of 4**                         | 4 of 4                                     |
+
+The rule for turning the pair on by default was metadata with a query on at least 3 of 4 schema
+calls. No model meets it (the best is 3.1 Pro at 2 of 4), so `structuredOutputWithTools` stays `false`
+everywhere and the combination is opt-in only. With `allowSchemaWithSearch` expect `grounding_missing`
+on most attempts for five of the six models, and that error is not retried: use the two-call recipe.
+
+The prompt-token jump column is not a usable "Search ran" signal. On some models a schema'd call
+shows a several-fold jump in prompt tokens with no metadata (Search probably ran and was not
+reported, so it is billed and invisible); on others a call that did search shows no jump. A control
+("reply with exactly OK" plus `googleSearch` plus a schema) added 262 and 176 prompt tokens on 3.1
+Flash-Lite and 3.8 Flash with zero queries, and nothing on the other four. Only the metadata
+evidence is tested.
+
+Earlier probe (2026-10-02, one question per model, `responseSchema` and `responseJsonSchema`)
+reached the same conclusion: Search ran on 3.1 Pro with a schema, probably on 3.8, 3.7 and 3.6, and
+not on the Flash-Lite models, and only 3.1 Pro returned `groundingMetadata`, and only with
+`responseJsonSchema`.
 
 If you send a grounded call without a schema and want JSON back, say so in the prompt
 ("respond with JSON only, no code fences"). The adapter returns the model's text unchanged;
@@ -32,10 +80,10 @@ The old `googleSearchRetrieval` tool name is not a compatibility alias. Use the
 documented `googleSearch` tool shape or the descriptor schema rejects the
 config.
 
-For citation-sensitive workflows, use two calls:
+For any grounded workflow that needs structured output, make two calls:
 
-1. grounded research;
-2. structured synthesis.
+1. grounded research, with `googleSearch` and no schema;
+2. structured synthesis, with `output.jsonSchema` and no `googleSearch`.
 
 Both attempts flow through the normal sink and keep separate ledger rows.
 
@@ -48,7 +96,7 @@ back into their own workflow tables. The stable first step is a documented recip
 
 ## Call 1: grounded research
 
-```ts
+```ts no-check
 const operationId = 'op-2026-01-research'
 
 const research = await client.generate(
@@ -85,7 +133,11 @@ const research = await client.generate(
 Important outputs from the first call:
 
 - `research.text` — grounded prose you can pass into synthesis;
+- `research.usage.details.web_search_calls` — how many queries the response reports (absent when it
+  does not say); `research.cost?.details.tools` is the priced grounding fee;
 - `research.providerMetadata?.groundingMetadata` — Gemini grounding payload;
+- `research.providerMetadata?.google?.searchEntryPoint` — the Search Suggestions widget Google
+  requires a grounded answer to display;
 - `research.providerMetadata?.promptFeedback` — prompt-level provider feedback;
 - `research.attemptId` — the correlation key for the ledger sidecar pattern: use it as the
   foreign key if you keep a host-owned sidecar row for this attempt (see `docs/ledger.md`).
@@ -119,16 +171,20 @@ function extractGroundingArtifacts(providerMetadata: unknown): GroundingArtifact
 ```
 
 The adapter also projects those chunks onto first-class `result.citations`
-(`{ url, title?, sourceName? }`). Raw `groundingMetadata` stays on
-`providerMetadata`. Empty / unused grounding omits the field.
+(`{ url, title?, sourceName?, cited?, textRange? }`). `cited` says whether a
+`groundingSupports` segment points at the source and `textRange` is the first supported
+span of `result.text` (UTF-16 offsets; Google's UTF-8 byte offsets are converted, and a range that
+does not match the segment's own text is dropped with a warning). Raw
+`groundingMetadata` stays on `providerMetadata` (without `searchEntryPoint`, which is at
+`providerMetadata.google.searchEntryPoint`; render its HTML in a sandboxed iframe). Empty / unused grounding omits the field.
 
-```ts
+```ts no-check
 const citations = research.citations
 ```
 
 ## Call 2: structured synthesis
 
-```ts
+```ts no-check
 const grounding = extractGroundingArtifacts(research.providerMetadata)
 
 const structured = await client.generate(

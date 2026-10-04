@@ -1,27 +1,30 @@
 /**
- * Tests for the overall-timeout (wall-clock ceiling) feature of retryMiddleware.
+ * Tests for how retryMiddleware shares the engine's call deadline.
  *
- * These tests use the injectable `sleep`, `random`, and `now` parameters to
- * exercise deadline logic deterministically without real timers.
+ * The engine puts the end of the logical call's budget on `ctx.deadlineAt`
+ * (on `ctx.clock`'s scale). These tests drive the middleware with a virtual
+ * clock and an injected `sleep`, so every timing assertion is exact.
  *
- * Four invariants verified:
- * (a) Total virtual elapsed time across all attempts + sleeps never exceeds timeoutMs.
- * (b) A retry is refused (throws timeout) once the overall budget is exhausted.
- * (c) Back-off sleep is clamped to the remaining budget so it never overshoots.
- * (d) With no timeoutMs set, the middleware preserves the unlimited-budget retry path.
+ * Invariants verified:
+ * (a) The middleware anchors its budget at the engine's deadline, not at the
+ *     time it was entered, so middleware time before it counts.
+ * (b) It never sleeps into a window shorter than the minimum attempt window,
+ *     and never starts an attempt in one: it rethrows the failed attempt's own
+ *     error (same object, `retryAfterMs` and `cause` intact), never a
+ *     synthetic timeout.
+ * (c) A provider delay is a floor: jitter on top of it is trimmed to fit, the
+ *     delay itself is never shortened.
+ * (d) With no deadline the retry path is unbounded by time.
  *
  * @module
  */
 
 import { describe, it, expect } from 'vitest'
+import { FakeClock } from '@gullabs/testing'
 import { LlmError } from './errors.js'
 import { retryMiddleware } from './retry.js'
 import type { Handler, EngineCtx, ResolvedRequest } from './ports.js'
 import type { LlmResult, Usage } from './types.js'
-
-// ---------------------------------------------------------------------------
-// Shared test fixtures
-// ---------------------------------------------------------------------------
 
 const NOOP_LOGGER = {
   info() {},
@@ -30,12 +33,7 @@ const NOOP_LOGGER = {
   debug() {},
 }
 
-const GOOD_USAGE: Usage = {
-  inputTokens: 10,
-  outputTokens: 5,
-  details: {},
-  raw: null,
-}
+const GOOD_USAGE: Usage = { inputTokens: 10, outputTokens: 5, details: {}, raw: null }
 
 const DUMMY_RESULT: LlmResult = {
   callId: 'c1',
@@ -45,19 +43,34 @@ const DUMMY_RESULT: LlmResult = {
   latencyMs: 0,
   warnings: [],
   text: 'ok',
+  message: { role: 'assistant', parts: [{ kind: 'text', text: 'ok' }] },
+  continuation: 'history',
 }
 
-function makeCtx(): EngineCtx {
+/** The minimum attempt window the middleware enforces (retry.ts). */
+const MIN_WINDOW = 250
+
+/** A virtual clock whose time only moves when a handler or a sleep says so. */
+function makeClock(start = 0): { now: () => number; advance: (ms: number) => void } {
+  let t = start
   return {
-    callId: 'c1',
-    clock: { now: () => 0 },
-    logger: NOOP_LOGGER,
+    now: () => t,
+    advance: (ms) => {
+      t += ms
+    },
   }
 }
 
-/**
- * Makes a ResolvedRequest with the given overall timeoutMs (or no timeout).
- */
+function makeCtx(clock: { now: () => number }, deadlineAt?: number): EngineCtx {
+  return {
+    callId: 'c1',
+    clock,
+    scheduler: new FakeClock(),
+    logger: NOOP_LOGGER,
+    ...(deadlineAt !== undefined ? { deadlineAt } : {}),
+  }
+}
+
 function makeReq(timeoutMs?: number): ResolvedRequest {
   return {
     provider: 'google',
@@ -70,351 +83,307 @@ function makeReq(timeoutMs?: number): ResolvedRequest {
   }
 }
 
-function rateLimited(): LlmError {
-  return new LlmError('Rate limited', { kind: 'rate_limited', retryable: true })
+function rateLimited(retryAfterMs?: number): LlmError {
+  return new LlmError('Rate limited', {
+    kind: 'rate_limited',
+    retryable: true,
+    ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+  })
 }
 
-// ---------------------------------------------------------------------------
-// (a) Total elapsed across N retries never exceeds timeoutMs
-// ---------------------------------------------------------------------------
+/** Records every sleep and advances the virtual clock by it. */
+function makeSleep(clock: { advance: (ms: number) => void }): {
+  calls: number[]
+  sleep: (ms: number) => Promise<void>
+} {
+  const calls: number[] = []
+  return {
+    calls,
+    sleep: async (ms) => {
+      calls.push(ms)
+      clock.advance(ms)
+    },
+  }
+}
 
-describe('retryMiddleware — overall timeout (FIX 1)', () => {
-  it('(a) virtual elapsed never exceeds timeoutMs across multiple attempts', async () => {
-    // Virtual clock: each attempt advances by 100ms, sleep advances by the
-    // requested sleep duration.
-    let virtualTime = 0
-    const now = () => virtualTime
-
-    const sleepCalls: number[] = []
-    const sleep = async (ms: number): Promise<void> => {
-      sleepCalls.push(ms)
-      virtualTime += ms
+describe('retryMiddleware: the engine deadline', () => {
+  it('(a) total virtual time never exceeds the deadline across many attempts', async () => {
+    const clock = makeClock()
+    const { calls, sleep } = makeSleep(clock)
+    const original = rateLimited()
+    const handler: Handler = async () => {
+      clock.advance(100)
+      throw original
     }
-
-    const handler: Handler = async (_req) => {
-      virtualTime += 100 // each attempt "takes" 100 ms
-      throw rateLimited()
-    }
-
-    // Budget: 1000 ms. With 100 ms per attempt and default backoff ~500 ms (rand=1),
-    // the middleware must stop before the virtual clock passes 1000 ms.
     const mw = retryMiddleware(
       { maxAttempts: 20, baseDelayMs: 500 },
-      { sleep, random: () => 1, now },
+      { sleep, random: () => 1 },
     )
 
     const err = await mw
-      .intercept(makeReq(1000), makeCtx(), handler)
-      .catch((e: unknown) => e as LlmError)
+      .intercept(makeReq(1000), makeCtx(clock, 1000), handler)
+      .catch((e: unknown) => e)
 
-    // The middleware must have stopped due to budget exhaustion.
-    expect(err).toBeInstanceOf(LlmError)
-
-    // Total virtual time must never have exceeded the budget by more than one
-    // attempt's worth (the check happens before each attempt, so at most one
-    // "extra" 100 ms attempt can run after the last sleep).
-    expect(virtualTime).toBeLessThanOrEqual(1000 + 100)
+    // t=100 attempt 1; sleep 500 (fits: 1000-100-250 = 650); t=700 attempt 2;
+    // the next 1000 ms back-off leaves no window (1000-700-250 = 50): stop.
+    expect(calls).toEqual([500])
+    expect(clock.now()).toBe(700)
+    expect(err).toBe(original)
   })
 
-  // ---------------------------------------------------------------------------
-  // (b) A retry is refused once the budget is exhausted
-  // ---------------------------------------------------------------------------
-
-  it('(b) throws timeout error when budget is exhausted before next attempt', async () => {
-    // Each attempt takes 200 ms. Budget is 300 ms.
-    // Attempt 1 runs → virtualTime = 200. remainingAfter = 100. sleep(capped) → virtualTime = ~300.
-    // Before attempt 2: remaining = 300 - (≥300) ≤ 0 → throw timeout.
-    let virtualTime = 0
-    const now = () => virtualTime
-
-    const sleep = async (ms: number): Promise<void> => {
-      virtualTime += ms
-    }
-
-    let attemptCount = 0
+  it('(a) anchors at the engine deadline: time spent before the middleware counts', async () => {
+    // A middleware ahead of retry used 600 ms of a 1000 ms call. The clock is
+    // already at 600 when retry is entered; its own entry time would say 1000
+    // ms remain, the engine says 400.
+    const clock = makeClock(600)
+    const { calls, sleep } = makeSleep(clock)
+    const original = rateLimited()
     const handler: Handler = async () => {
-      attemptCount++
-      virtualTime += 200
-      throw rateLimited()
+      clock.advance(100)
+      throw original
     }
-
     const mw = retryMiddleware(
-      { maxAttempts: 10, baseDelayMs: 50 },
-      { sleep, random: () => 1, now },
+      { maxAttempts: 5, baseDelayMs: 500 },
+      { sleep, random: () => 1 },
     )
 
-    // Either 'timeout' (pre-attempt check) or 'rate_limited' (post-attempt check)
-    // proves the budget is enforced; both are valid depending on exact timing.
-    await expect(mw.intercept(makeReq(300), makeCtx(), handler)).rejects.toMatchObject({
-      kind: expect.stringMatching(/^(timeout|rate_limited)$/),
-    })
+    const err = await mw
+      .intercept(makeReq(1000), makeCtx(clock, 1000), handler)
+      .catch((e: unknown) => e)
 
-    // Only a small number of attempts should have run.
-    expect(attemptCount).toBeLessThanOrEqual(3)
+    // t=700 after attempt 1; sleeping 500 would leave 1000-1200 < 250: stop.
+    expect(calls).toEqual([])
+    expect(err).toBe(original)
   })
 
-  it('(b) throws LlmError with kind=timeout when pre-attempt check exhausts budget', async () => {
-    // Budget of exactly 100 ms. First attempt takes 100 ms exactly.
-    // After attempt 1: remainingAfter = 0. Post-attempt check throws rate_limited.
-    // No sleep is issued. Before attempt 2 (if we tried): remaining = 0 → timeout.
-    // But the post-attempt check throws first, so we get rate_limited.
-    // To guarantee we get a 'timeout' pre-attempt: set budget = 0.
-    let virtualTime = 100 // already past budget from the start
-
-    // Budget is 100, but start = 100 (nowFn() returns 100 at entry), so
-    // remaining = 100 - (100 - 100) = 100 on the first check — still positive.
-    // Let's advance time so the FIRST pre-check fails.
-    let capturedStart: number | undefined
-    let callCount = 0
-    const nowWithCapture = () => {
-      const t = virtualTime
-      callCount++
-      // After the first call (capturing start), advance time past the budget
-      if (callCount === 1) capturedStart = t
-      return t
+  it('(a) a provider delay that fits a budget measured from its own entry but not the engine budget is not slept', async () => {
+    const clock = makeClock(500)
+    const { calls, sleep } = makeSleep(clock)
+    const original = rateLimited(700)
+    const handler: Handler = async () => {
+      throw original
     }
+    const mw = retryMiddleware({ maxAttempts: 3 }, { sleep, random: () => 0 })
 
-    virtualTime = 0
-    const mw2 = retryMiddleware(
-      { maxAttempts: 5 },
+    const err = await mw
+      .intercept(makeReq(1000), makeCtx(clock, 1000), handler)
+      .catch((e: unknown) => e)
+
+    // 700 ms fits in a fresh 1000 ms but 500 ms of the call is gone: 500 left.
+    expect(calls).toEqual([])
+    expect(err).toBe(original)
+    expect((err as LlmError).retryAfterMs).toBe(700)
+  })
+
+  it('(b) a back-off that leaves less than the minimum window rethrows the attempt error at once', async () => {
+    const clock = makeClock()
+    const { calls, sleep } = makeSleep(clock)
+    const original = rateLimited()
+    const handler: Handler = async () => {
+      clock.advance(100)
+      throw original
+    }
+    // After attempt 1: 350 ms left; a 500 ms back-off cannot fit.
+    const mw = retryMiddleware(
+      { maxAttempts: 5, baseDelayMs: 500 },
+      { sleep, random: () => 1 },
+    )
+
+    const err = await mw
+      .intercept(makeReq(450), makeCtx(clock, 450), handler)
+      .catch((e: unknown) => e)
+
+    expect(err).toBe(original)
+    expect(calls).toEqual([])
+    expect(clock.now()).toBe(100)
+  })
+
+  it('(b) the boundary: a delay that leaves exactly the minimum window is slept, one more ms is not', async () => {
+    for (const [delay, sleeps] of [
+      [500, [500]],
+      [501, []],
+    ] as const) {
+      const clock = makeClock()
+      const { calls, sleep } = makeSleep(clock)
+      const handler: Handler = async () => {
+        throw rateLimited(delay)
+      }
+      const mw = retryMiddleware({ maxAttempts: 2 }, { sleep, random: () => 0 })
+      // Attempt 1 fails at t=0; a window of exactly MIN_WINDOW must remain.
+      await mw
+        .intercept(makeReq(), makeCtx(clock, 500 + MIN_WINDOW), handler)
+        .catch(() => {})
+      expect(calls).toEqual(sleeps)
+    }
+  })
+
+  it('(b) no attempt starts in a window shorter than the minimum: the previous error is rethrown', async () => {
+    // The sleep overshoots (a timer that fires late): 200 ms are left.
+    const clock = makeClock()
+    const original = rateLimited()
+    let attempts = 0
+    const handler: Handler = async () => {
+      attempts++
+      clock.advance(10)
+      throw original
+    }
+    const mw = retryMiddleware(
+      { maxAttempts: 5, baseDelayMs: 100 },
       {
-        sleep: async (_ms) => {
-          virtualTime += 200 // sleeping advances time past budget
+        sleep: async () => {
+          clock.advance(900)
         },
-        random: () => 0,
-        now: nowWithCapture,
+        random: () => 0.5,
       },
     )
 
-    let attemptCount2 = 0
-    const handler2: Handler = async () => {
-      attemptCount2++
-      virtualTime += 50 // each attempt takes 50ms
-      throw rateLimited()
-    }
+    const err = await mw
+      .intercept(makeReq(1100), makeCtx(clock, 1100), handler)
+      .catch((e: unknown) => e)
 
-    // Budget = 100ms. Attempt 1: takes 50ms (virtualTime=50). remainingAfter = 50.
-    // sleep(min(0, 50)) → sleep(0) with rand=0 and baseDelayMs=500: delay=0.
-    // Actually with rand=0: delay = ceiling * 0 = 0. virtualTime stays 50.
-    // Attempt 2: remaining = 100 - 50 = 50. Takes 50ms. virtualTime = 100. remainingAfter = 0.
-    // Post check: remainingAfter = 0 <= 0 → throw rate_limited.
-    const err2 = await mw2
-      .intercept(makeReq(100), makeCtx(), handler2)
-      .catch((e: unknown) => e as LlmError)
-
-    expect(err2).toBeInstanceOf(LlmError)
-    expect(attemptCount2).toBeLessThanOrEqual(5)
-    expect(capturedStart).toBeDefined()
-    void capturedStart // used
+    expect(attempts).toBe(1)
+    expect(err).toBe(original)
+    expect((err as LlmError).kind).toBe('rate_limited')
   })
 
-  // ---------------------------------------------------------------------------
-  // (c) Back-off is clamped to the remaining budget
-  // ---------------------------------------------------------------------------
-
-  it('(c) back-off sleep is clamped to remaining budget', async () => {
-    // Budget: 350 ms. Attempt 1 takes 100 ms → remainingAfter = 250 ms.
-    // Unclamped backoff with rand=1, baseDelayMs=500 → 500 ms.
-    // Clamped: min(500, 250) = 250.
-    let virtualTime = 0
-    const now = () => virtualTime
-
-    const sleepCalls: number[] = []
-    const sleep = async (ms: number): Promise<void> => {
-      sleepCalls.push(ms)
-      virtualTime += ms
-    }
-
+  it('(b) a window of 9 ms after three failed attempts is not dispatched into', async () => {
+    const clock = makeClock()
+    const original = rateLimited()
+    let attempts = 0
     const handler: Handler = async () => {
-      virtualTime += 100
-      throw rateLimited()
+      attempts++
+      clock.advance(60)
+      throw original
     }
-
     const mw = retryMiddleware(
-      { maxAttempts: 5, baseDelayMs: 500 },
-      { sleep, random: () => 1, now },
+      { maxAttempts: 10, baseDelayMs: 0 },
+      { sleep: async () => {}, random: () => 0 },
     )
 
-    await mw.intercept(makeReq(350), makeCtx(), handler).catch(() => {})
+    const err = await mw
+      .intercept(makeReq(200), makeCtx(clock, 200), handler)
+      .catch((e: unknown) => e)
 
-    // The first sleep should be clamped to at most 250 ms (remaining after attempt 1).
-    expect(sleepCalls.length).toBeGreaterThan(0)
-    expect(sleepCalls[0]).toBeLessThanOrEqual(250)
-    // And it must be 250 specifically (min(500, 250) with rand=1)
-    expect(sleepCalls[0]).toBe(250)
+    // 200 ms budget, each attempt 60 ms: after attempt 1, 140 left (< 250).
+    expect(attempts).toBe(1)
+    expect(err).toBe(original)
   })
 
-  it('(c) back-off clamp uses remaining after the attempt, not before', async () => {
-    // Budget: 1000 ms. Attempt takes 800 ms → remainingAfter = 200 ms.
-    // Unclamped backoff = 500 ms. Clamped = min(500, 200) = 200.
-    let virtualTime = 0
-    const now = () => virtualTime
-
-    const sleepCalls: number[] = []
-    const sleep = async (ms: number): Promise<void> => {
-      sleepCalls.push(ms)
-      virtualTime += ms
-    }
-
-    const handler: Handler = async () => {
-      virtualTime += 800
-      throw rateLimited()
-    }
-
+  it("(b) the rethrown error is the attempt's own, with cause and retryAfterMs intact", async () => {
+    const clock = makeClock()
+    const cause = new Error('upstream detail')
+    const original = new LlmError('Overloaded', {
+      kind: 'server',
+      retryable: true,
+      httpStatus: 503,
+      retryAfterMs: 20_000,
+      cause,
+    })
     const mw = retryMiddleware(
-      { maxAttempts: 5, baseDelayMs: 500 },
-      { sleep, random: () => 1, now },
+      { maxAttempts: 3 },
+      { sleep: async () => {}, random: () => 0 },
     )
 
-    await mw.intercept(makeReq(1000), makeCtx(), handler).catch(() => {})
+    const err = await mw
+      .intercept(makeReq(5_000), makeCtx(clock, 5_000), async () => {
+        throw original
+      })
+      .catch((e: unknown) => e)
 
-    expect(sleepCalls.length).toBeGreaterThan(0)
-    expect(sleepCalls[0]).toBe(200)
+    expect(err).toBe(original)
+    expect((err as LlmError).cause).toBe(cause)
+    expect((err as LlmError).retryAfterMs).toBe(20_000)
   })
 
-  // ---------------------------------------------------------------------------
-  // (d) With no timeoutMs, the middleware keeps the unlimited-budget retry path.
-  // ---------------------------------------------------------------------------
-
-  it('(d) with no timeoutMs, retries exactly maxAttempts times', async () => {
-    let attemptCount = 0
+  it('(c) jitter on a provider delay is trimmed to the sleepable time; the delay itself is not', async () => {
+    const clock = makeClock()
+    const { calls, sleep } = makeSleep(clock)
+    let n = 0
     const handler: Handler = async () => {
-      attemptCount++
+      n++
+      if (n === 1) throw rateLimited(1_000)
+      return DUMMY_RESULT
+    }
+    // random=1 would add 100 ms (10 % of 1 s). Only 50 ms of slack remain.
+    const mw = retryMiddleware({ maxAttempts: 2 }, { sleep, random: () => 1 })
+
+    await mw.intercept(makeReq(), makeCtx(clock, 1_000 + MIN_WINDOW + 50), handler)
+
+    expect(calls).toEqual([1_050])
+  })
+
+  it('(c) a back-off that fits sleeps its full length', async () => {
+    const clock = makeClock()
+    const { calls, sleep } = makeSleep(clock)
+    const handler: Handler = async () => {
+      clock.advance(100)
       throw rateLimited()
     }
+    const mw = retryMiddleware(
+      { maxAttempts: 3, baseDelayMs: 500 },
+      { sleep, random: () => 0.2 },
+    )
 
+    await mw.intercept(makeReq(), makeCtx(clock, 1000), handler).catch(() => {})
+
+    expect(calls[0]).toBe(100)
+  })
+
+  it('(d) with no deadline, retries exactly maxAttempts times', async () => {
+    let attempts = 0
     const sleepCalls: number[] = []
-    const sleep = async (ms: number): Promise<void> => {
-      sleepCalls.push(ms)
+    const handler: Handler = async () => {
+      attempts++
+      throw rateLimited()
     }
-
+    const clock = makeClock()
     const mw = retryMiddleware(
       { maxAttempts: 3, baseDelayMs: 100 },
-      { sleep, random: () => 1 }, // no `now` injected
+      {
+        sleep: async (ms) => {
+          sleepCalls.push(ms)
+        },
+        random: () => 1,
+      },
     )
 
-    // makeReq() with no timeoutMs arg → no config.timeoutMs
-    await expect(mw.intercept(makeReq(), makeCtx(), handler)).rejects.toMatchObject({
+    await expect(mw.intercept(makeReq(), makeCtx(clock), handler)).rejects.toMatchObject({
       kind: 'rate_limited',
     })
 
-    expect(attemptCount).toBe(3) // exactly maxAttempts attempts
-    expect(sleepCalls).toHaveLength(2) // 2 sleeps between 3 attempts
+    expect(attempts).toBe(3)
+    expect(sleepCalls).toHaveLength(2)
   })
 
-  it('(d) with no timeoutMs, succeeds on third attempt', async () => {
-    let attemptCount = 0
-    const handler: Handler = async () => {
-      attemptCount++
-      if (attemptCount < 3) throw rateLimited()
+  it('(d) with no deadline a huge provider delay up to maxDelayMs is slept in full', async () => {
+    const clock = makeClock()
+    const { calls, sleep } = makeSleep(clock)
+    let n = 0
+    const mw = retryMiddleware({ maxAttempts: 2 }, { sleep, random: () => 0 })
+    await mw.intercept(makeReq(), makeCtx(clock), async () => {
+      n++
+      if (n === 1) throw rateLimited(59_000)
       return DUMMY_RESULT
-    }
+    })
+    expect(calls).toEqual([59_000])
+  })
 
+  it('leaves config.timeoutMs as the caller set it on every attempt', async () => {
+    const clock = makeClock()
+    const seen: Array<number | undefined> = []
+    const handler: Handler = async (req) => {
+      seen.push(req.config.timeoutMs)
+      clock.advance(100)
+      throw rateLimited()
+    }
     const mw = retryMiddleware(
-      { maxAttempts: 3, baseDelayMs: 100 },
+      { maxAttempts: 5, baseDelayMs: 0 },
       { sleep: async () => {}, random: () => 0 },
     )
 
-    const result = await mw.intercept(makeReq(), makeCtx(), handler)
-    expect(result.text).toBe('ok')
-    expect(attemptCount).toBe(3)
-  })
+    await mw.intercept(makeReq(1000), makeCtx(clock, 1000), handler).catch(() => {})
 
-  it('(d) with no timeoutMs, per-attempt timeoutMs on request is passed through unchanged', async () => {
-    // With no timeoutMs on the original req, the request must be forwarded as-is.
-    // This means if a different mechanism set timeoutMs on the inner req, it stays.
-    let receivedTimeoutMs: number | undefined = undefined
-
-    const handler: Handler = async (req) => {
-      receivedTimeoutMs = req.config.timeoutMs
-      throw rateLimited()
-    }
-
-    const reqWithNoTimeout = makeReq() // no timeoutMs
-    const mw = retryMiddleware(
-      { maxAttempts: 1 },
-      { sleep: async () => {}, random: () => 0 },
-    )
-
-    await mw.intercept(reqWithNoTimeout, makeCtx(), handler).catch(() => {})
-    expect(receivedTimeoutMs).toBeUndefined()
-  })
-
-  // ---------------------------------------------------------------------------
-  // Per-attempt timeoutMs shrinks with each attempt
-  // ---------------------------------------------------------------------------
-
-  it('per-attempt attemptTimeoutMs passed to next() decreases with elapsed time', async () => {
-    let virtualTime = 0
-    const now = () => virtualTime
-
-    const receivedAttemptTimeouts: (number | undefined)[] = []
-    const receivedConfigTimeouts: (number | undefined)[] = []
-    const handler: Handler = async (req) => {
-      receivedAttemptTimeouts.push(req.attemptTimeoutMs)
-      receivedConfigTimeouts.push(req.config.timeoutMs)
-      virtualTime += 200 // each attempt "takes" 200ms
-      throw rateLimited()
-    }
-
-    const sleep = async (ms: number): Promise<void> => {
-      virtualTime += ms
-    }
-
-    const mw = retryMiddleware(
-      { maxAttempts: 5, baseDelayMs: 50 },
-      { sleep, random: () => 0, now }, // rand=0 → sleep=0
-    )
-
-    const originalReq = makeReq(1000)
-    await mw.intercept(originalReq, makeCtx(), handler).catch(() => {})
-
-    // (a) attemptTimeoutMs should decrease with each attempt (shrinking budget).
-    expect(receivedAttemptTimeouts.length).toBeGreaterThan(1)
-    for (let i = 1; i < receivedAttemptTimeouts.length; i++) {
-      const prev = receivedAttemptTimeouts[i - 1]
-      const curr = receivedAttemptTimeouts[i]
-      if (prev !== undefined && curr !== undefined) {
-        expect(curr).toBeLessThan(prev)
-      }
-    }
-
-    // (b) config.timeoutMs must remain the ORIGINAL caller value across all attempts —
-    // the retry middleware must NOT mutate it.
-    for (const t of receivedConfigTimeouts) {
-      expect(t).toBe(1000)
-    }
-  })
-
-  it('config.timeoutMs remains original caller value after retries (not shrunk budget)', async () => {
-    const ORIGINAL_TIMEOUT = 500
-    let virtualTime = 0
-    const now = () => virtualTime
-
-    const receivedConfigTimeouts: number[] = []
-    const handler: Handler = async (req) => {
-      if (req.config.timeoutMs !== undefined) {
-        receivedConfigTimeouts.push(req.config.timeoutMs)
-      }
-      virtualTime += 100 // each attempt takes 100ms
-      throw rateLimited()
-    }
-
-    const sleep = async (ms: number): Promise<void> => {
-      virtualTime += ms
-    }
-
-    const mw = retryMiddleware(
-      { maxAttempts: 5, baseDelayMs: 50 },
-      { sleep, random: () => 0, now },
-    )
-
-    await mw.intercept(makeReq(ORIGINAL_TIMEOUT), makeCtx(), handler).catch(() => {})
-
-    // Every attempt must see the original timeoutMs — not a shrunk remaining budget.
-    expect(receivedConfigTimeouts.length).toBeGreaterThan(0)
-    for (const t of receivedConfigTimeouts) {
-      expect(t).toBe(ORIGINAL_TIMEOUT)
-    }
+    expect(seen.length).toBeGreaterThan(1)
+    for (const t of seen) expect(t).toBe(1000)
   })
 })

@@ -1,10 +1,23 @@
 /**
  * Unique Gemini toolCallId allocation.
  *
- * Provider-supplied functionCall / functionResponse ids are reserved first so
- * fallbacks of the form `call_${name}_${n}` never collide with them — even
- * when the provider id appears after an id-less sibling.
+ * Gemini does not always return a `functionCall.id` (the live capture shows the
+ * Developer API doing so, `call_<number>`, but a response may omit it). When it
+ * does not, the library synthesizes `anyllm_call_<name>_<n>`. A synthesized id
+ * is library bookkeeping: it is never sent to Gemini (pairing of a response to
+ * its call is by name and order, which is what Gemini documents), so it cannot
+ * confuse the API, and it is allocated so it is unique among every id already
+ * in the request's history. Provider-supplied ids are reserved first so a
+ * fallback never collides with them, even when the provider id appears after an
+ * id-less sibling.
  */
+
+const SYNTHESIZED_PREFIX = 'anyllm_call_'
+
+/** Whether `id` was synthesized by the library (and so must not be sent to Gemini). */
+export function isSynthesizedToolCallId(id: string): boolean {
+  return id.startsWith(SYNTHESIZED_PREFIX)
+}
 
 /** Collects non-empty provider-supplied ids so fallbacks skip them. */
 export function reserveProviderToolCallIds(
@@ -18,12 +31,12 @@ export function reserveProviderToolCallIds(
 }
 
 /**
- * Next `call_${toolName}_${n}` that is not in `reserved`.
+ * Next `anyllm_call_${toolName}_${n}` that is not in `reserved`.
  *
  * `counterKey` lets functionCall vs functionResponse keep independent
  * sequences so two id-less pairs of the same name still line up.
  */
-export function nextFallbackToolCallId(
+function nextFallbackToolCallId(
   toolName: string,
   counters: Map<string, number>,
   reserved: Set<string>,
@@ -33,7 +46,7 @@ export function nextFallbackToolCallId(
   let id: string
   do {
     n += 1
-    id = `call_${toolName}_${n}`
+    id = `${SYNTHESIZED_PREFIX}${toolName}_${n}`
   } while (reserved.has(id))
   counters.set(counterKey, n)
   return id

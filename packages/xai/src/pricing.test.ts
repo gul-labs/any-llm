@@ -14,6 +14,7 @@ import type { Usage } from '@gullabs/core'
 import {
   computeXaiCost,
   selectXaiRates,
+  unpricedXaiToolCounters,
   xaiPricingSource,
   xaiPricingVersion,
   XAI_PRICING,
@@ -551,5 +552,166 @@ describe('computeXaiCost — tool lanes (live-pinned 2026-08-24)', () => {
     const cost = computeXaiCost('grok-4.5', usage)
     expect(cost.details.tools).toBe(5_000)
     expect(cost.confidence).toBe('exact')
+  })
+})
+
+describe('Cost.providerReported (cost_in_usd_ticks, 1 tick = 1e-10 USD)', () => {
+  const base = { inputTokens: 1000, outputTokens: 100, raw: null }
+
+  it('converts ticks to whole µUSD with the same rounding as the priced lanes', () => {
+    const cost = computeXaiCost('grok-4.5', {
+      ...base,
+      details: { cost_in_usd_ticks: 246_704_000 },
+    })
+    expect(cost.providerReported).toEqual({ microUsd: 24_670 })
+    const half = computeXaiCost('grok-4.5', {
+      ...base,
+      details: { cost_in_usd_ticks: 15_000 },
+    })
+    expect(half.providerReported).toEqual({ microUsd: 2 })
+    expect(
+      computeXaiCost('grok-4.5', { ...base, details: { cost_in_usd_ticks: 14_999 } })
+        .providerReported,
+    ).toEqual({ microUsd: 1 })
+  })
+
+  it('never replaces the snapshot price', () => {
+    const cost = computeXaiCost('grok-4.5', {
+      ...base,
+      details: { cost_in_usd_ticks: 999_000_000 },
+    })
+    expect(cost.microUsd).toBe(2_000 + 600)
+    expect(cost.providerReported).toEqual({ microUsd: 99_900 })
+  })
+
+  it.each([[undefined], [-1], [Number.NaN], [Number.POSITIVE_INFINITY]])(
+    'is absent when ticks are %s',
+    (ticks) => {
+      const details: Record<string, number> =
+        ticks === undefined ? {} : { cost_in_usd_ticks: ticks }
+      expect(
+        computeXaiCost('grok-4.5', { ...base, details }).providerReported,
+      ).toBeUndefined()
+    },
+  )
+
+  it('rides on a call the snapshot cannot price, so a host can still use the total', () => {
+    const unknown = computeXaiCost('grok-9', {
+      ...base,
+      details: { cost_in_usd_ticks: 50_000_000 },
+    })
+    expect(unknown.microUsd).toBeNull()
+    expect(unknown.providerReported).toEqual({ microUsd: 5_000 })
+    const missingCounter = computeXaiCost('grok-4.5', {
+      ...base,
+      details: {
+        server_tools_missing: 1,
+        server_tools_requested: 1,
+        cost_in_usd_ticks: 80_000_000,
+      },
+    })
+    expect(missingCounter.microUsd).toBeNull()
+    expect(missingCounter.providerReported).toEqual({ microUsd: 8_000 })
+  })
+})
+
+describe('server tool counters are classified by an explicit table', () => {
+  const base = { inputTokens: 1000, outputTokens: 0, raw: null }
+
+  it.each([
+    'code_interpreter_calls',
+    'file_search_calls',
+    'document_search_calls',
+    'image_generation_calls',
+  ])(
+    '%s > 0 is a billed-per-use tool with no rate here: estimated, not exact',
+    (counter) => {
+      const cost = computeXaiCost('grok-4.5', {
+        ...base,
+        details: { server_tools_requested: 1, web_search_calls: 1, [counter]: 2 },
+      })
+      expect(cost.confidence).toBe('estimated')
+      // The priced lanes are still reported; the unpriced fee is simply absent.
+      expect(cost.details.tools).toBe(5_000)
+      expect(cost.microUsd).not.toBeNull()
+    },
+  )
+
+  it('mcp_calls is token-only on xAI: a non-zero count stays exact and is not listed', () => {
+    const usage = {
+      ...base,
+      details: { server_tools_requested: 1, web_search_calls: 1, mcp_calls: 3 },
+    }
+    const cost = computeXaiCost('grok-4.5', usage)
+    expect(cost.confidence).toBe('exact')
+    expect(cost.details.tools).toBe(5_000)
+    expect(unpricedXaiToolCounters(usage)).toEqual([])
+    // The audit's repro: MCP plus an image-understanding style counter in the
+    // nested object that xAI returns.
+    const nested = {
+      ...base,
+      details: { mcp_calls: 3 },
+      raw: { server_side_tool_usage_details: { mcp_calls: 3 } },
+    }
+    expect(computeXaiCost('grok-4.5', nested).confidence).toBe('exact')
+  })
+
+  it('a counter the table does not know is estimated when non-zero, whatever its suffix', () => {
+    const raw = {
+      server_side_tool_usage_details: { a_future_tool_calls: 2, brand_new: 1 },
+    }
+    const usage = { ...base, details: { a_future_tool_calls: 2, brand_new: 1 }, raw }
+    expect(computeXaiCost('grok-4.5', usage).confidence).toBe('estimated')
+    expect(unpricedXaiToolCounters(usage)).toEqual(['a_future_tool_calls', 'brand_new'])
+    // Zero is not usage.
+    const zero = {
+      ...base,
+      details: { a_future_tool_calls: 0 },
+      raw: { server_side_tool_usage_details: { a_future_tool_calls: 0 } },
+    }
+    expect(computeXaiCost('grok-4.5', zero).confidence).toBe('exact')
+  })
+
+  it('a usage field outside the tool counters object is never mistaken for a tool counter', () => {
+    const usage = {
+      ...base,
+      details: { num_sources_used: 4, something_calls: 9, cost_in_usd_ticks: 10_000 },
+      raw: { num_sources_used: 4, server_side_tool_usage_details: {} },
+    }
+    expect(unpricedXaiToolCounters(usage)).toEqual([])
+    expect(computeXaiCost('grok-4.5', usage).confidence).toBe('exact')
+  })
+
+  it('zero counters, the priced web counter and the superseded x_search_calls stay exact', () => {
+    const cost = computeXaiCost('grok-4.5', {
+      ...base,
+      details: {
+        server_tools_requested: 1,
+        web_search_calls: 3,
+        x_search_calls: 4,
+        x_posts_fetched: 0,
+        x_users_fetched: 0,
+        code_interpreter_calls: 0,
+        file_search_calls: 0,
+        mcp_calls: 0,
+      },
+    })
+    expect(cost.confidence).toBe('exact')
+  })
+
+  it('unpricedXaiToolCounters names exactly the non-zero counters with no rate here', () => {
+    expect(
+      unpricedXaiToolCounters({
+        ...base,
+        details: {
+          web_search_calls: 2,
+          x_search_calls: 1,
+          mcp_calls: 3,
+          file_search_calls: 0,
+          code_interpreter_calls: 1,
+          input: 10,
+        },
+      }),
+    ).toEqual(['code_interpreter_calls'])
   })
 })

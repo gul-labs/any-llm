@@ -126,3 +126,20 @@ describe('codexCliRegistry', () => {
     expect(result?.issues?.length).toBeGreaterThan(0)
   })
 })
+
+describe('codex-cli limits and media (docs read 2026-10-03)', () => {
+  it('states the 1,050,000-token window and 128,000 output, and admits no media', () => {
+    for (const d of codexCliModelDescriptors) {
+      expect(d.limits).toEqual({ contextWindow: 1_050_000, maxOutputTokens: 128_000 })
+      expect(d.capabilities?.inputMimeTypes).toEqual([])
+    }
+  })
+})
+
+describe('codex-cli configKeys', () => {
+  it('lists reasoning and timeoutMs on every model', () => {
+    for (const d of codexCliModelDescriptors) {
+      expect(d.configKeys).toEqual(['reasoning', 'timeoutMs'])
+    }
+  })
+})

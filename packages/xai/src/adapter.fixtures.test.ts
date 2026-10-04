@@ -18,12 +18,12 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
-import { createClient } from '@gullabs/core'
-import type { AdapterCtx, JsonValue, ResolvedRequest } from '@gullabs/core'
+import { assertJsonSchemaProfile, createClient } from '@gullabs/core'
+import type { AdapterCtx, JsonValue, ResolvedRequest, Usage } from '@gullabs/core'
 import { makeFakeXai, RecordingSink } from '@gullabs/testing'
 import { xaiAdapter, classifyXaiError } from './adapter.js'
 import type { XaiReplayState } from './client.js'
-import { assertXaiOutputJsonSchema } from './output-schema.js'
+import { XAI_JSON_SCHEMA_PROFILE } from './json-schema.js'
 import { computeXaiCost, xaiPricingSource } from './pricing.js'
 import {
   grok45ModelDescriptor,
@@ -541,7 +541,38 @@ describe('fixture: 17-web-search', () => {
     )
     expect(result.citations?.some((c) => c.url.includes('docs.x.ai'))).toBe(true)
     expect(result.usage.details.web_search_calls).toBe(1)
+    expect(result.usage.details.web_search_requested).toBe(1)
     expect(result.usage.details.server_tools_requested).toBe(1)
+  })
+
+  it('drops the numeric marker title and gives the inline marker as the text range', async () => {
+    const fixture = loadFixture<FixtureCall>('17-web-search.json')
+    const result = await xaiAdapter({
+      client: makeFakeXai(fixture.body as never),
+    }).run(
+      {
+        provider: 'xai',
+        model: 'grok-4.6',
+        messages: [{ role: 'user', parts: [{ kind: 'text', text: 'search' }] }],
+        config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
+        modelDescriptor: grok46ModelDescriptor,
+      },
+      {
+        auth: { apiKey: 'test-key' },
+        logger: { info() {}, warn() {}, error() {}, debug() {} },
+      },
+    )
+    // The live annotation is `title: "1"`, start 92, end 116: the title names
+    // nothing, and the range is the inline `[[1]](url)` marker.
+    expect(result.citations).toEqual([
+      {
+        url: 'https://docs.x.ai',
+        sourceName: 'docs.x.ai',
+        cited: true,
+        textRange: { start: 92, end: 116 },
+      },
+    ])
+    expect(result.text?.slice(92, 116)).toBe('[[1]](https://docs.x.ai)')
   })
 })
 
@@ -601,7 +632,7 @@ describe('fixture: 19-x-search (pre-2026-09-21 billing policy)', () => {
   })
 })
 
-describe('fixtures: P-X1 live X Search item billing (2026-09-26)', () => {
+describe('fixtures: live X Search item billing (2026-09-26)', () => {
   it.each([
     ['26-x-posts.json', 10, 0, 1_038_920_000],
     ['27-x-users.json', 0, 12, 1_476_220_000],
@@ -636,7 +667,7 @@ describe('fixtures: P-X1 live X Search item billing (2026-09-26)', () => {
   )
 })
 
-describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
+describe('fixture: grok-4.7 encrypted reasoning replay (2026-09-26)', () => {
   it('replays a live assistant message and web-search item on the next turn', async () => {
     const fixture = loadFixture<{
       request: {
@@ -790,7 +821,7 @@ describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
     )
     expect(second.text).toBe('The result is 5.')
     expect((wireClient.calls[1] as { input: unknown[] }).input).toEqual([
-      ...(first.transientProviderState as unknown as XaiReplayState).input,
+      ...(first.transientProviderState as unknown as XaiReplayState).xai.input,
       { type: 'function_call_output', call_id: call!.toolCallId, output: '5' },
     ])
     expect(sink.records).toHaveLength(2)
@@ -840,7 +871,7 @@ describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
       FAKE_CTX,
     )
     const replay = firstResult.transientProviderState as unknown as XaiReplayState
-    expect(replay.input.slice(1)).toEqual(originalOutput)
+    expect(replay.xai.input.slice(1)).toEqual(originalOutput)
     expect(JSON.stringify(firstResult.providerMetadata)).not.toContain(
       'encrypted_content',
     )
@@ -882,11 +913,11 @@ describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
           },
         ],
       },
-      ...replay.input.slice(1),
+      ...replay.xai.input.slice(1),
       { type: 'function_call_output', call_id: call!.toolCallId, output: '5' },
     ])
     expect(
-      (secondResult.transientProviderState as unknown as XaiReplayState).input,
+      (secondResult.transientProviderState as unknown as XaiReplayState).xai.input,
     ).toEqual([...wire.input, ...(fixture.second.body['output'] as unknown[])])
 
     const nextState = secondResult.transientProviderState as unknown as XaiReplayState
@@ -920,7 +951,10 @@ describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
     )
     expect(thirdResult.text).toContain('sum of 2 and 3')
     const thirdWire = thirdClient.calls[0] as { input: unknown[]; tools?: unknown }
-    expect(thirdWire.input).toEqual([...nextState.input, thirdFixture.request.next_input])
+    expect(thirdWire.input).toEqual([
+      ...nextState.xai.input,
+      thirdFixture.request.next_input,
+    ])
     expect(thirdWire.input).toHaveLength(thirdFixture.request.followup_input_length)
     expect(
       createHash('sha256').update(JSON.stringify(thirdWire.input)).digest('hex'),
@@ -958,7 +992,7 @@ describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
       FAKE_CTX,
     )
     const state = first.transientProviderState as unknown as XaiReplayState
-    expect(state.input.slice(1)).toEqual(mixed)
+    expect(state.xai.input.slice(1)).toEqual(mixed)
     const call = first.toolCalls?.[0]
     expect(call).toBeDefined()
     const client = makeFakeXai(fixture.second.body as never)
@@ -984,7 +1018,7 @@ describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
       FAKE_CTX,
     )
     expect((client.calls[0] as { input: unknown[] }).input).toEqual([
-      state.input[0],
+      state.xai.input[0],
       ...mixed,
       { type: 'function_call_output', call_id: call!.toolCallId, output: '5' },
     ])
@@ -1218,7 +1252,10 @@ describe('fixture: 32-server-tool-choice (live 2026-10-02)', () => {
         FAKE_CTX,
       )
       expect(result.warnings).toEqual([])
-      expect(result.usage.details.web_search_calls).toBeUndefined()
+      // The normalised facts: search was requested and the explicit "no server
+      // tool ran" is a known zero, not a missing counter.
+      expect(result.usage.details.web_search_requested).toBe(1)
+      expect(result.usage.details.web_search_calls).toBe(0)
       expect(result.usage.details.server_tools_missing).toBeUndefined()
       const cost = computeXaiCost(
         modelDescriptor.model,
@@ -1271,7 +1308,7 @@ describe('fixture: 32-server-tool-choice (live 2026-10-02)', () => {
       FAKE_CTX,
     )
     const state = result.transientProviderState as unknown as XaiReplayState
-    const types = (state.input as Array<{ type?: string }>).map((item) => item.type)
+    const types = (state.xai.input as Array<{ type?: string }>).map((item) => item.type)
     expect(types.indexOf('web_search_call')).toBeGreaterThan(0)
     expect(types.indexOf('web_search_call')).toBeLessThan(types.lastIndexOf('message'))
   })
@@ -1307,6 +1344,168 @@ describe('fixture: 33-max-turns-not-enforced (live 2026-10-02)', () => {
   })
 })
 
+describe('fixture: 33-max-turns-not-enforced prices to the billed ticks', () => {
+  const fixture = loadFixture<Record<string, LiveCall>>('33-max-turns-not-enforced.json')
+  const descriptors = {
+    grok_4_5: grok45ModelDescriptor,
+    grok_4_6: grok46ModelDescriptor,
+    grok_4_7: grok47ModelDescriptor,
+  } as const
+  const cases = [
+    'grok_4_5_required',
+    'grok_4_5_auto',
+    'grok_4_5_max_turns_2',
+    'grok_4_6_required',
+    'grok_4_7_required',
+  ]
+
+  // The fixture keeps the usage object and the output item types, not the
+  // output items. A one-message stub carries the captured usage through the
+  // real adapter; only the usage and the served tier are asserted.
+  it.each(cases)('%s: snapshot cost, long-context band and tools lane', async (name) => {
+    const call = fixture[name] as LiveCall
+    const descriptor = descriptors[name.slice(0, 8) as keyof typeof descriptors]
+    const body = {
+      id: `resp_${name}`,
+      model: descriptor.model,
+      status: call.body['status'],
+      service_tier: call.body['service_tier'],
+      usage: call.body['usage'],
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'stub', annotations: [] }],
+        },
+      ],
+    }
+    const result = await xaiAdapter({ client: makeFakeXai(body as never) }).run(
+      makeResolvedReq({
+        model: descriptor.model,
+        modelDescriptor: descriptor,
+        config: { providerOptions: { xai: { tools: [{ type: 'web_search' }] } } },
+      }),
+      FAKE_CTX,
+    )
+    const cost = computeXaiCost(descriptor.model, result.usage, result.servedServiceTier)
+    expect(cost.confidence).toBe('exact')
+    expect(result.warnings).toEqual([])
+    expectCostMatchesTicks(cost.microUsd, billedTicks(call))
+    // The reported total is the same ticks, rounded like every priced lane.
+    expect(cost.providerReported).toEqual({
+      microUsd: Math.round(billedTicks(call) / 10_000),
+    })
+    // Every one of the five bills the web searches on the tools lane.
+    expect(cost.details.tools).toBe(result.usage.details.web_search_calls! * 5_000)
+  })
+
+  it('grok_4_7_required is billed at the >= 200k band on the SUMMED agentic input', () => {
+    const call = fixture['grok_4_7_required'] as LiveCall
+    const usage = call.body['usage'] as {
+      input_tokens: number
+      context_details: { input_tokens: number }
+    }
+    // The model's own context never reached 200k; the summed input did.
+    expect(usage.context_details.input_tokens).toBeLessThan(200_000)
+    expect(usage.input_tokens).toBeGreaterThanOrEqual(200_000)
+    const cost = computeXaiCost('grok-4.7', mapForCost(call))
+    // grok-4.7 long-context list: $4 input, $1 cached, $12 output per 1M tokens,
+    // applied to ALL tokens of the call; the base list ($2 / $0.50 / $6) would bill
+    // about half. 17 searches at $5 per 1,000.
+    expect(cost.details).toEqual({
+      input: (361_851 - 171_008) * 4,
+      cached: 171_008 * 1,
+      output: 4_034 * 12,
+      tools: 17 * 5_000,
+    })
+    expectCostMatchesTicks(cost.microUsd, billedTicks(call))
+  })
+})
+
+function mapForCost(call: LiveCall): Usage {
+  const u = call.body['usage'] as {
+    input_tokens: number
+    output_tokens: number
+    input_tokens_details: { cached_tokens: number }
+    server_side_tool_usage_details: Record<string, number>
+  }
+  return {
+    inputTokens: u.input_tokens,
+    outputTokens: u.output_tokens,
+    cachedInputTokens: u.input_tokens_details.cached_tokens,
+    details: { ...u.server_side_tool_usage_details },
+    raw: null,
+  }
+}
+
+describe('fixture: 35-priority-warm-cache (live probe 2026-10-03)', () => {
+  const fixture = loadFixture<
+    Record<string, LiveCall & { requestedTier: string | null }>
+  >('35-priority-warm-cache.json')
+  const models = [
+    ['grok_4_5', 'grok-4.5'],
+    ['grok_4_6', 'grok-4.6'],
+    ['grok_4_7', 'grok-4.7'],
+  ] as const
+
+  function usageOf(call: LiveCall): Usage {
+    const u = call.body['usage'] as {
+      input_tokens: number
+      output_tokens: number
+      input_tokens_details: { cached_tokens: number }
+      output_tokens_details: { reasoning_tokens: number }
+      cost_in_usd_ticks: number
+    }
+    return {
+      inputTokens: u.input_tokens,
+      outputTokens: u.output_tokens,
+      cachedInputTokens: u.input_tokens_details.cached_tokens,
+      thinkingTokens: u.output_tokens_details.reasoning_tokens,
+      details: { cost_in_usd_ticks: u.cost_in_usd_ticks },
+      raw: null,
+    }
+  }
+
+  it.each(models)(
+    '%s: a priority call on a warm cache prices at 2x on every lane, cached included',
+    (key, model) => {
+      const call = fixture[`${key}_priority_warm`] as LiveCall
+      expect(call.body['service_tier']).toBe('priority')
+      const usage = usageOf(call)
+      expect(usage.cachedInputTokens).toBeGreaterThan(13_000)
+      const cost = computeXaiCost(model, usage, 'priority')
+      expect(cost.confidence).toBe('exact')
+      expectCostMatchesTicks(cost.microUsd, billedTicks(call))
+
+      const standard = computeXaiCost(model, usage, undefined)
+      // Every lane doubles, the cached lane included.
+      expect(cost.details.cached).toBe(standard.details.cached! * 2)
+      expect(cost.details.input).toBe(standard.details.input * 2)
+      expect(cost.details.output).toBe(standard.details.output * 2)
+    },
+  )
+
+  it.each(models)(
+    '%s: the same warm prefix at the standard tier bills about half',
+    (key, model) => {
+      const priority = fixture[`${key}_priority_warm`] as LiveCall
+      const standard = fixture[`${key}_standard_warm`] as LiveCall
+      expect(standard.body['service_tier']).toBe('default')
+      expectCostMatchesTicks(
+        computeXaiCost(model, usageOf(standard), undefined).microUsd,
+        billedTicks(standard),
+      )
+      const ratio = billedTicks(priority) / billedTicks(standard)
+      expect(ratio).toBeGreaterThan(1.9)
+      expect(ratio).toBeLessThan(2.1)
+    },
+  )
+})
+
+function assertXaiSchema(schema: JsonValue): void {
+  assertJsonSchemaProfile(schema, 'output.jsonSchema', XAI_JSON_SCHEMA_PROFILE)
+}
+
 describe('fixture: 34-strict-schema-dialect (live 2026-10-02)', () => {
   interface SchemaCall extends FixtureCall {
     requestSchema: JsonValue
@@ -1330,7 +1529,7 @@ describe('fixture: 34-strict-schema-dialect (live 2026-10-02)', () => {
       const answer = lastMessageJson(call)
       expect(answer['employeeCount']).not.toBeNull()
       expect(answer['foundedYear']).not.toBeNull()
-      expect(() => assertXaiOutputJsonSchema(call.requestSchema)).toThrow(
+      expect(() => assertXaiSchema(call.requestSchema)).toThrow(
         /properties\.employeeCount/,
       )
     },
@@ -1338,7 +1537,7 @@ describe('fixture: 34-strict-schema-dialect (live 2026-10-02)', () => {
 
   it('a null type union passes the preflight and returns real nulls', () => {
     const call = fixture['null_type_union_grok_4_5'] as SchemaCall
-    expect(() => assertXaiOutputJsonSchema(call.requestSchema)).not.toThrow()
+    expect(() => assertXaiSchema(call.requestSchema)).not.toThrow()
     expect(lastMessageJson(call)).toMatchObject({
       employeeCount: null,
       foundedYear: null,
@@ -1349,6 +1548,82 @@ describe('fixture: 34-strict-schema-dialect (live 2026-10-02)', () => {
     const call = fixture['uppercase_types_grok_4_5'] as SchemaCall
     expect(call.status).toBe(400)
     expect(JSON.stringify(call.body)).toContain('STRING')
-    expect(() => assertXaiOutputJsonSchema(call.requestSchema)).toThrow(/"OBJECT"/)
+    expect(() => assertXaiSchema(call.requestSchema)).toThrow(/"OBJECT"/)
   })
+})
+
+describe('fixtures: citation ranges and cited on every captured annotation shape', () => {
+  const cases: Array<[string, (f: unknown) => unknown, 'ranged' | 'zero-width']> = [
+    ['17-web-search.json', (f) => (f as FixtureCall).body, 'ranged'],
+    ['26-x-posts.json', (f) => (f as FixtureCall).body, 'ranged'],
+    ['30-grok-4-7-search-replay.json', (f) => (f as { first: unknown }).first, 'ranged'],
+    [
+      '32-server-tool-choice.json',
+      (f) => (f as Record<string, FixtureCall>)['required_grok_4_5']!.body,
+      'ranged',
+    ],
+    [
+      '32-server-tool-choice.json',
+      (f) => (f as Record<string, FixtureCall>)['required_grok_4_7']!.body,
+      'ranged',
+    ],
+    // 19: the answer text carries inline `render_inline_citation` markup, yet
+    // every annotation is 0/0. 18, 27 and the 4.6 variant of 32: only 0/0.
+    ['19-x-search.json', (f) => (f as FixtureCall).body, 'zero-width'],
+    ['18-structured-search.json', (f) => (f as FixtureCall).body, 'zero-width'],
+    ['27-x-users.json', (f) => (f as FixtureCall).body, 'zero-width'],
+    [
+      '32-server-tool-choice.json',
+      (f) => (f as Record<string, FixtureCall>)['required_grok_4_6']!.body,
+      'zero-width',
+    ],
+  ]
+
+  it.each(cases)(
+    '%s: a range is the [[N]](url) marker of its own source; 0/0 leaves cited absent',
+    async (name, pick, kind) => {
+      const body = pick(loadFixture(name))
+      const result = await xaiAdapter({ client: makeFakeXai(body as never) }).run(
+        makeResolvedReq({
+          model: 'grok-4.6',
+          modelDescriptor: grok46ModelDescriptor,
+          config: {
+            providerOptions: {
+              xai: { tools: [{ type: 'web_search' }, { type: 'x_search' }] },
+            },
+          },
+          ...(name.startsWith('18-')
+            ? {
+                outputJsonSchema: {
+                  type: 'object',
+                  properties: { window: { type: 'string' } },
+                  required: ['window'],
+                },
+              }
+            : {}),
+        }),
+        FAKE_CTX,
+      )
+      const citations = result.citations ?? []
+      expect(citations.length).toBeGreaterThan(0)
+      expect(citations.every((c) => c.cited !== false)).toBe(true)
+      expect(result.warnings.some((w) => w.message.includes('textRange'))).toBe(false)
+      if (kind === 'zero-width') {
+        for (const c of citations) {
+          expect(c).not.toHaveProperty('cited')
+          expect(c).not.toHaveProperty('textRange')
+        }
+        return
+      }
+      const ranged = citations.filter((c) => c.textRange !== undefined)
+      expect(ranged.length).toBeGreaterThan(0)
+      for (const c of ranged) {
+        expect(c.cited).toBe(true)
+        const slice = result.text!.slice(c.textRange!.start, c.textRange!.end)
+        expect(slice).toMatch(/^\[\[\d+\]\]\(/)
+        expect(slice.endsWith(`](${c.url})`)).toBe(true)
+        expect(c).not.toHaveProperty('title')
+      }
+    },
+  )
 })

@@ -49,7 +49,7 @@ function expectBadRequest(fn: () => void): LlmError {
 describe('OUTPUT_SCHEMA_WALK_KEYWORDS — pinned traversal-set completeness', () => {
   it('is a superset of the COMPLETE draft-2020-12 applicator + content vocabulary subschema keywords, plus $defs/definitions', () => {
     // Pinned literal list, transcribed independently from
-    // docs/openai-strict-output-schema-plan.md §D1 — NOT imported from the
+    // docs/archive/openai-strict-output-schema-plan.md §D1 — NOT imported from the
     // module under test, so this fails CI if the walker's own keyword set
     // ever narrows.
     const PINNED_REQUIRED_KEYWORDS = [

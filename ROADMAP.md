@@ -39,13 +39,13 @@ Model-generated images, audio, and structured files as output parts. The `Part` 
 
 ### Additional providers
 
-The `ProviderAdapter` port and routing infrastructure are ready. `AuthMaterial` is currently `{ apiKey: string, keyId?: string }` only. Extending to OAuth tokens, bearer tokens, or provider-specific shapes is additive and non-breaking for the port itself, though each new `AuthMaterial` variant is a union extension that may require host-code updates.
+The `ProviderAdapter` port and routing infrastructure are ready. `AuthMaterial` is a union of `ApiKeyAuth` (`{ apiKey: string, keyId?: string }`) and `CliSessionAuth` (`{ cliSession: true }`, for the dev-only CLI providers, ADR-026). Extending it to OAuth tokens, bearer tokens, or provider-specific shapes is additive and non-breaking for the port itself, though each new `AuthMaterial` variant is a union extension that may require host-code updates.
 
 Refreshable credentials (OAuth/STS short-lived tokens): resolve at the engine entrypoint via a resolver function; primary design work is the long-lived cache/file stores that currently memoize a client from a single auth snapshot (see ADR-020 in DECISIONS.md).
 
 ### `Redactor` port
 
-A port for scrubbing sensitive content from messages and results before persistence. Currently only `redactSecrets` (regex-based, applied to `errorMessage` and select `generationConfig` fields) exists. A proper `Redactor` port would allow host-supplied DLP logic and would be fail-closed to prevent accidental persistence of unredacted content.
+A port for scrubbing sensitive content from messages and results before persistence. Today the built-in `redactSecrets` patterns (credentials only, regex-based) are applied to the text the ledger row stores (`errorMessage`, reasoning text, tool-call arguments, secret-bearing `generationConfig` lanes), and `ClientConfig.payloads.redact` (ADR-038) is a synchronous host redactor for the opt-in payload table. What is missing is a host redactor for the `llm_calls` row itself. A proper `Redactor` port would cover both with host-supplied DLP logic and would be fail-closed to prevent accidental persistence of unredacted content.
 
 See ADR-021 in DECISIONS.md for the reasoning behind deferring this to a host/consumer concern.
 
@@ -54,14 +54,14 @@ See ADR-021 in DECISIONS.md for the reasoning behind deferring this to a host/co
 The following observability features are explicitly deferred by design — they are consumer concerns or future companion packages, not library responsibilities.
 
 - **First-party OpenTelemetry package** — the `Telemetry` port is the designed seam; ship an integration example or a thin `@gullabs/otel` wrapper, not an OTel SDK dependency in core.
-- **W3C `traceparent` propagation into provider calls** — requires per-call header injection into `httpOptions`; the host can do this today via `providerOptions.google.httpOptions.headers`.
+- **W3C `traceparent` propagation into provider calls** — needs per-call header injection, which no adapter exposes. Google's `providerOptions.google.httpOptions` admits only `timeout`, and xAI's `transport.fetch` is per client, so a host that must propagate `traceparent` today wraps `fetch` there and reads its own request context. A per-call `headers` option is the missing piece.
 - **In-library metrics runtime / `/metrics` endpoint / cache-hit & rate-limiter gauges** — consumers derive metrics from `LlmCallRecord` rows and `Telemetry` events; the library should not own a Prometheus registry or HTTP server.
 - **Error sampling / dedup** — call-level `errorKind` is in every record; sampling policy belongs in the host's error-reporting integration (e.g. Sentry's `sampleRate`).
 - **Persisted stack traces** — stack frames carry no operational value in production error records and inflate storage; `errorKind` + `errorMessage` are sufficient for postmortems.
 - **Typed provider-error schema** — a first-class `providerError` field on `LlmCallRecord` with structured provider-specific fields (HTTP status, provider error code, etc.) is useful but requires per-adapter schema work.
 - **TTFB / streaming latency** — time-to-first-byte and per-token streaming latency require a streaming pipeline (`stream()`) which is not yet implemented.
 - **Sink-side logical-call latency** — per-attempt `latencyMs` is already captured on every `LlmCallRecord`, correlated by a stable `callId` and ordered by `attemptNumber`, so hosts can already aggregate per-attempt records into a logical-call latency at the sink/query layer today (e.g. group rows by `callId`). What's deferred is a built-in helper/API in the library for this aggregation — today it's a query the host writes itself.
-- **Configurable custom-redaction-pattern API** — a `Redactor` port (see existing roadmap item) would allow host-supplied DLP patterns; today only the built-in regex patterns in `redactSecrets` are applied.
+- **Configurable custom-redaction-pattern API for the ledger row** — a `Redactor` port (see existing roadmap item) would allow host-supplied DLP patterns there; today the row gets only the built-in regex patterns in `redactSecrets`, and only the payload table has a host redactor (`payloads.redact`).
 
 ### `ResultCache` port
 

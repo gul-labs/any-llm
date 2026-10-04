@@ -7,10 +7,13 @@
  * @module
  */
 
-import type { AuthMaterial, Logger } from '@gullabs/core'
-import { LlmError, classifyError, redactSecrets } from '@gullabs/core'
+import type { AuthMaterial, Logger, Scheduler } from '@gullabs/core'
+import { LlmError, assertMediaTypeAdmitted, redactSecrets } from '@gullabs/core'
 
-import { requireApiKey } from './client.js'
+import { MAX_TIMER_MS, newGoogleGenAI } from './client.js'
+import { classifyGoogleError, isGoogleNotFoundError } from './errors.js'
+import { GEMINI_INPUT_MIME_TYPES } from './model-limits.js'
+import { PLATFORM_SCHEDULER } from './platform-scheduler.js'
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -27,6 +30,17 @@ export interface GoogleFileHandle {
   expiresAt?: Date
 }
 
+/** The `File` resource fields the store reads. */
+type FileResp = {
+  name?: string
+  uri?: string
+  mimeType?: string
+  state?: string
+  expirationTime?: string
+  /** Real field `File.error` (`FileStatus`): why processing failed. */
+  error?: { code?: number; message?: string; details?: Record<string, unknown>[] }
+}
+
 /**
  * Minimal structural interface for the Gemini Files client surface we use.
  * Satisfied by the real ai.files object or a test fake.
@@ -34,21 +48,9 @@ export interface GoogleFileHandle {
 export interface GeminiFilesClientLike {
   upload(params: {
     file: Uint8Array | Blob
-    config?: { mimeType?: string; displayName?: string }
-  }): Promise<{
-    name?: string
-    uri?: string
-    mimeType?: string
-    state?: string
-    expirationTime?: string
-  }>
-  get(params: { name: string }): Promise<{
-    name?: string
-    uri?: string
-    mimeType?: string
-    state?: string
-    expirationTime?: string
-  }>
+    config?: { mimeType?: string; displayName?: string; abortSignal?: AbortSignal }
+  }): Promise<FileResp>
+  get(params: { name: string }): Promise<FileResp>
   delete(params: { name: string }): Promise<void>
 }
 
@@ -83,7 +85,18 @@ export interface GoogleFileStoreOptions {
     /** Max time to wait for ACTIVE. Default: 300 000 ms (5 min). */
     timeoutMs?: number
   }
-  /** Injectable sleep for tests. Default: real setTimeout. */
+  /**
+   * Timer source for the poll wait; pass the client's `FakeClock` in tests so
+   * one `advance` fires the wait. Default: the platform's timers. (`now` is the
+   * poll timeout's clock; pass `() => clock.now()` with it.)
+   */
+  scheduler?: Scheduler
+  /**
+   * Replaces the poll wait wholesale (instant polling in tests). When given,
+   * `scheduler` is not used for the wait, and the wait cannot be cancelled: if
+   * the deadline or an abort ends the upload first, a timer your `sleep` set
+   * stays pending until it fires. The default wait is cleared at once.
+   */
   sleep?: (ms: number) => Promise<void>
   /** Injectable clock for deterministic tests. Default: `Date.now`. */
   now?: () => number
@@ -96,13 +109,43 @@ export interface GoogleFileStoreOptions {
 const DEFAULT_INTERVAL_MS = 3_000
 const DEFAULT_TIMEOUT_MS = 300_000
 
-const realSleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms))
+/** A poll wait, and how to end it early (a no-op for a host's own `sleep`). */
+interface Wait {
+  promise: Promise<void>
+  cancel: () => void
+}
+
+/** The default wait: its timer is cleared by `cancel`, so a lost race leaves none. */
+const waitOn =
+  (scheduler: Scheduler) =>
+  (ms: number): Wait => {
+    let timer: ReturnType<Scheduler['setTimeout']> | undefined
+    const promise = new Promise<void>((resolve) => {
+      timer = scheduler.setTimeout(resolve, ms)
+    })
+    return {
+      promise,
+      cancel: () => {
+        if (timer !== undefined) scheduler.clearTimeout(timer)
+      },
+    }
+  }
+
+/**
+ * `server`, not `timeout`: ADR-036 makes every `timeout` retryable, and this must not be.
+ * The upload already succeeded, so a retry would upload the bytes again and orphan the
+ * first file (upload is not idempotent, ADR-024). Poll the existing file by name instead.
+ */
+function pollTimeoutError(name: string): LlmError {
+  return new LlmError(`Timed out waiting for uploaded file "${name}" to become ACTIVE`, {
+    kind: 'server',
+    retryable: false,
+    provider: 'google',
+  })
+}
 
 async function buildFilesClient(auth: AuthMaterial): Promise<GeminiFilesClientLike> {
-  const { GoogleGenAI } = await import('@google/genai')
-
-  const ai = new GoogleGenAI({ apiKey: requireApiKey(auth) })
+  const ai = await newGoogleGenAI(auth)
 
   return {
     async upload(params) {
@@ -113,23 +156,14 @@ async function buildFilesClient(auth: AuthMaterial): Promise<GeminiFilesClientLi
       // (the type of params.file) may structurally include.
       const fileArg: Blob =
         params.file instanceof Uint8Array
-          ? new Blob(
-              [Uint8Array.from(params.file)],
-              params.config?.mimeType !== undefined && params.config.mimeType.length > 0
+          ? new Blob([Uint8Array.from(params.file)], {
+              ...(params.config?.mimeType !== undefined
                 ? { type: params.config.mimeType }
-                : {},
-            )
+                : {}),
+            })
           : params.file
 
-      const result = await (
-        ai.files.upload as (p: unknown) => Promise<{
-          name?: string
-          uri?: string
-          mimeType?: string
-          state?: string
-          expirationTime?: string
-        }>
-      )({
+      const result = await (ai.files.upload as (p: unknown) => Promise<FileResp>)({
         file: fileArg,
         ...(params.config !== undefined ? { config: params.config } : {}),
       })
@@ -137,15 +171,7 @@ async function buildFilesClient(auth: AuthMaterial): Promise<GeminiFilesClientLi
     },
 
     async get(params) {
-      const result = await (
-        ai.files.get as (p: unknown) => Promise<{
-          name?: string
-          uri?: string
-          mimeType?: string
-          state?: string
-          expirationTime?: string
-        }>
-      )(params)
+      const result = await (ai.files.get as (p: unknown) => Promise<FileResp>)(params)
       return result
     },
 
@@ -153,14 +179,6 @@ async function buildFilesClient(auth: AuthMaterial): Promise<GeminiFilesClientLi
       await (ai.files.delete as (p: unknown) => Promise<unknown>)(params)
     },
   }
-}
-
-type FileResp = {
-  name?: string
-  uri?: string
-  mimeType?: string
-  state?: string
-  expirationTime?: string
 }
 
 function makeHandle(
@@ -198,7 +216,8 @@ export class GoogleFileStore {
   private readonly logger: Logger | undefined
   private readonly intervalMs: number
   private readonly timeoutMs: number
-  private readonly sleep: (ms: number) => Promise<void>
+  private readonly startWait: (ms: number) => Wait
+  private readonly scheduler: Scheduler
   private readonly now: () => number
   /** Memoised client promise — built at most once per store instance. */
   private clientPromise: Promise<GeminiFilesClientLike> | undefined
@@ -212,19 +231,24 @@ export class GoogleFileStore {
       ((name, err) => {
         if (this.logger !== undefined) {
           this.logger.error(
-            { name, error: redactSecrets(classifyError(err).message) },
+            { name, error: redactSecrets(classifyGoogleError(err).message) },
             'gemini.file.delete.failed',
           )
         } else {
           console.error(
             `[GoogleFileStore] delete failed for "${name}":`,
-            redactSecrets(classifyError(err).message),
+            redactSecrets(classifyGoogleError(err).message),
           )
         }
       })
     this.intervalMs = opts.poll?.intervalMs ?? DEFAULT_INTERVAL_MS
     this.timeoutMs = opts.poll?.timeoutMs ?? DEFAULT_TIMEOUT_MS
-    this.sleep = opts.sleep ?? realSleep
+    this.scheduler = opts.scheduler ?? PLATFORM_SCHEDULER
+    const customSleep = opts.sleep
+    this.startWait =
+      customSleep !== undefined
+        ? (ms) => ({ promise: customSleep(ms), cancel: () => {} })
+        : waitOn(this.scheduler)
     this.now = opts.now ?? (() => Date.now())
   }
 
@@ -240,7 +264,11 @@ export class GoogleFileStore {
    * Upload bytes to the Gemini File API and wait until the file is ACTIVE.
    *
    * @param source  - Raw bytes or Blob.
-   * @param mimeType - IANA media type, e.g. `"image/png"`.
+   * @param mimeType - IANA media type, e.g. `"image/png"`. It must pass the same
+   *   admission rule `generate` applies to a Gemini model's parts (one shared
+   *   function, so a file that uploads can be used): an empty or unadmitted type
+   *   is `bad_request` before any bytes are sent. The string is sent to Google
+   *   unchanged.
    * @param opts    - Optional display name.
    */
   async upload(
@@ -249,25 +277,38 @@ export class GoogleFileStore {
     opts?: { displayName?: string; signal?: AbortSignal },
   ): Promise<GoogleFileHandle> {
     const signal = opts?.signal
+    assertMediaTypeAdmitted(
+      mimeType,
+      GEMINI_INPUT_MIME_TYPES,
+      'mimeType',
+      'google',
+      'a Google file upload',
+    )
     const client = await this.getClient()
 
-    let uploadResp: {
-      name?: string
-      uri?: string
-      mimeType?: string
-      state?: string
-      expirationTime?: string
+    if (signal?.aborted === true) {
+      throw new LlmError('File upload aborted', { kind: 'aborted', retryable: false })
     }
+
+    let uploadResp: FileResp
     try {
-      uploadResp = await client.upload({
-        file: source,
-        config: {
-          mimeType,
-          ...(opts?.displayName !== undefined ? { displayName: opts.displayName } : {}),
-        },
-      })
+      // The signal goes to the SDK, and the wait is also raced against it: the
+      // SDK's upload does not act on `abortSignal` (checked in
+      // `@google/genai` 2.25.0), and an abort cannot recall bytes already sent,
+      // so the file may still be stored; the caller is released at once.
+      uploadResp = await abortable(
+        client.upload({
+          file: source,
+          config: {
+            mimeType,
+            ...(opts?.displayName !== undefined ? { displayName: opts.displayName } : {}),
+            ...(signal !== undefined ? { abortSignal: signal } : {}),
+          },
+        }),
+        signal,
+      )
     } catch (e) {
-      throw classifyError(e)
+      throw classifyGoogleError(e)
     }
 
     const { name, uri } = uploadResp
@@ -298,18 +339,16 @@ export class GoogleFileStore {
     }
 
     if (uploadResp.state === 'FAILED') {
-      throw new LlmError('File processing failed immediately after upload', {
-        kind: 'bad_request',
-        retryable: false,
-      })
+      throw failedFile('File processing failed immediately after upload', uploadResp)
     }
 
     // PROCESSING (or unknown) — poll until ACTIVE or timeout.
     const deadline = this.now() + this.timeoutMs
 
     // Pre-flight: if the signal is already aborted, throw before creating any
-    // promise so we never produce an unhandled rejection.
-    if (signal?.aborted === true) {
+    // promise so we never produce an unhandled rejection. Cast: TS keeps the
+    // narrowing from the check before the upload across the awaits.
+    if ((signal?.aborted as boolean | undefined) === true) {
       throw new LlmError('File upload polling aborted', {
         kind: 'aborted',
         retryable: false,
@@ -318,62 +357,135 @@ export class GoogleFileStore {
 
     // Build an abort-race promise so future aborts wake up the sleep race
     // immediately rather than waiting the full interval.  Created only when
-    // the signal is NOT already aborted (guard above handles that case).
+    // the signal is NOT already aborted (guard above handles that case). It is
+    // observed from the start (a loop that ends before the first race, or after
+    // the last, must not leave a rejection nobody handles), and its listener is
+    // removed on every way out of the loop.
+    let onAbort: (() => void) | undefined
     const abortRacePromise: Promise<never> | undefined =
       signal !== undefined
         ? new Promise<never>((_, reject) => {
-            signal.addEventListener(
-              'abort',
-              () => {
-                reject(
-                  new LlmError('File upload polling aborted', {
-                    kind: 'aborted',
-                    retryable: false,
-                  }),
-                )
-              },
-              { once: true },
-            )
+            onAbort = () => {
+              reject(
+                new LlmError('File upload polling aborted', {
+                  kind: 'aborted',
+                  retryable: false,
+                }),
+              )
+            }
+            signal.addEventListener('abort', onAbort, { once: true })
           })
         : undefined
+    abortRacePromise?.catch(() => {})
 
+    try {
+      return await this.pollUntilActive(
+        client,
+        name,
+        fallback,
+        deadline,
+        signal,
+        abortRacePromise,
+      )
+    } finally {
+      if (signal !== undefined && onAbort !== undefined) {
+        signal.removeEventListener('abort', onAbort)
+      }
+    }
+  }
+
+  /**
+   * `work` raced against the abort promise and the time left until `deadline`
+   * (the deadline is a non-retryable `server` error). `work` is observed, so a
+   * late rejection after the race is lost is not unhandled; the deadline timer
+   * is always cleared.
+   */
+  private async raceDeadline<T>(
+    work: Promise<T>,
+    name: string,
+    deadline: number,
+    abortRacePromise: Promise<never> | undefined,
+  ): Promise<T> {
+    work.catch(() => {})
+    const remainingMs = deadline - this.now()
+    let deadlineTimer: ReturnType<Scheduler['setTimeout']> | undefined
+    const deadlineRace = new Promise<never>((_, reject) => {
+      // Too far out for a timer: the abort is then the only early exit.
+      if (remainingMs > MAX_TIMER_MS) return
+      deadlineTimer = this.scheduler.setTimeout(
+        () => {
+          reject(pollTimeoutError(name))
+        },
+        Math.max(remainingMs, 0),
+      )
+    })
+    deadlineRace.catch(() => {})
+    try {
+      return await Promise.race(
+        abortRacePromise !== undefined
+          ? [work, deadlineRace, abortRacePromise]
+          : [work, deadlineRace],
+      )
+    } finally {
+      if (deadlineTimer !== undefined) this.scheduler.clearTimeout(deadlineTimer)
+    }
+  }
+
+  /** Polls `name` until ACTIVE; see {@link GoogleFileStore.upload}. */
+  private async pollUntilActive(
+    client: GeminiFilesClientLike,
+    name: string,
+    fallback: { name: string; uri: string; mimeType: string },
+    deadline: number,
+    signal: AbortSignal | undefined,
+    abortRacePromise: Promise<never> | undefined,
+  ): Promise<GoogleFileHandle> {
     for (;;) {
       if (this.now() >= deadline) {
-        throw new LlmError('Timed out waiting for uploaded file to become ACTIVE', {
-          kind: 'timeout',
-          retryable: true,
-        })
+        throw pollTimeoutError(name)
       }
 
-      // Sleep — race against the abort promise so we wake up immediately
-      // when the signal fires rather than waiting the full interval.
-      const sleepCall = this.sleep(this.intervalMs)
-      await (abortRacePromise !== undefined
-        ? Promise.race([sleepCall, abortRacePromise])
-        : sleepCall)
-
-      let pollResp: {
-        name?: string
-        uri?: string
-        mimeType?: string
-        state?: string
-        expirationTime?: string
-      }
+      // The wait is raced against the abort and the rest of the polling
+      // deadline: a poll interval longer than the time left ends at the
+      // deadline, not after it.
+      const wait = this.startWait(this.intervalMs)
       try {
-        pollResp = await client.get({ name })
-      } catch (e) {
-        throw classifyError(e)
+        await this.raceDeadline(wait.promise, name, deadline, abortRacePromise)
+      } finally {
+        wait.cancel()
       }
+
+      // The clock is checked again before a request starts: a wait that a custom
+      // `sleep` let run past the deadline must not buy one more poll.
+      if (this.now() >= deadline) {
+        throw pollTimeoutError(name)
+      }
+
+      // The poll request is raced the same way, so a `get()` that stalls ends at
+      // whichever comes first instead of holding `upload()` open. The losing
+      // request is observed, so a late rejection is not unhandled.
+      const pollCall = (async (): Promise<FileResp> => {
+        try {
+          return await client.get({ name })
+        } catch (e) {
+          throw classifyGoogleError(e)
+        }
+      })()
+      const pollResp = await this.raceDeadline(pollCall, name, deadline, abortRacePromise)
 
       // Also guard here: the signal may have fired during client.get()
       // before we looped back to the sleep race.
-      // Cast needed: TS 5.6 persists readonly-property narrowing across awaits,
-      // making it think `aborted` is still `false | undefined` after the preflight.
-      if ((signal?.aborted as boolean | undefined) === true) {
+      if (signal?.aborted === true) {
         throw new LlmError('File upload polling aborted', {
           kind: 'aborted',
           retryable: false,
         })
+      }
+
+      // A response that arrives after the deadline is not accepted, `ACTIVE`
+      // included: the caller was promised an answer by then.
+      if (this.now() >= deadline) {
+        throw pollTimeoutError(name)
       }
 
       if (pollResp.state === 'ACTIVE') {
@@ -381,10 +493,7 @@ export class GoogleFileStore {
       }
 
       if (pollResp.state === 'FAILED') {
-        throw new LlmError('File processing failed during polling', {
-          kind: 'bad_request',
-          retryable: false,
-        })
+        throw failedFile('File processing failed during polling', pollResp)
       }
       // PROCESSING — continue loop
     }
@@ -425,22 +534,7 @@ export class GoogleFileStore {
       if (isGoogleNotFoundError(err)) {
         return
       }
-      const classified = err instanceof LlmError ? err : classifyError(err)
-      const withProvider =
-        classified.provider === undefined
-          ? new LlmError(classified.message, {
-              kind: classified.kind,
-              retryable: classified.retryable,
-              ...(classified.httpStatus !== undefined
-                ? { httpStatus: classified.httpStatus }
-                : {}),
-              ...(classified.retryAfterMs !== undefined
-                ? { retryAfterMs: classified.retryAfterMs }
-                : {}),
-              provider: 'google',
-              cause: classified.cause ?? err,
-            })
-          : classified
+      const withProvider = classifyGoogleError(err)
 
       if (failClosed) {
         throw withProvider
@@ -465,24 +559,60 @@ export class GoogleFileStore {
   }
 }
 
-/** Detect Gemini/SDK not-found shapes so delete stays idempotent. */
-function isGoogleNotFoundError(err: unknown): boolean {
-  if (err instanceof LlmError && err.httpStatus === 404) {
-    return true
+/**
+ * gRPC codes (`google.rpc.Code`) a `File.error` status can carry that name a
+ * provider-side, transient failure: `DEADLINE_EXCEEDED` (4), `INTERNAL` (13)
+ * and `UNAVAILABLE` (14). Processing the same bytes again can succeed.
+ */
+const TRANSIENT_FILE_STATUS_CODES = new Set([4, 13, 14])
+
+/**
+ * A `FAILED` file, carrying the provider's own `File.error` (message in the
+ * text, the whole `FileStatus` as `cause`). `File.error` is a `google.rpc.Status`:
+ * a transient code (`DEADLINE_EXCEEDED`, `INTERNAL`, `UNAVAILABLE`) is a
+ * retryable `server` error, since the failure is the provider's and a fresh
+ * upload can succeed; any other code, or none, is a non-retryable `bad_request`
+ * (the file itself cannot be processed).
+ */
+function failedFile(prefix: string, resp: FileResp): LlmError {
+  const providerMessage = resp.error?.message
+  const transient =
+    typeof resp.error?.code === 'number' &&
+    TRANSIENT_FILE_STATUS_CODES.has(resp.error.code)
+  return new LlmError(
+    providerMessage !== undefined && providerMessage.length > 0
+      ? `${prefix}: ${providerMessage}`
+      : prefix,
+    {
+      kind: transient ? 'server' : 'bad_request',
+      retryable: transient,
+      provider: 'google',
+      ...(resp.error !== undefined ? { cause: resp.error } : {}),
+    },
+  )
+}
+
+/**
+ * Races `promise` against `signal`: an abort rejects with an `aborted`
+ * `LlmError` while the underlying work carries on unobserved.
+ */
+async function abortable<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (signal === undefined) return promise
+  promise.catch(() => {})
+  let onAbort: (() => void) | undefined
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => {
+      reject(new LlmError('File upload aborted', { kind: 'aborted', retryable: false }))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted) onAbort()
+  })
+  try {
+    return await Promise.race([promise, aborted])
+  } finally {
+    if (onAbort !== undefined) signal.removeEventListener('abort', onAbort)
   }
-  if (typeof err !== 'object' || err === null) {
-    return false
-  }
-  const obj = err as Record<string, unknown>
-  if (obj['status'] === 404 || obj['httpStatus'] === 404 || obj['code'] === 404) {
-    return true
-  }
-  if (obj['status'] === 'NOT_FOUND' || obj['code'] === 'NOT_FOUND') {
-    return true
-  }
-  const msg = typeof obj['message'] === 'string' ? obj['message'] : ''
-  if (/not\s*found|404/i.test(msg) && /file/i.test(msg)) {
-    return true
-  }
-  return false
 }

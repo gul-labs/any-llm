@@ -137,6 +137,8 @@ describe('Citation type shape', () => {
       url: string
       title?: string
       sourceName?: string
+      cited?: boolean
+      textRange?: { start: number; end: number }
     }>()
   })
 })
@@ -148,8 +150,11 @@ describe('LlmResult.citations', () => {
 })
 
 describe('Warning type shape', () => {
-  it('has only the other member', () => {
-    expectTypeOf<Warning>().toEqualTypeOf<{ type: 'other'; message: string }>()
+  it('is a closed union: other, and the typed shutdown advisory', () => {
+    expectTypeOf<Warning>().toEqualTypeOf<
+      | { type: 'other'; message: string }
+      | { type: 'shutdown'; message: string; shutdownDate: string }
+    >()
   })
 })
 
