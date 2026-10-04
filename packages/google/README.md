@@ -33,7 +33,7 @@ pnpm add @gullabs/google @gullabs/core @google/genai
 
 `GoogleFileStore` takes a `scheduler` (the timer source of the poll wait; pass the client's `FakeClock` in tests, with `now: () => clock.now()` for the poll timeout), and the Gemini flex/standard client-side ceiling runs on the engine's `scheduler` too, so a `FakeClock` fires both. `sleep` still replaces the poll wait wholesale.
 
-`GoogleFileStore.delete` defaults to **fail-open** (errors → `onDeleteError`, resolve). Pass `{ failClosed: true }` when the host gates durable state on known success; HTTP/SDK not-found remains success (idempotent). Empty `handle.name` always throws `bad_request`.
+`GoogleFileStore.delete` defaults to **fail-open** (errors → `onDeleteError`, resolve). Pass `{ failClosed: true }` when the host gates durable state on known success; not-found remains success (idempotent): HTTP 404, `NOT_FOUND`, and the HTTP 403 Google sends for an unknown or expired file id ("You do not have permission to access the File ... or it may not exist"). That 403 wording comes from public bug reports, not from a live capture here, and a real permission failure carries the same status, so the shape is treated as gone. `GoogleCacheStore.delete` follows the same rule (a 404, or the captured 403 `CachedContent not found`, is success and never reaches `onDeleteError`). Empty `handle.name` always throws `bad_request`.
 
 ```ts
 import type { GoogleFileHandle, GoogleFileStore } from '@gullabs/google'
@@ -290,10 +290,10 @@ Google unchanged.
 - `output.jsonSchema` → `responseMimeType: 'application/json'` + verbatim `responseJsonSchema` when native structured output is enabled, and `tools[].inputJsonSchema` → `parametersJsonSchema` (both standard JSON Schema, in your key order; see "JSON Schema" below); the engine returns parsed output and `outputParsed` without validating shape
 - `providerOptions.google.*` → typed provider-extension lane for admitted keys such as `cachedContent`, `safetySettings`, and exact tool declarations
 - Usage: `promptTokenCount`→`inputTokens`, `candidatesTokenCount`+`thoughtsTokenCount`→`outputTokens` (GROSS)
-- Errors: `401` and a bare `403` default to `invalid_auth`; `429`→`rate_limited`; `5xx`→`server`; timeouts; Gemini safety blocks are a 200-path `content_filter` when `promptFeedback.blockReason` is set, and so is an output filter stop (`SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_*`) that produced no text and no tool call (not retryable, usage attached; a stop that kept partial text is a success with `finishReason: 'content_filter'`). A candidate-less 200 without a block reason is retryable `server`, unless it billed reasoning tokens (the output cap was spent on thinking: the same request fails the same way), which is not retryable. A call that reaches the adapter's own client-side ceiling (5 minutes standard, 25 minutes flex, when no `timeoutMs` is set) or the SDK's transport timer is `timeout`, not retryable, `reason: 'transport_timeout'`, so `retryMiddleware` makes one attempt and the ledger holds one row. The structured body adds: `RetryInfo.retryDelay` → `retryAfterMs`; a per-day quota (`QuotaFailure` quota id containing `PerDay`) → `rate_limited`, not retryable, `reason: 'daily_quota'`; `API_KEY_INVALID` / `API_KEY_EXPIRED` (Google sends the first as HTTP 400) → `invalid_auth`; a stale `cachedContent` (HTTP 403, "CachedContent not found") → `bad_request`, `reason: 'cache_not_found'`. `retryMiddleware` (default `maxDelayMs` 60 s) sleeps a typical per-minute `retryDelay` and retries; a delay over 60 s stops the retry and the 429 surfaces with `retryAfterMs` for a scheduler (raise `maxDelayMs` to wait longer in process).
+- Errors: `401` and a bare `403` default to `invalid_auth`; `429`→`rate_limited`; `5xx`→`server`; timeouts; Gemini safety blocks are a 200-path `content_filter` when `promptFeedback.blockReason` is set, and so is an output filter stop (`SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_*`) that produced no text and no complete tool call (not retryable, usage attached; a stop that kept partial text is a success with `finishReason: 'content_filter'`). A function call is complete only when the candidate finished with `STOP` (or no finish reason): beside `MAX_TOKENS` (cut by the output cap), a filter stop or any other finish it is dropped from `toolCalls` and from `result.message`, a warning names it, and `finishReason` is `length`, `content_filter` or `other`, so a tool loop never runs a call Google stopped. A candidate-less 200 without a block reason is retryable `server`, unless it billed reasoning tokens (the output cap was spent on thinking: the same request fails the same way), which is not retryable. A call that reaches the adapter's own client-side ceiling (5 minutes standard, 25 minutes flex, when no `timeoutMs` is set) or the SDK's transport timer is `timeout`, not retryable, `reason: 'transport_timeout'`, so `retryMiddleware` makes one attempt and the ledger holds one row. The structured body adds: `RetryInfo.retryDelay` → `retryAfterMs`; a per-day quota (`QuotaFailure` quota id containing `PerDay`) → `rate_limited`, not retryable, `reason: 'daily_quota'`; `API_KEY_INVALID` / `API_KEY_EXPIRED` (Google sends the first as HTTP 400) → `invalid_auth`; a stale `cachedContent` (HTTP 403, "CachedContent not found") → `bad_request`, `reason: 'cache_not_found'`. `retryMiddleware` (default `maxDelayMs` 60 s) sleeps a typical per-minute `retryDelay` and retries; a delay over 60 s stops the retry and the 429 surfaces with `retryAfterMs` for a scheduler (raise `maxDelayMs` to wait longer in process).
 - `providerOptions.google.safetySettings` → `category` is one of `HARM_CATEGORY_HARASSMENT`, `_HATE_SPEECH`, `_SEXUALLY_EXPLICIT`, `_DANGEROUS_CONTENT`, `_CIVIC_INTEGRITY`, `_JAILBREAK` and `threshold` one of `HARM_BLOCK_THRESHOLD_UNSPECIFIED`, `BLOCK_LOW_AND_ABOVE`, `BLOCK_MEDIUM_AND_ABOVE`, `BLOCK_ONLY_HIGH`, `BLOCK_NONE`, `OFF` (Google's safety-settings guide, dated 2026-09-17); anything else is `bad_request` before dispatch.
-- `providerOptions.google.cachedContent` cannot be sent with `system`, `tools` or `providerOptions.google.tools`: Gemini needs them stored in the cache, so pass `tools` / `toolConfig` (and `systemInstruction`) to `GoogleCacheStore.create` instead. The adapter rejects the combination before dispatch.
-- Inline media is checked against Google's request limits before dispatch: an inline PDF over 50 MB, or a request whose inline data and text exceed 100 MB, is `bad_request`; upload it with `GoogleFileStore` and send a `file-uri` part. The result's `providerMetadata.google.candidate` holds the candidate's raw `finishReason`, `finishMessage`, `safetyRatings`, `citationMetadata` and `urlContextMetadata` when Google sent them.
+- `providerOptions.google.cachedContent` cannot be sent with `system`, `tools` or `providerOptions.google.tools`: Gemini needs them stored in the cache, so pass `tools` / `toolConfig` (and `systemInstruction`) to `GoogleCacheStore.create` instead. The adapter rejects the combination before dispatch. `cachedContent` is admitted only on the models that cache explicitly (Gemini 2.5 and 3.x; Gemma 4 has no caching capability and rejects it). It takes the cache name, or `{ cacheName: handle.cacheName, toolKinds: handle.toolKinds }` from a `GoogleCacheHandle` (not the whole handle: the schema is strict and the type refuses it) (`handle.toolKinds` lists the kinds of tool the cache holds, empty when none); the request sent to Google carries only the name. A cache that holds `googleSearch` sends no search tool in the request, so a handle whose `toolKinds` includes it marks the call as a Search call (priced like a sent tool); with a bare name the library cannot know, so a `groundingMetadata` in the response is the evidence that Search ran (see "Search facts, grounding price and `requireGrounding`").
+- Inline media is checked against Google's request limits before dispatch: an inline PDF over 50 MB (matched on the media type whatever its case or `; parameters`), or a request whose inline data and text exceed 100 MB, is `bad_request`; upload it with `GoogleFileStore` and send a `file-uri` part. The result's `providerMetadata.google.candidate` holds the candidate's raw `finishReason`, `finishMessage`, `safetyRatings`, `citationMetadata` and `urlContextMetadata` when Google sent them.
 
 ## JSON Schema
 
@@ -378,15 +378,24 @@ A call that sends `googleSearch` reports two facts in `usage.details`:
 `web_search_requested` (`1`) and `web_search_calls`, the number of queries in
 `groundingMetadata.webSearchQueries` counted as occurrences (a repeated query counts each
 time; absent when the response has no metadata or no query list). `tool_use_prompt` records
-`toolUsePromptTokenCount` when Google reports it (Gemini 2.5). Those tokens are not priced, so a
-grounded 2.5 call is understated by them at the input rate; whether Google bills them is the open
-billing question in ADR-035.
+`toolUsePromptTokenCount` when Google reports it (Gemini 2.5). Those tokens are not priced: Google's
+pricing page says retrieved search results are not charged as input tokens (read in the 2026-10
+audit), but no live billing reconciliation has confirmed it, so the total mismatch they cause still
+marks the cost `'estimated'` (ADR-035).
+
+Search counts as requested when the request sends `googleSearch` or the `cachedContent` handle lists
+it in `toolKinds`. When neither says so (a bare cache name, or no cache at all) and the response
+carries `groundingMetadata`, the response is the evidence: `web_search_requested` is `1`,
+`web_search_calls` is the observed query count (left out when the metadata names none), the fee is
+priced from those queries, the cost is `'estimated'` and a warning says the request did not declare
+`googleSearch`. A grounded response is never priced `'exact'` just because the request was silent.
 
 The pricing source puts the grounding fee on `cost.details.tools`: Gemini 3 bills per query
 (`web_search_calls × $0.014`), Gemini 2.5 per grounded prompt (`$0.035`, once however many
 queries ran), from Google's pricing page read 2026-10-03. A call that ran Search is always
-`cost.confidence: 'estimated'`: Google's daily free allowance is shared across a project, so
-no single call can know it was free, and every fee is charged in full. When Search was
+`cost.confidence: 'estimated'`: Google's free allowance (as read in the 2026-10 audit, 5,000
+requests per month shared across Gemini 3.x and 1,500 per day on Gemini 2.5) is shared across a
+project, so no single call can know it was free, and every fee is charged in full. When Search was
 requested but the count is unknown, the tools lane is `0`, the cost is estimated and a warning
 says so. Google's billing of repeated queries and of tool-use tokens is not established.
 
@@ -410,7 +419,12 @@ There is no batch tier: `'batch'` is an unpriced tier.
 
 `GoogleCacheStore.create` and `getOrCreate` return a handle with `totalTokenCount`, the create response's
 `usageMetadata.totalTokenCount`. Cache storage is billed per token-hour and appears in no usage record;
-price it from that count and the time you keep the cache.
+price it from that count and the time you keep the cache. The handle also carries `toolKinds` (the kinds
+of tool given to `create`, empty when none); pass `{ cacheName, toolKinds }` as `cachedContent` so a
+cached `googleSearch` is priced as Search. `ttlSeconds` must be a positive integer (`bad_request`
+otherwise, before any call); an `expireTime` Google sends that does not parse falls back to now plus
+the TTL, so a live cache is reused; and `getOrCreate` drops an expired entry from its in-process map
+when its key is asked for again.
 
 `providerOptions.google.requireGrounding: true` fails the call unless the response proves Search
 ran (`groundingMetadata` with at least one non-empty query): a `server` error with
@@ -420,7 +434,9 @@ grounded); with a schema the same request keeps missing, so it is `retryable: fa
 middleware makes one billed attempt, not three. Use the two-call recipe, or override `shouldRetry`
 and accept the spend. The check applies only to a candidate that finished with `STOP`: a filtered
 candidate (`SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `IMAGE_SAFETY`) with no evidence
-throws `content_filter` (not retryable), and `MAX_TOKENS` returns `finishReason: 'length'`. It needs
+throws `content_filter` (not retryable), and a `MAX_TOKENS` or other abnormal finish with no evidence is
+not judged: it returns, with `finishReason: 'length'` (or `other`), so "a response without proof throws"
+holds only for a normally finished candidate. It needs
 `googleSearch` in the same request. `result.cost` of a call that succeeded on a retry covers the
 last attempt only; the earlier attempts' spend is in their ledger rows.
 
@@ -440,9 +456,14 @@ as untrusted markup. Render it in a sandboxed `<iframe>` (for example `sandbox` 
 
 `countTokens` counts `messages`, `system` and `tools`. The SDK's Developer API method cannot carry
 `system` or `tools`, so with either present the library calls the REST `countTokens` with a full
-`generateContentRequest` (a messages-only count still goes through the SDK), and the count covers the
-same request `generate()` would send. Tool schemas are held to the same JSON Schema profile as
-`generate()`. `cachedContent` is not part of a count.
+`generateContentRequest` (a messages-only count still goes through the SDK). The count covers
+`messages`, `system` and `tools` only: it carries no response schema, thinking config, `toolConfig`,
+safety settings or Search tool, which `generate()` also sends, so it is not the whole prompt `generate()`
+bills (whether Google bills schema tokens as prompt tokens is unverified). Tool schemas are held to the
+same JSON Schema profile as `generate()`. `cachedContent` is not part of a count. The SDK client and
+the REST count both go to one pinned endpoint (`https://generativelanguage.googleapis.com`); the SDK's
+`GOOGLE_GEMINI_BASE_URL` environment override is not honoured, and a count's timeout is the
+`timeoutMs` of `client.countTokens` (the abort signal the adapter receives carries it).
 
 ## Registered models
 
@@ -477,6 +498,25 @@ A candidate-less HTTP 200 without a safety block is a retryable provider error, 
 reasoning tokens (not retryable: the cap was spent on thinking); its reported usage and snapshot cost are
 saved on that failed attempt.
 
+A 200 that carries no `usageMetadata` is unknown usage, not a free call: `usage.details.usage_missing`
+is `1`, the usage is recorded as zero tokens, a warning says so, and the pricing source reports the cost
+unpriced (`microUsd: null`, `confidence: 'estimated'`, with an `unpricedReason`), never an exact $0.
+
+`providerOptions.google.httpOptions.timeout` is the SDK's own timer. It is rejected above 2147483647 ms
+(a Node timer that long fires after 1 ms and the call would abort at once), and with `timeoutMs` set it
+must be at least `timeoutMs + 5000`, because a shorter SDK timer would end the call before the engine's
+deadline with a raw SDK abort instead of the clean `timeout`. A flex call the adapter sends again at the
+standard tier (HTTP 503) carries a warning saying so; with no `timeoutMs` the standard attempt then
+runs under the 300000 ms client-side ceiling, not the 25-minute flex one. A retry never gives a request
+that named no `serviceTier` one: only a request that asked for a tier is pinned to the tier an attempt
+was served at, and a failed attempt's ledger row keeps the tier it asked for (`serviceTier`) beside the
+tier it was served at (`servedServiceTier`).
+
+`providerMetadata.groundingMetadata` and `providerMetadata.promptFeedback` are copied with the same
+bounds as `providerMetadata.google.candidate` (50 list entries, 2048 characters per string, 8 levels,
+a warning when something is cut); the citations are built from the full response. `GEMINI_PRICING`
+is deep-frozen.
+
 ## Gemma 4
 
 The default registry includes two API-verified Gemma 4 models: `gemma-4-31b-it`
@@ -484,7 +524,13 @@ and `gemma-4-26b-a4b-it`. Both route through this adapter and support:
 
 - **Native structured output** — `responseMimeType` + verbatim `responseJsonSchema` are sent
   automatically when `output.jsonSchema` is set. Gemma ignored `format`, `minLength` and
-  `maxLength` in live probes, so those three keywords are rejected for Gemma models.
+  `maxLength` in live probes, so those three keywords are rejected for Gemma models. **Caveat:**
+  Gemma wrapped 67 of 162 schema answers (41%) in a markdown ` ```json ` fence in the live probe
+  (2026-10-03), which is not parseable JSON: `outputParsed` is `false` and `result.text` holds the fenced
+  text. The adapter does not unwrap it (that would be repair, not rejection); it adds a warning
+  `gemma_fenced_json` naming the cause. Hosts that use Gemma for structured output should expect
+  about four in ten calls to need handling: call again, or strip a single enclosing fence from
+  `result.text` themselves and parse it. Gemini models were not seen to fence.
 - **Grounding** — `tools:[{googleSearch:{}}]` via `providerOptions.google`.
 - **Vision** — `inline-media` and `file-uri` multimodal message parts.
 - **Thinking** — `reasoning.effort` maps to `thinkingLevel` (`reasoningApi: 'level'`).
@@ -494,6 +540,11 @@ and `gemma-4-26b-a4b-it`. Both route through this adapter and support:
   and HIGH `thinkingLevel` values. Note: `thinkingBudget` is **not** supported
   (rejected by the API with HTTP 400).
 - **Tunable sampling** — `temperature`, `topP`, `topK` are accepted.
+
+Gemma 4 has no caching capability: `providerOptions.google.cachedContent` is rejected for it, and
+`allowSchemaWithSearch` is not in its schema (schema plus Search is rejected on Gemma with or
+without it). Google's pricing page marks grounding "Not available" for Gemma 4 (read in the 2026-10
+audit); the `grounding: true` flag follows the live capture instead.
 
 This follows the library-wide **reject, don't map** rule: unsupported or incorrect input throws a
 typed `bad_request` `LlmError` at validation time rather than being silently clamped or coerced

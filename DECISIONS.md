@@ -3892,3 +3892,60 @@ descriptors may carry a date too. Nothing about a model without `shutdownDate` c
    file with the counts spelled out: metadata on 5 of 5 completed calls, the sixth a `MAX_TOKENS` truncation
    that proves nothing (5 of 6 in all). Its test checks the fixture against itself (counts add up, token
    arithmetic reconciles) and the descriptors; it cannot detect a wrong capture.
+
+---
+
+## ADR-044: Google edges: Search in a cache, incomplete calls, unknown usage, the retry pin
+
+**Status:** Accepted (2026-10-03).
+
+**Context:**
+An audit of `@gullabs/google` found five places where a call's record said less than what Google did.
+Search held in a `cachedContent` cache sends no tool in the request, so the fee was billed nothing and the cost
+was `exact`. A function call beside a `SAFETY` or `MAX_TOKENS` stop was returned as `tool_calls`, so a tool loop
+would run a call Google had stopped. A 200 without `usageMetadata` was an exact $0. A retry pinned an untiered
+call to `standard`, which arms the adapter's 300-second ceiling and a transport timeout the first attempt never
+had, and a failed attempt's ledger row lost the tier it asked for.
+
+**Decision:**
+
+1. **Search in a cache is priced from what is known.** `GoogleCacheHandle.toolKinds` records the kinds of tool
+   the cache was created with. `providerOptions.google.cachedContent` takes the cache name or
+   `{ cacheName, toolKinds }`; the request sent to Google carries the name only. A handle that lists
+   `googleSearch` marks `web_search_requested` like a sent tool. When the request declares no search (a bare
+   cache name, or no cache), grounding metadata in the response is the evidence: `web_search_requested` is set,
+   `web_search_calls` is the observed query count, the fee is priced from it and the cost is `estimated` with a
+   warning. A cost is never `exact` when grounding metadata exists and the request did not declare search; when
+   the metadata names no query the tools lane is empty and the cost is still `estimated`.
+2. **A function call is complete only on a normal stop.** With a finish other than `STOP` (or none) the call is
+   dropped from `toolCalls` and from the assistant message and a warning names it; `finishReason` is `length`,
+   `content_filter` or `other`. A filter stop with no text and no complete call is the `content_filter`
+   failure. A call is never exposed half-made, and a host never executes a call Google stopped.
+3. **Missing usage is unknown, not zero.** A 200 with no `usageMetadata` sets `usage.details.usage_missing = 1`
+   and a warning; the pricing source returns an unpriced, `estimated` cost with an `unpricedReason`.
+4. **A retry sends the request the first attempt sent.** Core pins a retry to the served tier only when the
+   request named a tier. A failed attempt's row keeps the requested tier in `serviceTier` and the served tier in
+   `servedServiceTier`. A flex call the adapter sends again at standard carries a warning, naming the 300 s
+   ceiling when no `timeoutMs` is set.
+5. **Transport timeouts that cannot work are rejected.** `httpOptions.timeout` above 2^31 - 1 ms, or below
+   `timeoutMs + 5000` when `timeoutMs` is set, is `bad_request`. The SDK client is built with the Developer API
+   base URL pinned, which the REST `countTokens` shares; the SDK's `GOOGLE_GEMINI_BASE_URL` override is not read.
+6. **Options a model cannot honour are rejected where they are declared.** Gemma has no caching capability, so
+   its schema omits `cachedContent` and the adapter rejects it; the Gemini 2.5 and Gemma schemas omit
+   `allowSchemaWithSearch`; a schema for a model without native structured output is `bad_request`, not dropped.
+7. **A fenced Gemma answer is named, not repaired.** Gemma fenced 67 of 162 schema answers (41%) in the
+   2026-10-03 probe. The adapter returns the text as sent (`outputParsed: false`) and warns `gemma_fenced_json`;
+   stripping the fence would be mapping (reject, don't map). The README gives the host recommendation.
+8. **Delete is idempotent for a gone resource.** `GoogleFileStore.delete` and `GoogleCacheStore.delete` treat
+   HTTP 404, `NOT_FOUND` and the 403 that says the resource is not found or "may not exist" as success. The
+   cache wording is a live capture; the Files API wording is quoted from public bug reports and is not
+   captured here (ADR-013: the fixture entry says so).
+9. Smaller: the inline-PDF cap matches the media type as admission does; `groundingMetadata` and
+   `promptFeedback` are bounded like the other copied metadata; `GEMINI_PRICING` is deep-frozen; a cache's
+   `ttlSeconds` must be a positive integer, an unparseable `expireTime` falls back to now plus the TTL, and
+   `getOrCreate` evicts an expired entry; `GoogleFileStore.upload` observes its abort promise and removes its
+   listener; the client-factory test seam is out of the shipped types.
+
+**Consequences:** a host with a Search cache sees the fee and the `estimated` mark; a tool loop sees `length` or
+`content_filter` and no call on a stopped candidate; a usage-less 200 is visible as unpriced. The ledger gains
+no column.

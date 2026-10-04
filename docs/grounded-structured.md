@@ -27,7 +27,10 @@ grounding evidence throws `content_filter` (not retryable), not `grounding_missi
 
 Every call that sends `googleSearch` reports `usage.details.web_search_requested` and, when the
 response says, `web_search_calls`. The grounding fee is priced on the `tools` lane, and a call that
-ran Search is `cost.confidence: 'estimated'` (ADR-035).
+ran Search is `cost.confidence: 'estimated'` (ADR-035). Search held in a `cachedContent` cache sends no
+tool in the request: a handle that lists `googleSearch` in `toolKinds` counts as a Search call, and with
+a bare cache name any `groundingMetadata` in the response is taken as evidence that Search ran
+(ADR-044).
 
 ## Measured: schema plus Search on Gemini 3.x (live, 2026-10-03)
 

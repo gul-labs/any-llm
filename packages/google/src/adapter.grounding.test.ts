@@ -416,8 +416,17 @@ describe('search facts in usage (R2.3)', () => {
     )
   })
 
-  it('a call that did not request search carries neither fact nor warning, even with metadata', async () => {
+  it('a call that did not declare search but got grounding metadata prices the observed queries and warns', async () => {
     const result = await run(undefined, grounded(['q']))
+    expect(result.usage.details['web_search_requested']).toBe(1)
+    expect(result.usage.details['web_search_calls']).toBe(1)
+    expect(result.warnings.map((w) => w.message).join('\n')).toContain(
+      'did not declare googleSearch',
+    )
+  })
+
+  it('a call that did not request search and got no metadata carries neither fact nor warning', async () => {
+    const result = await run(undefined, undefined)
     expect(result.usage.details).not.toHaveProperty('web_search_requested')
     expect(result.usage.details).not.toHaveProperty('web_search_calls')
     expect(result.warnings).toEqual([])

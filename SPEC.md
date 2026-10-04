@@ -166,8 +166,12 @@ export interface Usage {
   raw: JsonValue // provider's entire usage object, verbatim
 }
 // Normalised search facts in `details`, same names on every provider (ADR-035):
-//   web_search_requested  1 when the request enabled web search, else absent
+//   web_search_requested  1 when the request enabled web search (Google: also when the cachedContent
+//                         handle lists googleSearch, or the response carries grounding metadata the request
+//                         did not declare: ADR-044), else absent
 //   web_search_calls      observed number of searches; absent when the response does not say
+//   usage_missing         1 on a Google 200 that carried no usageMetadata: the usage is unknown, the cost
+//                         is unpriced (ADR-044), else absent
 //   search_budget_exceeded  1 when an xAI `searchBudget` ceiling was exceeded (reported after the call), else absent
 //   usage_estimated       1 on the usage an xAI adapter ESTIMATED for a stream that failed after output began
 //                         (a lower bound, priced 'estimated'; ADR-040 Amendment A), else absent
@@ -527,14 +531,18 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
   output, grounding, and thinking (thinkingLevel). They do not support Gemini Flex or pricing.
 - Usage: read `usageMetadata` → `promptTokenCount`→inputTokens, `candidatesTokenCount`→outputTokens,
   `cachedContentTokenCount`→cachedInputTokens, `thoughtsTokenCount`→thinkingTokens; copy whole object
-  to `usage.raw`; populate `details`. Enforce GROSS convention. `toolUsePromptTokenCount` is recorded
+  to `usage.raw`; populate `details`. Enforce GROSS convention. A 200 with no `usageMetadata` is
+  `details.usage_missing = 1` and an unpriced, `estimated` cost with a warning (ADR-044). A function call
+  beside a finish other than `STOP` is not returned: `toolCalls` omits it, a warning names it, and
+  `finishReason` is `length` / `content_filter` / `other` (ADR-044). `toolUsePromptTokenCount` is recorded
   as `details.tool_use_prompt` and not priced. Per-modality prompt counts are recorded as
   `details.input_<modality>` and `details.cached_<modality>`; audio is priced apart on the models that
   price it apart (ADR-039). `GoogleCacheHandle.totalTokenCount` is the create call's
   `usageMetadata.totalTokenCount`, for pricing cache storage.
-- Grounding (ADR-013, ADR-035): `providerOptions.google.tools: [{ googleSearch: {} }]` sets
-  `details.web_search_requested`; `details.web_search_calls` is the number of `webSearchQueries`
-  occurrences. The pricing source adds the fee to `Cost.details.tools` (Gemini 3: per query; Gemini 2.5:
+- Grounding (ADR-013, ADR-035, ADR-044): `providerOptions.google.tools: [{ googleSearch: {} }]` (or a
+  `cachedContent` handle whose `toolKinds` lists `googleSearch`) sets `details.web_search_requested`; so does
+  grounding metadata the request did not declare (evidence: the fee is priced from the observed queries,
+  `estimated`); `details.web_search_calls` is the number of `webSearchQueries` occurrences. The pricing source adds the fee to `Cost.details.tools` (Gemini 3: per query; Gemini 2.5:
   per grounded prompt) and a call that ran Search is `estimated`. `requireGrounding: true` throws a
   `server` error with reason `grounding_missing` (usage attached) unless metadata with at least one
   non-empty query is present; it is `retryable: true` only without an output schema, and is judged only on

@@ -66,18 +66,34 @@ function hasModalitySplit(usage: Usage, prefix: 'input_' | 'cached_'): boolean {
  * covers every cached token is a known zero (`cached_audio: 0`, set by the
  * adapter), so a text cache beside new audio is exact.
  *
+ * **Missing usage.** `details.usage_missing` (the response had no
+ * `usageMetadata`) is unpriced and `'estimated'`: the amount is unknown.
+ *
  * **Grounding.**
  * - No `web_search_requested`: the call is token-priced and exact.
  * - Requested, count known to be zero: Search did not run; token-priced, exact.
  * - Requested, count unknown (`web_search_calls` absent): the fee cannot be
  *   known, so the `tools` lane stays 0 and the cost is `'estimated'`.
  * - Search ran (count >= 1): the fee is added to `tools` and the cost is
- *   `'estimated'`, because the daily free allowance is unknowable per call and
+ *   `'estimated'`, because the free allowance is unknowable per call and
  *   the fee is charged in full.
  *
  * `microUsd` stays the sum of the four lanes.
  */
 function priceCall(model: string, usage: Usage, tier: string | undefined): Cost {
+  // The adapter marks a 200 that carried no `usageMetadata`: the tokens billed
+  // are unknown, so no amount (and certainly not an exact zero) is reported.
+  if (usage.details['usage_missing'] === 1) {
+    return {
+      microUsd: null,
+      usd: null,
+      pricingVersion,
+      confidence: 'estimated',
+      details: { input: 0, cached: 0, output: 0, tools: 0 },
+      unpricedReason:
+        'The response carried no usageMetadata, so the tokens billed are unknown.',
+    }
+  }
   const modelRates = resolveGeminiRates(model, tier)
   const audioRates = modelRates?.audio
 

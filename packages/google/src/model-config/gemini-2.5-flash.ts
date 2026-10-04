@@ -1,7 +1,8 @@
 import { maxOutputTokensSchema } from '@gullabs/core'
 import { z } from 'zod'
 
-import { GOOGLE_MAX_TIMEOUT_MS } from '../client.js'
+import { GOOGLE_MAX_TIMEOUT_MS, MAX_TIMER_MS } from '../client.js'
+import { cachedContentSchema } from './cached-content.js'
 import { GOOGLE_MODEL_LIMITS } from '../model-limits.js'
 import { GOOGLE_SAFETY_CATEGORIES, GOOGLE_SAFETY_THRESHOLDS } from '../safety-settings.js'
 
@@ -82,20 +83,12 @@ export const Gemini25FlashConfigSchema = z
         .strictObject({
           google: z
             .strictObject({
-              allowSchemaWithSearch: z.boolean().optional().meta({
-                title: 'Allow Schema With Search',
-                description:
-                  'Admit googleSearch together with a response schema. Turns requireGrounding on unless it is false.',
-              }),
               requireGrounding: z.boolean().optional().meta({
                 title: 'Require Grounding',
                 description:
-                  'Fail the call unless the response proves Google Search ran (grounding metadata with at least one query).',
+                  'Fail the call unless the response proves Google Search ran (grounding metadata with at least one query). Judged only on a candidate that finished with STOP: a MAX_TOKENS or other abnormal finish returns with its own finish reason, a filtered one throws content_filter. The error is retryable only when no response schema is attached.',
               }),
-              cachedContent: z.string().min(1).optional().meta({
-                title: 'Cached Content',
-                description: 'Google cached content resource name.',
-              }),
+              cachedContent: cachedContentSchema,
               safetySettings: z
                 .array(
                   z.strictObject({
@@ -131,9 +124,10 @@ export const Gemini25FlashConfigSchema = z
                 }),
               httpOptions: z
                 .strictObject({
-                  timeout: z.number().int().positive().optional().meta({
+                  timeout: z.number().int().positive().max(MAX_TIMER_MS).optional().meta({
                     title: 'HTTP Timeout',
-                    description: 'Per-request Google transport timeout in milliseconds.',
+                    description:
+                      'Per-request Google transport timeout in milliseconds, at most 2147483647; with timeoutMs set, at least timeoutMs + 5000.',
                   }),
                 })
                 .optional()
@@ -234,20 +228,12 @@ export const Gemini25FlashConfigSchema = z
         .strictObject({
           google: z
             .strictObject({
-              allowSchemaWithSearch: z.boolean().optional().meta({
-                title: 'Allow Schema With Search',
-                description:
-                  'Admit googleSearch together with a response schema. Turns requireGrounding on unless it is false.',
-              }),
               requireGrounding: z.boolean().optional().meta({
                 title: 'Require Grounding',
                 description:
-                  'Fail the call unless the response proves Google Search ran (grounding metadata with at least one query).',
+                  'Fail the call unless the response proves Google Search ran (grounding metadata with at least one query). Judged only on a candidate that finished with STOP: a MAX_TOKENS or other abnormal finish returns with its own finish reason, a filtered one throws content_filter. The error is retryable only when no response schema is attached.',
               }),
-              cachedContent: z.string().min(1).optional().meta({
-                title: 'Cached Content',
-                description: 'Google cached content resource name.',
-              }),
+              cachedContent: cachedContentSchema,
               safetySettings: z
                 .array(
                   z.strictObject({
@@ -283,9 +269,10 @@ export const Gemini25FlashConfigSchema = z
                 }),
               httpOptions: z
                 .strictObject({
-                  timeout: z.number().int().positive().optional().meta({
+                  timeout: z.number().int().positive().max(MAX_TIMER_MS).optional().meta({
                     title: 'HTTP Timeout',
-                    description: 'Per-request Google transport timeout in milliseconds.',
+                    description:
+                      'Per-request Google transport timeout in milliseconds, at most 2147483647; with timeoutMs set, at least timeoutMs + 5000.',
                   }),
                 })
                 .optional()

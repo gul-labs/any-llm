@@ -43,10 +43,15 @@ Rules that matter:
   unpriced fee and understates), an unpriced model or tier, a non-zero xAI tool counter with no rate, an
   audio prompt whose per-modality split the response did not report, or any call whose `totalTokens`
   exceeds `inputTokens + outputTokens`. `web_search_requested` (`1` on every attempt of a request that
-  enabled web search, billed failures included) and `web_search_calls` (the observed number of searches;
+  enabled web search, billed failures included; Google also sets it when a `cachedContent` handle lists
+  `googleSearch`, and when a response carries grounding metadata the request did not declare, in which case
+  the observed queries are priced and a warning says so) and `web_search_calls` (the observed number of searches;
   absent when the provider did not say, `0` when it said none ran) stay in `token_details`, which is
   otherwise token counts, so do not sum its values. `tool_use_prompt` (Gemini 2.5 Search-result tokens) is
-  recorded and not priced. Rows written before record version 2 have NULL in all three cost columns: their
+  recorded and not priced. `usage_missing` (`1`) marks a Google 200 that carried no `usageMetadata`: the
+  tokens are recorded as zero, `cost_micro_usd` is NULL and the confidence `estimated`. A failed attempt's
+  row keeps the tier the attempt asked for in `service_tier` and the tier it was served at, when the error
+  says, in `served_service_tier`. Rows written before record version 2 have NULL in all three cost columns: their
   confidence was never stored and cannot be recovered (`record_schema_version = 1`). Refusal rows (no
   attempt ran) have no cost.
 - Money you can reconcile: the ledger writes `cost_micro_usd` per attempt, NULL when the attempt has no

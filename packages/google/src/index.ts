@@ -20,6 +20,7 @@
  */
 
 export type {
+  GoogleCachedContentRef,
   GoogleSafetySetting,
   GoogleSearchTool,
   GoogleProviderOptions,

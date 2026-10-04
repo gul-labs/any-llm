@@ -13,6 +13,7 @@ import {
   assertJsonSchemaProfile,
   assertInputMimeTypesAdmitted,
   assertModelMatchesDescriptor,
+  isMediaTypeAdmitted,
 } from '@gullabs/core'
 import type {
   ProviderAdapter,
@@ -35,6 +36,7 @@ import type {
 import {
   buildGoogleClient,
   FLEX_DEFAULT_TIMEOUT_MS,
+  MAX_TIMER_MS,
   STANDARD_DEFAULT_TIMEOUT_MS,
   TRANSPORT_TIMEOUT_BUFFER_MS,
 } from './client.js'
@@ -217,6 +219,12 @@ function parseGoogleSafetySetting(
 }
 
 type MappedGoogleProviderOptions = Partial<GeminiDispatchConfig> & {
+  /**
+   * The tool kinds the named cache holds, when the host passed a handle that
+   * records them (`{ cacheName, toolKinds }`). Absent for a bare cache name:
+   * what the cache holds is then unknown.
+   */
+  cachedToolKinds?: readonly string[]
   flexFallback?: boolean
   /** Effective `requireGrounding`: the explicit value, else on when the host opted into schema + search. */
   requireGrounding?: boolean
@@ -242,12 +250,14 @@ function mapGoogleProviderOptions({
   model,
   structuredOutputRequested,
   descriptorGrounding,
+  descriptorCaching,
   structuredOutputWithTools,
 }: {
   googleOpts: unknown
   model: string
   structuredOutputRequested: boolean
   descriptorGrounding: boolean | undefined
+  descriptorCaching: boolean
   structuredOutputWithTools: boolean | undefined
 }): MappedGoogleProviderOptions {
   if (googleOpts === undefined) {
@@ -272,9 +282,7 @@ function mapGoogleProviderOptions({
   }
 
   const unknownKeys = Object.keys(googleOpts).filter(
-    (key) =>
-      !ALLOWED_GOOGLE_PROVIDER_OPTION_KEYS.has(key) &&
-      !RESERVED_GOOGLE_PROVIDER_OPTION_KEYS.has(key),
+    (key) => !ALLOWED_GOOGLE_PROVIDER_OPTION_KEYS.has(key),
   )
   if (unknownKeys.length > 0) {
     throw badGoogleProviderOptions(
@@ -287,15 +295,39 @@ function mapGoogleProviderOptions({
   const mapped: MappedGoogleProviderOptions = {}
 
   if (googleOpts['cachedContent'] !== undefined) {
-    if (
-      typeof googleOpts['cachedContent'] !== 'string' ||
-      googleOpts['cachedContent'].length === 0
-    ) {
+    if (!descriptorCaching) {
       throw badGoogleProviderOptions(
-        `providerOptions.google.cachedContent must be a non-empty string for model "${model}".`,
+        `providerOptions.google.cachedContent is not supported for model "${model}": the model has no explicit-caching capability.`,
       )
     }
-    mapped.cachedContent = googleOpts['cachedContent']
+    const cached = googleOpts['cachedContent']
+    if (typeof cached === 'string' && cached.length > 0) {
+      mapped.cachedContent = cached
+    } else if (isPlainRecord(cached)) {
+      const extraKeys = Object.keys(cached).filter(
+        (key) => key !== 'cacheName' && key !== 'toolKinds',
+      )
+      const cacheName = cached['cacheName']
+      const toolKinds = cached['toolKinds']
+      if (
+        extraKeys.length > 0 ||
+        typeof cacheName !== 'string' ||
+        cacheName.length === 0 ||
+        (toolKinds !== undefined &&
+          (!Array.isArray(toolKinds) ||
+            !toolKinds.every((kind) => typeof kind === 'string')))
+      ) {
+        throw badGoogleProviderOptions(
+          `providerOptions.google.cachedContent must be a non-empty cache name, or { cacheName: non-empty string, toolKinds?: string[] } and nothing else (pass handle.cacheName and handle.toolKinds, not the whole handle), for model "${model}".`,
+        )
+      }
+      mapped.cachedContent = cacheName
+      if (toolKinds !== undefined) mapped.cachedToolKinds = toolKinds
+    } else {
+      throw badGoogleProviderOptions(
+        `providerOptions.google.cachedContent must be a non-empty cache name, or { cacheName: non-empty string, toolKinds?: string[] }, for model "${model}".`,
+      )
+    }
   }
 
   if (googleOpts['flexFallback'] !== undefined) {
@@ -327,9 +359,14 @@ function mapGoogleProviderOptions({
 
     const timeout = googleOpts['httpOptions']['timeout']
     if (timeout !== undefined) {
-      if (typeof timeout !== 'number' || !Number.isInteger(timeout) || timeout <= 0) {
+      if (
+        typeof timeout !== 'number' ||
+        !Number.isInteger(timeout) ||
+        timeout <= 0 ||
+        timeout > MAX_TIMER_MS
+      ) {
         throw badGoogleProviderOptions(
-          `providerOptions.google.httpOptions.timeout must be a positive integer for model "${model}".`,
+          `providerOptions.google.httpOptions.timeout must be a positive integer of at most ${MAX_TIMER_MS} ms (the longest delay a Node timer holds; a larger one aborts the call after 1 ms) for model "${model}".`,
         )
       }
       mapped.httpOptions = { timeout }
@@ -448,11 +485,6 @@ function assertSamplingAllowed(
 }
 
 // ---------------------------------------------------------------------------
-// Exported types for consumers that inject a custom client
-// ---------------------------------------------------------------------------
-export type { GeminiClientLike }
-
-// ---------------------------------------------------------------------------
 // FinishReason mapping (Gemini SDK enum → our FinishReason)
 // ---------------------------------------------------------------------------
 
@@ -466,6 +498,8 @@ export type { GeminiClientLike }
  */
 const MAX_INLINE_REQUEST_BYTES = 100 * 1024 * 1024
 const MAX_INLINE_PDF_BYTES = 50 * 1024 * 1024
+/** The one media type the PDF cap applies to, matched as admission matches it. */
+const PDF_MEDIA_TYPES: readonly string[] = ['application/pdf']
 
 /**
  * Rejects, before dispatch, a request whose inline data and text certainly
@@ -484,7 +518,7 @@ function assertInlinePayloadWithinLimits(
       if (!('inlineData' in part)) return
       const { mimeType, data } = part.inlineData
       total += data.length
-      if (mimeType === 'application/pdf') {
+      if (isMediaTypeAdmitted(mimeType, PDF_MEDIA_TYPES)) {
         const decoded = Math.floor((data.length * 3) / 4)
         if (decoded > MAX_INLINE_PDF_BYTES) {
           throw new LlmError(
@@ -677,8 +711,11 @@ function mapUsage(meta: GeminiUsageMetadataShape | undefined): Usage {
     ...(cachedContentTokenCount !== undefined ? { cached: cachedContentTokenCount } : {}),
     ...(thoughtsTokenCount !== undefined ? { thinking: thoughtsTokenCount } : {}),
     // Tokens of Search results fed back to the model. They sit in
-    // `totalTokenCount` but outside `promptTokenCount`; whether Google bills
-    // them as input is not established, so they are recorded and not priced.
+    // `totalTokenCount` but outside `promptTokenCount`. Google's pricing page
+    // (read in the 2026-10 audit) says retrieved search results are not charged
+    // as input tokens, so they are recorded and not priced; no live billing
+    // reconciliation has confirmed it, so the total mismatch still marks the
+    // cost `estimated`.
     ...(toolUsePromptTokenCount !== undefined
       ? { tool_use_prompt: toolUsePromptTokenCount }
       : {}),
@@ -882,14 +919,6 @@ export interface GeminiAdapterOptions {
    * as a typed `LlmError`.
    */
   client?: GeminiClientLike
-  /**
-   * @internal Testing-only.
-   *
-   * Override the default `buildGoogleClient` factory.  Allows unit tests to
-   * simulate construction failures (e.g. bad credentials) without importing
-   * the real `@google/genai` SDK.  Never set this in production code.
-   */
-  _clientFactory?: (auth: AuthMaterial) => GeminiClientLike | Promise<GeminiClientLike>
 }
 
 // ---------------------------------------------------------------------------
@@ -902,6 +931,20 @@ export interface GeminiAdapterOptions {
  * @param opts.client - Optional pre-built client (e.g. for testing).
  */
 export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
+  return geminiAdapterWithClientFactory(opts?.client, buildGoogleClient)
+}
+
+/**
+ * The adapter with its client factory replaced: the seam a test uses to make
+ * client construction fail without the real SDK. Not exported from the package
+ * index, so it is in no shipped type.
+ *
+ * @internal
+ */
+export function geminiAdapterWithClientFactory(
+  injectedClient: GeminiClientLike | undefined,
+  buildClient: (auth: AuthMaterial) => GeminiClientLike | Promise<GeminiClientLike>,
+): ProviderAdapter {
   return {
     id: 'google',
 
@@ -1139,20 +1182,33 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       // ------------------------------------------------------------------
       const structuredOutputRequested = req.outputJsonSchema !== undefined
       if (structuredOutputRequested) {
-        const nativeStructuredOutput =
-          descriptor.capabilities?.nativeStructuredOutput !== false
-
-        if (nativeStructuredOutput) {
-          // Standard JSON Schema, verbatim and in the host's key order. A
-          // keyword Google would silently ignore is rejected here, not sent.
-          assertJsonSchemaProfile(
-            req.outputJsonSchema as JsonValue,
-            'output.jsonSchema',
-            googleJsonSchemaProfile(descriptor.model),
+        // This adapter has one structured-output path, the native one; a schema
+        // for a model without it would be dropped, so it is rejected.
+        if (descriptor.capabilities?.nativeStructuredOutput === false) {
+          throw new LlmError(
+            `output.jsonSchema is not supported for model "${model}": the model has no native structured output and the Google adapter has no other path.`,
+            {
+              kind: 'bad_request',
+              retryable: false,
+              provider: 'google',
+              issues: [
+                {
+                  path: 'output.jsonSchema',
+                  message: 'model has no native structured output',
+                },
+              ],
+            },
           )
-          config.responseMimeType = 'application/json'
-          config.responseJsonSchema = req.outputJsonSchema
         }
+        // Standard JSON Schema, verbatim and in the host's key order. A
+        // keyword Google would silently ignore is rejected here, not sent.
+        assertJsonSchemaProfile(
+          req.outputJsonSchema as JsonValue,
+          'output.jsonSchema',
+          googleJsonSchemaProfile(descriptor.model),
+        )
+        config.responseMimeType = 'application/json'
+        config.responseJsonSchema = req.outputJsonSchema
       }
 
       // ------------------------------------------------------------------
@@ -1163,15 +1219,26 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         model,
         structuredOutputRequested,
         descriptorGrounding: descriptor.capabilities?.grounding,
+        descriptorCaching: descriptor.capabilities?.caching !== undefined,
         structuredOutputWithTools: descriptor.capabilities?.structuredOutputWithTools,
       })
       // Search facts, normalised across providers (ADR-035): `web_search_requested`
-      // is 1 when the request sent `googleSearch`; `web_search_calls` is the
-      // number of queries the response reports (occurrences, not unique
-      // strings), absent when the response does not say. The pricing source
-      // reads both, because it sees only `(model, usage, tier)`.
+      // is 1 when Search was asked for; `web_search_calls` is the number of
+      // queries the response reports (occurrences, not unique strings), absent
+      // when the response does not say. The pricing source reads both, because
+      // it sees only `(model, usage, tier)`.
+      //
+      // Search was asked for when the request sent `googleSearch`, or when the
+      // handle behind `cachedContent` records that its cache holds the tool (the
+      // request then carries no tool). When the request declares no search (a
+      // bare cache name says nothing about what the cache holds), grounding
+      // metadata in the response is the evidence: queries observed mean the fee
+      // was incurred, so it is priced from them, and the cost is never exact.
       const googleSearchSent =
         googleProviderConfig.tools?.some((tool) => 'googleSearch' in tool) === true
+      const searchDeclared =
+        googleSearchSent ||
+        googleProviderConfig.cachedToolKinds?.includes('googleSearch') === true
       const requireGrounding = googleProviderConfig.requireGrounding === true
       // Audio in the prompt is billed at its own rate on some models, from the
       // per-modality counts the response reports; `audio_input_requested` lets the
@@ -1189,22 +1256,41 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       ): Usage => {
         const mapped = mapUsage(meta)
         if (audioRequested) mapped.details['audio_input_requested'] = 1
-        if (googleSearchSent) {
+        const queries = countWebSearchQueries(groundingMetadata)
+        if (searchDeclared) {
           mapped.details['web_search_requested'] = 1
-          const calls = countWebSearchQueries(groundingMetadata)
-          if (calls !== undefined) mapped.details['web_search_calls'] = calls
+          if (queries !== undefined) mapped.details['web_search_calls'] = queries
+        } else if (groundingMetadata !== undefined) {
+          // Undeclared Search with grounding metadata: queries observed price the
+          // fee; none observed leaves the count unknown (estimated, tools lane 0).
+          mapped.details['web_search_requested'] = 1
+          if (queries !== undefined && queries > 0) {
+            mapped.details['web_search_calls'] = queries
+          }
         }
         return mapped
       }
       /** Warnings about a grounded call whose response does not show what Search did. */
       const groundingWarnings = (groundingMetadata: unknown): Warning[] => {
-        if (!googleSearchSent) return []
+        if (!searchDeclared) {
+          if (groundingMetadata === undefined) return []
+          const queries = countWebSearchQueries(groundingMetadata)
+          return [
+            {
+              type: 'other',
+              message:
+                queries !== undefined && queries > 0
+                  ? `google: the response reports ${queries} search quer${queries === 1 ? 'y' : 'ies'} but the request did not declare googleSearch (a cachedContent cache can hold the tool); the Search fee was priced from the observed queries, and cost.confidence is "estimated" because the free allowance is unknowable per call.`
+                  : 'google: the response carries groundingMetadata but the request did not declare googleSearch and the metadata names no query, so the number of searches is unknown; grounding fees are not included in cost, so cost.confidence is "estimated".',
+            },
+          ]
+        }
         if (groundingMetadata === undefined) {
           return [
             {
               type: 'other',
               message:
-                'google: googleSearch was sent but the response carries no groundingMetadata, so Search may not have run, or may have run without being reported; grounding fees are not included in cost, so cost.confidence is "estimated".',
+                'google: googleSearch was requested (sent, or held by the cache named in cachedContent) but the response carries no groundingMetadata, so Search may not have run, or may have run without being reported; grounding fees are not included in cost, so cost.confidence is "estimated".',
             },
           ]
         }
@@ -1266,6 +1352,21 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       }
       if (googleProviderConfig.httpOptions !== undefined) {
         config.httpOptions = googleProviderConfig.httpOptions
+        // The SDK arms its own timer from `httpOptions.timeout`. When the engine
+        // arms its deadline at `timeoutMs`, a shorter SDK timer would end the call
+        // first with a raw SDK abort instead of the engine's clean `timeout`.
+        const sdkTimeout = googleProviderConfig.httpOptions.timeout
+        if (
+          sdkTimeout !== undefined &&
+          genConfig.timeoutMs !== undefined &&
+          sdkTimeout < genConfig.timeoutMs + TRANSPORT_TIMEOUT_BUFFER_MS
+        ) {
+          throw badGoogleProviderOptions(
+            `providerOptions.google.httpOptions.timeout (${sdkTimeout} ms) must be at least timeoutMs + ${TRANSPORT_TIMEOUT_BUFFER_MS} ms (${
+              genConfig.timeoutMs + TRANSPORT_TIMEOUT_BUFFER_MS
+            } ms) for model "${model}": a shorter SDK timer would abort the call before the engine's own timeout and surface a raw SDK abort.`,
+          )
+        }
       }
       if (googleProviderConfig.safetySettings !== undefined) {
         config.safetySettings = googleProviderConfig.safetySettings
@@ -1275,7 +1376,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       }
 
       if (req.tools !== undefined && req.tools.length > 0) {
-        if (req.modelDescriptor?.capabilities?.functionCalling !== true) {
+        if (descriptor.capabilities?.functionCalling !== true) {
           throw new LlmError(
             `tools is not supported for google model "${model}" (capabilities.functionCalling is not true).`,
             { kind: 'bad_request', retryable: false, provider: 'google' },
@@ -1283,7 +1384,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         }
         if (googleProviderConfig.tools !== undefined) {
           throw new LlmError(
-            'tools cannot be combined with providerOptions.google.tools (googleSearch) in this iteration.',
+            'tools cannot be combined with providerOptions.google.tools (googleSearch): this adapter does not send function declarations and Search in one request.',
             { kind: 'bad_request', retryable: false, provider: 'google' },
           )
         }
@@ -1344,18 +1445,16 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       // 5a. Fixed-sampling models reject sampling params even when a custom
       //     descriptor or direct adapter test bypasses core parsing.
       // ------------------------------------------------------------------
-      assertSamplingAllowed(config, model, req.modelDescriptor?.capabilities?.sampling)
+      assertSamplingAllowed(config, model, descriptor.capabilities?.sampling)
 
       // ------------------------------------------------------------------
-      // 6. AbortSignal passthrough + FIX A-2: client-side flex ceiling
+      // 6. AbortSignal passthrough + client-side tier ceiling
       //
-      // FIX A-2 belt-and-suspenders: @google/genai issue #1277 — on SDK
-      // versions before 2.0.0, httpOptions.timeout is a no-op for
-      // generateContent. Upstream landed a related Undici dispatcher fix in
-      // 2.0.0 (commit 850f680), but we keep this mitigation as
-      // belt-and-suspenders since it is now merely double-covered, not made
-      // incorrect. On explicit flex calls without timeoutMs, the engine arms
-      // NO AbortSignal; relying solely on
+      // @google/genai issue #1277: on SDK versions before 2.0.0,
+      // httpOptions.timeout is a no-op for generateContent. Upstream landed a
+      // related Undici dispatcher fix in 2.0.0 (commit 850f680), so this
+      // ceiling is now a second guard, not the only one. On explicit flex calls
+      // without timeoutMs, the engine arms NO AbortSignal; relying solely on
       // httpOptions.timeout risks a silent hang. We arm our own
       // AbortController here and combine it with any incoming signal so WE
       // enforce the ceiling regardless of the SDK bug.
@@ -1483,9 +1582,8 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
           contents,
           config: dispatchConfig,
         }
-        const buildClient = opts?._clientFactory ?? buildGoogleClient
         const client: GeminiClientLike =
-          opts?.client !== undefined ? opts.client : await buildClient(ctx.auth)
+          injectedClient !== undefined ? injectedClient : await buildClient(ctx.auth)
         ctx.logger.debug(
           {
             model,
@@ -1534,6 +1632,16 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         ) {
           config.serviceTier = 'standard'
           servedServiceTier = 'standard'
+          warnings.push({
+            type: 'other',
+            message: `google: the flex call hit a capacity error (${
+              typed.httpStatus ?? 'no status'
+            }) and was sent again at the standard tier, billed at standard rates.${
+              genConfig.timeoutMs === undefined
+                ? ` Without timeoutMs the standard attempt runs under the ${STANDARD_DEFAULT_TIMEOUT_MS} ms client-side ceiling, not the flex ${FLEX_DEFAULT_TIMEOUT_MS} ms one.`
+                : ''
+            }`,
+          })
           const fallbackTimeout =
             genConfig.timeoutMs !== undefined
               ? genConfig.timeoutMs + TRANSPORT_TIMEOUT_BUFFER_MS
@@ -1558,7 +1666,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
           throw typed
         }
       } finally {
-        // FIX A-2: always clear the tier timeout timer so it never leaks,
+        // Always clear the tier timeout timer so it never leaks,
         // regardless of whether the call succeeded, threw, or was aborted.
         clearTierTimeout()
       }
@@ -1582,10 +1690,9 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       // blockReason is a provider failure, not evidence of a safety block.
       // ------------------------------------------------------------------
       const hasBlockReason = response.promptFeedback?.blockReason !== undefined
-      const hasCandidates =
-        response.candidates !== undefined && response.candidates.length > 0
+      const candidate = response.candidates?.[0]
 
-      if (hasBlockReason || !hasCandidates) {
+      if (hasBlockReason || candidate === undefined) {
         const reason = response.promptFeedback?.blockReason ?? 'NO_CANDIDATES'
         const thoughtTokens = response.usageMetadata?.thoughtsTokenCount ?? 0
         // The usual cause of a candidate-less 200 that billed reasoning is a
@@ -1619,39 +1726,29 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       // ------------------------------------------------------------------
       // 9. Map response
       // ------------------------------------------------------------------
-      const candidates = response.candidates
-      if (candidates === undefined || candidates.length === 0) {
-        throw new LlmError('Gemini response has no usable candidate: NO_CANDIDATES', {
-          kind: 'server',
-          retryable: true,
-          provider: 'google',
-          ...billedFailure(response.usageMetadata),
-          ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
-        })
-      }
-      const candidate = candidates[0]
-      if (candidate === undefined) {
-        throw new LlmError('Gemini response has no usable candidate: NO_CANDIDATES', {
-          kind: 'server',
-          retryable: true,
-          provider: 'google',
-          ...billedFailure(response.usageMetadata),
-          ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
-        })
-      }
       const groundingMetadata = candidate.groundingMetadata
       const parts = candidate.content?.parts ?? []
 
-      // An output-side filter stop that produced neither answer text nor a tool
-      // call is a failure, like a blocked prompt: `content_filter`, not
-      // retryable (the same call is refused again), billed. A stop that kept
-      // partial text or a call is returned with `finishReason: 'content_filter'`.
+      // A function call is complete only when the candidate ended normally
+      // (`STOP`, or no finish reason). Alongside any other finish (`MAX_TOKENS`
+      // cut it, `SAFETY` filtered it, `OTHER` and the rest) it is not a call a
+      // host may run: it is dropped from `toolCalls` and from the assistant
+      // message, and a warning names it. The finish reason then says why.
+      const callsComplete =
+        candidate.finishReason === undefined || candidate.finishReason === 'STOP'
+      const isFunctionCall = (part: (typeof parts)[number]): boolean =>
+        part.functionCall !== undefined && typeof part.functionCall.name === 'string'
+
+      // An output-side filter stop that produced neither answer text nor a
+      // complete tool call is a failure, like a blocked prompt: `content_filter`,
+      // not retryable (the same call is refused again), billed. A stop that kept
+      // partial text is returned with `finishReason: 'content_filter'`.
       const hasAnswer = parts.some(
         (part) =>
           (part.thought !== true &&
             typeof part.text === 'string' &&
             part.text.length > 0) ||
-          (part.functionCall !== undefined && typeof part.functionCall.name === 'string'),
+          (callsComplete && isFunctionCall(part)),
       )
       const filteredCandidateError = (note: string): LlmError => {
         const finishMessage =
@@ -1682,7 +1779,9 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         )
       }
       if (mapFinishReason(candidate.finishReason) === 'content_filter' && !hasAnswer) {
-        throw filteredCandidateError('it carries no answer text and no tool call')
+        throw filteredCandidateError(
+          'it carries no answer text and no complete tool call',
+        )
       }
 
       // requireGrounding fails closed: only a response that reports at least one
@@ -1738,6 +1837,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       const issuedSignatures: Array<{ partIndex: number; signature: string }> = []
       let droppedSignatures = 0
 
+      const droppedCalls: string[] = []
       const nameCounts = new Map<string, number>()
       // Reserve the provider's ids and every id already in the history, so a
       // synthesized id is unique within the conversation.
@@ -1757,7 +1857,10 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
             ? part.thoughtSignature
             : undefined
         let represented = false
-        if (
+        if (isFunctionCall(part) && !callsComplete) {
+          droppedCalls.push(part.functionCall?.name ?? '')
+          represented = true
+        } else if (
           part.functionCall !== undefined &&
           typeof part.functionCall.name === 'string'
         ) {
@@ -1794,6 +1897,18 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
           }
         }
         if (signature !== undefined && !represented) droppedSignatures += 1
+      }
+
+      if (droppedCalls.length > 0) {
+        const named = droppedCalls.map((name) => `"${name}"`).join(', ')
+        warnings.push({
+          type: 'other',
+          message: `google: dropped ${droppedCalls.length} function call(s) (${named}) because the candidate ended with finishReason ${candidate.finishReason ?? 'unspecified'}, not STOP: ${
+            candidate.finishReason === 'MAX_TOKENS'
+              ? 'the call was cut by the output cap and is incomplete'
+              : 'a call beside an abnormal stop is not a call to run'
+          }. The result carries no tool call; finishReason is "${mapFinishReason(candidate.finishReason) ?? 'other'}".`,
+        })
       }
 
       const text = textParts.join('')
@@ -1856,6 +1971,14 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
           rawStructured = JSON.parse(text)
         } catch {
           // Core reports outputParsed:false; callers own validation/retry policy.
+          // Gemma wraps its answer in a markdown fence often enough to name the
+          // cause; the text is returned as sent, never unwrapped here.
+          if (descriptor.model.startsWith('gemma-') && /^\s*```/.test(text)) {
+            warnings.push({
+              type: 'other',
+              message: `google: gemma_fenced_json: the answer from "${model}" is wrapped in a markdown code fence, so it is not parseable JSON and outputParsed is false. Gemma 4 fenced 67 of 162 schema answers (41%) in a live probe (2026-10-03) although the schema is native. The text is returned as the model sent it; call again, or unwrap the fence on the host side.`,
+            })
+          }
         }
       }
 
@@ -1863,6 +1986,17 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       // 10. Build AdapterResult
       // ------------------------------------------------------------------
       const usage = usageFor(response.usageMetadata, groundingMetadata)
+      // A 200 without `usageMetadata` billed tokens nobody reported: the usage
+      // is unknown, not zero. The marker makes the pricing source report the
+      // call unpriced (`microUsd: null`, estimated) instead of an exact $0.
+      if (response.usageMetadata === undefined) {
+        usage.details['usage_missing'] = 1
+        warnings.push({
+          type: 'other',
+          message:
+            'google: the response carries no usageMetadata, so token usage is unknown; the call is recorded with zero tokens and is not priced (cost.microUsd is null, cost.confidence is "estimated").',
+        })
+      }
       const finishReason = mapFinishReason(candidate.finishReason)
       warnings.push(...groundingWarnings(groundingMetadata))
       warnings.push(...modalityWarnings(response.usageMetadata))
@@ -1923,12 +2057,6 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
                   })()
                 : boundMetadata(value, bounded)
           }
-          if (bounded.truncated) {
-            warnings.push({
-              type: 'other',
-              message: `google: providerMetadata.google.candidate was truncated (finishMessage over ${MAX_FINISH_MESSAGE_CHARS} characters, or a list over ${MAX_METADATA_ARRAY} entries).`,
-            })
-          }
           const googleMeta: { [k: string]: JsonValue } = {}
           if (Object.keys(candidateFields).length > 0) {
             googleMeta['candidate'] = candidateFields
@@ -1941,8 +2069,11 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
             return {}
           }
           const meta: { [k: string]: JsonValue } = {}
+          // `promptFeedback` and `groundingMetadata` are bounded like the
+          // candidate fields: `webSearchQueries` come from the user's prompt and
+          // every `groundingSupports[].segment.text` copies the answer.
           if (pf !== undefined) {
-            meta['promptFeedback'] = pf as unknown as JsonValue
+            meta['promptFeedback'] = boundMetadata(pf, bounded)
           }
           if (gm !== undefined) {
             const searchEntryPoint = readSearchEntryPoint(gm)
@@ -1951,11 +2082,17 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
               // kilobytes and `providerMetadata` is persisted on every grounded
               // row, so the raw copy omits it.
               const { searchEntryPoint: _widget, ...rest } = gm as Record<string, unknown>
-              meta['groundingMetadata'] = rest as unknown as JsonValue
+              meta['groundingMetadata'] = boundMetadata(rest, bounded)
               googleMeta['searchEntryPoint'] = searchEntryPoint
             } else {
-              meta['groundingMetadata'] = gm as unknown as JsonValue
+              meta['groundingMetadata'] = boundMetadata(gm, bounded)
             }
+          }
+          if (bounded.truncated) {
+            warnings.push({
+              type: 'other',
+              message: `google: providerMetadata was truncated (finishMessage over ${MAX_FINISH_MESSAGE_CHARS} characters, a string over ${MAX_METADATA_STRING}, a list over ${MAX_METADATA_ARRAY} entries or nesting over ${MAX_METADATA_DEPTH} levels, in the candidate fields, promptFeedback or groundingMetadata); the citations are built from the full response.`,
+            })
           }
           if (Object.keys(googleMeta).length > 0) meta['google'] = googleMeta
           return { providerMetadata: meta as JsonValue }
@@ -1984,9 +2121,10 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
 
       // The SDK's Gemini Developer API `countTokens` carries only `contents`, so
       // a `system` or `tools` count goes through the REST `generateContentRequest`
-      // form (see `buildGoogleClient`): the count then covers the same request
-      // `generate()` would send. An empty system string adds no tokens and is
-      // treated as absent.
+      // form (see `buildGoogleClient`). The count covers `messages`, `system` and
+      // `tools`; it carries no response schema, thinking config, `toolConfig`,
+      // safety settings or Search tool, which `generate()` also sends. An empty
+      // system string adds no tokens and is treated as absent.
       const system =
         req.system !== undefined && req.system !== '' ? req.system : undefined
       const tools =
@@ -2040,9 +2178,8 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       }
 
       try {
-        const buildClient = opts?._clientFactory ?? buildGoogleClient
         const client: GeminiClientLike =
-          opts?.client !== undefined ? opts.client : await buildClient(ctx.auth)
+          injectedClient !== undefined ? injectedClient : await buildClient(ctx.auth)
         const response = await client.models.countTokens(params)
 
         if (response.totalTokens === undefined) {

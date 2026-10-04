@@ -36,7 +36,7 @@ export function reserveProviderToolCallIds(
  * `counterKey` lets functionCall vs functionResponse keep independent
  * sequences so two id-less pairs of the same name still line up.
  */
-export function nextFallbackToolCallId(
+function nextFallbackToolCallId(
   toolName: string,
   counters: Map<string, number>,
   reserved: Set<string>,

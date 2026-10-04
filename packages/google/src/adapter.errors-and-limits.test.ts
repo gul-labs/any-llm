@@ -178,18 +178,19 @@ describe('R4.11 output-side filter stop', () => {
     expect(result.finishReason).toBe('content_filter')
   })
 
-  it('a tool call is an answer: a filter stop after it is a success with the call', async () => {
+  it('a function call beside a filter stop is not a call to run: with no text the stop is the failure', async () => {
     const client = makeFakeGemini(
       fakeGeminiResponse({
         finishReason: 'SAFETY',
         parts: [{ functionCall: { name: 'get_temperature', args: { city: 'Rome' } } }],
       }),
     )
-    const result = await geminiAdapter({ client }).run(
-      makeReq({ tools: [TOOL] }),
-      FAKE_CTX,
+    const err = await failure(
+      geminiAdapter({ client }).run(makeReq({ tools: [TOOL] }), FAKE_CTX),
     )
-    expect(result.toolCalls).toHaveLength(1)
+    expect(err.kind).toBe('content_filter')
+    expect(err.retryable).toBe(false)
+    expect(err.message).toContain('no complete tool call')
   })
 
   it('a non-filter stop with no text (MAX_TOKENS) is not turned into an error', async () => {

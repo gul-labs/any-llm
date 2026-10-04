@@ -165,7 +165,7 @@ const STALE =
   'history was edited, reordered or produced by another model after the signature was issued'
 
 /** What {@link resolveSignatures} found in the overlay. */
-export interface ResolvedSignatures {
+interface ResolvedSignatures {
   /** `"messageIndex:partIndex"` to signature, for the entries that verified. */
   bySlot: Map<string, string>
   /** The entries that verified, in order: the overlay to carry forward. */

@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  nextFallbackToolCallId,
-  reserveProviderToolCallIds,
-  resolveToolCallId,
-} from './tool-call-id.js'
+import { reserveProviderToolCallIds, resolveToolCallId } from './tool-call-id.js'
 
 describe('reserveProviderToolCallIds', () => {
   it('keeps only non-empty strings', () => {
@@ -13,11 +9,11 @@ describe('reserveProviderToolCallIds', () => {
   })
 })
 
-describe('nextFallbackToolCallId', () => {
+describe('a synthesized id', () => {
   it('skips reserved provider ids', () => {
     const counters = new Map<string, number>()
     const reserved = new Set(['anyllm_call_lookup_1'])
-    expect(nextFallbackToolCallId('lookup', counters, reserved)).toBe(
+    expect(resolveToolCallId(undefined, 'lookup', counters, reserved)).toBe(
       'anyllm_call_lookup_2',
     )
   })

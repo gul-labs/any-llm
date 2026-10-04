@@ -87,13 +87,21 @@ export interface GeminiTierRates {
   flex: GeminiRates
 }
 
+/** Freezes a rate object and the `gt200k` and `audio` objects it holds. */
+function freezeRates(rates: GeminiRates): GeminiRates {
+  if (rates.gt200k !== undefined) Object.freeze(rates.gt200k)
+  if (rates.audio !== undefined) Object.freeze(rates.audio)
+  return Object.freeze(rates)
+}
+
 function tiers(standard: GeminiRates, flex: GeminiRates): GeminiTierRates {
-  return Object.freeze({ standard, flex })
+  return Object.freeze({ standard: freezeRates(standard), flex: freezeRates(flex) })
 }
 
 /**
- * Frozen Gemini pricing snapshot (per-1M in µUSD), keyed by model id, then
- * by priced tier. Every number is transcribed from the pricing page.
+ * Deep-frozen Gemini pricing snapshot (per-1M in µUSD), keyed by model id, then
+ * by priced tier; no rate object, `gt200k` band or `audio` rate can be changed.
+ * Every number is transcribed from the pricing page.
  *
  * Keys are exact priced model identifiers. Unlisted variants are unpriced.
  *
@@ -221,10 +229,12 @@ export const GEMINI_PRICING: Readonly<Record<string, GeminiTierRates>> = Object.
  *
  * Transcribed from https://ai.google.dev/gemini-api/docs/pricing, grounding
  * with Google Search, read 2026-10-03 (Gemini 3: $14 per 1,000 queries;
- * Gemini 2.5: $35 per 1,000 grounded prompts). The page also publishes a daily
- * free allowance. It is shared across a project's calls, so no single call can
- * know whether it was free: every grounding fee is charged in full here, which
- * is why a call that ran Search is never reported as exact.
+ * Gemini 2.5: $35 per 1,000 grounded prompts). The page also publishes a free
+ * allowance (as read in the 2026-10 audit: 5,000 requests per month shared
+ * across Gemini 3.x, 1,500 requests per day on Gemini 2.5). It is shared across
+ * a project's calls, so no single call can know whether it was free: every
+ * grounding fee is charged in full here, which is why a call that ran Search is
+ * never reported as exact.
  *
  * Keys are exact priced model identifiers. Gemma has no token price in this
  * snapshot, so it has no grounding price either.

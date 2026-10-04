@@ -10,6 +10,7 @@
  * @module
  */
 
+import type { GoogleCacheHandle } from './cache-store.js'
 import type { GoogleSafetyCategory, GoogleSafetyThreshold } from './safety-settings.js'
 
 export type GoogleSafetySetting = {
@@ -23,9 +24,27 @@ export type GoogleSearchTool = {
   googleSearch: Record<string, never>
 }
 
+/**
+ * A cached-content reference: the resource name, or `{ cacheName, toolKinds }`
+ * taken from a `GoogleCacheHandle` (`handle.toolKinds` records which tools the
+ * cache holds). Pass those two fields, not the whole handle: the other fields
+ * are typed `never` here and the schema is strict. The request sent to Google
+ * carries only the name. A bare name says nothing about what the cache holds,
+ * so a Search fee in the response is priced from the observed queries and the
+ * cost is `estimated`; a handle whose `toolKinds` lists `googleSearch` marks the
+ * call as a Search call up front.
+ */
+export type GoogleCachedContentRef =
+  | string
+  | (Pick<GoogleCacheHandle, 'cacheName' | 'toolKinds'> & {
+      expiresAt?: never
+      model?: never
+      totalTokenCount?: never
+    })
+
 export type GoogleProviderOptions = {
-  /** Google cached content resource name. */
-  cachedContent?: string
+  /** Google cached content: the resource name, or a handle that records the cache's tool kinds. Explicit-caching models only. */
+  cachedContent?: GoogleCachedContentRef
   /** Allowlisted Google safety settings. */
   safetySettings?: GoogleSafetySetting[]
   /** Exact Google tool declarations admitted by the selected model schema. */
@@ -46,9 +65,14 @@ export type GoogleProviderOptions = {
   allowSchemaWithSearch?: boolean
   /**
    * Fail the call unless the response proves Search ran: `groundingMetadata`
-   * present with at least one `webSearchQueries` entry. A response without that
-   * proof throws a retryable `server` error with reason `grounding_missing`,
-   * and the attempt's usage is recorded. Requires `googleSearch`. Defaults to
+   * present with at least one `webSearchQueries` entry. The check judges only a
+   * candidate that finished normally (`STOP`, or no finish reason). Without the
+   * proof it throws a `server` error with reason `grounding_missing` and the
+   * attempt's usage is recorded; the error is retryable when no response schema
+   * is attached and not retryable when one is (the same request keeps missing).
+   * A `MAX_TOKENS` or other abnormal finish with no proof is not judged: it
+   * returns, with its own finish reason (`length`), and a filtered candidate
+   * throws its `content_filter` error. Requires `googleSearch`. Defaults to
    * `true` when {@link allowSchemaWithSearch} is `true`, else `false`.
    */
   requireGrounding?: boolean
