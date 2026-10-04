@@ -304,7 +304,10 @@ const b = await caches.getOrCreate(key, async () => ({ ttlSeconds: 600 }))
 `FakeGoogleFileStore.upload` applies the real store's media-type admission (core's
 `assertMediaTypeAdmitted` over the list `@gullabs/google` exports as `GEMINI_INPUT_MIME_TYPES`): an
 empty type or `application/x-foo` is `bad_request`, as with the real store. `failUpload` (an error or a
-list, one per upload in order) scripts upload failures. `FakeGoogleCacheStore` takes `failCreate`
+list, one per upload in order) scripts upload failures. An `upload` whose `signal` aborts (including while it reads
+a `Blob`) rejects with `aborted` at once and stores nothing; `delete` of a blank name is `bad_request`, and
+`delete` with an aborted signal throws `aborted` with `failClosed` and otherwise goes to `onDeleteError`, as with
+the real store (a parity test runs both over the same cases). `FakeGoogleCacheStore` takes `failCreate`
 (same shape), `preflight: { minTokens, countTokens }` (the real store's opt-in token gate; Gemini 3.x
 caches need at least 2048 tokens) and `coalesce`. A scripted error is classified as the real store
 classifies an SDK failure, so `fakeProviderError('google', 'per-day-quota')` arrives as

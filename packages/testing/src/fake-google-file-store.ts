@@ -5,7 +5,9 @@
  * Structural (no static import of `@gullabs/google`): hosts inject it where
  * production code takes a store-shaped object. Mirrors the real store's surface
  * (`upload`, `delete`, `deleteAll`) and its delete semantics: a missing file is
- * success, other failures follow `failClosed`. `upload` applies the real
+ * success, other failures follow `failClosed`, an aborted `signal` is a failure
+ * routed the same way, and a blank name is `bad_request`. `upload` honours an
+ * abort while it reads a Blob. `upload` applies the real
  * store's media-type admission (core's `assertMediaTypeAdmitted` over the
  * Gemini list that `@gullabs/google` exports as `GEMINI_INPUT_MIME_TYPES`, an
  * optional peer dependency loaded on first upload), so a type the real store
@@ -60,6 +62,38 @@ export interface FakeGoogleFileStoreOptions {
 }
 
 const DEFAULT_TTL_MS = 48 * 3_600_000
+
+/**
+ * Races `promise` against `signal`: an abort rejects with an `aborted`
+ * `LlmError` while the underlying work carries on unobserved, as in the real
+ * store.
+ */
+async function abortable<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (signal === undefined) return promise
+  promise.catch(() => {})
+  let onAbort: (() => void) | undefined
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => {
+      reject(
+        new LlmError('File upload aborted', {
+          kind: 'aborted',
+          retryable: false,
+          provider: 'google',
+        }),
+      )
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted) onAbort()
+  })
+  try {
+    return await Promise.race([promise, aborted])
+  } finally {
+    if (onAbort !== undefined) signal.removeEventListener('abort', onAbort)
+  }
+}
 
 /**
  * An in-memory Gemini file store. Upload keeps the bytes and returns a handle
@@ -136,8 +170,12 @@ export class FakeGoogleFileStore {
     if (scripted !== undefined) {
       throw classifyError(await classifyAs('google', scripted))
     }
+    // Reading a Blob is awaited work; an abort ends it at once, as an abort ends the
+    // real store's upload wait, and nothing is stored.
     const bytes =
-      source instanceof Uint8Array ? source : new Uint8Array(await source.arrayBuffer())
+      source instanceof Uint8Array
+        ? source
+        : new Uint8Array(await abortable(source.arrayBuffer(), opts?.signal))
     this.seq += 1
     const name = `files/fake-${this.seq}`
     const expiresAtMs = this.now() + this.ttlMs
@@ -155,16 +193,35 @@ export class FakeGoogleFileStore {
     handle: Pick<FakeGoogleFileHandle, 'name'>,
     opts?: FakeGoogleFileDeleteOptions,
   ): Promise<void> {
+    const name: unknown = handle.name
+    if (typeof name !== 'string' || name.trim() === '') {
+      throw new LlmError('GoogleFileHandle.name must be a non-empty string.', {
+        kind: 'bad_request',
+        retryable: false,
+        provider: 'google',
+      })
+    }
     this.purgeExpired()
-    if (this.files.delete(handle.name)) return
-    if (!this.deleteMissingAsError) return // not found is success (idempotent)
-    const err = new LlmError('simulated delete failure', {
-      kind: 'server',
-      retryable: true,
-      provider: 'google',
-    })
+    let err: LlmError
+    if (opts?.signal?.aborted === true) {
+      // The real store checks the signal before it calls Google, and routes the
+      // aborted error through `failClosed` / `onDeleteError` like any other failure.
+      err = new LlmError('Google file delete aborted', {
+        kind: 'aborted',
+        retryable: false,
+        provider: 'google',
+      })
+    } else {
+      if (this.files.delete(name)) return
+      if (!this.deleteMissingAsError) return // not found is success (idempotent)
+      err = new LlmError('simulated delete failure', {
+        kind: 'server',
+        retryable: true,
+        provider: 'google',
+      })
+    }
     if (opts?.failClosed === true) throw err
-    this.onDeleteError(handle.name, err)
+    this.onDeleteError(name, err)
   }
 
   async deleteAll(
