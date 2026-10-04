@@ -692,29 +692,36 @@ describe('vision / media mapping', () => {
   })
 
   it('sizes an inline image by its base64 characters, not by its line breaks', async () => {
-    const wrap = (raw: Uint8Array) =>
-      Buffer.from(raw).toString('base64').replace(/.{76}/g, '$&\r\n')
-    const png = (bytes: number) => ({
+    // Built by repetition (a few ms), never by encoding and regex-wrapping tens of
+    // megabytes: that took seconds of CPU under parallel load and made the test flaky.
+    // 76 base64 characters = 57 decoded bytes per CRLF-wrapped line.
+    const line = `${'QUFB'.repeat(19)}\r\n`
+    const wrapped = (decodedBytes: number): string =>
+      line.repeat(Math.ceil(decodedBytes / 57))
+    const png = (decodedBytes: number) => ({
       kind: 'inline-media' as const,
       mimeType: 'image/png',
-      data: wrap(new Uint8Array(bytes).fill(1)),
+      data: wrapped(decodedBytes),
     })
-    const run = (bytes: number) => {
+    const run = (decodedBytes: number) => {
       const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
       return {
         client,
         done: xaiAdapter({ client }).run(
-          makeResolvedReq({ messages: [{ role: 'user', parts: [png(bytes)] }] }),
+          makeResolvedReq({
+            messages: [{ role: 'user', parts: [png(decodedBytes)] }],
+          }),
           FAKE_CTX,
         ),
       }
     }
-    // 19.5 MiB decoded is about 26.6 MB of base64 once wrapped every 76 characters.
+    // 19.5 MiB decoded is about 27.3 MB of text once wrapped every 76 characters,
+    // over the ceiling by plain length alone: only the line-break-free count admits it.
     const within = run(19.5 * 1024 * 1024)
     await within.done
     expect(within.client.calls).toHaveLength(1)
     // Wrapping does not hide an image that really is over the ceiling.
-    await expect(run(20 * 1024 * 1024 + 3).done).rejects.toMatchObject({
+    await expect(run(20 * 1024 * 1024 + 57 * 4).done).rejects.toMatchObject({
       kind: 'bad_request',
     })
   })
