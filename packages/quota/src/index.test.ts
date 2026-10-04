@@ -262,11 +262,8 @@ describe('@gullabs/quota', () => {
     const error = await checkProviderQuota({
       provider: 'google',
       model: 'gemini-2.5-flash',
-      policy: quotaPolicyForGemini({
-        models: {
-          'gemini-2.5-flash': { rpd: Number.NaN },
-        },
-      }),
+      // A host's own policy: `quotaPolicy` refuses this value when it is built.
+      policy: { getRule: () => ({ rpd: Number.NaN }) },
       store,
       nowMs: Date.UTC(2026, 5, 30, 12, 0, 0),
     }).catch((err: unknown) => err)
@@ -288,11 +285,7 @@ describe('@gullabs/quota', () => {
       onStoreError: 'fail-closed',
       provider: 'google',
       model: 'gemini-2.5-flash',
-      policy: quotaPolicyForGemini({
-        models: {
-          'gemini-2.5-flash': { rpm: -5 },
-        },
-      }),
+      policy: { getRule: () => ({ rpm: -5 }) },
       store,
       nowMs: Date.UTC(2026, 5, 30, 12, 0, 0),
     }).catch((err: unknown) => err)
@@ -381,11 +374,7 @@ describe('@gullabs/quota', () => {
 
     const middleware = providerQuotaMiddleware({
       onStoreError: 'fail-closed',
-      policy: quotaPolicyForGemini({
-        models: {
-          'gemini-2.5-flash': { rpm: -5 },
-        },
-      }),
+      policy: { getRule: () => ({ rpm: -5 }) },
       store,
       now: () => Date.UTC(2026, 5, 30, 12, 0, 0),
     })

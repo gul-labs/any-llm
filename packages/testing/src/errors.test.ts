@@ -14,9 +14,16 @@ import { constants as osConstants } from 'node:os'
 import { createRequire } from 'node:module'
 import type { ApiError } from '@google/genai'
 import type { APIError } from 'openai'
-import { LlmError, classifyError, createClient, createModelRegistry } from '@gullabs/core'
+import {
+  LlmError,
+  classifyError,
+  createClient,
+  createModelRegistry,
+  retryMiddleware,
+} from '@gullabs/core'
 import type { AdapterResult } from '@gullabs/core'
 import { FakeAdapter } from './fake-adapter.js'
+import { fakeLlmResult } from './fake-llm-result.js'
 import {
   GOOGLE_ERROR_CASES,
   XAI_ERROR_CASES,
@@ -25,6 +32,7 @@ import {
   fakeHttpError,
   fakeNetworkError,
   fakeProviderError,
+  fakeStreamFailure,
   type GoogleErrorScenario,
   type XaiErrorScenario,
 } from './errors.js'
@@ -224,6 +232,75 @@ describe('fakeBilledFailure', () => {
       inputTokens: 120,
       outputTokens: 3,
     })
+  })
+})
+
+describe('fakeStreamFailure', () => {
+  it('is an LlmError that may have billed, not retried, with no usage by default', () => {
+    const err = fakeStreamFailure()
+    expect(err).toBeInstanceOf(LlmError)
+    expect(err).toMatchObject({
+      kind: 'server',
+      retryable: false,
+      mayHaveBilled: true,
+      provider: 'xai',
+    })
+    expect(err.usage).toBeUndefined()
+  })
+
+  it('options set the kind, retryability, message, provider and usage', () => {
+    const err = fakeStreamFailure({
+      kind: 'rate_limited',
+      message: 'cut',
+      provider: 'other',
+      usage: { inputTokens: 40, outputTokens: 7 },
+    })
+    expect(err).toMatchObject({
+      kind: 'rate_limited',
+      retryable: false,
+      message: 'cut',
+      provider: 'other',
+      mayHaveBilled: true,
+    })
+    expect(err.usage).toEqual({
+      inputTokens: 40,
+      outputTokens: 7,
+      details: {},
+      raw: null,
+    })
+  })
+
+  it('the engine books the attempt unpriced and does not retry, even for a rate_limited kind', async () => {
+    const records: import('@gullabs/core').LlmCallRecord[] = []
+    const adapter = new FakeAdapter('xai', [
+      fakeStreamFailure({ kind: 'rate_limited' }),
+      fakeLlmResult({ text: 'second' }),
+    ])
+    const client = createClient({
+      adapters: [adapter],
+      middleware: [retryMiddleware()],
+      modelRegistry: createModelRegistry([
+        makePermissiveTestDescriptor({ provider: 'xai', model: 'm' }),
+      ]),
+      sink: {
+        record: (r) => {
+          records.push(r)
+          return Promise.resolve()
+        },
+      },
+    })
+    await expect(
+      client.generate(
+        {
+          provider: 'xai',
+          model: 'm',
+          messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
+        },
+        { auth: { apiKey: 'k' } },
+      ),
+    ).rejects.toMatchObject({ kind: 'rate_limited', mayHaveBilled: true })
+    expect(records).toHaveLength(1)
+    expect(records[0]?.costMicroUsd ?? null).toBeNull()
   })
 })
 

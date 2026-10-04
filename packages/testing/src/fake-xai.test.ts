@@ -54,6 +54,29 @@ describe('fakeXaiResponse', () => {
     }
   })
 
+  it('builds function_call items after the message, serializing object arguments', () => {
+    const r = fakeXaiResponse({
+      text: 'calling',
+      functionCalls: [
+        { callId: 'call_1', name: 'lookup', arguments: { q: 'x' } },
+        { callId: 'call_2', name: 'broken', arguments: '{"q":', status: 'incomplete' },
+      ],
+    })
+    expect(r.output.map((item) => item.type)).toEqual([
+      'message',
+      'function_call',
+      'function_call',
+    ])
+    expect(r.output[1]).toEqual({
+      type: 'function_call',
+      call_id: 'call_1',
+      name: 'lookup',
+      arguments: '{"q":"x"}',
+      status: 'completed',
+    })
+    expect(r.output[2]).toMatchObject({ arguments: '{"q":', status: 'incomplete' })
+  })
+
   it('populates all usage fields', () => {
     const r = fakeXaiResponse({
       inputTokens: 100,

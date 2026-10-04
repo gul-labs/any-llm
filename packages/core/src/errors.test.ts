@@ -8,12 +8,13 @@ import {
   classifyError,
   causeChain,
   isTransportError,
+  llmErrorOptionsOf,
   parseRetryAfter,
   LlmError,
   normalizeSchemaIssues,
   toErrorIssues,
 } from './errors.js'
-import type { LlmErrorKind } from './errors.js'
+import type { LlmErrorKind, LlmErrorOptions } from './errors.js'
 import type { StandardSchemaV1 } from './standard-schema.js'
 
 // ---------------------------------------------------------------------------
@@ -1004,5 +1005,52 @@ describe('parseRetryAfter', () => {
       86_400_000,
     )
     expect(classifyError({ status: 429, retryAfterMs: 0 }).retryAfterMs).toBeUndefined()
+  })
+})
+
+describe('llmErrorOptionsOf', () => {
+  // `Required<LlmErrorOptions>` makes this literal fail to compile when a field is
+  // added to the options, so the test cannot go stale silently.
+  const everything = {
+    kind: 'rate_limited',
+    retryable: true,
+    reason: 'quota_window',
+    httpStatus: 429,
+    retryAfterMs: 1500,
+    provider: 'google',
+    cause: new Error('underlying'),
+    callId: 'call-1',
+    attemptId: 'attempt-1',
+    servedServiceTier: 'flex',
+    usage: { inputTokens: 1, outputTokens: 2, details: {}, raw: null },
+    mayHaveBilled: true,
+    warnings: [{ type: 'other', message: 'w' }],
+    issues: [{ path: 'a.b', message: 'bad' }],
+  } satisfies Required<LlmErrorOptions>
+
+  it('returns every field of an error, so a rebuilt copy equals the original', () => {
+    const original = new LlmError('boom', everything)
+    const options = llmErrorOptionsOf(original)
+    expect(Object.keys(options).sort()).toEqual(Object.keys(everything).sort())
+    expect(options).toEqual(everything)
+    const copy = new LlmError('boom', options)
+    expect({ ...copy }).toEqual({ ...original })
+  })
+
+  it('reads an error built by another copy of the class, by shape', () => {
+    const foreign = Object.assign(
+      new Error('x'),
+      everything,
+    ) as unknown as LlmErrorOptions
+    expect(llmErrorOptionsOf(foreign)).toEqual(everything)
+  })
+
+  it('omits what the error does not carry, and a false mayHaveBilled', () => {
+    expect(
+      llmErrorOptionsOf(new LlmError('m', { kind: 'server', retryable: false })),
+    ).toEqual({ kind: 'server', retryable: false })
+    expect(
+      llmErrorOptionsOf({ kind: 'server', retryable: false, mayHaveBilled: false }),
+    ).toEqual({ kind: 'server', retryable: false })
   })
 })

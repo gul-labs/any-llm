@@ -126,7 +126,10 @@ describe('no-ambient-auth: no process.env in source files', () => {
     ).toHaveLength(0)
   })
 
-  it('packages/claude-cli/src — no non-test source file reads process.env', () => {
+  // The real runner passes the child an allowlisted copy of the environment, so it
+  // reads `process.env` once, to filter it. That read is the scrub of credential
+  // variables, not a credential read: nothing else may touch it.
+  it('packages/claude-cli/src — process.env is read only to build the child allowlist', () => {
     const files = collectSourceFiles(CLAUDE_CLI_SRC)
     expect(files.length).toBeGreaterThan(0)
 
@@ -136,7 +139,12 @@ describe('no-ambient-auth: no process.env in source files', () => {
       const codeLines = content
         .split('\n')
         .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
-      if (codeLines.some((line) => line.includes('process.env'))) {
+      if (
+        codeLines.some(
+          (line) =>
+            line.includes('process.env') && !line.includes('buildChildEnv(process.env'),
+        )
+      ) {
         violations.push(file.replace(MONOREPO_ROOT + '/', ''))
       }
     }
@@ -147,7 +155,10 @@ describe('no-ambient-auth: no process.env in source files', () => {
     ).toHaveLength(0)
   })
 
-  it('packages/codex-cli/src — no non-test source file reads process.env', () => {
+  // The real runner passes the child an allowlisted copy of the environment, so it
+  // reads `process.env` once, to filter it. That read is the scrub of credential
+  // variables, not a credential read: nothing else may touch it.
+  it('packages/codex-cli/src — process.env is read only to build the child allowlist', () => {
     const files = collectSourceFiles(CODEX_CLI_SRC)
     expect(files.length).toBeGreaterThan(0)
 
@@ -157,7 +168,12 @@ describe('no-ambient-auth: no process.env in source files', () => {
       const codeLines = content
         .split('\n')
         .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
-      if (codeLines.some((line) => line.includes('process.env'))) {
+      if (
+        codeLines.some(
+          (line) =>
+            line.includes('process.env') && !line.includes('buildChildEnv(process.env'),
+        )
+      ) {
         violations.push(file.replace(MONOREPO_ROOT + '/', ''))
       }
     }

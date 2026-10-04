@@ -311,6 +311,13 @@ export interface RateLimitHint {
    * {@link Release}.
    */
   estimatedInputTokens?: number
+  /**
+   * The engine clock's reading (`Clock.now()`, epoch milliseconds) when the attempt
+   * reached the limiter. A limiter that names time windows uses it instead of the
+   * system clock, so a client built with a `FakeClock` and a limiter agree on what
+   * time it is. The engine always sets it.
+   */
+  nowMs?: number
 }
 
 /**

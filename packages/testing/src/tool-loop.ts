@@ -47,8 +47,9 @@ export interface ToolLoopOutcome {
  * A tool that throws does not abort the loop: its error message goes back to
  * the model as a tool result with `isError: true`, which is what a host's real
  * loop does and lets a test drive the model's error-recovery turn. A call to a
- * tool with no implementation is a mistake in the test and throws
- * `LlmError('bad_request')`.
+ * tool with no implementation (own properties of `tools` only) is a mistake in
+ * the test and throws `LlmError('bad_request')`, and so does a `maxTurns` that is
+ * not an integer of at least 1.
  */
 export async function runToolLoop(
   client: ToolLoopClient,
@@ -57,6 +58,12 @@ export async function runToolLoop(
   opts: ToolLoopOptions,
 ): Promise<ToolLoopOutcome> {
   const { maxTurns = 8, ...generateOpts } = opts
+  if (!Number.isInteger(maxTurns) || maxTurns < 1) {
+    throw new LlmError(
+      `runToolLoop: maxTurns must be an integer of at least 1, got ${String(maxTurns)}.`,
+      { kind: 'bad_request', retryable: false },
+    )
+  }
   const turns: LlmResult[] = []
   let messages: Message[] = [...req.messages]
   let state: JsonValue | undefined = req.transientProviderState
@@ -72,7 +79,11 @@ export async function runToolLoop(
 
     const toolResults: ToolResultPart[] = []
     for (const call of calls) {
-      const implementation = tools[call.toolName]
+      // Own properties only: a model call named `toString` or `constructor` is a
+      // missing tool, not the function it inherits from `Object.prototype`.
+      const implementation = Object.hasOwn(tools, call.toolName)
+        ? tools[call.toolName]
+        : undefined
       if (implementation === undefined) {
         throw new LlmError(
           `runToolLoop: no implementation for tool "${call.toolName}".`,

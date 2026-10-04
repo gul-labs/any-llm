@@ -358,6 +358,37 @@ describe('configuration is validated when the middleware is built', () => {
     ).toThrow(/onStoreError/)
   })
 
+  it.each([
+    ['a fractional rpm', { rpm: 1.5 }],
+    ['a NaN rpd', { rpd: Number.NaN }],
+    ['a negative tpm', { tpm: -1 }],
+    ['a string rpm', { rpm: '10' as never }],
+  ])('%s in a model entry is bad_request when the policy is built', (_label, limits) => {
+    let thrown: unknown
+    try {
+      quotaPolicy({ provider: 'google', models: { m: limits } })
+    } catch (e) {
+      thrown = e
+    }
+    expect(thrown).toBeInstanceOf(LlmError)
+    expect(thrown).toMatchObject({ kind: 'bad_request', retryable: false })
+    expect((thrown as LlmError).message).toContain('models["m"]')
+  })
+
+  it('an invalid default limit, and the presets over quotaPolicy, are refused at construction too', () => {
+    expect(() =>
+      quotaPolicy({ provider: 'google', models: {}, defaults: { rpm: Number.NaN } }),
+    ).toThrow(/defaults/)
+    expect(() => quotaPolicyForGemini({ models: { m: { rpd: -2 } } })).toThrow(LlmError)
+    expect(() => quotaPolicyForXai({ models: { m: { tpm: 0.5 } } })).toThrow(LlmError)
+  })
+
+  it('a limit of 0 is valid: it disables the provider', () => {
+    expect(() =>
+      quotaPolicy({ provider: 'google', models: { m: { rpm: 0 } } }),
+    ).not.toThrow()
+  })
+
   it('the rate limiter validates onStoreError at construction too', () => {
     expect(() =>
       providerQuotaRateLimiter({ policy, store: inMemoryQuotaStore() } as never),
@@ -380,7 +411,11 @@ describe('a limit of 0 means the provider is disabled, for every window', () => 
     async (rule) => {
       for (const store of [undefined, inMemoryQuotaStore()]) {
         const err = (await run(rule, store).catch((e: unknown) => e)) as LlmError
-        expect(err).toMatchObject({ kind: 'rate_limited', retryable: false })
+        expect(err).toMatchObject({
+          kind: 'rate_limited',
+          retryable: false,
+          reason: 'quota_window',
+        })
         expect(err.message).toMatch(/Provider quota disabled/)
       }
     },

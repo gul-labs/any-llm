@@ -14,7 +14,8 @@
  * @module
  */
 
-import { LlmError } from '@gullabs/core'
+import { LlmError, llmErrorOptionsOf } from '@gullabs/core'
+import type { LlmErrorOptions } from '@gullabs/core'
 
 /** The providers `fakeProviderError` builds errors for. */
 export type ErrorProvider = 'google' | 'xai'
@@ -73,28 +74,12 @@ export function loadPeer(id: string, forWhat: string): Promise<Record<string, un
  * carried over to this package's class (the peer `@gullabs/core` the host
  * shares).
  */
-function adopt(value: unknown): unknown {
+export function adopt(value: unknown): unknown {
   if (value instanceof LlmError) return value
   if (typeof value !== 'object' || value === null) return value
   const e = value as Partial<LlmError> & { message?: string }
   if (typeof e.kind !== 'string' || typeof e.retryable !== 'boolean') return value
-  return new LlmError(e.message ?? '', {
-    kind: e.kind,
-    retryable: e.retryable,
-    ...(e.reason !== undefined ? { reason: e.reason } : {}),
-    ...(e.httpStatus !== undefined ? { httpStatus: e.httpStatus } : {}),
-    ...(e.retryAfterMs !== undefined ? { retryAfterMs: e.retryAfterMs } : {}),
-    ...(e.provider !== undefined ? { provider: e.provider } : {}),
-    ...(e.cause !== undefined ? { cause: e.cause } : {}),
-    ...(e.callId !== undefined ? { callId: e.callId } : {}),
-    ...(e.attemptId !== undefined ? { attemptId: e.attemptId } : {}),
-    ...(e.servedServiceTier !== undefined
-      ? { servedServiceTier: e.servedServiceTier }
-      : {}),
-    ...(e.usage !== undefined ? { usage: e.usage } : {}),
-    ...(e.warnings !== undefined ? { warnings: e.warnings } : {}),
-    ...(e.issues !== undefined ? { issues: e.issues } : {}),
-  })
+  return new LlmError(e.message ?? '', llmErrorOptionsOf(e as LlmErrorOptions))
 }
 
 /** Whether `error` came from `fakeProviderError` (so it needs the provider's classifier). */

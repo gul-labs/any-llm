@@ -648,11 +648,11 @@ describe('providerQuotaRateLimiter with tokens', () => {
       modelRegistry: REGISTRY,
       clock,
       scheduler: clock,
+      // No `now` option: the window is named by the time the client hands over.
       rateLimiter: providerQuotaRateLimiter({
         policy: quotaPolicy({ provider: 'google', models: { m: { tpm: 1_000 } } }),
         store,
         onStoreError: 'fail-closed',
-        now: () => clock.now(),
       }),
     })
 
@@ -666,6 +666,56 @@ describe('providerQuotaRateLimiter with tokens', () => {
       tokens: 0,
     })
     expect(probe.tpm).toMatchObject({ used: 20 })
+  })
+})
+
+describe('the rate limiter takes its time from the engine clock', () => {
+  it('names the window by hint.nowMs, and an explicit now option still wins', async () => {
+    const seen: number[] = []
+    const store = inMemoryQuotaStore({ clock: new FakeClock(T0) })
+    const spy: QuotaStore = {
+      ...store,
+      checkAndConsume: (input) => {
+        seen.push(input.nowMs)
+        return store.checkAndConsume(input)
+      },
+    }
+    const policy = quotaPolicy({ provider: 'google', models: { m: { rpm: 5 } } })
+    const fromHint = providerQuotaRateLimiter({
+      policy,
+      store: spy,
+      onStoreError: 'fail-closed',
+    })
+    await fromHint.acquire('google:m', undefined, { nowMs: T0 + 12_345 })
+    expect(seen).toEqual([T0 + 12_345])
+
+    const explicit = providerQuotaRateLimiter({
+      policy,
+      store: spy,
+      onStoreError: 'fail-closed',
+      now: () => T0 + 99,
+    })
+    await explicit.acquire('google:m', undefined, { nowMs: T0 + 12_345 })
+    expect(seen).toEqual([T0 + 12_345, T0 + 99])
+  })
+
+  it('the engine hands the limiter its clock reading', async () => {
+    const clock = new FakeClock(T0 + 777)
+    const hints: Array<number | undefined> = []
+    const client = createClient({
+      adapters: [new FakeAdapter('google', result(1))],
+      modelRegistry: REGISTRY,
+      clock,
+      scheduler: clock,
+      rateLimiter: {
+        acquire: (_key, _signal, hint) => {
+          hints.push(hint?.nowMs)
+          return Promise.resolve(() => {})
+        },
+      },
+    })
+    await client.generate(request('hi'), { auth: { apiKey: 'k' } })
+    expect(hints).toEqual([T0 + 777])
   })
 })
 

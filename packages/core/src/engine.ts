@@ -13,6 +13,7 @@
 import {
   LlmError,
   classifyError,
+  llmErrorOptionsOf,
   normalizeSchemaIssues,
   toErrorIssues,
 } from './errors.js'
@@ -586,22 +587,8 @@ function failedAttemptCostsNothing(err: LlmError, dispatched: boolean): boolean 
  * otherwise stamp call context onto, or throw, an error object it does not own.
  */
 function cloneLlmError(err: LlmError): LlmError {
-  return new LlmError(err.message, {
-    kind: err.kind,
-    retryable: err.retryable,
-    ...(err.reason !== undefined ? { reason: err.reason } : {}),
-    ...(err.httpStatus !== undefined ? { httpStatus: err.httpStatus } : {}),
-    ...(err.retryAfterMs !== undefined ? { retryAfterMs: err.retryAfterMs } : {}),
-    ...(err.provider !== undefined ? { provider: err.provider } : {}),
-    ...(err.servedServiceTier !== undefined
-      ? { servedServiceTier: err.servedServiceTier }
-      : {}),
-    ...(err.usage !== undefined ? { usage: err.usage } : {}),
-    ...(err.mayHaveBilled === true ? { mayHaveBilled: true } : {}),
-    ...(err.warnings !== undefined ? { warnings: err.warnings } : {}),
-    ...(err.issues !== undefined ? { issues: err.issues } : {}),
-    cause: err,
-  })
+  const { callId: _callId, attemptId: _attemptId, ...options } = llmErrorOptionsOf(err)
+  return new LlmError(err.message, { ...options, cause: err })
 }
 
 /**
@@ -2356,6 +2343,7 @@ export function createClient(config: ClientConfig): Client {
         // limiter bucket.
         const rateLimitHint: RateLimitHint = {
           estimatedInputTokens: estimateInputTokens(effectiveReq),
+          nowMs: acquireStartMs,
         }
         const acquirePromise = rateLimiter.acquire(
           `${provider}:${callDescriptor.model}`,

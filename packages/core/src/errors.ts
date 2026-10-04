@@ -57,8 +57,9 @@ export type LlmErrorKind =
  * - `'transport_timeout'`      — a transport-level timeout (a header timer, a
  *   body timer or the client's own deadline; it can fire before or after
  *   response headers).
- * - `'quota_window'`           — a local quota window is exhausted for longer
- *   than the caller is willing to wait.
+ * - `'quota_window'`           — a local quota rule keeps the call from being
+ *   sent: a window is exhausted for longer than the caller is willing to wait,
+ *   or the rule's limit is `0` and disables the provider for that scope.
  * - `'daily_quota'`            — a provider daily quota is exhausted.
  * - `'credits_exhausted'`      — the provider account is out of credits.
  * - `'spend_ceiling'`          — a spend ceiling was reached.
@@ -245,6 +246,35 @@ export class LlmError extends Error {
 
     // Maintain a proper prototype chain in transpiled ES5 environments.
     Object.setPrototypeOf(this, new.target.prototype)
+  }
+}
+
+/**
+ * The {@link LlmErrorOptions} that rebuild `error`: every field it carries, copied
+ * (`cause`, `callId` and `attemptId` included). Accepts any error with the
+ * `LlmError` shape, so it also reads one built by another copy of this package (a
+ * CommonJS and an ESM build loaded side by side), which `instanceof` cannot match.
+ * It is the one list of the fields: code that copies an error calls it instead of
+ * naming them, so a field added to {@link LlmErrorOptions} is carried by every copy.
+ */
+export function llmErrorOptionsOf(error: LlmErrorOptions): LlmErrorOptions {
+  return {
+    kind: error.kind,
+    retryable: error.retryable,
+    ...(error.reason !== undefined ? { reason: error.reason } : {}),
+    ...(error.httpStatus !== undefined ? { httpStatus: error.httpStatus } : {}),
+    ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {}),
+    ...(error.provider !== undefined ? { provider: error.provider } : {}),
+    ...(error.cause !== undefined ? { cause: error.cause } : {}),
+    ...(error.callId !== undefined ? { callId: error.callId } : {}),
+    ...(error.attemptId !== undefined ? { attemptId: error.attemptId } : {}),
+    ...(error.servedServiceTier !== undefined
+      ? { servedServiceTier: error.servedServiceTier }
+      : {}),
+    ...(error.usage !== undefined ? { usage: error.usage } : {}),
+    ...(error.mayHaveBilled === true ? { mayHaveBilled: true } : {}),
+    ...(error.warnings !== undefined ? { warnings: error.warnings } : {}),
+    ...(error.issues !== undefined ? { issues: error.issues } : {}),
   }
 }
 

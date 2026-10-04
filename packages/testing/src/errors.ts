@@ -168,6 +168,60 @@ export function fakeBilledFailure(
 }
 
 // ---------------------------------------------------------------------------
+// fakeStreamFailure
+// ---------------------------------------------------------------------------
+
+export interface FakeStreamFailureOptions {
+  /**
+   * The kind the adapter gives the failure. Default `'server'`. An `error` event
+   * inside a stream can carry any provider code, so `rate_limited`, `bad_request`
+   * and `invalid_auth` are allowed: they are the kinds a provider does not bill
+   * when it refuses a request, and `mayHaveBilled` is what says this one may have.
+   */
+  kind?: 'server' | 'rate_limited' | 'bad_request' | 'invalid_auth' | 'unknown'
+  /** Default `false`: a retry repeats what the call already generated. */
+  retryable?: boolean
+  /** Default `'fake: the provider reported an error inside an open stream'`. */
+  message?: string
+  /** Default `'xai'`. */
+  provider?: string
+  /**
+   * The usage the failure reports: the terminal usage the stream carried, or the
+   * adapter's estimate of what it received. Absent by default, as when the stream
+   * died before any output.
+   */
+  usage?: Pick<Usage, 'inputTokens' | 'outputTokens'> & Partial<Usage>
+}
+
+/**
+ * The `LlmError` an adapter throws for an error event inside an open stream: the
+ * provider had accepted the request and started work, so `mayHaveBilled` is set
+ * and the engine books the attempt as unpriced (never as a known-free `0`), and by
+ * default it is not retried. Script it with `FakeAdapter` to test a host's
+ * handling of "the call failed after it started": the ledger row, the retry
+ * count, a spend ceiling.
+ *
+ * @example
+ * ```ts
+ * new FakeAdapter('xai', [fakeStreamFailure({ kind: 'rate_limited' })])
+ * ```
+ */
+export function fakeStreamFailure(opts: FakeStreamFailureOptions = {}): LlmError {
+  return new LlmError(
+    opts.message ?? 'fake: the provider reported an error inside an open stream',
+    {
+      kind: opts.kind ?? 'server',
+      retryable: opts.retryable ?? false,
+      mayHaveBilled: true,
+      provider: opts.provider ?? 'xai',
+      ...(opts.usage !== undefined
+        ? { usage: { details: {}, raw: null, ...opts.usage } }
+        : {}),
+    },
+  )
+}
+
+// ---------------------------------------------------------------------------
 // fakeProviderError
 // ---------------------------------------------------------------------------
 

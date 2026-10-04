@@ -31,6 +31,7 @@ export {
   fakeHttpError,
   fakeNetworkError,
   fakeBilledFailure,
+  fakeStreamFailure,
   fakeProviderError,
   HttpStatusError,
 } from './errors.js'
@@ -38,6 +39,7 @@ export type {
   FakeHttpErrorOptions,
   FakeNetworkErrorOptions,
   FakeBilledFailureOptions,
+  FakeStreamFailureOptions,
   FakeXaiProviderErrorOptions,
   GoogleErrorScenario,
   XaiErrorScenario,
@@ -82,6 +84,7 @@ export type {
   XaiReasoningSummaryPartLike,
   XaiReasoningOutputItemLike,
   XaiOutputTextPartLike,
+  XaiFunctionCallOutputItemLike,
   XaiMessageOutputItemLike,
   XaiOutputItemLike,
   XaiUsageLike,

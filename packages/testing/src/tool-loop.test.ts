@@ -154,6 +154,32 @@ describe('runToolLoop', () => {
     expect(endless.requests).toHaveLength(3)
   })
 
+  it.each(['toString', 'constructor', '__proto__', 'hasOwnProperty'])(
+    'a model call named %s is a missing tool, not an inherited Object.prototype function',
+    async (name) => {
+      const inherited = scripted([
+        result({ toolCalls: [{ toolCallId: '1', toolName: name, args: {} }] }),
+      ])
+      await expect(runToolLoop(inherited.client, REQ, tools, AUTH)).rejects.toMatchObject(
+        {
+          kind: 'bad_request',
+          message: expect.stringContaining(`no implementation for tool "${name}"`),
+        },
+      )
+    },
+  )
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    'maxTurns %s is bad_request before any model call',
+    async (maxTurns) => {
+      const { client, requests } = scripted([result({ text: 'unused' })])
+      await expect(
+        runToolLoop(client, REQ, tools, { ...AUTH, maxTurns }),
+      ).rejects.toMatchObject({ name: 'LlmError', kind: 'bad_request' })
+      expect(requests).toHaveLength(0)
+    },
+  )
+
   it('a throwing tool becomes an isError tool result and the loop continues', async () => {
     const { client, requests } = scripted([
       result({

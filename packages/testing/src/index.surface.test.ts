@@ -49,6 +49,7 @@ describe('@gullabs/testing package surface: R8 helpers', () => {
       'fakeHttpError',
       'fakeNetworkError',
       'fakeBilledFailure',
+      'fakeStreamFailure',
       'fakeProviderError',
     ] as const) {
       expect(typeof api[name], name).toBe('function')

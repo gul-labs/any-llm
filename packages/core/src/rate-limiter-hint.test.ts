@@ -68,18 +68,21 @@ function spy(): Spy {
 }
 
 describe('the engine feeds the rate limiter', () => {
-  it('hands acquire an input-token estimate of the request', async () => {
+  it('hands acquire an input-token estimate of the request and the engine clock reading', async () => {
     const s = spy()
+    const clock = new FakeClock(1_700_000_000_000)
     const client = createClient({
       adapters: [new FakeAdapter('google', OK)],
       modelRegistry: REGISTRY,
       rateLimiter: s.limiter,
+      clock,
+      scheduler: clock,
     })
 
     await client.generate(request('x'.repeat(100)), { auth: AUTH })
 
     // 'be brief' (8) + 100 chars of user text = 108 chars, 4 per token, rounded up.
-    expect(s.hints).toEqual([{ estimatedInputTokens: 27 }])
+    expect(s.hints).toEqual([{ estimatedInputTokens: 27, nowMs: 1_700_000_000_000 }])
   })
 
   it('releases with the attempt usage on success', async () => {

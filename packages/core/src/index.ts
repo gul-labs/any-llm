@@ -61,6 +61,7 @@ export {
   classifyHttpStatus,
   classifyError,
   causeChain,
+  llmErrorOptionsOf,
   isTransportError,
   parseRetryAfter,
 } from './errors.js'

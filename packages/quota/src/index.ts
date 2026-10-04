@@ -4,6 +4,7 @@ import {
   LlmError,
   redactSecrets,
   type Middleware,
+  type RateLimitHint,
   type RateLimiter,
   type Release,
   type Scheduler,
@@ -265,6 +266,12 @@ export interface ProviderQuotaRateLimiterOptions {
   /** What to do when the store fails; see {@link QuotaStoreErrorMode}. No default. */
   onStoreError: QuotaStoreErrorMode
   onEvent?: QuotaEventHandler
+  /**
+   * The time source for window names, in epoch milliseconds. Defaults to the
+   * engine clock's reading the engine hands the limiter with every `acquire`
+   * (`RateLimitHint.nowMs`), so a client built with a `FakeClock` needs no option
+   * here; the system clock is used only when a caller of `acquire` passes no time.
+   */
   now?: () => number
   /**
    * Same cap and default as {@link ProviderQuotaMiddlewareOptions.maxDeferMs}:
@@ -423,6 +430,7 @@ export function quotaPolicy(opts: QuotaPolicyOptions): ProviderQuotaPolicy {
     'quotaPolicy',
   )
   assertKnownLimitKeys(opts, ['rpm', 'rpd', 'tpm'], 'quotaPolicy')
+  assertLimitValues(opts, 'quotaPolicy')
   const dayBoundary =
     opts.dayBoundary === undefined
       ? undefined
@@ -554,6 +562,40 @@ function assertKnownLimitKeys(
   }
 }
 
+/**
+ * Every limit of a policy (`defaults` and each `models` entry) must be a
+ * non-negative integer, checked when the policy is built: a `NaN` from
+ * `Number(process.env.X)` is a startup error, not the first call's.
+ */
+function assertLimitValues(
+  opts: { models?: unknown; defaults?: unknown },
+  where: string,
+): void {
+  const check = (limits: unknown, at: string): void => {
+    if (typeof limits !== 'object' || limits === null) return
+    for (const name of ['rpm', 'rpd', 'tpm'] as const) {
+      const value = (limits as Partial<Record<typeof name, number>>)[name]
+      try {
+        validateConfiguredLimit(name, value)
+      } catch (error) {
+        if (error instanceof LlmError) {
+          throw new LlmError(`${where}: ${at}: ${error.message}`, {
+            kind: 'bad_request',
+            retryable: false,
+          })
+        }
+        throw error
+      }
+    }
+  }
+  check(opts.defaults, 'defaults')
+  if (typeof opts.models === 'object' && opts.models !== null) {
+    for (const [model, limits] of Object.entries(opts.models)) {
+      check(limits, `models["${model}"]`)
+    }
+  }
+}
+
 export async function checkProviderQuota(
   opts: CheckProviderQuotaOptions,
 ): Promise<QuotaDecision> {
@@ -665,6 +707,7 @@ export async function enforceProviderQuota(
         const error = new LlmError(messageForDeny(decision.reason, decision.scope), {
           kind: 'rate_limited',
           retryable: false,
+          reason: 'quota_window',
         })
         // LlmError declares `retryAfterMs` as a class field, so with
         // useDefineForClassFields (implied by tsconfig's ES2022 target) every
@@ -853,7 +896,7 @@ export function providerQuotaRateLimiter(
     async acquire(
       key: string,
       signal?: AbortSignal,
-      hint?: { estimatedInputTokens?: number },
+      hint?: RateLimitHint,
     ): Promise<Release> {
       const { provider, model } = parseRateLimiterKey(key)
 
@@ -863,7 +906,7 @@ export function providerQuotaRateLimiter(
         policy: opts.policy,
         store: opts.store,
         onStoreError: opts.onStoreError,
-        nowMs: opts.now?.() ?? Date.now(),
+        nowMs: opts.now?.() ?? hint?.nowMs ?? Date.now(),
         maxDeferMs,
       }
 

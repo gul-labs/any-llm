@@ -36,6 +36,8 @@ import {
   type GoogleErrorScenario,
   type XaiErrorScenario,
 } from './index.js'
+import { llmErrorOptionsOf } from '@gullabs/core'
+import { adopt } from './provider-errors.js'
 import { makePermissiveTestDescriptor } from '../../core/src/test-model-descriptor.js'
 
 const OK: AdapterResult = {
@@ -421,5 +423,41 @@ describe('fakeLlmResult does not claim a price it was not given', () => {
       callId: 'x',
       attemptId: 'y',
     })
+  })
+})
+
+describe('adopt rebuilds an error from another copy of core with every field', () => {
+  it('carries mayHaveBilled and the rest of LlmErrorOptions onto this copy of LlmError', () => {
+    // What a classifier from a CommonJS build of a provider package returns: the
+    // LlmError shape, but not an instance of this copy's class.
+    const foreign = Object.assign(new Error('stream cut'), {
+      kind: 'rate_limited',
+      retryable: false,
+      reason: 'quota_window',
+      httpStatus: 429,
+      retryAfterMs: 10,
+      provider: 'xai',
+      callId: 'c1',
+      attemptId: 'a1',
+      servedServiceTier: 'default',
+      usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
+      mayHaveBilled: true,
+      warnings: [{ type: 'other', message: 'w' }],
+      issues: [{ path: 'p', message: 'm' }],
+    })
+    const adopted = adopt(foreign)
+    expect(adopted).toBeInstanceOf(LlmError)
+    expect(llmErrorOptionsOf(adopted as LlmError)).toEqual(
+      llmErrorOptionsOf(foreign as never),
+    )
+    expect((adopted as LlmError).message).toBe('stream cut')
+    expect((adopted as LlmError).mayHaveBilled).toBe(true)
+  })
+
+  it('leaves an LlmError of this copy, and a value that is not error-shaped, alone', () => {
+    const own = new LlmError('x', { kind: 'server', retryable: false })
+    expect(adopt(own)).toBe(own)
+    expect(adopt('text')).toBe('text')
+    expect(adopt({ kind: 'server' })).toEqual({ kind: 'server' })
   })
 })

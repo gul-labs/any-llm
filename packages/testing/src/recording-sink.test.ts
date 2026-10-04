@@ -103,12 +103,21 @@ describe('RecordingSink', () => {
       expect(sink.payloads.has('a2')).toBe(false)
     })
 
-    it('a deduplicated record and a failed write take their payload with them', async () => {
+    it('dedupeOn de-duplicates the payload on its own, as the ledger’s payload table does: the first payload wins', async () => {
+      const other = { request: { messages: [] }, response: { text: 'other' } }
       const deduped = new RecordingSink({ dedupeOn: 'attemptId' })
       await deduped.record(makeRecord({ attemptId: 'a1' }))
+      // The repeat's record is dropped, its payload is kept: none was held yet.
       await deduped.record(makeRecord({ attemptId: 'a1' }), { payload })
-      expect(deduped.payloads.size).toBe(0)
+      expect(deduped.records).toHaveLength(1)
+      expect(deduped.duplicates).toHaveLength(1)
+      expect(deduped.payloads.get('a1')).toBe(payload)
+      // A second repeat with another payload does not replace it.
+      await deduped.record(makeRecord({ attemptId: 'a1' }), { payload: other })
+      expect(deduped.payloads.get('a1')).toBe(payload)
+    })
 
+    it('a failed write stores no payload', async () => {
       const failing = new RecordingSink({ failOnRecord: true })
       await expect(failing.record(makeRecord(), { payload })).rejects.toThrow()
       expect(failing.payloads.size).toBe(0)
