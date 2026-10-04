@@ -73,6 +73,15 @@ describe('buildRecord — success path', () => {
     expect(r.recordSchemaVersion).toBe(2)
   })
 
+  it('rounds latencyMs and queueDelayMs to whole milliseconds (a Clock may return fractions)', () => {
+    const r = buildRecord(makeBaseInput({ latencyMs: 12.5, queueDelayMs: 0.3 }))
+    expect(r.latencyMs).toBe(13)
+    expect(r.queueDelayMs).toBe(0)
+    const whole = buildRecord(makeBaseInput({ latencyMs: 1234, queueDelayMs: 7 }))
+    expect([whole.latencyMs, whole.queueDelayMs]).toEqual([1234, 7])
+    expect('queueDelayMs' in buildRecord(makeBaseInput())).toBe(false)
+  })
+
   it('persists requested toolNames and toolCount even without toolCalls', () => {
     const r = buildRecord(makeBaseInput({ toolNames: ['get_temperature', 'lookup'] }))
     expect(r.toolNames).toEqual(['get_temperature', 'lookup'])

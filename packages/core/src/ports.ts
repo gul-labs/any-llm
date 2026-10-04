@@ -519,6 +519,8 @@ export type AuthMaterial = ApiKeyAuth | CliSessionAuth
 /**
  * Monotonic or wall-clock time source.
  * Injected so tests can use a `FakeClock` for deterministic latency assertions.
+ * It may return fractional milliseconds (`performance.now()`): the ledger record
+ * rounds `latencyMs` and `queueDelayMs` to whole milliseconds.
  */
 export interface Clock {
   /** Returns the current time as milliseconds since the Unix epoch. */

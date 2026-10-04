@@ -115,9 +115,9 @@ export interface LlmCallRecord {
   finishReason?: FinishReason
   /** Whether JSON.parse succeeded for a structured-output request. */
   outputParsed?: boolean
-  /** Wall-clock latency in milliseconds from dispatch to response. */
+  /** Latency in whole milliseconds from dispatch to response (rounded from the clock). */
   latencyMs: number
-  /** Time spent waiting in the configured RateLimiter before provider dispatch. */
+  /** Whole milliseconds spent waiting in the configured RateLimiter before provider dispatch. */
   queueDelayMs?: number
 
   // --- usage (typed hot fields) ---
@@ -985,8 +985,12 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
     status,
     ...(input.finishReason !== undefined ? { finishReason: input.finishReason } : {}),
     ...(input.outputParsed !== undefined ? { outputParsed: input.outputParsed } : {}),
-    latencyMs: input.latencyMs,
-    ...(input.queueDelayMs !== undefined ? { queueDelayMs: input.queueDelayMs } : {}),
+    // Whole milliseconds: a `Clock` may return fractions (`performance.now()`), and
+    // the ledger columns are integers.
+    latencyMs: Math.round(input.latencyMs),
+    ...(input.queueDelayMs !== undefined
+      ? { queueDelayMs: Math.round(input.queueDelayMs) }
+      : {}),
     // Usage hot fields — always present since Usage.inputTokens/outputTokens are required.
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
