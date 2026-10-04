@@ -105,6 +105,103 @@ describe('isGoogleNotFoundError', () => {
   ])('%s is not not-found', (_name, err) => {
     expect(isGoogleNotFoundError(err)).toBe(false)
   })
+
+  // Every place core's status extraction reads is a KNOWN status: the message
+  // alone never makes a failed delete "already gone".
+  describe('a known HTTP status is never overruled by the message', () => {
+    const message = 'file not found'
+    const known500: [string, unknown][] = [
+      ['statusCode 500', { statusCode: 500, message }],
+      ["statusCode '500'", { statusCode: '500', message }],
+      ["status '500'", { status: '500', message }],
+      ["code '500'", { code: '500', message }],
+      ['code 500', { code: 500, message }],
+      ['httpStatus 500', { httpStatus: 500, message }],
+      ["httpStatus '500'", { httpStatus: '500', message }],
+      ['a nested cause with status 500', new Error(message, { cause: { status: 500 } })],
+      [
+        'a nested cause with statusCode 500',
+        new Error(message, { cause: { statusCode: 500 } }),
+      ],
+      [
+        'a cause two levels down',
+        new Error(message, { cause: new Error('x', { cause: { status: '500' } }) }),
+      ],
+      ['response.status 500', { message, response: { status: 500 } }],
+      ['response.statusCode 500', { message, response: { statusCode: 500 } }],
+      ["response.status '500'", { message, response: { status: '500' } }],
+      ['error.code 500', { message, error: { code: 500 } }],
+      ['error.statusCode 500', { message, error: { statusCode: 500 } }],
+      [
+        'an LlmError classified from a statusCode 500',
+        classifyGoogleError({ statusCode: 500, message }),
+      ],
+    ]
+    it.each(known500)('%s is not not-found', (_name, err) => {
+      expect(isGoogleNotFoundError(err)).toBe(false)
+    })
+
+    it.each([
+      ['statusCode 404', { statusCode: 404, message: 'x' }],
+      ["statusCode '404'", { statusCode: '404', message: 'x' }],
+      ["code '404'", { code: '404', message: 'x' }],
+      ["httpStatus '404'", { httpStatus: '404', message: 'x' }],
+      ['a nested cause with status 404', new Error('x', { cause: { status: 404 } })],
+      ['response.statusCode 404', { message: 'x', response: { statusCode: 404 } }],
+      [
+        'statusCode 403 whose message says "may not exist"',
+        { statusCode: 403, message: 'it may not exist' },
+      ],
+    ])('%s is not-found', (_name, err) => {
+      expect(isGoogleNotFoundError(err)).toBe(true)
+    })
+
+    it('statusCode 403 with an unrelated message is not not-found', () => {
+      expect(
+        isGoogleNotFoundError({ statusCode: 403, message: 'Permission denied' }),
+      ).toBe(false)
+    })
+
+    describe('a delete that fails with such a status', () => {
+      it.each(known500)(
+        'GoogleFileStore, %s: failClosed throws and the callback fires',
+        async (_name, failure) => {
+          const client: GeminiFilesClientLike = {
+            upload: vi.fn(),
+            get: vi.fn(),
+            delete: vi.fn().mockRejectedValue(failure),
+          }
+          const closed = new GoogleFileStore({ auth, client })
+          await expect(
+            closed.delete(fileHandle, { failClosed: true }),
+          ).rejects.toBeInstanceOf(LlmError)
+          const onDeleteError = vi.fn()
+          const open = new GoogleFileStore({ auth, client, onDeleteError })
+          await open.delete(fileHandle)
+          expect(onDeleteError).toHaveBeenCalledTimes(1)
+        },
+      )
+
+      it.each(known500)(
+        'GoogleCacheStore, %s: the callback fires',
+        async (_name, failure) => {
+          const client: GeminiCachesClientLike = {
+            create: vi.fn(),
+            update: vi.fn(),
+            delete: vi.fn().mockRejectedValue(failure),
+          }
+          const onDeleteError = vi.fn()
+          const store = new GoogleCacheStore({ auth, client, onDeleteError })
+          await store.delete({
+            cacheName: 'cachedContents/gone',
+            model: 'gemini-2.5-flash',
+            expiresAt: new Date(NOW),
+          })
+          expect(onDeleteError).toHaveBeenCalledTimes(1)
+        },
+      )
+    })
+  })
 })
 
 describe('GoogleFileStore.delete of a file Google no longer has', () => {

@@ -151,7 +151,9 @@ const STALE_CACHE_MESSAGE = 'CachedContent not found'
  * says the resource is not found or "may not exist"; an error with no status at
  * all is not-found when its message names a file or cache that was not found.
  * Any other known status (a 500 whose message says "file not found") is a
- * failed delete. Google answers an unknown
+ * failed delete; a status is known wherever core reads one (`status`,
+ * `statusCode`, `code`, `response`, `error`, a `cause`, as a number or a
+ * numeric string) or in `httpStatus`. Google answers an unknown
  * or expired file id (and an unknown or expired cache) with that 403, not a 404:
  * the `CachedContent not found (or permission denied)` shape is a live capture
  * (probe P6); the Files API wording ("You do not have permission to access the
@@ -163,26 +165,42 @@ const STALE_CACHE_MESSAGE = 'CachedContent not found'
 export function isGoogleNotFoundError(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false
   const obj = err as Record<string, unknown>
-  const hasStatus = (status: number): boolean =>
-    obj['status'] === status || obj['httpStatus'] === status || obj['code'] === status
-  if (hasStatus(404) || obj['status'] === 'NOT_FOUND' || obj['code'] === 'NOT_FOUND') {
+  // The HTTP status core reads from an error (`status`, `statusCode`, `code`,
+  // `response.*`, `error.*`, then each `cause`; a number or a three-digit
+  // numeric string), plus the `httpStatus` field an `LlmError` carries.
+  const httpStatus = classifyError(err).httpStatus ?? numericStatus(obj['httpStatus'])
+  if (
+    httpStatus === 404 ||
+    obj['status'] === 'NOT_FOUND' ||
+    obj['code'] === 'NOT_FOUND'
+  ) {
     return true
   }
   const body = parseGoogleErrorBody(err)
   const message =
     body?.message ?? (typeof obj['message'] === 'string' ? obj['message'] : '')
-  if (hasStatus(403)) return /may not exist|not found/i.test(message)
+  if (httpStatus === 403) return /may not exist|not found/i.test(message)
   // Message-only detection is for an error that carries no status at all. An
   // error with a known status is not-found only in the documented cases above:
   // a 500 whose message mentions a file that was not found is a failed delete.
   const statusKnown =
+    httpStatus !== undefined ||
     body?.status !== undefined ||
     typeof obj['status'] === 'string' ||
-    [obj['status'], obj['httpStatus'], obj['code']].some(
-      (value) => typeof value === 'number',
-    )
+    [obj['status'], obj['code']].some((value) => typeof value === 'number')
   if (statusKnown) return false
   return /not\s*found|404/i.test(message) && /file|cachedcontent/i.test(message)
+}
+
+/** A status written as a number or a three-digit numeric string. */
+function numericStatus(value: unknown): number | undefined {
+  const n =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^\d{3}$/.test(value.trim())
+        ? Number(value)
+        : undefined
+  return n !== undefined && Number.isInteger(n) && n >= 100 && n <= 599 ? n : undefined
 }
 
 /** Optional extra fields threaded onto the returned {@link LlmError}. */
