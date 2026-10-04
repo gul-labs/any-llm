@@ -11,7 +11,7 @@
 import { describe, it, expect } from 'vitest'
 import { LlmError } from '@gullabs/core'
 import type { AdapterCtx } from '@gullabs/core'
-import { xaiAdapter } from './adapter.js'
+import { xaiAdapter, xaiAdapterWithSeams } from './adapter.js'
 import { XaiFileStore, XAI_FILES_DEFAULT_TIMEOUT_MS } from './file-store.js'
 
 const auth = { apiKey: 'test-xai-key' }
@@ -58,7 +58,7 @@ const countReq = {
 
 describe('countTokens keeps the response headers and has a deadline', () => {
   it('a 429 carries Retry-After as retryAfterMs and the request id in the message', async () => {
-    const adapter = xaiAdapter({ _fetch: fetchOf(rateLimited).fetch })
+    const adapter = xaiAdapterWithSeams(undefined, { fetch: fetchOf(rateLimited).fetch })
     const err = await adapter.countTokens!(countReq, CTX).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(LlmError)
     expect(err).toMatchObject({
@@ -70,10 +70,10 @@ describe('countTokens keeps the response headers and has a deadline', () => {
   })
 
   it('a hung call ends at countTokensTimeoutMs as a retryable timeout', async () => {
-    const adapter = xaiAdapter({
-      countTokensTimeoutMs: 40,
-      _fetch: fetchOf(hung).fetch,
-    })
+    const adapter = xaiAdapterWithSeams(
+      { countTokensTimeoutMs: 40 },
+      { fetch: fetchOf(hung).fetch },
+    )
     const started = Date.now()
     const err = await adapter.countTokens!(countReq, CTX).catch((e: unknown) => e)
     expect(Date.now() - started).toBeLessThan(2_000)
@@ -82,7 +82,7 @@ describe('countTokens keeps the response headers and has a deadline', () => {
   })
 
   it('a caller abort is still aborted, not a timeout', async () => {
-    const adapter = xaiAdapter({ _fetch: fetchOf(hung).fetch })
+    const adapter = xaiAdapterWithSeams(undefined, { fetch: fetchOf(hung).fetch })
     const controller = new AbortController()
     const pending = adapter.countTokens!(countReq, { ...CTX, signal: controller.signal })
     setTimeout(() => controller.abort(), 20)
@@ -91,8 +91,8 @@ describe('countTokens keeps the response headers and has a deadline', () => {
   })
 
   it('a 200 whose body is not JSON is a typed server error', async () => {
-    const adapter = xaiAdapter({
-      _fetch: fetchOf(() => new Response('<html>gateway</html>', { status: 200 })).fetch,
+    const adapter = xaiAdapterWithSeams(undefined, {
+      fetch: fetchOf(() => new Response('<html>gateway</html>', { status: 200 })).fetch,
     })
     const err = await adapter.countTokens!(countReq, CTX).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(LlmError)

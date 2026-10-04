@@ -625,9 +625,16 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
   Server-tool counters are classified by an explicit table (`XAI_SERVER_TOOL_COUNTERS`): a non-zero
   counter xAI bills per use with no rate here (`code_interpreter_calls`, `file_search_calls`,
   `document_search_calls`, `image_generation_calls`) or one the table does not know prices the call
-  `estimated` and the adapter warns; token-only tools (`mcp_calls`) do not (ADR-039 Amendment A). The response's `x-request-id` and `x-ratelimit-remaining-*`
+  `estimated` and the adapter warns (an unknown counter beside enabled image or video understanding, which xAI
+  prices by tokens only, does not claim it understates); token-only tools (`mcp_calls`) do not (ADR-039
+  Amendment A, ADR-040 Amendment B). The response's `x-request-id` and `x-ratelimit-remaining-*`
   headers are on `providerMetadata.xai` as `requestId` and `rateLimitRemaining`
   (the real client reads them with the SDK's `.withResponse()`; a fake client reports none).
+- **Output mapping (ADR-040 Amendment B).** A `function_call` is a tool call only on a `completed` response
+  (an `incomplete` one drops every call, with a warning, and `finishReason` stays `length` / `other`); a
+  completed call with non-JSON arguments is a non-retryable `server` error with usage; a `refusal` content
+  part is `content_filter` with no text; reasoning summary parts join with a blank line. `temperature` is 0 to 2,
+  `topP` 0 to 1, and a structured-output schema `title` must match `^[a-zA-Z0-9_-]{1,64}$` (else `bad_request`).
 - Search tools plus `output.jsonSchema` is admitted on all three models
   (`structuredOutputWithTools`). A response reporting `num_server_side_tools_used: 0` and no
   `server_side_tool_usage_details` prices exactly with no tool fee. See ADR-030.

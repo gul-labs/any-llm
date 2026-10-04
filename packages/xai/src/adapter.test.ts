@@ -24,7 +24,7 @@ import {
   makeFakeXai,
   RecordingSink,
 } from '@gullabs/testing'
-import { xaiAdapter, classifyXaiError } from './adapter.js'
+import { xaiAdapter, xaiAdapterWithSeams, classifyXaiError } from './adapter.js'
 import { computeXaiCost, xaiPricingSource } from './pricing.js'
 import { sseResponse, synthesizeStreamEvents } from './test-sse.js'
 import {
@@ -211,10 +211,10 @@ describe('basic text completion', () => {
     expect(obj).toMatchObject({ model: 'grok-4.5' })
   })
 
-  it('uses a _clientFactory override when supplied', async () => {
+  it('uses a client factory seam when supplied', async () => {
     const client = makeFakeXai(fakeXaiResponse({ text: 'factory-built' }))
     const factory = vi.fn().mockResolvedValue(client)
-    const adapter = xaiAdapter({ _clientFactory: factory })
+    const adapter = xaiAdapterWithSeams(undefined, { clientFactory: factory })
     const result = await adapter.run(makeResolvedReq(), FAKE_CTX)
 
     expect(factory).toHaveBeenCalledWith(FAKE_CTX.auth, undefined)
@@ -1487,7 +1487,7 @@ describe('xai transport option', () => {
     }
     const { client } = makeOptionsCapturingClient()
     const factory = vi.fn((_auth: unknown, _transport?: XaiTransport) => client)
-    await xaiAdapter({ transport, _clientFactory: factory }).run(
+    await xaiAdapterWithSeams({ transport }, { clientFactory: factory }).run(
       makeResolvedReq(),
       FAKE_CTX,
     )
@@ -1501,7 +1501,10 @@ describe('xai transport option', () => {
   it('passes undefined when no transport is configured', async () => {
     const { client } = makeOptionsCapturingClient()
     const factory = vi.fn((_auth: unknown, _transport?: XaiTransport) => client)
-    await xaiAdapter({ _clientFactory: factory }).run(makeResolvedReq(), FAKE_CTX)
+    await xaiAdapterWithSeams(undefined, { clientFactory: factory }).run(
+      makeResolvedReq(),
+      FAKE_CTX,
+    )
     expect(factory.mock.calls[0]?.[1]).toBeUndefined()
   })
 
@@ -2247,8 +2250,8 @@ describe('xai function calling', () => {
   })
 
   it('countTokens rejects tools', async () => {
-    const adapter = xaiAdapter({
-      _fetch: (async () => {
+    const adapter = xaiAdapterWithSeams(undefined, {
+      fetch: (async () => {
         throw new Error('should not fetch')
       }) as typeof fetch,
     })

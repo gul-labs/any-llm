@@ -89,13 +89,17 @@ const LONG_CONTEXT_THRESHOLD = 200_000
  * - `token_only`: xAI lists the tool as token-priced with no invocation fee, so
  *   the tokens already priced are the whole cost. `mcp_calls` (Remote MCP Tools)
  *   is the only token-only counter whose name has been captured. Image
- *   understanding and X video understanding are token-only too, but xAI names
- *   their counters outside this object (`SERVER_SIDE_TOOL_VIEW_IMAGE`); none has
- *   been captured, so none is listed.
+ *   understanding and X video understanding are token-only too ("you will not be
+ *   charged for the tool invocation itself but will be charged for the image
+ *   tokens used"; web-search image search is billed as web search, so it is
+ *   `web_search_calls`), but the page names no counter for them and none has been
+ *   captured, so none is listed.
  *
- * Source: https://docs.x.ai/developers/pricing ("Tools pricing"), read 2026-10-03
- * (the page carries no date). A counter that is not in this table and is
- * non-zero is unknown: it is treated like `fee_unpriced`.
+ * Source: https://docs.x.ai/developers/pricing ("Tools pricing"), re-read
+ * 2026-10-03 (the page carries no date). A counter that is not in this table and
+ * is non-zero is unknown: it keeps the call `'estimated'` like `fee_unpriced`
+ * does, but the adapter's warning does not claim it understates (see
+ * {@link classifyUnpricedXaiToolCounters}).
  */
 export const XAI_SERVER_TOOL_COUNTERS: Readonly<
   Record<string, 'priced' | 'superseded' | 'fee_unpriced' | 'token_only'>
@@ -112,17 +116,21 @@ export const XAI_SERVER_TOOL_COUNTERS: Readonly<
 })
 
 /**
- * Names of the non-zero server-tool counters this snapshot cannot price: the
- * `fee_unpriced` ones in {@link XAI_SERVER_TOOL_COUNTERS} and any counter the
- * table does not know. xAI may bill them; the snapshot cannot, so a call that
- * reports one is priced `'estimated'` (it understates) and the adapter warns.
+ * The non-zero server-tool counters this snapshot cannot price, split by why:
+ * `feeUnpriced` are the counters {@link XAI_SERVER_TOOL_COUNTERS} lists as
+ * `fee_unpriced` (xAI charges per use, this snapshot has no rate), `unknown` are
+ * counters the table does not know at all (xAI may bill them or may not). A call
+ * that reports either is priced `'estimated'`, and the adapter warns.
  *
  * Candidates are the members of `usage.raw.server_side_tool_usage_details` (the
  * object xAI reports tool counters in; `usage.details` flattens it together with
  * unrelated numeric usage fields, so it cannot tell a counter from, say,
  * `num_sources_used`) plus the table's own names found in `usage.details`.
  */
-export function unpricedXaiToolCounters(usage: Usage): string[] {
+export function classifyUnpricedXaiToolCounters(usage: Usage): {
+  feeUnpriced: string[]
+  unknown: string[]
+} {
   const candidates = new Map<string, unknown>()
   const raw = usage.raw
   if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
@@ -136,15 +144,24 @@ export function unpricedXaiToolCounters(usage: Usage): string[] {
       candidates.set(key, value)
     }
   }
-  const unpriced: string[] = []
+  const feeUnpriced: string[] = []
+  const unknown: string[] = []
   for (const [key, value] of candidates) {
     if (typeof value !== 'number' || !(value > 0)) continue
-    const kind = Object.hasOwn(XAI_SERVER_TOOL_COUNTERS, key)
-      ? XAI_SERVER_TOOL_COUNTERS[key]
-      : undefined
-    if (kind === undefined || kind === 'fee_unpriced') unpriced.push(key)
+    if (!Object.hasOwn(XAI_SERVER_TOOL_COUNTERS, key)) unknown.push(key)
+    else if (XAI_SERVER_TOOL_COUNTERS[key] === 'fee_unpriced') feeUnpriced.push(key)
   }
-  return unpriced
+  return { feeUnpriced, unknown }
+}
+
+/**
+ * Names of the non-zero server-tool counters this snapshot cannot price (both
+ * groups of {@link classifyUnpricedXaiToolCounters}); any makes the call
+ * `'estimated'`.
+ */
+export function unpricedXaiToolCounters(usage: Usage): string[] {
+  const { feeUnpriced, unknown } = classifyUnpricedXaiToolCounters(usage)
+  return [...feeUnpriced, ...unknown]
 }
 
 /**

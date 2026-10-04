@@ -44,7 +44,7 @@ import { XAI_JSON_SCHEMA_PROFILE } from './json-schema.js'
 import {
   X_SEARCH_ITEM_COUNTERS,
   XAI_ESTIMATED_USAGE_KEY,
-  unpricedXaiToolCounters,
+  classifyUnpricedXaiToolCounters,
 } from './pricing.js'
 import { XaiStreamError } from './stream.js'
 import type {
@@ -222,6 +222,15 @@ const XAI_PROVIDER_OPTION_KEYS = new Set([
   'maxTurns',
   'searchBudget',
 ])
+
+/** The structured-output `name` used when the schema has no `title`. */
+const XAI_DEFAULT_SCHEMA_NAME = 'structured_output'
+
+/**
+ * The names `text.format.name` may take: the Responses API's rule. xAI
+ * documents none (docs.x.ai, read 2026-10-03), so this is the mirrored API's.
+ */
+const XAI_SCHEMA_NAME = /^[a-zA-Z0-9_-]{1,64}$/
 
 const XAI_SERVER_TOOL_CHOICES = new Set(['auto', 'required', 'none'])
 
@@ -1217,23 +1226,6 @@ export interface XaiAdapterOptions {
    * call still open then fails with a retryable `timeout` error.
    */
   countTokensTimeoutMs?: number
-  /**
-   * @internal Testing-only.
-   *
-   * Override the default `buildXaiClient` factory. Allows unit tests to
-   * simulate construction failures without importing the real `openai` SDK.
-   * Never set this in production code. Mirrors `GeminiAdapterOptions._clientFactory`.
-   */
-  _clientFactory?: (
-    auth: AuthMaterial,
-    transport?: XaiTransport,
-  ) => XaiClientLike | Promise<XaiClientLike>
-  /**
-   * @internal Testing-only.
-   *
-   * Override `fetch` for `POST /v1/tokenize-text` (not on the openai SDK).
-   */
-  _fetch?: typeof fetch
 }
 
 // ---------------------------------------------------------------------------
@@ -1317,6 +1309,35 @@ function snapshotXaiTransport(
  * @param opts.transport - Optional `fetch` + `fetchOptions` for the built client.
  */
 export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
+  return xaiAdapterWithSeams(opts, {})
+}
+
+/**
+ * The test seams of {@link xaiAdapter}: a replacement for the client factory
+ * (to make client construction fail without the real SDK) and for the `fetch`
+ * `countTokens` uses. Passed to {@link xaiAdapterWithSeams}.
+ *
+ * @internal
+ */
+export interface XaiAdapterSeams {
+  clientFactory?: (
+    auth: AuthMaterial,
+    transport?: XaiTransport,
+  ) => XaiClientLike | Promise<XaiClientLike>
+  fetch?: typeof fetch
+}
+
+/**
+ * {@link xaiAdapter} with its seams replaced. Not exported from the package
+ * index, so no test seam is in a shipped type (the same pattern as the Gemini
+ * adapter's `geminiAdapterWithClientFactory`).
+ *
+ * @internal
+ */
+export function xaiAdapterWithSeams(
+  opts: XaiAdapterOptions | undefined,
+  seams: XaiAdapterSeams,
+): ProviderAdapter {
   if (opts?.client !== undefined && opts.transport !== undefined) {
     throw new LlmError(
       'xaiAdapter: `transport` has no effect on an injected `client`; configure the transport on the client itself.',
@@ -1573,12 +1594,18 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
           'output.jsonSchema',
           XAI_JSON_SCHEMA_PROFILE,
         )
-        const name =
-          isPlainRecord(schema) &&
-          typeof schema['title'] === 'string' &&
-          schema['title'].length > 0
-            ? schema['title']
-            : 'structured_output'
+        const title = isPlainRecord(schema) ? schema['title'] : undefined
+        // `text.format.name` is the schema's `title`. xAI documents no rule for
+        // it (read 2026-10-03); the Responses API it mirrors takes
+        // `^[a-zA-Z0-9_-]{1,64}$`, so that is enforced: a title outside it is
+        // rejected, never rewritten, and a schema with no title is sent as
+        // `structured_output`.
+        if (typeof title === 'string' && !XAI_SCHEMA_NAME.test(title)) {
+          throw badXaiRequest(
+            `output.jsonSchema.title "${boundedNote(title)}" cannot be the xAI structured-output name for model "${model}": it must match ${XAI_SCHEMA_NAME.source} (letters, digits, "_" and "-", 1 to 64 characters). Rename the title or remove it to use "${XAI_DEFAULT_SCHEMA_NAME}".`,
+          )
+        }
+        const name = typeof title === 'string' ? title : XAI_DEFAULT_SCHEMA_NAME
         params.text = {
           format: { type: 'json_schema', name, schema, strict: true },
         }
@@ -1695,7 +1722,7 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       let responseMeta: XaiResponseMeta | undefined
       let sdkCallStart: { startedAt: number; timeoutMs: number } | undefined
       try {
-        const buildClient = opts?._clientFactory ?? buildXaiClient
+        const buildClient = seams.clientFactory ?? buildXaiClient
         const client: XaiClientLike =
           opts?.client !== undefined
             ? opts.client
@@ -1950,10 +1977,7 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
           })
         }
 
-        const expectedToolCounters = expectedServerToolCounters(
-          xaiProviderConfig.tools,
-          hasFileRef,
-        )
+        const expectedToolCounters = expectedServerToolCounters(xaiProviderConfig.tools)
         // A response where no server tool ran reports
         // `num_server_side_tools_used: 0` and omits the per-tool counters
         // (live 2026-10-02, fixture 32: `tool_choice: 'none'`; the same shape
@@ -1988,18 +2012,39 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
         }
         // A non-zero counter for a server tool that xAI bills per use and the
         // pricing snapshot has no rate for (code interpreter, file or document
-        // search, image generation), or one the snapshot does not know, is not
-        // priced here: the call is priced 'estimated' and understates. Token-only
-        // tools (MCP) are fully priced by their tokens and do not warn.
-        const unpricedCounters = unpricedXaiToolCounters(usage)
-        if (unpricedCounters.length > 0) {
+        // search, image generation) is not priced here: the call is priced
+        // 'estimated' and understates. A counter the snapshot does not know is
+        // priced 'estimated' too, but nothing says it is billed: when the request
+        // enabled image or video understanding, which xAI lists as token-priced
+        // with no invocation fee (pricing page, re-read 2026-10-03; it names no
+        // counter for them), the unknown counter is most likely that tool's and the
+        // token cost already priced may be the whole cost. Token-only tools (MCP)
+        // do not warn. With a file attachment, the attachment warning below states
+        // the same fact as `document_search_calls`.
+        const { feeUnpriced, unknown } = classifyUnpricedXaiToolCounters(usage)
+        const shown = (keys: string[]): string =>
+          keys.map((key) => `${key}=${String(usage.details[key])}`).join(', ')
+        const feeCounters = hasFileRef
+          ? feeUnpriced.filter((key) => key !== 'document_search_calls')
+          : feeUnpriced
+        if (feeCounters.length > 0) {
           warnings.push({
             type: 'other',
-            message: `xai: server tool counter(s) [${unpricedCounters
-              .map((key) => `${key}=${String(usage.details[key])}`)
-              .join(
-                ', ',
-              )}] are non-zero but have no rate in the pricing snapshot (xAI bills the tool per use, or the counter is unknown); the call's cost is estimated and understates.`,
+            message: `xai: server tool counter(s) [${shown(feeCounters)}] are non-zero but have no rate in the pricing snapshot (xAI bills the tool per use); the call's cost is estimated and understates.`,
+          })
+        }
+        if (unknown.length > 0) {
+          const understanding =
+            xaiProviderConfig.tools?.some(
+              (tool) =>
+                tool['enable_image_understanding'] === true ||
+                tool['enable_video_understanding'] === true,
+            ) === true
+          warnings.push({
+            type: 'other',
+            message: understanding
+              ? `xai: server tool counter(s) [${shown(unknown)}] are not in the pricing snapshot. The request enabled image or video understanding, which xAI prices by tokens with no invocation fee, so the counter is probably that tool's and the priced token cost may be complete; the counter's name was never captured, so the call stays estimated.`
+              : `xai: server tool counter(s) [${shown(unknown)}] are not in the pricing snapshot; xAI may bill the tool per use, so the call's cost is estimated and may understate.`,
           })
         }
         if ((expectedToolCounters.length > 0 || hasFileRef) && !noServerToolRan) {
@@ -2140,7 +2185,7 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
 
       const text = concatenateTokenizeText(req)
       const apiKey = requireApiKey(ctx.auth)
-      const fetchImpl = opts?._fetch ?? transport?.fetch ?? fetch
+      const fetchImpl = seams.fetch ?? transport?.fetch ?? fetch
 
       // The call's own deadline, beside the caller's signal: a hung connection
       // must not wait forever.
@@ -2162,7 +2207,7 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
         const res = await fetchImpl('https://api.x.ai/v1/tokenize-text', {
           // The host transport's init (a dispatcher, say) first; the request
           // owns the keys below, which `snapshotXaiTransport` keeps out of it.
-          ...(opts?._fetch === undefined ? transport?.fetchOptions : undefined),
+          ...(seams.fetch === undefined ? transport?.fetchOptions : undefined),
           method: 'POST',
           headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -2242,7 +2287,6 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
 const WEB_SEARCH_COUNTER = 'web_search_calls'
 function expectedServerToolCounters(
   tools: Array<Record<string, unknown>> | undefined,
-  _hasFileRef: boolean,
 ): string[] {
   const keys: string[] = []
   if (tools !== undefined) {

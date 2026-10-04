@@ -3621,6 +3621,33 @@ that the rules of Amendment A were applied to some endings of a started run and 
    secrets redacted, in the error's `cause`. The client's own whole-call timer reports "client deadline" and
    the timeout the caller configured, not the SDK's timer and not the value plus the 5 s buffer.
 
+6. **An output that did not complete is not a tool call.** Every `function_call` of a response whose status
+   is not `completed` (an output-cap cut, any abnormal end), and any call whose own status is not
+   `completed`, is dropped from `toolCalls`, `message` and the replayed state: its arguments may stop
+   mid-string, and a call beside an abnormal stop is not one the model finished. `finishReason` keeps the
+   response's reason (`length` for `max_output_tokens`, else `other`; it was rewritten to `tool_calls`) and a
+   warning names the call, as the Gemini adapter does (ADR-044). A completed call whose arguments are not
+   JSON is a non-retryable `server` error carrying the usage. A message content part without `text` no
+   longer throws: a `refusal` part is text-less with `finishReason: 'content_filter'` and a warning, any other
+   type is ignored with a warning; a billed answer is never discarded for its shape.
+7. **Files and `countTokens` have the same edges as the call.** Their errors keep the response headers
+   (`Retry-After` becomes `retryAfterMs`, `x-request-id` is in the message), each call has a deadline
+   (60 s by default, `timeoutMs` on the store, `countTokensTimeoutMs` on the adapter; a retryable `timeout`),
+   a file id is one encoded path segment, and a 2xx body that is not JSON is a typed `server` error.
+8. **What the pricing snapshot does not know is not claimed to understate.** xAI lists image understanding
+   and X video understanding as token-priced with no invocation fee (pricing page, re-read 2026-10-03) and
+   names no counter for them; none was captured, so none is added to the table. A non-zero counter the table
+   does not know keeps the call `'estimated'`, and when the request enabled image or video understanding the
+   warning says the token cost may be complete instead of saying it understates. A known per-use counter
+   (code execution) still understates. A file attachment gets one warning for `document_search_calls`, not two.
+9. **Request limits and names.** `temperature` is 0 to 2 (xAI documents "between 0 and 2") and `topP` 0 to 1
+   (no range is documented; a probability mass outside it is meaningless): outside is rejected by the config
+   schema. The structured-output `name` is the schema `title` and must match `^[a-zA-Z0-9_-]{1,64}$` (xAI
+   documents no rule; the Responses API's is enforced): an invalid title is `bad_request`, never rewritten, a
+   schema with no title is `structured_output`. Reasoning summary parts are joined with a blank line. The
+   adapter's test seams (client factory, `countTokens` fetch) moved out of `XaiAdapterOptions` into an
+   unexported `xaiAdapterWithSeams`, as in the Gemini adapter, so no seam is in a shipped type.
+
 ---
 
 ## ADR-041: Quota windows, token pacing, the scheduler port and the test package

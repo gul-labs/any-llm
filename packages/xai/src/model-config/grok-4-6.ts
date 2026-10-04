@@ -19,13 +19,15 @@ import { XaiProviderOptionsSchema } from './tools.js'
 
 export const Grok46ConfigSchema = z
   .strictObject({
-    temperature: z.number().optional().meta({
+    temperature: z.number().min(0).max(2).optional().meta({
       title: 'Temperature',
-      description: 'Sampling temperature forwarded verbatim to grok-4.6.',
+      description:
+        'Sampling temperature forwarded verbatim to grok-4.6, from 0 to 2 (the range xAI documents for the Responses API: "between 0 and 2"); a value outside it is rejected.',
     }),
-    topP: z.number().optional().meta({
+    topP: z.number().min(0).max(1).optional().meta({
       title: 'Top P',
-      description: 'Nucleus sampling parameter forwarded verbatim to grok-4.6.',
+      description:
+        'Nucleus sampling probability forwarded verbatim to grok-4.6, from 0 to 1 (xAI documents no range for it; a probability mass outside 0 to 1 is meaningless); a value outside it is rejected.',
     }),
     maxOutputTokens: maxOutputTokensSchema(XAI_MODEL_LIMITS['grok-4.6'])
       .optional()

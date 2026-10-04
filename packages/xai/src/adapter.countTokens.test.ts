@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect, vi } from 'vitest'
 import type { AdapterCtx, TokenCountRequest } from '@gullabs/core'
-import { xaiAdapter } from './adapter.js'
+import { xaiAdapter, xaiAdapterWithSeams } from './adapter.js'
 import type { XaiTransport } from './client.js'
 
 const FAKE_CTX: AdapterCtx = {
@@ -76,8 +76,8 @@ describe('xaiAdapter.countTokens — host transport', () => {
 describe('xaiAdapter.countTokens — happy path', () => {
   it('POSTs concatenated text to /v1/tokenize-text and reports lower-bound', async () => {
     let captured: { url: string; body: unknown } | undefined
-    const adapter = xaiAdapter({
-      _fetch: makeFetch(async (url, init) => {
+    const adapter = xaiAdapterWithSeams(undefined, {
+      fetch: makeFetch(async (url, init) => {
         captured = { url, body: JSON.parse(String(init?.body)) }
         return new Response(JSON.stringify(tokenizeFixture.body), { status: 200 })
       }),
@@ -131,8 +131,8 @@ describe('xaiAdapter.countTokens — non-text rejects', () => {
       },
     ],
   ])('rejects %s parts', async (_label, part) => {
-    const adapter = xaiAdapter({
-      _fetch: makeFetch(async () => {
+    const adapter = xaiAdapterWithSeams(undefined, {
+      fetch: makeFetch(async () => {
         throw new Error('fetch should not be called')
       }),
     })
@@ -152,8 +152,8 @@ describe('xaiAdapter.countTokens — non-text rejects', () => {
 
 describe('xaiAdapter.countTokens — error classification', () => {
   it('classifies 400 invalid-key as invalid_auth', async () => {
-    const adapter = xaiAdapter({
-      _fetch: makeFetch(async () => {
+    const adapter = xaiAdapterWithSeams(undefined, {
+      fetch: makeFetch(async () => {
         return new Response(
           JSON.stringify({
             code: 'invalid-argument',
