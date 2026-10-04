@@ -1,6 +1,6 @@
 /**
  * The call deadline, the sink wait and abort handling, end to end through the
- * engine (R4a audit findings F2, F3, F4, F7, F8, F14, F15, F17).
+ * engine.
  *
  * Every test drives fake timers; the engine's default clock is `Date.now`,
  * which the fake timers also move, so deadline arithmetic is exact.
@@ -97,7 +97,7 @@ afterEach(() => {
 })
 
 // ---------------------------------------------------------------------------
-// F2: retry shares the engine's budget; synthetic deadline errors keep the cause
+// Retry shares the engine's budget; synthetic deadline errors keep the cause
 // ---------------------------------------------------------------------------
 
 describe('retry anchors its budget at the start of the call', () => {
@@ -305,7 +305,7 @@ describe('the deadline error carries the last attempt error', () => {
 })
 
 // ---------------------------------------------------------------------------
-// F3: the deadline survives being deferred while an attempt is in flight
+// The deadline survives being deferred while an attempt is in flight
 // ---------------------------------------------------------------------------
 
 describe('a middleware that hangs after a failed attempt cannot hold the call', () => {
@@ -360,7 +360,7 @@ describe('a middleware that hangs after a failed attempt cannot hold the call', 
 })
 
 // ---------------------------------------------------------------------------
-// F4: a billed success is never turned into a timeout
+// A billed success is never turned into a timeout
 // ---------------------------------------------------------------------------
 
 describe('a slow middleware after next() keeps the billed result', () => {
@@ -446,7 +446,7 @@ describe('a slow middleware after next() keeps the billed result', () => {
 })
 
 // ---------------------------------------------------------------------------
-// F7: a hung sink does not hold the abort or the deadline
+// A hung sink does not hold the abort or the deadline
 // ---------------------------------------------------------------------------
 
 describe('a hung sink does not delay an abort or the deadline', () => {
@@ -549,7 +549,7 @@ describe('a hung sink does not delay an abort or the deadline', () => {
 })
 
 // ---------------------------------------------------------------------------
-// F8: timers above 2^31 - 1 ms are rejected
+// Timers above 2^31 - 1 ms are rejected
 // ---------------------------------------------------------------------------
 
 describe('timer values above 2^31 - 1 are bad_request', () => {
@@ -634,7 +634,7 @@ describe('timer values above 2^31 - 1 are bad_request', () => {
 })
 
 // ---------------------------------------------------------------------------
-// F14: a cooperative middleware that throws the abort reason
+// A cooperative middleware that throws the abort reason
 // ---------------------------------------------------------------------------
 
 describe('a middleware that rejects with the signal reason is an abort', () => {
@@ -710,7 +710,7 @@ describe('a middleware that rejects with the signal reason is an abort', () => {
 })
 
 // ---------------------------------------------------------------------------
-// F15: an aborted signal never dispatches
+// An aborted signal never dispatches
 // ---------------------------------------------------------------------------
 
 describe('a signal that is already aborted does not dispatch', () => {
@@ -799,7 +799,7 @@ describe('a signal that is already aborted does not dispatch', () => {
 })
 
 // ---------------------------------------------------------------------------
-// F17: the deadline follows the injected clock
+// The deadline follows the injected clock
 // ---------------------------------------------------------------------------
 
 describe('deadline arithmetic uses the injected clock', () => {

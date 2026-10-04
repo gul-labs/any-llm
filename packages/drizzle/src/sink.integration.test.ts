@@ -4,7 +4,7 @@
  * Uses PGlite (in-memory WASM Postgres) so the suite runs offline in CI with
  * no Docker or external service dependencies.
  *
- * Covers audit findings TEST-002 / DB-001:
+ * Covers:
  *   a) INSERT shape — all mapped values (hot columns + JSONB lanes) round-trip.
  *   b) attemptId idempotency — recording the same attemptId twice yields 1 row.
  *   c) timestamp + JSONB mapping — timestamps and JSONB objects round-trip correctly.
@@ -281,7 +281,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
     expect(new Set(rows.map((r) => r.attemptId)).size).toBe(2)
   })
 
-  // R1.10: the typed error reason persists in its own column; rows without a
+  // The typed error reason persists in its own column; rows without a
   // reason keep it NULL.
   it('persists errorReason and leaves it null when the record has none', async () => {
     const db = await createTestDb()
@@ -309,7 +309,7 @@ describe('drizzleUsageSink — real PGlite integration', () => {
     expect(withoutReason?.errorReason).toBeNull()
   })
 
-  // R1.10: reasons the engine's error paths produce reach the row — a provider
+  // Reasons the engine's error paths produce reach the row — a provider
   // attempt that throws one, and a middleware refusal that writes the
   // attemptNumber:0 pre-attempt row.
   it('engine error paths write the typed reason to error_reason', async () => {

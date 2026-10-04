@@ -85,7 +85,7 @@ the requested id and no other model. Any other model id throws
 `stop_reason: "refusal"` returns `finishReason: 'content_filter'` and preserves
 its billed usage; an error envelope throws `content_filter`.
 
-P-A1 was captured on 2026-09-26 with Claude Code 2.1.282: the invariant argv
+The live capture of 2026-09-26 (Claude Code 2.1.282) shows it: the invariant argv
 and `--json-schema` completed for all four registered ids, and each success
 envelope contained only its requested id as a `modelUsage` key. The sanitized
 responses are in `src/__fixtures__/model-refresh-p-a1.json`. The full installed CLI version and

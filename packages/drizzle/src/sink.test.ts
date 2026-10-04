@@ -433,7 +433,7 @@ function drizzleQueryError(rootMessage: string, code: string, secret: string): E
   )
 }
 
-describe('drizzleUsageSink: a failed ledger insert never carries the row (P2-2)', () => {
+describe('drizzleUsageSink: a failed ledger insert never carries the row', () => {
   it('rejects with the driver message and SQLSTATE, not the SQL or its parameters, and has no cause', async () => {
     const secret = 'CUSTOMER REASONING sk-ant-api03-abcdefghijklmnopqrstuvwxyz'
     const error = await drizzleUsageSink({
@@ -506,7 +506,7 @@ describe('drizzleUsageSink: a failed ledger insert never carries the row (P2-2)'
   })
 })
 
-describe('drizzleUsageSink on a transaction handle (P2-1)', () => {
+describe('drizzleUsageSink on a transaction handle', () => {
   const ids = Array.from({ length: 6 }, (_, i) => `attempt_${i}`)
 
   it('db as a transaction handle: concurrent records run one at a time, each in a nested transaction, so none crosses another', async () => {
@@ -563,7 +563,7 @@ describe('drizzleUsageSink on a transaction handle (P2-1)', () => {
   })
 })
 
-describe('drizzleUsageSink construction (P2-7)', () => {
+describe('drizzleUsageSink construction', () => {
   it('a db without transaction() is bad_request at construction, with the plain explanation', () => {
     const insertOnly = { insert: () => ({}) } as unknown as PostgresDb
     expect(() => drizzleUsageSink({ db: insertOnly })).toThrow(

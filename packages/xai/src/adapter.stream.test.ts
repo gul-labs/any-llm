@@ -268,7 +268,7 @@ describe('a streamed call maps to exactly what the non-streamed call maps to (sy
   )
 })
 
-describe('the continuation state keeps the provider reasoning the final object omitted (P9a)', () => {
+describe('the continuation state keeps the provider reasoning the final object omitted', () => {
   const first = loadFixture('30-grok-4-7-search-replay.json')['first'] as Plain
   const response = completeResponse(first)
 
@@ -429,7 +429,7 @@ describe('streamed usage reconciles to the billed ticks (real P9a streamed usage
   })
 })
 
-describe('terminal events map as the non-streamed path does (R4)', () => {
+describe('terminal events map as the non-streamed path does', () => {
   const failed = JSON.parse(
     readFileSync(fixtureDir + 'doc-derived-error-shapes.json', 'utf8'),
   ) as Record<string, Plain>
@@ -593,7 +593,7 @@ const resetError = (): TypeError =>
     cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }),
   })
 
-describe('a stream that cannot be completed (P1-1: progress decides whether a retry is safe)', () => {
+describe('a stream that cannot be completed (progress decides whether a retry is safe)', () => {
   it('cut BEFORE any output event: a retryable server error with no usage', async () => {
     const err = await failure(streamingAdapter(respond(openedStream())).run(req45(), CTX))
     expect(err).toMatchObject({ kind: 'server', retryable: true, provider: 'xai' })
@@ -757,7 +757,7 @@ describe('a stream that cannot be completed (P1-1: progress decides whether a re
   })
 })
 
-describe('retries through the real engine (P1-1, P2-1)', () => {
+describe('retries through the real engine', () => {
   /** A client with the documented retry middleware over a counted stub. */
   function retrying(stub: Stub) {
     const calls = { n: 0 }
@@ -875,7 +875,7 @@ describe('retries through the real engine (P1-1, P2-1)', () => {
   })
 })
 
-describe('reconciliation is enrichment: a complete, billed stream is never thrown away (P1-2)', () => {
+describe('reconciliation is enrichment: a complete, billed stream is never thrown away', () => {
   const ticks = 4_033_200_000
   const response = completeResponse({
     output: [
@@ -1002,7 +1002,7 @@ describe('reconciliation is enrichment: a complete, billed stream is never throw
   })
 })
 
-describe('frames that are not events (P3-2, P3-3)', () => {
+describe('frames that are not events', () => {
   const full = synthesizeStreamEvents(
     completeResponse({
       output: [
@@ -1075,7 +1075,7 @@ describe('frames that are not events (P3-2, P3-3)', () => {
   })
 })
 
-describe('idleTimeoutMs bounds a half-open connection (P2-5)', () => {
+describe('idleTimeoutMs bounds a half-open connection', () => {
   const heartbeats =
     (everyMs: number): Stub =>
     (_url, init) => {
@@ -1176,7 +1176,7 @@ describe('idleTimeoutMs bounds a half-open connection (P2-5)', () => {
   )
 })
 
-describe('what the client leaves behind (P2-4)', () => {
+describe('what the client leaves behind', () => {
   const activeTimeouts = (): number =>
     process.getActiveResourcesInfo().filter((name) => name === 'Timeout').length
 
@@ -1234,7 +1234,7 @@ describe('what the client leaves behind (P2-4)', () => {
   })
 })
 
-describe('the fake client and the real streaming path agree (P3-7)', () => {
+describe('the fake client and the real streaming path agree', () => {
   it('makeFakeXai bypasses the stream (it replaces `responses.create`, below which the reducer lives); a streamed run of the same response gives the same result', async () => {
     const response = completeResponse({
       model: 'grok-4.5',

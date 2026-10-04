@@ -1,5 +1,5 @@
 /**
- * @gullabs/google — Search facts, grounding checks and grounding price (R2.2, R2.3, R2.4).
+ * @gullabs/google — Search facts, grounding checks and grounding price.
  *
  * - `providerOptions.google.allowSchemaWithSearch` / `requireGrounding`.
  * - Normalised `usage.details.web_search_requested` / `web_search_calls`,
@@ -94,7 +94,7 @@ const grounded = (
   ...extra,
 })
 
-describe('providerOptions.google.allowSchemaWithSearch (R2.2)', () => {
+describe('providerOptions.google.allowSchemaWithSearch', () => {
   it('is admitted and dispatched: schema and googleSearch go out in one request', async () => {
     const fake = makeFakeGemini(
       fakeGeminiResponse({
@@ -375,7 +375,7 @@ describe('P4: no Gemini 3.x model is default-on (live capture, 2026-10-03)', () 
   })
 })
 
-describe('search facts in usage (R2.3)', () => {
+describe('search facts in usage', () => {
   const run = (
     googleOptions: Record<string, unknown> | undefined,
     groundingMetadata: unknown,
@@ -455,7 +455,7 @@ describe('search facts in usage (R2.3)', () => {
   })
 })
 
-describe('requireGrounding fails closed (R2.3, D5)', () => {
+describe('requireGrounding fails closed', () => {
   const generate = (
     response: ReturnType<typeof fakeGeminiResponse>,
     options: Record<string, unknown> = { ...SEARCH, requireGrounding: true },
@@ -576,7 +576,7 @@ describe('requireGrounding fails closed (R2.3, D5)', () => {
   })
 })
 
-describe('requireGrounding: retry policy and finish reasons (R2.2 audit)', () => {
+describe('requireGrounding: retry policy and finish reasons', () => {
   const OPT_IN = { ...SEARCH, allowSchemaWithSearch: true }
   const retrying = (responses: ReturnType<typeof fakeGeminiResponse>[]) => {
     const sink = new RecordingSink()
@@ -702,7 +702,7 @@ describe('requireGrounding: retry policy and finish reasons (R2.2 audit)', () =>
   })
 })
 
-describe('the grounding price lane (R2.3)', () => {
+describe('the grounding price lane', () => {
   const source = geminiPricingSource()
   const usage = (details: Record<string, number>) => ({
     inputTokens: 1000,
@@ -907,7 +907,7 @@ describe('live Gemini 2.5 usage with a repeated query (P5 capture, 2026-10-03)',
   })
 })
 
-describe('citations carry cited and textRange from groundingSupports (R2.4)', () => {
+describe('citations carry cited and textRange from groundingSupports', () => {
   const chunks = [
     { web: { uri: 'https://a.example/x', title: 'A' } },
     { web: { uri: 'https://b.example/y', title: 'B' } },
@@ -1028,7 +1028,7 @@ describe('citations carry cited and textRange from groundingSupports (R2.4)', ()
   })
 })
 
-describe('textRange against a real grounded response (audit P2-3)', () => {
+describe('textRange against a real grounded response', () => {
   const fixture = JSON.parse(
     readFileSync(
       fileURLToPath(
@@ -1108,7 +1108,7 @@ describe('textRange against a real grounded response (audit P2-3)', () => {
   })
 })
 
-describe('providerMetadata.google.searchEntryPoint (R2.4)', () => {
+describe('providerMetadata.google.searchEntryPoint', () => {
   const run = (groundingMetadata: unknown) =>
     geminiAdapter({
       client: makeFakeGemini(

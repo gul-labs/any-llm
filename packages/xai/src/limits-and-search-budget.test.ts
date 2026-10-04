@@ -1,5 +1,5 @@
 /**
- * R3.1 / R3.3 — xAI descriptor limits, admitted image types, and the
+ * xAI descriptor limits, admitted image types, and the
  * observed-after-the-call search budget. No network: fake client only.
  */
 
@@ -370,7 +370,7 @@ describe('providerOptions.xai.searchBudget', () => {
   })
 })
 
-describe('xai configKeys (R5)', () => {
+describe('xai configKeys', () => {
   it('lists the top-level keys of each Grok schema, sorted', () => {
     for (const d of xaiModelDescriptors) {
       expect(d.configKeys).toEqual([

@@ -1,5 +1,5 @@
 /**
- * The Upstash store in R8.1: the per-day window in a time zone (key and TTL,
+ * The Upstash store: the per-day window in a time zone (key and TTL,
  * DST-safe), token windows and their reconciliation, and the bounded REST call.
  * Timers run on a `FakeClock`; no real time passes.
  *

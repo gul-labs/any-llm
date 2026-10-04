@@ -267,14 +267,14 @@ examples; function-call history requires state (`continuation: 'state'`). Live f
 `31-grok-4-7-third-turn.json` cover function replay and follow-ups that replay
 assistant message and web-search items.
 
-**Billing note:** attaching files on Responses implicitly enables xAI's `attachment_search` agentic tool. `web_search_calls` is billed per call. Since 2026-09-21, x_search is billed from `x_posts_fetched` and `x_users_fetched`, not `x_search_calls`. The attachment_search counter is **not** live-pinned (P-X2); a `file-ref` call sets synthetic `usage.details.attachment_search_unpinned = 1` and `Cost.confidence: 'estimated'`. Image and X video understanding are token-priced by xAI (pricing page, re-read 2026-10-03: "you will not be charged for the tool invocation itself"; image search is billed as web search) but the page names no counter for them and none has been captured: a counter the snapshot does not know keeps the call `'estimated'`, and when the request enabled image or video understanding the warning says the priced token cost may be complete instead of claiming it understates. When a required server-tool counter is absent, the snapshot cost is unpriced (`microUsd: null`) rather than understating an unknown fee. The provider's billed `cost_in_usd_ticks` remains in raw usage for separate reconciliation; it is not represented as a rate-snapshot-derived `Cost`.
+**Billing note:** attaching files on Responses implicitly enables xAI's `attachment_search` agentic tool. `web_search_calls` is billed per call. Since 2026-09-21, x_search is billed from `x_posts_fetched` and `x_users_fetched`, not `x_search_calls`. The attachment_search counter is **not** live-pinned (the probe is blocked by a Zero Data Retention key, see `BACKLOG.md`); a `file-ref` call sets synthetic `usage.details.attachment_search_unpinned = 1` and `Cost.confidence: 'estimated'`. Image and X video understanding are token-priced by xAI (pricing page, re-read 2026-10-03: "you will not be charged for the tool invocation itself"; image search is billed as web search) but the page names no counter for them and none has been captured: a counter the snapshot does not know keeps the call `'estimated'`, and when the request enabled image or video understanding the warning says the priced token cost may be complete instead of claiming it understates. When a required server-tool counter is absent, the snapshot cost is unpriced (`microUsd: null`) rather than understating an unknown fee. The provider's billed `cost_in_usd_ticks` remains in raw usage for separate reconciliation; it is not represented as a rate-snapshot-derived `Cost`.
 
 Fixture `19-x-search.json` was captured on 2026-08-24, before the billing
 change. It has only `x_search_calls`; the fixture test retains its actual
 billed total in usage but leaves snapshot cost unpriced.
 Live 2026-09-26 fixtures `26-x-posts.json` and `27-x-users.json` pin both
 item counters, including explicit zero counts, and reconcile snapshot cost to
-the provider's billed ticks. P-X2 attachment counter verification remains
+the provider's billed ticks. Attachment counter verification remains
 blocked: the available Zero Data Retention key returned 403 for file upload
 and 400 for a public URL attachment (`29-attachment-zdr-blocked.json`).
 

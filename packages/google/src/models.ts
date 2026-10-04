@@ -280,8 +280,8 @@ export const geminiModelDescriptors: ModelDescriptor[] = [
   },
 ]
 
-// Google's pricing page marks grounding "Not available" for Gemma 4 (read in the
-// 2026-10 audit), while `grounding: true` below rests on a live capture, so it is
+// Google's pricing page marks grounding "Not available" for Gemma 4 (read
+// 2026-10), while `grounding: true` below rests on a live capture, so it is
 // the capture, not the page, that this flag follows (ADR-013).
 // `grounding: true` on both Gemma descriptors rests on a live capture (ADR-013):
 // `__fixtures__/gemma-grounding-2026-10-03.json` (a derived summary of six calls, not the

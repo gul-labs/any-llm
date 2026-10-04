@@ -2829,7 +2829,7 @@ the deferral error instead of waking early; xAI's non-retryable
     `contents` only; the wire tests stub `fetch`), so its exact accuracy with `system` and `tools` is
     unproven. An empty `system` string is absent in `countTokens`, `generate()` and the `cachedContent`
     conflict check. A messages-only count still goes through the SDK. The tool schemas are
-    held to the same JSON Schema profile as `generate()`. The R1.3 rule stands: function calls in the
+    held to the same JSON Schema profile as `generate()`. The earlier rule stands: function calls in the
     history of a Gemini 3 model keep `accuracy: 'estimated'` (replayed signatures are billed and the
     count carries none). Wire tests run the real SDK with only `fetch` stubbed. This replaces the
     short-lived `bad_request` for these fields.
@@ -3052,7 +3052,7 @@ The owner decided hosts own routing and fallback; the library offers neither.
 ## ADR-038: Opt-in payload storage
 
 **Status:** Accepted (2026-10-03). Extends ADR-002 (fail-open sinks), ADR-027 and ADR-039 (the ledger). Amended
-2026-10-03 after the R11 audit: bounded, linear-time redaction; payload built after the outcome inside the sink
+2026-10-03 after the payload audit: bounded, linear-time redaction; payload built after the outcome inside the sink
 budget; a truthful statement of what `llm_calls` holds; reused transaction handles; batched purge; a stricter
 upgrade guard.
 
@@ -3306,7 +3306,7 @@ dropped both cache lanes and thinking.
 - `Telemetry` implementers may add `onAttempt`; no existing hook changes meaning.
 - A host that switched on the three-member `GEMINI_PRICED_TIERS` loses `'batch'`.
 
-### Amendment A (2026-10-03): R7 audit fixes
+### Amendment A (2026-10-03): ledger and cost audit fixes
 
 An adversarial audit of ADR-039's implementation found four P2 and nine P3 defects. This amendment
 supersedes the items below where they differ. Numbering follows the ADR's items.
@@ -3455,7 +3455,7 @@ past Node's 300 s header timer (ADR-032). Streaming keeps the connection busy. L
      adds none. What the stream never announced cannot be rebuilt: when xAI emits no reasoning item at all
      (the P9a shape), the state replays without it; the library does not warn, because billed reasoning
      with no reasoning item is not by itself a stream artifact.
-3. **Terminal and error events map as the non-streamed path does (R4).** `response.completed` and
+3. **Terminal and error events map as the non-streamed path does.** `response.completed` and
    `response.incomplete` go through the mapping unchanged (`incomplete` + `max_output_tokens` is
    `finishReason: 'length'`). `response.failed` becomes a response with `status: 'failed'` and goes through
    the failed-response rule (the `error.code` table, billed usage attached). An `error` event or `event:
@@ -3677,7 +3677,7 @@ sink that did not dedupe like the ledger, a `FakeAdapter` that turned a mistyped
    `dayBoundary: { timeZone: 'America/Los_Angeles' }`. Google's rate-limits page,
    https://ai.google.dev/gemini-api/docs/rate-limits, re-read on 2026-10-03, states that requests-per-day
    (RPD) quotas reset at midnight Pacific time, that limits apply per project and not per API key, and names
-   three dimensions (RPM, input TPM, RPD). It gives no per-model numbers. This closes the audit's Q-02.
+   three dimensions (RPM, input TPM, RPD). It gives no per-model numbers.
 3. **`quotaPolicy` is the builder; the presets sit on it.** `quotaPolicy({ provider, models, defaults,
 dayBoundary?, scope? })`; `quotaPolicyForGemini` and `quotaPolicyForXai` call it (their `defaultLimits`
    option is now `defaults`, one name). The xAI preset carries **no numbers**: xAI's rate-limits page,
@@ -3693,7 +3693,7 @@ void` (ADR-008's port, widened). The engine hands `acquire` `estimateInputTokens
    text parts, tool calls, tool results, tool declarations and the output schema over 4, rounded up. It is a floor for a
    request with media or file parts (they carry no text) and exists to pace, never to bill or refuse, so the
    real usage corrects it. The store reserves the estimate in the minute's counter under the same atomic
-   check-and-consume as the request windows (R1.5 semantics unchanged: a denied call consumes nothing; one
+   check-and-consume as the request windows (the request-window semantics are unchanged: a denied call consumes nothing; one
    call larger than the whole window passes into an empty window rather than waiting for a window it can
    never fit) and `QuotaStore.adjustTokens({ scope, nowMs, tokens })` adds `actual - reserved` to the
    acquire minute's counter, floored at 0, leaving a window that has ended alone. An attempt that ends
@@ -3748,7 +3748,7 @@ void` (ADR-008's port, widened). The engine hands `acquire` `estimateInputTokens
 - A request with media is under-estimated for `tpm`; the reconciliation corrects the counter after the call,
   not before it.
 
-### Amendment A (audit of R8, 2026-10-03)
+### Amendment A (quota and testing audit, 2026-10-03)
 
 An adversarial audit of this decision's implementation found five behaviours that contradicted the
 intent. Each is fixed; the contract is now:

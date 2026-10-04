@@ -23,7 +23,7 @@ import type {
 } from './runner.js'
 
 // ---------------------------------------------------------------------------
-// Synthetic envelopes for narrow contract tests. The separate P-A1 fixture
+// Synthetic envelopes for narrow contract tests. The separate 2026-09-26 capture fixture
 // below retains selected verbatim fields from four live CLI responses.
 // ---------------------------------------------------------------------------
 
@@ -219,7 +219,7 @@ describe('happy path: structured output', () => {
 // Argv construction
 // ---------------------------------------------------------------------------
 
-describe('P-A1 live CLI envelopes', () => {
+describe('live CLI envelopes (2026-09-26 capture)', () => {
   for (const model of [
     'claude-fable-5-1',
     'claude-opus-5-5',
@@ -858,7 +858,7 @@ describe('function-calling seam reject', () => {
 })
 
 // ---------------------------------------------------------------------------
-// R7.7 — usage mapping: both cache lanes are input, thinking is reported
+// Usage mapping: both cache lanes are input, thinking is reported
 // ---------------------------------------------------------------------------
 
 describe('usage mapping (both cache lanes are input)', () => {
@@ -870,7 +870,7 @@ describe('usage mapping (both cache lanes are input)', () => {
     return claudeCliAdapter({ runner }).run(makeResolvedReq(), CLI_SESSION_CTX)
   }
 
-  it('the live P-A1 capture: input 2 + cache write 4,011 is 4,013 input tokens, no clamp warning', async () => {
+  it('the live capture: input 2 + cache write 4,011 is 4,013 input tokens, no clamp warning', async () => {
     const captured = pA1Fixture.responses['claude-fable-5-1'] as ClaudeCliEnvelope
     const { runner } = makeFakeRunner(() => envelopeResult(captured))
     const result = await claudeCliAdapter({ runner }).run(

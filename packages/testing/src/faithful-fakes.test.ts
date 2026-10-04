@@ -1,5 +1,5 @@
 /**
- * R8 audit fixes for the test package: provider-shaped errors reach the fakes
+ * Provider-shaped errors reach the fakes
  * classified as the real adapters classify them, `FakeClient` rejects only
  * with `LlmError`, `FakeClock` works detached and rejects bad input,
  * concurrent delayed `FakeAdapter` calls each take their own entry, the file

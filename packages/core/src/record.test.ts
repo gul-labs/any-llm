@@ -557,7 +557,7 @@ describe('buildRecord — usage invariant clamping (fail-open)', () => {
   })
 })
 
-describe('normalizeUsage — totalTokens above input + output (R2.3)', () => {
+describe('normalizeUsage — totalTokens above input + output', () => {
   const base = { details: {}, raw: null }
 
   it('warns and reports estimated when the provider counted tokens the fields omit', () => {
@@ -793,7 +793,7 @@ describe('buildRecord — text Postgres cannot store (U+0000, lone surrogates)',
   })
 })
 
-describe('buildRecord — the ledger row redacts what it stores (P1-2, P2-1)', () => {
+describe('buildRecord — the ledger row redacts what it stores', () => {
   const NUL = '\u0000'
   const KEY = ['AIza', 'SyA1234567890abcdefghijklmnopqrstuv'].join('')
 
@@ -865,7 +865,7 @@ describe('buildRecord — the ledger row redacts what it stores (P1-2, P2-1)', (
   })
 })
 
-describe('buildRecord — a __proto__ key is data (P3-1)', () => {
+describe('buildRecord — a __proto__ key is data', () => {
   it('cleaning a record that also holds U+0000 keeps a __proto__ key in metadata and tool arguments', () => {
     const metadata = JSON.parse('{"__proto__":{"a":1},"b":"x\\u0000y"}') as never
     const r = buildRecord(

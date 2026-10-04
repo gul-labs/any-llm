@@ -1,5 +1,5 @@
 /**
- * `runStructured` option parity with `generate` (R6): `externalId`,
+ * `runStructured` option parity with `generate`: `externalId`,
  * `attachments`, `history` and `transientProviderState` reach the adapter and
  * the record, and an empty rendered user message with no attachments is
  * refused. Output validation stays with the host (ADR-009): none of these

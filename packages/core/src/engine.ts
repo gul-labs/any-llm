@@ -298,7 +298,7 @@ export interface ClientConfig {
    *   missing its contract and misconfigured fails with the existing
    *   prologue error, row-less, exactly as today. The missing-contract
    *   refusal itself happens inside `runPipeline`, immediately after
-   *   `callId` allocation — post-`callId`, so it writes a ledger row (D5).
+   *   `callId` allocation — post-`callId`, so it writes a ledger row.
    * - `runStructured` refuses any call whose `callSite.inputSchema` (D2) is
    *   absent. This is the FIRST check in the `runStructured` prologue —
    *   before D2 validation, D1 interpolation, and request building.
@@ -2127,7 +2127,7 @@ export function createClient(config: ClientConfig): Client {
     const callerSignal = signalProblem === undefined ? callerSignalInput : undefined
 
     // The logical-call deadline (`timeoutMs`) starts inside the `try` below, so
-    // middleware time counts against it (R4.1) and nothing that can throw runs
+    // middleware time counts against it and nothing that can throw runs
     // between arming its timer and the `finally` that clears it. Until then the
     // deadline is inert (no timer).
     let lastAttemptError: LlmError | undefined

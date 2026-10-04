@@ -1,5 +1,5 @@
 /**
- * Ledger v2 and cost observability in the engine (R7.1, R7.3, R7.4):
+ * Ledger v2 and cost observability in the engine:
  *
  * - the record carries `costConfidence`, `costDetails`, `costUnpricedReason`
  *   and `recordSchemaVersion: 2`;
@@ -93,7 +93,7 @@ function makeClient(
   return { client, sink, attempts, errors, successes }
 }
 
-describe('R7.1 the record persists cost confidence, lanes and the unpriced reason', () => {
+describe('the record persists cost confidence, lanes and the unpriced reason', () => {
   it('an exact priced call', async () => {
     const { client, sink } = makeClient(ok())
     await client.generate(request(), { auth: AUTH })
@@ -153,7 +153,7 @@ describe('R7.1 the record persists cost confidence, lanes and the unpriced reaso
   })
 })
 
-describe('R7.3 per-attempt telemetry and the cost of the whole call', () => {
+describe('per-attempt telemetry and the cost of the whole call', () => {
   const billedFailure = () =>
     new LlmError('empty 200', {
       kind: 'server',
@@ -417,7 +417,7 @@ describe('R7.3 per-attempt telemetry and the cost of the whole call', () => {
   })
 })
 
-describe('R7.4 provider-reported total versus the priced total', () => {
+describe('provider-reported total versus the priced total', () => {
   function reportingSource(providerMicroUsd: number | undefined): PricingSource {
     return {
       version: 'reporting-1',

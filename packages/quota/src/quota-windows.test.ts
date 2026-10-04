@@ -1,5 +1,5 @@
 /**
- * R8.1: `tpm`, `dayBoundary`, the Gemini and xAI presets over `quotaPolicy`,
+ * `tpm`, `dayBoundary`, the Gemini and xAI presets over `quotaPolicy`,
  * the middleware without a store, the explicit store-failure policy, and the
  * hint and usage the rate limiter receives.
  *

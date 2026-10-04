@@ -54,7 +54,7 @@ export const xaiPricingVersion = 'xai-2026-09-25' as const
  * - `x_users_fetched`: $10 / 1,000 profiles (per item, since 2026-09-21).
  *
  * The per-call `x_search_calls` rate is gone. Attachment search stays
- * unpriced until a live probe pins the counter name (P-X2); a file-ref call
+ * unpriced until a live probe pins the counter name (blocked, see BACKLOG.md); a file-ref call
  * is estimated, not billed at an invented counter.
  */
 export const XAI_TOOL_RATE_MICRO_USD = {
@@ -85,7 +85,7 @@ const LONG_CONTEXT_THRESHOLD = 200_000
  *   non-zero count makes the call `'estimated'`: code execution $5/1k calls
  *   (`code_interpreter_calls`), collections search $2.50/1k (`file_search_calls`),
  *   file attachments $5/1k (`document_search_calls`, whose counter name is not
- *   pinned: P-X2), image generation at Imagine API rates.
+ *   pinned, see BACKLOG.md), image generation at Imagine API rates.
  * - `token_only`: xAI lists the tool as token-priced with no invocation fee, so
  *   the tokens already priced are the whole cost. `mcp_calls` (Remote MCP Tools)
  *   is the only token-only counter whose name has been captured. Image
@@ -366,7 +366,7 @@ function scaleRates(rates: XaiModelRates, factor: number): XaiModelRates {
  *    item counter leaves the call unpriced; the provider's billed ticks remain
  *    in `usage.details` and, as `Cost.providerReported`, on the returned cost.
  *    File-ref still sets `attachment_search_unpinned` and the call is
- *    estimated — the counter name is not pinned (P-X2).
+ *    estimated — the counter name is not pinned.
  */
 export function computeXaiCost(model: string, usage: Usage, tier?: string): Cost {
   const cost = priceXaiCall(model, usage, tier)

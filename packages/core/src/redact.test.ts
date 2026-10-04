@@ -295,7 +295,7 @@ describe('redactSecrets — combined patterns', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 6. Linear time on hostile input (P1-1)
+// 6. Linear time on hostile input
 // ---------------------------------------------------------------------------
 
 describe('redactSecrets — linear time on adversarial input', () => {
@@ -354,7 +354,7 @@ describe('redactSecrets — linear time on adversarial input', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 7. Wider coverage (P1-3)
+// 7. Wider coverage
 // ---------------------------------------------------------------------------
 
 describe('redactSecrets — signed URLs and header forms', () => {

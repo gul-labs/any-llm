@@ -446,7 +446,7 @@ describe('normalizeSchemaIssues', () => {
 })
 
 // ---------------------------------------------------------------------------
-// classifyError — structured evidence first, message heuristic last (R4.5)
+// classifyError — structured evidence first, message heuristic last
 // ---------------------------------------------------------------------------
 
 describe('classifyError — evidence order', () => {
@@ -737,7 +737,7 @@ describe('isTransportError', () => {
 })
 
 // ---------------------------------------------------------------------------
-// parseRetryAfter (R4.6)
+// parseRetryAfter
 // ---------------------------------------------------------------------------
 
 describe('parseRetryAfter', () => {

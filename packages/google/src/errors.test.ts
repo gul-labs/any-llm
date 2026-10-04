@@ -124,7 +124,7 @@ describe('classifyGoogleError', () => {
   })
 })
 
-describe('classifyGoogleError: structured-body overlays (R4.9, R4.10, R4.12)', () => {
+describe('classifyGoogleError: structured-body overlays', () => {
   it('a wrong API key (live capture: 400, ErrorInfo.reason API_KEY_INVALID) is invalid_auth', () => {
     const err = classifyGoogleError(apiError(fixtures.captured['invalidApiKey']!))
     expect(err).toMatchObject({

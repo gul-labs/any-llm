@@ -1,5 +1,5 @@
 /**
- * R7.6 — Gemini input priced by `promptTokensDetails[].modality`.
+ * Gemini input priced by `promptTokensDetails[].modality`.
  *
  * Audio input is billed at its own rate on Gemini 2.5 Flash, 2.5 Flash-Lite and
  * 3.1 Flash-Lite (https://ai.google.dev/gemini-api/docs/pricing, read 2026-10-03,

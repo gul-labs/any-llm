@@ -1,11 +1,11 @@
 /**
  * @gullabs/google — result diagnostics.
  *
- * - R1.9: reasoning that uses up `maxOutputTokens` is reported, on a normal
+ * - Reasoning that uses up `maxOutputTokens` is reported, on a normal
  *   200 (engine warning) and on a candidate-less 200 (hint in the `server` error).
- * - R2.3: a call that sent `googleSearch` never reports an exact cost unless the
+ * - A call that sent `googleSearch` never reports an exact cost unless the
  *   response proves Search did not run; failed-but-billed attempts carry the facts.
- * - R1.10: a typed reason survives the Google error overlay.
+ * - A typed reason survives the Google error overlay.
  *
  * All tests use fakes from @gullabs/testing — no network.
  */
@@ -47,7 +47,7 @@ const messages = [
   { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'Question?' }] },
 ]
 
-describe('reasoning used up the output cap (R1.9)', () => {
+describe('reasoning used up the output cap', () => {
   it('a MAX_TOKENS response with only reasoning tokens carries the warning', async () => {
     const client = makeClient(
       makeFakeGemini(
@@ -141,7 +141,7 @@ describe('reasoning used up the output cap (R1.9)', () => {
   })
 })
 
-describe('grounded calls are not priced as exact (R2.3)', () => {
+describe('grounded calls are not priced as exact', () => {
   const generate = (googleSearch: boolean) => {
     const sink = new RecordingSink()
     const client = makeClient(
@@ -191,7 +191,7 @@ describe('grounded calls are not priced as exact (R2.3)', () => {
   })
 })
 
-describe('grounded attempts that fail after billing carry the search facts (R2.3)', () => {
+describe('grounded attempts that fail after billing carry the search facts', () => {
   const GROUNDING_WARNING = 'grounding fees are not included'
   const grounded = { providerOptions: { google: { tools: [{ googleSearch: {} }] } } }
 
@@ -251,7 +251,7 @@ describe('grounded attempts that fail after billing carry the search facts (R2.3
   })
 })
 
-describe('typed reasons survive the Google error overlay (R1.10)', () => {
+describe('typed reasons survive the Google error overlay', () => {
   it('keeps reason when re-classifying an LlmError', () => {
     const original = new LlmError('window exhausted', {
       kind: 'rate_limited',

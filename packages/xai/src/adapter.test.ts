@@ -3340,7 +3340,7 @@ describe('middleware cannot reroute on the built-in registry (ADR-037)', () => {
   })
 })
 
-describe('reasoning used up the output cap (R1.9)', () => {
+describe('reasoning used up the output cap', () => {
   it('a max_output_tokens response with only reasoning tokens carries the warning', async () => {
     const client = makeFakeXai(
       fakeXaiResponse({
@@ -3377,7 +3377,7 @@ describe('reasoning used up the output cap (R1.9)', () => {
   })
 })
 
-describe('response metadata and unpriced server tools (R7.5, R7.8)', () => {
+describe('response metadata and unpriced server tools', () => {
   /** A client that reports response metadata through `onResponse`, like the real one. */
   function clientWithMeta(
     meta: import('./client.js').XaiResponseMeta,

@@ -1,5 +1,5 @@
 /**
- * `ClientConfig.scheduler` (R8.2): the engine's timeout, deadline and sink
+ * `ClientConfig.scheduler`: the engine's timeout, deadline and sink
  * waits, `retryMiddleware`'s back-off and `FakeAdapter`'s delay all run on one
  * injected scheduler. Every test advances a `FakeClock`; no real timer is
  * created or waited on.

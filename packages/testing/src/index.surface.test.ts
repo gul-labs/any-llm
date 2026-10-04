@@ -32,8 +32,8 @@ describe('@gullabs/testing package surface: runToolLoop', () => {
   })
 })
 
-describe('@gullabs/testing package surface: R8 helpers', () => {
-  it('every R8 helper is reachable from the package root', async () => {
+describe('@gullabs/testing package surface: scripted-error and clock helpers', () => {
+  it('every one of these helpers is reachable from the package root', async () => {
     const api = await import('./index.js')
     for (const name of [
       'FakeClock',

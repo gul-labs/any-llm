@@ -1,5 +1,5 @@
 /**
- * `RateLimiter.acquire(key, signal, hint)` and `Release(usage)` (R8.1): the
+ * `RateLimiter.acquire(key, signal, hint)` and `Release(usage)`: the
  * engine hands the limiter an input-token estimate before dispatch and the
  * attempt's real usage when it releases.
  *

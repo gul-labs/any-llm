@@ -103,10 +103,10 @@ const asyncThrow = async (): Promise<never> => {
 }
 
 // ---------------------------------------------------------------------------
-// P1-1: async host callbacks
+// Async host callbacks
 // ---------------------------------------------------------------------------
 
-describe('P1-1: a host callback that returns a rejecting promise is never an unhandled rejection', () => {
+describe('a host callback that returns a rejecting promise is never an unhandled rejection', () => {
   const asyncTelemetry = (): Telemetry => ({
     onStart: asyncThrow,
     onAttempt: asyncThrow,
@@ -348,10 +348,10 @@ describe('P1-1: a host callback that returns a rejecting promise is never an unh
 })
 
 // ---------------------------------------------------------------------------
-// P2-1: requireAuth never echoes the credential
+// requireAuth never echoes the credential
 // ---------------------------------------------------------------------------
 
-describe('P2-1: a malformed auth is invalid_auth and never echoes the value', () => {
+describe('a malformed auth is invalid_auth and never echoes the value', () => {
   const SECRET = ['AIza', 'SySECRETKEY1234567890'].join('')
   it.each([
     ['a string', SECRET],
@@ -404,10 +404,10 @@ describe('P2-1: a malformed auth is invalid_auth and never echoes the value', ()
 })
 
 // ---------------------------------------------------------------------------
-// P2-2: buildRecord is total over host JSON
+// buildRecord is total over host JSON
 // ---------------------------------------------------------------------------
 
-describe('P2-2: hostile metadata never costs a billed result its ledger row', () => {
+describe('hostile metadata never costs a billed result its ledger row', () => {
   const circular = (): Record<string, never> => {
     const meta: Record<string, unknown> = { a: 1 }
     meta['self'] = meta
@@ -508,10 +508,10 @@ describe('P2-2: hostile metadata never costs a billed result its ledger row', ()
 })
 
 // ---------------------------------------------------------------------------
-// P2-3: shared error objects
+// Shared error objects
 // ---------------------------------------------------------------------------
 
-describe('P2-3: a host error object shared across calls is never re-stamped', () => {
+describe('a host error object shared across calls is never re-stamped', () => {
   it('a shared LlmError abort reason: each call throws its own copy with its own ids and writes its own refusal row', async () => {
     const reason = new LlmError('shutting down', { kind: 'aborted', retryable: false })
     const { client, sink } = build()
@@ -574,10 +574,10 @@ describe('P2-3: a host error object shared across calls is never re-stamped', ()
 })
 
 // ---------------------------------------------------------------------------
-// P2-5: a bad signal arms nothing
+// A bad signal arms nothing
 // ---------------------------------------------------------------------------
 
-describe('P2-5: an invalid signal is refused before any timer is armed', () => {
+describe('an invalid signal is refused before any timer is armed', () => {
   it.each([
     ['an empty object', {}],
     ['null', null],
@@ -645,7 +645,7 @@ describe('P2-5: an invalid signal is refused before any timer is armed', () => {
 // P3s
 // ---------------------------------------------------------------------------
 
-describe('P3-1: a billed failure keeps its usage-clamp warnings on the row', () => {
+describe('a billed failure keeps its usage-clamp warnings on the row', () => {
   it('cachedInputTokens above inputTokens is clamped and the warning is on the row', async () => {
     const billed = new LlmError('billed', {
       kind: 'server',
@@ -668,7 +668,7 @@ describe('P3-1: a billed failure keeps its usage-clamp warnings on the row', () 
   })
 })
 
-describe('P3-2: the call id is the engine’s own, whatever a middleware passes down', () => {
+describe('the call id is the engine’s own, whatever a middleware passes down', () => {
   it('next(req, { ...ctx, callId }) cannot change the id on the result, row or attempt event', async () => {
     const swap: Middleware = {
       id: 'swap',
@@ -690,7 +690,7 @@ describe('P3-2: the call id is the engine’s own, whatever a middleware passes 
   })
 })
 
-describe('P3-3: payload building does not hang on a manual scheduler', () => {
+describe('payload building does not hang on a manual scheduler', () => {
   it('a 4 MB inline media part with a FakeClock scheduler finishes', async () => {
     const clock = new FakeClock()
     const bytes = Buffer.alloc(4 * 1024 * 1024, 5)
@@ -721,7 +721,7 @@ describe('P3-3: payload building does not hang on a manual scheduler', () => {
   }, 15_000)
 })
 
-describe('P3-4: countTokens hands the adapter the scheduler', () => {
+describe('countTokens hands the adapter the scheduler', () => {
   it('AdapterCtx.scheduler is the client scheduler', async () => {
     const clock = new FakeClock()
     let seen: AdapterCtx | undefined
@@ -747,7 +747,7 @@ describe('P3-4: countTokens hands the adapter the scheduler', () => {
   })
 })
 
-describe('P3-5: the shutdown advisory is kept for a call that produced a result', () => {
+describe('the shutdown advisory is kept for a call that produced a result', () => {
   it('a first call that fails after the advisory was chosen does not use it up', async () => {
     const descriptor = makePermissiveTestDescriptor({
       model: 'm',
@@ -773,7 +773,7 @@ describe('P3-5: the shutdown advisory is kept for a call that produced a result'
   })
 })
 
-describe('P3-6: only a 4xx or 5xx status proves the provider answered with an error', () => {
+describe('only a 4xx or 5xx status proves the provider answered with an error', () => {
   const unpriced = async (status: number): Promise<number | undefined> => {
     const err = new LlmError('x', {
       kind: 'server',
@@ -810,7 +810,7 @@ describe('P3-6: only a 4xx or 5xx status proves the provider answered with an er
   })
 })
 
-describe('P3-7: the request is snapshotted at the top of the call', () => {
+describe('the request is snapshotted at the top of the call', () => {
   it('top-level fields a host reassigns while the call validates do not reach the row', async () => {
     const descriptor = makePermissiveTestDescriptor({ model: 'm', provider: 'p' })
     let release!: () => void

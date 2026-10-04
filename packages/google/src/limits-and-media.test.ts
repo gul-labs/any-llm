@@ -1,5 +1,5 @@
 /**
- * R3.1 / R3.2 — descriptor limits, admitted input media types, and the
+ * Descriptor limits, admitted input media types, and the
  * thinking-budget warning. No network: every call goes through the fake client.
  */
 
@@ -306,7 +306,7 @@ async function warningsForReasoning(
   return result.warnings.map((w) => w.message).filter((m) => m.includes('thinking'))
 }
 
-describe('thinking budget at or above maxOutputTokens (R3.2)', () => {
+describe('thinking budget at or above maxOutputTokens', () => {
   async function warningsFor(
     model: string,
     config: Record<string, unknown>,
@@ -389,7 +389,7 @@ describe('thinking budget at or above maxOutputTokens (R3.2)', () => {
   })
 })
 
-describe('google configKeys (R5)', () => {
+describe('google configKeys', () => {
   it('lists the keys of every tier branch of each Gemini schema, once', () => {
     for (const d of geminiModelDescriptors) {
       expect(d.configKeys, d.model).toEqual(

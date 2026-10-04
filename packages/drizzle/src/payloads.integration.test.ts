@@ -460,7 +460,7 @@ describe('retention and deletion', () => {
   })
 })
 
-describe('a host helper that reuses one transaction handle (P2-2)', () => {
+describe('a host helper that reuses one transaction handle', () => {
   const GOOD = (id: string) => makeRecord({ attemptId: id, callId: `call_${id}` })
 
   async function withAmbient(
@@ -536,7 +536,7 @@ describe('a host helper that reuses one transaction handle (P2-2)', () => {
   })
 })
 
-describe('a database without transaction support (P2-7)', () => {
+describe('a database without transaction support', () => {
   function noTransactions(db: ReturnType<typeof drizzle>): PostgresDb {
     return new Proxy(db, {
       get(target, key) {
@@ -573,7 +573,7 @@ describe('a database without transaction support (P2-7)', () => {
   })
 })
 
-describe('purgeLlmCallPayloads runs in bounded batches (P2-3)', () => {
+describe('purgeLlmCallPayloads runs in bounded batches', () => {
   async function seed(pg: PGlite, old: number, fresh: number) {
     await pg.exec(`
       INSERT INTO llm_calls (record_schema_version, call_id, attempt_id, provider, model,
@@ -654,7 +654,7 @@ describe('purgeLlmCallPayloads runs in bounded batches (P2-3)', () => {
   )
 })
 
-describe('deleteLlmCallPayloads validation (P3-11)', () => {
+describe('deleteLlmCallPayloads validation', () => {
   it('a sparse array is bad_request, not a raw driver error', async () => {
     const { db } = await freshDb()
     await expect(

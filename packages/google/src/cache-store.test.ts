@@ -101,7 +101,7 @@ describe('GoogleCacheStore', () => {
     expect(handle.expiresAt.getTime()).toBe(BASE_NOW + ttlSeconds * 1000)
   })
 
-  it("create returns the create call's usageMetadata.totalTokenCount on the handle (R7.6)", async () => {
+  it("create returns the create call's usageMetadata.totalTokenCount on the handle", async () => {
     const client = makeClient({
       create: vi.fn().mockResolvedValue({
         name: 'cachedContents/abc123',

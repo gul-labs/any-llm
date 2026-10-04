@@ -86,7 +86,7 @@ function engine(stub: Stub) {
 }
 
 // ---------------------------------------------------------------------------
-// P2-1: a terminal response.failed obeys the policy of an error event
+// A terminal response.failed obeys the policy of an error event
 // ---------------------------------------------------------------------------
 
 const snapshot = { id: 'resp_1', model: 'grok-4.5', status: 'in_progress', output: [] }
@@ -125,7 +125,7 @@ const respond =
   () =>
     Promise.resolve(sseResponse(events))
 
-describe('a terminal response.failed after output began (P2-1)', () => {
+describe('a terminal response.failed after output began', () => {
   it.each([
     { code: 'server_error', kind: 'server' },
     { code: 'rate_limit_exceeded', kind: 'rate_limited' },
@@ -184,7 +184,7 @@ describe('a terminal response.failed after output began (P2-1)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// P2-2 / P2-3: abort and deadline keep the estimate; the estimate counts replayed state
+// Abort and deadline keep the estimate; the estimate counts replayed state
 // ---------------------------------------------------------------------------
 
 const BIG_TEXT = 'a'.repeat(40_000)
@@ -224,7 +224,7 @@ function stuckBody(events: SseEvent[]): Stub {
     )
 }
 
-describe('an engine deadline or caller abort mid-stream keeps the estimate (P2-2)', () => {
+describe('an engine deadline or caller abort mid-stream keeps the estimate', () => {
   it("the engine's deadline after 40,000 characters books an estimated, priced attempt", async () => {
     const { calls, telemetry, generate } = engine(stuckBody(bigPartial()))
     const err = await generate({ timeoutMs: 150 })
@@ -286,7 +286,7 @@ describe('an engine deadline or caller abort mid-stream keeps the estimate (P2-2
   })
 })
 
-describe('the failure estimate counts the replayed state history (P2-3)', () => {
+describe('the failure estimate counts the replayed state history', () => {
   const state = {
     xai: {
       model: 'grok-4.7',
@@ -388,10 +388,10 @@ describe('the failure estimate counts the replayed state history (P2-3)', () => 
 })
 
 // ---------------------------------------------------------------------------
-// P3-1 / P3-2 / P3-3 / P3-7
+// Smaller stream failures
 // ---------------------------------------------------------------------------
 
-describe('a typed error event with a nested error object (P3-1)', () => {
+describe('a typed error event with a nested error object', () => {
   it('keeps its code and message, like the same body without a type', () => {
     const typed = new XaiStreamReducer()
     const typeless = new XaiStreamReducer()
@@ -415,7 +415,7 @@ describe('a typed error event with a nested error object (P3-1)', () => {
   })
 })
 
-describe('the SSE reader is linear in the bytes read (P3-2)', () => {
+describe('the SSE reader is linear in the bytes read', () => {
   it('one 20 MiB event in 16 KiB chunks takes well under 500 ms', async () => {
     const CHUNK = 16 * 1024
     const chunks = 20 * 64
@@ -464,7 +464,7 @@ describe('the SSE reader is linear in the bytes read (P3-2)', () => {
   })
 })
 
-describe('an absurd stream index is a typed server error, not a stall (P3-3)', () => {
+describe('an absurd stream index is a typed server error, not a stall', () => {
   const opened = (): SseEvent[] => [
     { type: 'response.created', response: snapshot },
     {
@@ -531,7 +531,7 @@ describe('an absurd stream index is a typed server error, not a stall (P3-3)', (
   })
 })
 
-describe('a 200 that is not an event stream (P3-7)', () => {
+describe('a 200 that is not an event stream', () => {
   it('quotes a bounded, secret-redacted snippet of the body in the cause', async () => {
     const html = `<html>Bad gateway Authorization: Bearer sk-live-abcdef0123456789 ${'x'.repeat(5_000)}</html>`
     const client = await buildXaiClient(
@@ -573,7 +573,7 @@ describe('a 200 that is not an event stream (P3-7)', () => {
   })
 })
 
-describe('the client deadline message quotes the configured timeout (P3-7)', () => {
+describe('the client deadline message quotes the configured timeout', () => {
   it('says "client deadline" with the caller timeoutMs, not the buffered value', async () => {
     // The client's own timer is armed at timeoutMs + 5 s; the message names timeoutMs.
     const client = {

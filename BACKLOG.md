@@ -95,12 +95,11 @@ paths to other repos.
 ## B-006 — Dependency review: pending dependabot PRs, notably `@google/genai` 2.x major
 
 - **Priority:** P3
-- **Status:** largely done on branch `chore/dependabot-upgrades-careful` — routine
-  devDeps + `openai@7` (peer `^7`) + `@google/genai@2.16` (peer `^2`)
-  - `actions/setup-node@v7` + pglite 0.5.4. `pnpm quality` green against new majors.
+- **Status:** done. The routine devDeps, `openai@7` (peer `^7`), `@google/genai@2` (peer `^2`),
+  `@changesets/cli@3`, Vitest 5 and `actions/setup-node@v7` are on `main`, and `pnpm quality`
+  passes against them. TypeScript stays on 6.x: 7 is a separate plan.
 - **Origin:** open dependabot PRs.
-- **Next step:** merge upgrade PR; close Dependabot PRs as superseded. Skipped
-  `@changesets/cli@3` and TypeScript 7 / Vitest 4 (out of Dependabot scope; separate plan).
+- **Next step:** none; re-run the review when Dependabot opens the next major.
 
 ---
 
@@ -139,8 +138,8 @@ paths to other repos.
 
 - **2027-01-01 Gemini intro-price re-snapshot.** `gemini-3.6-flash`, `gemini-3.7-flash`, and `gemini-3.8-flash` ship at the published intro rates $0.75 / $0.075 / $3.75 per million (input / cached / output). On 2027-01-01 those become $1.50 / $0.15 / $7.50. Re-snapshot `GEMINI_PRICING` and bump `pricingVersion` before that date. The owner chose a dated backlog item instead of date-windowed pricing (plan D1).
 - **2027-05-07 `gemini-3.1-flash-lite` shutdown.** Google's deprecations page (read 2026-10-03) lists the date and `gemini-3.5-flash-lite` as the replacement. The descriptor warns from 2027-02-06 (`shutdownDate`, ADR-043). After the date, delete the descriptor, its pricing row, config schema and fixtures in one change; do not keep an alias to the replacement. Re-read the page before each release: a new shutdown date is a one-line descriptor change.
-- **`gemini-3.5-flash` status.** The README and `docs/architecture.md` say it is deleted (a live 404 when the registry was refreshed); Google's pricing and deprecations pages still listed it when read in the 2026-10 audit. Re-read both pages and re-probe the id before the next release; if it serves, it is a registry decision, not an alias.
-- Gemini `priority` tier. P-G7 captured a `usageMetadata.serviceTier` flex echo and the adapter now reads served tier. Priority still needs live admission, pricing, and downgrade accounting before the schema admits it.
+- **`gemini-3.5-flash` status.** The README and `docs/architecture.md` say it is deleted (a live 404 when the registry was refreshed); Google's pricing and deprecations pages still listed it when read 2026-10. Re-read both pages and re-probe the id before the next release; if it serves, it is a registry decision, not an alias.
+- Gemini `priority` tier. A live flex call (2026-09-26) echoed `usageMetadata.serviceTier`, and the adapter reads the served tier. Priority still needs live admission, pricing, and downgrade accounting before the schema admits it.
 - Other Gemini features: built-in tools beyond `googleSearch` (URL context, Maps, code execution, file search); `media_resolution: ultra_high`; `gemini-3.1-pro-preview-customtools`.
 - xAI models not in this refresh: grok-4.3, the grok-4.20 family (including multi-agent), grok-build-0.1.
 - xAI tools not supported: code execution, collections, remote MCP.
@@ -148,10 +147,7 @@ paths to other repos.
 - Undocumented xAI ids (`grok-4.5-cloud`, `grok-4.5-sp`, `grok-orca-oa0917`) are never registered.
 - Vision on the CLI providers (`codex exec -i`; `claude -p --input-format stream-json`).
 - Non-text models (image, video, TTS, STT, live, music, embeddings).
-- P-G5 completed 2026-09-26: cache create at 1024 tokens succeeded, 103 tokens failed with `min_total_token_count=1024`, on all six registered Gemini 3.x ids.
-- P-X2 blocked by the current xAI Zero Data Retention key: file upload returned 403 and public URL attachment returned 400. A non-ZDR key is needed to pin the `attachment_search` usage counter, price it at $10/1k, and delete `attachment_search_unpinned`.
-- P-X3 completed 2026-09-26: live grok-4.7 `store: false` two-turn function call captured the encrypted reasoning item; `result.transientProviderState` and `request.transientProviderState` preserve the full wire history while the next request supplies only new messages. The state stays out of ledger rows. Fixture `28-grok-4-7-replay.json` pins the round trip.
-- P-X1 completed 2026-09-26: live posts-only and users-only X Search responses emitted both item counters, including explicit zeroes, and snapshot cost reconciled to billed ticks. Fixtures `26-x-posts.json` and `27-x-users.json` pin the behavior. The 2026-08-24 fixture predates per-item billing; its billed ticks remain in usage while snapshot cost is unpriced.
+- **xAI `attachment_search` counter.** Blocked by the current xAI Zero Data Retention key: file upload returned 403 and public URL attachment returned 400 (`docs/model-config-provider-evidence.md`). A non-ZDR key is needed to pin the usage counter, price it at $5 per 1,000 calls (pricing page, read 2026-10-02) and delete `attachment_search_unpinned`. Until then the lane stays estimated.
 
 ## Follow-ups from the xAI server tool-choice release (2026-10-02)
 
@@ -159,7 +155,6 @@ paths to other repos.
 - **xAI `safety_identifier`.** New Responses request field (September 2026 release notes, <https://docs.x.ai/developers/faq/security>): an opaque, hashed end-user id. Candidate `providerOptions.xai.safetyIdentifier` for multi-tenant hosts on one key. Needs a live probe before admission.
 - **xAI `POST /v1/responses/compact`.** Documented transcript compaction (<https://docs.x.ai/developers/advanced-api-usage/context-compaction>). grok-4.7 replay resends the full wire input; compaction would be the cost control. Needs a design: a second endpoint plus an opaque `compaction` input item.
 - **xAI `include: ["no_inline_citations"]`.** Suppresses inline `[[N]](url)` links in the text (<https://docs.x.ai/developers/tools/citations>). Expose only if a host needs citation-free text.
-- **xAI `attachment_search` price.** The pricing page lists it at $5 per 1,000 calls (read 2026-10-02), not the $10 noted under P-X2 above. The counter name is still unpinned (ZDR key), so the lane stays estimated.
 - **xAI `max_turns` enforcement.** Exposed as `providerOptions.xai.maxTurns`; not enforced by xAI on 2026-10-02 (fixture 33, ADR-030). Re-probe when xAI changes the agentic loop, then update the README.
 - Not exposed on purpose (xAI docs mark them compatibility-only, unsupported, or silently ignored): `reasoning.summary`, function `strict`, `metadata`, `truncation`, `background`, `logprobs`, `search_parameters`, `service_tier: 'fast'`.
 
@@ -176,9 +171,9 @@ paths to other repos.
 - **`countTokens` with function-call history on Gemini 3.** The adapter sends no signatures to
   `countTokens`. Whether the Developer API accepts an unsigned function call there is unprobed.
 - **Function-call ids on replay.** When Google returns no `functionCall.id`, the adapter assigns
-  `call_<name>_<n>` and replays it as `functionCall.id` / `functionResponse.id`. The 2026-10-03
-  capture replayed the provider's parts as returned. Confirm with a probe that the API accepts a
-  library-assigned id.
+  `anyllm_call_<name>_<n>` as the tool call's id for the host, and never sends it to Gemini: the
+  replayed `functionCall` and `functionResponse` carry no `id` (the 2026-10-03 capture replayed the
+  provider's parts as returned). If a host needs Gemini to see the id, that needs a probe first.
 
 ## Follow-ups from Gemini grounding usage and price (2026-10-03)
 
@@ -194,7 +189,7 @@ paths to other repos.
 - **Request-side search intent.** One provider-neutral way to say "search" (today: `providerOptions.google.tools`
   or `providerOptions.xai.tools`) is deferred to its own decision. Usage reports search the same way on
   both providers already.
-- **Grounding free allowance.** Google publishes a free grounding allowance (read in the 2026-10 audit:
+- **Grounding free allowance.** Google publishes a free grounding allowance (read 2026-10:
   5,000 requests per month shared across Gemini 3.x, 1,500 per day on Gemini 2.5). It is shared across a
   project, so a single call cannot know it was free and the fee is charged in full. A host that tracks
   its own volume can subtract it from the ledger.

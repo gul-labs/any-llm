@@ -1,11 +1,11 @@
 /**
  * @gullabs/google — output-side filter stops, cachedContent conflicts,
  * safetySettings enumeration, inline payload limits and `countTokens` with
- * `system` / `tools` (ADR-036, adapter rows of R4).
+ * `system` / `tools` (ADR-036).
  *
  * Unit tests use the fakes from @gullabs/testing. The `countTokens` wire tests
  * run the real `@google/genai` client with only `fetch` stubbed, so a throw
- * inside the SDK's own request transformers is caught (the original R1.8 gap).
+ * inside the SDK's own request transformers is caught (the original gap).
  *
  * @module
  */
@@ -58,10 +58,10 @@ async function failure(promise: Promise<unknown>): Promise<LlmError> {
 }
 
 // ---------------------------------------------------------------------------
-// R4.11 output-side filter stops
+// Output-side filter stops
 // ---------------------------------------------------------------------------
 
-describe('R4.11 output-side filter stop', () => {
+describe('output-side filter stop', () => {
   const FILTER_REASONS = [
     'SAFETY',
     'RECITATION',
@@ -256,7 +256,7 @@ describe('R4.11 output-side filter stop', () => {
   })
 })
 
-describe('R4.11 providerMetadata.google.candidate', () => {
+describe('providerMetadata.google.candidate', () => {
   it('copies the raw finish reason, message, safety ratings, citation and URL-context metadata', async () => {
     const safetyRatings = [
       { category: 'HARM_CATEGORY_HARASSMENT', probability: 'NEGLIGIBLE' },
@@ -381,10 +381,10 @@ describe('R4.11 providerMetadata.google.candidate', () => {
 })
 
 // ---------------------------------------------------------------------------
-// R4.17 cachedContent conflicts
+// cachedContent conflicts
 // ---------------------------------------------------------------------------
 
-describe('R4.17 cachedContent with system or tools', () => {
+describe('cachedContent with system or tools', () => {
   const cached = {
     providerOptions: { google: { cachedContent: 'cachedContents/abc' } },
   }
@@ -456,10 +456,10 @@ describe('R4.17 cachedContent with system or tools', () => {
 })
 
 // ---------------------------------------------------------------------------
-// R4.18 safetySettings enumeration
+// safetySettings enumeration
 // ---------------------------------------------------------------------------
 
-describe('R4.18 safetySettings categories and thresholds', () => {
+describe('safetySettings categories and thresholds', () => {
   const run = (safetySettings: unknown) =>
     geminiAdapter({ client: makeFakeGemini(fakeGeminiResponse({ text: 'ok' })) }).run(
       makeReq({
@@ -535,10 +535,10 @@ describe('R4.18 safetySettings categories and thresholds', () => {
 })
 
 // ---------------------------------------------------------------------------
-// R4.20 inline payload size
+// Inline payload size
 // ---------------------------------------------------------------------------
 
-describe('R4.20 inline payload size check', () => {
+describe('inline payload size check', () => {
   const MIB = 1024 * 1024
   /** Base64 text of `bytes` decoded bytes, without allocating real data twice. */
   const base64Of = (bytes: number): string => 'A'.repeat(Math.ceil((bytes * 4) / 3))
@@ -646,7 +646,7 @@ describe('R4.20 inline payload size check', () => {
 })
 
 // ---------------------------------------------------------------------------
-// R4.16 countTokens with system and tools (fake client)
+// countTokens with system and tools (fake client)
 // ---------------------------------------------------------------------------
 
 function makeCountReq(overrides: Partial<TokenCountRequest> = {}): TokenCountRequest {
@@ -658,7 +658,7 @@ function makeCountReq(overrides: Partial<TokenCountRequest> = {}): TokenCountReq
   }
 }
 
-describe('R4.16 countTokens carries system and tools', () => {
+describe('countTokens carries system and tools', () => {
   it('hands the client the same systemInstruction and function declarations generate() sends', async () => {
     const countClient = makeFakeGemini({ candidates: [] }, { totalTokens: 77 })
     const runClient = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
@@ -747,10 +747,10 @@ describe('R4.16 countTokens carries system and tools', () => {
 })
 
 // ---------------------------------------------------------------------------
-// R4.16 wire tests: the real SDK, only fetch stubbed
+// Wire tests: the real SDK, only fetch stubbed
 // ---------------------------------------------------------------------------
 
-describe('R4.16 countTokens on the wire (real @google/genai, stubbed fetch)', () => {
+describe('countTokens on the wire (real @google/genai, stubbed fetch)', () => {
   interface Sent {
     url: string
     headers: Record<string, string>

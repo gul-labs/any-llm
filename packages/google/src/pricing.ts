@@ -230,7 +230,7 @@ export const GEMINI_PRICING: Readonly<Record<string, GeminiTierRates>> = Object.
  * Transcribed from https://ai.google.dev/gemini-api/docs/pricing, grounding
  * with Google Search, read 2026-10-03 (Gemini 3: $14 per 1,000 queries;
  * Gemini 2.5: $35 per 1,000 grounded prompts). The page also publishes a free
- * allowance (as read in the 2026-10 audit: 5,000 requests per month shared
+ * allowance (as read 2026-10: 5,000 requests per month shared
  * across Gemini 3.x, 1,500 requests per day on Gemini 2.5). It is shared across
  * a project's calls, so no single call can know whether it was free: every
  * grounding fee is charged in full here, which is why a call that ran Search is

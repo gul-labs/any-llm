@@ -1,14 +1,14 @@
 /**
- * Engine robustness tests (R4.1, R4.2, R4.7, R4.8).
+ * Engine robustness tests.
  *
- * - R4.1: the sink write is bounded by `sinkTimeoutMs`; the logical-call
+ * - The sink write is bounded by `sinkTimeoutMs`; the logical-call
  *   deadline starts with the call, so middleware time counts against
  *   `timeoutMs`.
- * - R4.2: a limiter slot whose `acquire` resolves after the race was lost is
+ * - A limiter slot whose `acquire` resolves after the race was lost is
  *   released.
- * - R4.7: `countTokens` honours abort and `timeoutMs` even when the adapter
+ * - `countTokens` honours abort and `timeoutMs` even when the adapter
  *   ignores its signal.
- * - R4.8: `generate`, `runStructured` and `countTokens` reject only with
+ * - `generate`, `runStructured` and `countTokens` reject only with
  *   `LlmError`, with the original kept as `cause`.
  *
  * @module
@@ -108,10 +108,10 @@ afterEach(() => {
 })
 
 // ---------------------------------------------------------------------------
-// R4.1 — sink timeout
+// Sink timeout
 // ---------------------------------------------------------------------------
 
-describe('engine — sinkTimeoutMs (R4.1)', () => {
+describe('engine — sinkTimeoutMs', () => {
   it('a sink that never settles does not hold the result past sinkTimeoutMs', async () => {
     vi.useFakeTimers()
     const { logger, events } = recordingLogger()
@@ -271,10 +271,10 @@ describe('engine — sinkTimeoutMs (R4.1)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// R4.1 — logical-call deadline
+// Logical-call deadline
 // ---------------------------------------------------------------------------
 
-describe('engine — logical-call deadline (R4.1)', () => {
+describe('engine — logical-call deadline', () => {
   function slowMiddleware(
     ms: number,
     onSignal?: (s: AbortSignal | undefined) => void,
@@ -403,17 +403,17 @@ describe('engine — logical-call deadline (R4.1)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// R4.2 — late acquire release
+// Late acquire release
 // ---------------------------------------------------------------------------
 
-describe('engine — late rate-limiter acquire (R4.2)', () => {
+describe('engine — late rate-limiter acquire', () => {
   function lateLimiter(delayMs: number): {
     limiter: RateLimiter
     state: { acquired: number; released: number }
   } {
     const state = { acquired: 0, released: 0 }
     const limiter: RateLimiter = {
-      // Ignores the signal on purpose: the case R4.2 covers.
+      // Ignores the signal on purpose: the case a late `acquire` covers.
       async acquire() {
         await sleep(delayMs)
         state.acquired++
@@ -516,7 +516,7 @@ describe('engine — late rate-limiter acquire (R4.2)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// R4.7 — countTokens cancellation race
+// countTokens cancellation race
 // ---------------------------------------------------------------------------
 
 class CountingAdapter implements ProviderAdapter {
@@ -549,7 +549,7 @@ function countClient(adapter: ProviderAdapter, logger?: Logger) {
   })
 }
 
-describe('engine — countTokens cancellation race (R4.7)', () => {
+describe('engine — countTokens cancellation race', () => {
   it('timeoutMs ends the call with a retryable timeout even if the adapter ignores its signal', async () => {
     vi.useFakeTimers()
     const adapter = new CountingAdapter(() => new Promise<TokenCount>(() => {}))
@@ -639,10 +639,10 @@ describe('engine — countTokens cancellation race (R4.7)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// R4.8 — only LlmError escapes
+// Only LlmError escapes
 // ---------------------------------------------------------------------------
 
-describe('engine — rejects only with LlmError (R4.8)', () => {
+describe('engine — rejects only with LlmError', () => {
   const callSite: CallSite = {
     id: 'site',
     provider: 'google',
@@ -799,10 +799,10 @@ describe('engine — rejects only with LlmError (R4.8)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// R4.3 / R4.4 — retry end to end through the engine
+// Retry end to end through the engine
 // ---------------------------------------------------------------------------
 
-describe('engine + retryMiddleware — provider delay and deadline (R4.3, R4.4)', () => {
+describe('engine + retryMiddleware — provider delay and deadline', () => {
   it('a backoff longer than the budget surfaces the attempt error at once, not a synthetic timeout', async () => {
     vi.useFakeTimers()
     const failure = new LlmError('overloaded', {

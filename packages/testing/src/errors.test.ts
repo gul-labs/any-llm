@@ -1,5 +1,5 @@
 /**
- * The error factories (R8.3): shapes from real SDK classes and pinned bodies.
+ * The error factories: shapes from real SDK classes and pinned bodies.
  *
  * The scenario bodies are copies of the provider packages' fixtures; the
  * fixture tests below fail if a copy drifts. The round trip through each

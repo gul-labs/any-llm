@@ -27,7 +27,7 @@ function nodeRunner() {
 const run = (script: string, input = '') =>
   nodeRunner().run(['-e', script], input, { cwd: process.cwd() })
 
-describe('buildClaudeCliRunner: stdout and stdin handling (R4.19)', () => {
+describe('buildClaudeCliRunner: stdout and stdin handling', () => {
   it('echoes stdin to stdout byte-exact, multibyte text included', async () => {
     const input = 'caf\u00e9 \u20ac \u{1F600} '.repeat(5000)
     const result = await run(

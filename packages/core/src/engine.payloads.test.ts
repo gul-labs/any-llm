@@ -720,7 +720,7 @@ describe('createClient rejects an unusable payloads config', () => {
 })
 
 // ---------------------------------------------------------------------------
-// R11 audit fixes
+// Payload building, redaction and inline media
 // ---------------------------------------------------------------------------
 
 const realSetTimeout = globalThis.setTimeout
@@ -775,7 +775,7 @@ function textMessage(text: string): LlmRequest['messages'] {
   return [{ role: 'user', parts: [{ kind: 'text', text }] }]
 }
 
-describe('P1-1: building a payload is linear and inside the sink budget', () => {
+describe('building a payload is linear and inside the sink budget', () => {
   it('280 KB of X-Goog- and 1 MB of A in one prompt build in well under a second', async () => {
     const { sink, client } = setup({})
     const hostile = `${'X-Goog-'.repeat(40_000)}${'A'.repeat(1_000_000)}`
@@ -876,7 +876,7 @@ describe('P1-1: building a payload is linear and inside the sink budget', () => 
   })
 })
 
-describe('P1-2: what the llm_calls record holds, with and without a payload', () => {
+describe('what the llm_calls record holds, with and without a payload', () => {
   const toolCalls = [
     {
       toolCallId: 'c1',
@@ -921,7 +921,7 @@ describe('P1-2: what the llm_calls record holds, with and without a payload', ()
   })
 })
 
-describe('P1-3: signed URLs, headers, provider keys and secret-named keys', () => {
+describe('signed URLs, headers, provider keys and secret-named keys', () => {
   it('a file-uri keeps scheme, host and path only: no query, fragment or userinfo', async () => {
     const { sink, client } = setup({})
     await client.generate(
@@ -1052,7 +1052,7 @@ describe('P1-3: signed URLs, headers, provider keys and secret-named keys', () =
   })
 })
 
-describe('P2-1: U+0000 is stripped before redaction, so a split secret is redacted whole', () => {
+describe('U+0000 is stripped before redaction, so a split secret is redacted whole', () => {
   it('in text, system, tool arguments, results and the response', async () => {
     const split = `AIza\u0000SyA1234567890abcdefghijklmnopqrstuv`
     const bearer = `Bearer \u0000abcdef1234567890SECRET`
@@ -1104,7 +1104,7 @@ describe('P2-1: U+0000 is stripped before redaction, so a split secret is redact
   })
 })
 
-describe('P2-4: inline media is hashed in chunks, with limits', () => {
+describe('inline media is hashed in chunks, with limits', () => {
   it('a multi-megabyte part hashes to the right digest and yields to the event loop', async () => {
     const bytes = Buffer.alloc(6 * 1024 * 1024 + 5, 7)
     const { scheduler, counts } = spyScheduler()

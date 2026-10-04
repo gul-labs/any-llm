@@ -1,7 +1,7 @@
 /**
- * @gullabs/xai — credits-exhausted classification (R4.13), responses that
- * report failure on a 200 (R4.14), `parallelToolCalls` without tools (R4.15),
- * and the shared transport matcher (R4.5).
+ * @gullabs/xai — credits-exhausted classification, responses that
+ * report failure on a 200, `parallelToolCalls` without tools,
+ * and the shared transport matcher.
  *
  * The bodies in `__fixtures__/doc-derived-error-shapes.json` are DOC-DERIVED,
  * not captures (see its `_note` and ADR-036): the account could not be driven to
@@ -60,7 +60,7 @@ async function failure(promise: Promise<unknown>): Promise<LlmError> {
   return err as LlmError
 }
 
-describe('R4.13 credits exhausted / spending limit (doc-derived body)', () => {
+describe('credits exhausted / spending limit (doc-derived body)', () => {
   it.each(['creditsExhausted429', 'creditsExhausted403'])(
     '%s → rate_limited, not retryable, reason credits_exhausted',
     (name) => {
@@ -154,7 +154,7 @@ describe('R4.13 credits exhausted / spending limit (doc-derived body)', () => {
   })
 })
 
-describe('R4.14 a 200 that reports failure (doc-derived shapes)', () => {
+describe('a 200 that reports failure (doc-derived shapes)', () => {
   const run = async (name: string): Promise<LlmError> =>
     failure(
       xaiAdapter({ client: makeFakeXai(fixtures[name] as never) }).run(
@@ -326,7 +326,7 @@ describe('R4.14 a 200 that reports failure (doc-derived shapes)', () => {
   })
 })
 
-describe('R4.15 parallelToolCalls needs a tool', () => {
+describe('parallelToolCalls needs a tool', () => {
   const tool = {
     name: 'get_temperature',
     description: 'Get temperature',
@@ -380,7 +380,7 @@ describe('R4.15 parallelToolCalls needs a tool', () => {
   })
 })
 
-describe('R4.5 shared transport matcher', () => {
+describe('shared transport matcher', () => {
   it('a fetch failed with an errno cause is a retryable server error', () => {
     const cause = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
     const err = classifyXaiError(new TypeError('fetch failed', { cause }))

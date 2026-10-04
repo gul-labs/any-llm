@@ -632,7 +632,7 @@ describe('fixture: 19-x-search (pre-2026-09-21 billing policy)', () => {
   })
 })
 
-describe('fixtures: P-X1 live X Search item billing (2026-09-26)', () => {
+describe('fixtures: live X Search item billing (2026-09-26)', () => {
   it.each([
     ['26-x-posts.json', 10, 0, 1_038_920_000],
     ['27-x-users.json', 0, 12, 1_476_220_000],
@@ -667,7 +667,7 @@ describe('fixtures: P-X1 live X Search item billing (2026-09-26)', () => {
   )
 })
 
-describe('fixture: P-X3 grok-4.7 encrypted reasoning replay', () => {
+describe('fixture: grok-4.7 encrypted reasoning replay (2026-09-26)', () => {
   it('replays a live assistant message and web-search item on the next turn', async () => {
     const fixture = loadFixture<{
       request: {
@@ -1344,7 +1344,7 @@ describe('fixture: 33-max-turns-not-enforced (live 2026-10-02)', () => {
   })
 })
 
-describe('fixture: 33-max-turns-not-enforced prices to the billed ticks (R7.5)', () => {
+describe('fixture: 33-max-turns-not-enforced prices to the billed ticks', () => {
   const fixture = loadFixture<Record<string, LiveCall>>('33-max-turns-not-enforced.json')
   const descriptors = {
     grok_4_5: grok45ModelDescriptor,

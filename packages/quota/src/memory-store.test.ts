@@ -1,5 +1,5 @@
 /**
- * `inMemoryQuotaStore({ clock })` (R8.1): the same windows and check-and-consume
+ * `inMemoryQuotaStore({ clock })`: the same windows and check-and-consume
  * rule as the Upstash store, on a `FakeClock`.
  *
  * @module

@@ -282,18 +282,15 @@ describe('reconciliation rules', () => {
       ],
       /output_item.done event with no integer output_index or typed item/,
     ],
-  ])(
-    '%s is skipped, reported, and the final response is used (P1-2)',
-    (_name, events, note) => {
-      const reducer = new XaiStreamReducer()
-      for (const event of events) reducer.push(event)
-      reducer.push({ type: 'response.completed', response })
-      const { response: reduced, notes } = reducer.result()
-      expect(reduced.output).toEqual(response.output)
-      expect(notes).toHaveLength(1)
-      expect(notes[0]).toMatch(note)
-    },
-  )
+  ])('%s is skipped, reported, and the final response is used', (_name, events, note) => {
+    const reducer = new XaiStreamReducer()
+    for (const event of events) reducer.push(event)
+    reducer.push({ type: 'response.completed', response })
+    const { response: reduced, notes } = reducer.result()
+    expect(reduced.output).toEqual(response.output)
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toMatch(note)
+  })
 
   it('a frame with no data, the [DONE] sentinel and a typeless JSON body are skipped', () => {
     const reducer = new XaiStreamReducer()
@@ -643,7 +640,7 @@ describe('delta assembly (hand-written event sequences with no done events)', ()
   })
 })
 
-describe('matching items that the final object omits (P3-1)', () => {
+describe('matching items that the final object omits', () => {
   const message = (id: string | undefined, text: string): Plain => ({
     ...(id !== undefined ? { id } : {}),
     type: 'message',
@@ -750,7 +747,7 @@ describe('what a divergence is worth reporting (live finding, 2026-10-03)', () =
   })
 })
 
-describe('response.incomplete is normalised like response.failed (P3-4)', () => {
+describe('response.incomplete is normalised like response.failed', () => {
   it.each(['in_progress', 'completed', undefined])(
     'an incomplete event whose response says %s is incomplete, with its assembled items finished as incomplete',
     (status) => {

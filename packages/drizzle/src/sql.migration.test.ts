@@ -711,7 +711,7 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
       ).rejects.toThrow()
     })
 
-    it('while the CHECKs are NOT VALID any UPDATE of a legacy row fails with the documented text, a DELETE and the cleanup UPDATE do not (P3-2)', async () => {
+    it('while the CHECKs are NOT VALID any UPDATE of a legacy row fails with the documented text, a DELETE and the cleanup UPDATE do not', async () => {
       const pg = await legacyTable()
       await runStatementwise(pg, sqlFile(UPGRADE_0002))
       // The tenant-deletion recipe of docs/ledger.md, aimed at a legacy row.
@@ -883,7 +883,7 @@ describe('a table that was not migrated is detectable, and the engine logs every
     expect(err.cause).toBeDefined()
   })
 
-  it('a table made by 0.1.1 to 0.4.0 (raw_usage NOT NULL) goes through every upgrade, assertLlmCallsSchema names raw_usage, and the one-line fix makes it pass (P2-4)', async () => {
+  it('a table made by 0.1.1 to 0.4.0 (raw_usage NOT NULL) goes through every upgrade, assertLlmCallsSchema names raw_usage, and the one-line fix makes it pass', async () => {
     const pg = new PGlite()
     await pg.exec(
       PUBLISHED_0_7_2_SQL.replace(

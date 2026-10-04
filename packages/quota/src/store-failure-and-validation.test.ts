@@ -1,5 +1,5 @@
 /**
- * R8 audit fixes: a store outage is one non-retryable `quota_store_unavailable`
+ * A store outage is one non-retryable `quota_store_unavailable`
  * error, reconciliation never delays or masks a result, and the smaller
  * contract gaps (validation at construction, `rpm`/`tpm` of 0, canonical time
  * zones, the warning's event name, the bounded call's cleanup).

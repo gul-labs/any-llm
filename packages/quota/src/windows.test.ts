@@ -1,5 +1,5 @@
 /**
- * Day windows in a time zone (R8.1, Q-02): `Intl.DateTimeFormat` bucketing and
+ * Day windows in a time zone: `Intl.DateTimeFormat` bucketing and
  * the time left in the day, DST-safe.
  *
  * @module

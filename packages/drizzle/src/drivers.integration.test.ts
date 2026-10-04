@@ -212,7 +212,7 @@ for (const driver of DRIVERS) {
       return { calls: Number(c[0]?.['n']), payloads: Number(p[0]?.['n']) }
     }
 
-    describe('a payload that cannot be written never costs the ledger row (P1-1)', () => {
+    describe('a payload that cannot be written never costs the ledger row', () => {
       it('a payload Postgres rejects: record() resolves, the ledger row commits, the failure is logged', async () => {
         const { logger, calls } = recordingLogger()
         const sink = drizzleUsageSink({ db: h.db })
@@ -276,7 +276,7 @@ for (const driver of DRIVERS) {
       })
     })
 
-    describe('retention helpers run on this driver (P1-2)', () => {
+    describe('retention helpers run on this driver', () => {
       it('purgeLlmCallPayloads takes a Date, deletes only older payloads and returns the count', async () => {
         const sink = drizzleUsageSink({ db: h.db })
         for (const [i, day] of ['01', '02', '03'].entries()) {
@@ -335,7 +335,7 @@ for (const driver of DRIVERS) {
       })
     })
 
-    describe('db is a host transaction handle (P2-1)', () => {
+    describe('db is a host transaction handle', () => {
       it('twelve concurrent records with payloads (two bad) all succeed and the host transaction stays usable and commits', async () => {
         const { logger } = recordingLogger()
         await h.db.transaction(async (ambient) => {
@@ -408,7 +408,7 @@ for (const driver of DRIVERS) {
       })
     })
 
-    describe('the ledger-failure error never carries the row (P2-2)', () => {
+    describe('the ledger-failure error never carries the row', () => {
       const SECRET = 'CUSTOMER-REASONING-TEXT-T9'
 
       it('a CHECK violation rejects with the driver message and no parameters, no row values, no cause', async () => {
@@ -468,7 +468,7 @@ for (const driver of DRIVERS) {
       })
     })
 
-    describe('a client Clock with fractional milliseconds (P2-3)', () => {
+    describe('a client Clock with fractional milliseconds', () => {
       it('every row is written with whole-millisecond latency and queue delay', async () => {
         let t = 0
         const OK: AdapterResult = {
@@ -513,7 +513,7 @@ for (const driver of DRIVERS) {
       })
     })
 
-    describe('cost_micro_usd is BIGINT (P3-4)', () => {
+    describe('cost_micro_usd is BIGINT', () => {
       it('stores a cost above the INTEGER range and reads sums back as strings or numbers the docs describe', async () => {
         await drizzleUsageSink({ db: h.db }).record(
           makeRecord({ costMicroUsd: 5_000_000_000 }),
@@ -525,7 +525,7 @@ for (const driver of DRIVERS) {
       })
     })
 
-    describe('assertLlmCallsSchema reports a column that would block every insert (P2-4)', () => {
+    describe('assertLlmCallsSchema reports a column that would block every insert', () => {
       it('passes on a fresh install', async () => {
         await expect(assertLlmCallsSchema(h.db)).resolves.toBeUndefined()
       })

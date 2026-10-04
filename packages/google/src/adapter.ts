@@ -712,7 +712,7 @@ function mapUsage(meta: GeminiUsageMetadataShape | undefined): Usage {
     ...(thoughtsTokenCount !== undefined ? { thinking: thoughtsTokenCount } : {}),
     // Tokens of Search results fed back to the model. They sit in
     // `totalTokenCount` but outside `promptTokenCount`. Google's pricing page
-    // (read in the 2026-10 audit) says retrieved search results are not charged
+    // (read 2026-10) says retrieved search results are not charged
     // as input tokens, so they are recorded and not priced; no live billing
     // reconciliation has confirmed it, so the total mismatch still marks the
     // cost `estimated`.

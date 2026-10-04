@@ -1,5 +1,5 @@
 /**
- * Engine diagnostics on results and errors (R1.9, R1.10 engine halves).
+ * Engine diagnostics on results and errors.
  *
  * - A `finishReason: 'length'` result with no answer and reasoning tokens
  *   carries a warning, on any provider.
@@ -98,7 +98,7 @@ describe('adapter warnings on a billed failure reach the attempt row', () => {
   })
 })
 
-describe('reasoning used up the output cap (R1.9)', () => {
+describe('reasoning used up the output cap', () => {
   it('warns when length ended the call with no answer and reasoning tokens', async () => {
     const { client, sink } = makeClient(adapterResult())
     const result = await client.generate(REQUEST, { auth: AUTH })
@@ -172,7 +172,7 @@ describe('reasoning used up the output cap (R1.9)', () => {
   })
 })
 
-describe('typed error reasons (R1.10)', () => {
+describe('typed error reasons', () => {
   const reasoned = new LlmError('headers took too long', {
     kind: 'timeout',
     retryable: false,
@@ -233,7 +233,7 @@ describe('typed error reasons (R1.10)', () => {
   })
 })
 
-describe('tokens the usage fields do not carry (R2.3)', () => {
+describe('tokens the usage fields do not carry', () => {
   const GREATER = 'greater than inputTokens + outputTokens'
 
   it('totalTokens above input + output: a warning once on the result and the row, cost estimated', async () => {

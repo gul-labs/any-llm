@@ -379,8 +379,7 @@ A call that sends `googleSearch` reports two facts in `usage.details`:
 `groundingMetadata.webSearchQueries` counted as occurrences (a repeated query counts each
 time; absent when the response has no metadata or no query list). `tool_use_prompt` records
 `toolUsePromptTokenCount` when Google reports it (Gemini 2.5). Those tokens are not priced: Google's
-pricing page says retrieved search results are not charged as input tokens (read in the 2026-10
-audit), but no live billing reconciliation has confirmed it, so the total mismatch they cause still
+pricing page says retrieved search results are not charged as input tokens (read 2026-10), but no live billing reconciliation has confirmed it, so the total mismatch they cause still
 marks the cost `'estimated'` (ADR-035).
 
 Search counts as requested when the request sends `googleSearch` or the `cachedContent` handle lists
@@ -393,7 +392,7 @@ priced from those queries, the cost is `'estimated'` and a warning says the requ
 The pricing source puts the grounding fee on `cost.details.tools`: Gemini 3 bills per query
 (`web_search_calls × $0.014`), Gemini 2.5 per grounded prompt (`$0.035`, once however many
 queries ran), from Google's pricing page read 2026-10-03. A call that ran Search is always
-`cost.confidence: 'estimated'`: Google's free allowance (as read in the 2026-10 audit, 5,000
+`cost.confidence: 'estimated'`: Google's free allowance (as read 2026-10, 5,000
 requests per month shared across Gemini 3.x and 1,500 per day on Gemini 2.5) is shared across a
 project, so no single call can know it was free, and every fee is charged in full. When Search was
 requested but the count is unknown, the tools lane is `0`, the cost is estimated and a warning
@@ -543,8 +542,7 @@ and `gemma-4-26b-a4b-it`. Both route through this adapter and support:
 
 Gemma 4 has no caching capability: `providerOptions.google.cachedContent` is rejected for it, and
 `allowSchemaWithSearch` is not in its schema (schema plus Search is rejected on Gemma with or
-without it). Google's pricing page marks grounding "Not available" for Gemma 4 (read in the 2026-10
-audit); the `grounding: true` flag follows the live capture instead.
+without it). Google's pricing page marks grounding "Not available" for Gemma 4 (read 2026-10); the `grounding: true` flag follows the live capture instead.
 
 This follows the library-wide **reject, don't map** rule: unsupported or incorrect input throws a
 typed `bad_request` `LlmError` at validation time rather than being silently clamped or coerced
