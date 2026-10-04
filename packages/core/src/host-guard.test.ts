@@ -57,6 +57,66 @@ describe('guardHostCall', () => {
     expect(failures).toHaveLength(1)
   })
 
+  it('a result whose then getter throws never escapes the guard', async () => {
+    const failures: unknown[] = []
+    const hostile = {
+      get then(): never {
+        throw new Error('getter boom')
+      },
+    }
+    expect(isThenable(hostile)).toBe(true)
+    let out: unknown
+    expect(() => {
+      out = guardHostCall(
+        () => hostile,
+        (e) => failures.push(e),
+      )
+    }).not.toThrow()
+    expect(out).toBe(hostile)
+    await wait(5)
+    expect(failures).toHaveLength(1)
+
+    const trapped = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('trap boom')
+        },
+      },
+    )
+    expect(isThenable(trapped)).toBe(true)
+    expect(() =>
+      guardHostCall(
+        () => trapped,
+        () => {},
+      ),
+    ).not.toThrow()
+    // A reporter that returns such an object is absorbed too.
+    expect(() =>
+      guardHostCall(
+        () => {
+          throw new Error('x')
+        },
+        () => hostile,
+      ),
+    ).not.toThrow()
+  })
+
+  it('a logger method that returns a throwing-getter object does not break the logger', async () => {
+    const hostile = {
+      get then(): never {
+        throw new Error('getter boom')
+      },
+    }
+    const logger = {
+      info: () => hostile,
+      warn: () => {},
+      error: () => {},
+      debug: () => {},
+    } as unknown as Logger
+    expect(() => makeSafeLogger(logger).info({}, 'event')).not.toThrow()
+  })
+
   it('a reporter that throws or rejects is never an unhandled rejection', async () => {
     const seen: unknown[] = []
     const on = (reason: unknown): void => {

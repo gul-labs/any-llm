@@ -537,7 +537,7 @@ describe('promptLanes: random splits', () => {
       const lanes = promptLanes(
         usage({
           inputTokens: P,
-          cachedInputTokens: random() < 0.5 ? undefined : int(150_000),
+          ...(random() < 0.5 ? {} : { cachedInputTokens: int(150_000) }),
           details: {
             ...(random() < 0.6 ? { input_audio: int(150_000) } : {}),
             ...(random() < 0.6 ? { cached_audio: int(150_000) } : {}),

@@ -15,13 +15,21 @@
 import type { Logger } from './ports.js'
 import { redactSecrets } from './redact.js'
 
-/** True when `value` is a Promise or any other thenable. */
+/**
+ * True when `value` is a Promise or any other thenable. Never throws: an object
+ * whose `then` cannot be read (a throwing getter or proxy trap) counts as a
+ * thenable, because `Promise.resolve` on it turns that throw into a rejection the
+ * caller can absorb, where a throw from here would escape it.
+ */
 export function isThenable(value: unknown): value is PromiseLike<unknown> {
-  return (
-    (typeof value === 'object' || typeof value === 'function') &&
-    value !== null &&
-    typeof (value as { then?: unknown }).then === 'function'
-  )
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
+    return false
+  }
+  try {
+    return typeof (value as { then?: unknown }).then === 'function'
+  } catch {
+    return true
+  }
 }
 
 /** `String(error)` that cannot throw (an error whose `toString` throws), secrets redacted. */

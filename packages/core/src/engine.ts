@@ -2289,30 +2289,11 @@ export function createClient(config: ClientConfig): Client {
       let effectiveReq: ResolvedRequest = req
 
       try {
-        const validatedConfig = await validateResolvedConfig(
-          req.model,
-          req.modelDescriptor,
-          req.config,
-        )
-        effectiveReq =
-          validatedConfig === req.config ? req : { ...req, config: validatedConfig }
-
-        // Step 5: Resolve adapter (may throw LlmError 'bad_request')
-        const adapter = routeFn(effectiveReq.provider, effectiveReq.model, adapters)
-
-        // Post-route invariant — applies to the default router AND any custom
-        // `route()` option: the returned adapter must serve the requested
-        // provider. Closes both the default-route miss case and custom
-        // routers that might cross providers.
-        if (adapter.id !== effectiveReq.provider) {
-          throw new LlmError(
-            `Adapter routing invariant violated: router returned adapter "${adapter.id}" ` +
-              `for request provider "${effectiveReq.provider}".`,
-            { kind: 'bad_request', retryable: false },
-          )
-        }
-
         // ── Per-attempt cancellation setup ──────────────────────────────────
+        // Armed before the per-attempt config validation, which may be async:
+        // a validator that never settles ends at this attempt's timeout or at
+        // the caller's abort like any other wait of the attempt.
+        //
         // adapter.run() is raced against two independent rejection promises:
         //
         //   (a) Caller-abort  — rejects LlmError('aborted') when ctx.signal fires.
@@ -2335,6 +2316,33 @@ export function createClient(config: ClientConfig): Client {
         const cancellation = buildCancellationRace(ctx.signal, attemptBudgetMs, scheduler)
         cleanup = cancellation.cleanup
         const { raceParts, combinedSignal } = cancellation
+
+        const configValidation = validateResolvedConfig(
+          req.model,
+          req.modelDescriptor,
+          req.config,
+        )
+        const validatedConfig =
+          raceParts.length > 0
+            ? await Promise.race([configValidation, ...raceParts])
+            : await configValidation
+        effectiveReq =
+          validatedConfig === req.config ? req : { ...req, config: validatedConfig }
+
+        // Step 5: Resolve adapter (may throw LlmError 'bad_request')
+        const adapter = routeFn(effectiveReq.provider, effectiveReq.model, adapters)
+
+        // Post-route invariant — applies to the default router AND any custom
+        // `route()` option: the returned adapter must serve the requested
+        // provider. Closes both the default-route miss case and custom
+        // routers that might cross providers.
+        if (adapter.id !== effectiveReq.provider) {
+          throw new LlmError(
+            `Adapter routing invariant violated: router returned adapter "${adapter.id}" ` +
+              `for request provider "${effectiveReq.provider}".`,
+            { kind: 'bad_request', retryable: false },
+          )
+        }
 
         // Step 6b: Rate-limiter acquire — PRE-SEND backpressure. Measure
         // queueDelayMs separately from provider-dispatch latencyMs below.
@@ -2378,6 +2386,9 @@ export function createClient(config: ClientConfig): Client {
         if (ctx.signal?.aborted === true) {
           throw abortedError(ctx.signal, deadline.ownReason())
         }
+        // The same for a deadline that passed while the config validator or
+        // the limiter held the attempt: the timer may not have run yet.
+        if (deadline.expired()) throw deadline.error()
 
         ctx.logger.debug(
           { callId, attemptNumber, queueDelayMs },
@@ -2875,6 +2886,26 @@ export function createClient(config: ClientConfig): Client {
           ctx,
         )
       }
+    /**
+     * Awaits `work` (an async validation that runs before the first attempt) under
+     * the call's cancellation: the deadline gate ends it at `timeoutMs`, and the
+     * caller's abort ends it at once. Without this a validator that never settles
+     * would hold `generate()` forever, because the middleware chain and its
+     * attempts, which enforce the deadline themselves, have not started.
+     */
+    async function underCallCancellation<T>(work: Promise<T>): Promise<T> {
+      const cancellation = buildCancellationRace(engineCtx.signal, undefined, scheduler)
+      try {
+        const parts: Array<Promise<unknown>> = [...cancellation.raceParts]
+        if (deadline.gate !== undefined) parts.push(deadline.gate)
+        return parts.length > 0
+          ? ((await Promise.race([work, ...parts])) as T)
+          : await work
+      } finally {
+        cancellation.cleanup()
+      }
+    }
+
     const chain: Handler = middleware.reduceRight(
       (next: Handler, mw: Middleware): Handler =>
         (req, ctx) =>
@@ -2934,7 +2965,12 @@ export function createClient(config: ClientConfig): Client {
         )
       }
       if (request.inputContract !== undefined) {
-        await validateInputContract(request.inputContract)
+        // An async validator is bounded by the call: a validator that never
+        // settles ends at the deadline or the caller's abort, not never.
+        await underCallCancellation(validateInputContract(request.inputContract))
+        // A validator that settled late (or blocked the event loop) must not
+        // hand a spent call to the middleware chain.
+        if (deadline.expired()) throw deadline.error()
       }
 
       const chainResult = chain(preResolvedReq, engineCtx)

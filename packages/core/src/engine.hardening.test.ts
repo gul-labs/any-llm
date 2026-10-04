@@ -126,6 +126,25 @@ describe('a host callback that returns a rejecting promise is never an unhandled
     expect(seen).toEqual([])
   })
 
+  it('a hook that returns an object whose then getter throws fails nothing', async () => {
+    const hostile = {
+      get then(): never {
+        throw new Error('getter boom')
+      },
+    }
+    const hook = (): never => hostile as never
+    const { client } = build({
+      telemetry: { onStart: hook, onSuccess: hook, onError: hook, onAttempt: hook },
+      logger: { info: hook, warn: hook, error: hook, debug: hook },
+    })
+    const seen = await unhandledDuring(async () => {
+      await expect(client.generate(request(), { auth: AUTH })).resolves.toMatchObject({
+        text: 'ok',
+      })
+    })
+    expect(seen).toEqual([])
+  })
+
   it('telemetry hooks on a failed call', async () => {
     const { client } = build({ telemetry: asyncTelemetry() }, [
       new LlmError('no', { kind: 'bad_request', retryable: false }),
