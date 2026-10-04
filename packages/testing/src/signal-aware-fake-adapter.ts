@@ -131,10 +131,15 @@ export class SignalAwareFakeAdapter implements ProviderAdapter {
       let settled = false
       let timerId: TimerHandle | undefined
 
-      /** Settle the promise at most once. */
+      /**
+       * Settle the promise at most once. The abort listener stays attached until
+       * here, so an abort that lands while an error is still being classified
+       * wins, as the comment on the classification says.
+       */
       const settle = (fn: () => void): void => {
         if (!settled) {
           settled = true
+          signal?.removeEventListener('abort', onAbort)
           fn()
         }
       }
@@ -187,10 +192,6 @@ export class SignalAwareFakeAdapter implements ProviderAdapter {
       // Schedule the scripted result after delayMs.
       timerId = scheduler.setTimeout(() => {
         timerId = undefined
-        // Remove abort listener — the delay elapsed without abort.
-        if (signal !== undefined) {
-          signal.removeEventListener('abort', onAbort)
-        }
 
         const entry = this._entry
         if (entry instanceof Error) {

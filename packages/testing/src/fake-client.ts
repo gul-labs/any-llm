@@ -182,6 +182,8 @@ export class FakeClient implements Client {
 
   countTokens(request: TokenCountRequest, opts: CountTokensOptions): Promise<TokenCount> {
     this.calls.push({ method: 'countTokens', request, opts })
+    // Like the real client, an already-aborted signal rejects before any answer.
+    if (opts.signal?.aborted === true) return rejectAborted()
     if (this._countTokens === undefined) {
       return Promise.reject(
         new TypeError(
@@ -221,14 +223,17 @@ export class FakeClient implements Client {
   }
 
   private _answer(signal: AbortSignal | undefined): Promise<LlmResult> {
-    if (signal?.aborted === true) {
-      return Promise.reject(
-        new LlmError('Request aborted by caller', { kind: 'aborted', retryable: false }),
-      )
-    }
+    if (signal?.aborted === true) return rejectAborted()
     const entry = pick(this._script, this._generated++)
     return entry instanceof Error ? rejectClassified(entry) : Promise.resolve(entry)
   }
+}
+
+/** Rejects with what a real client rejects with for a signal that is already aborted. */
+function rejectAborted(): Promise<never> {
+  return Promise.reject(
+    new LlmError('Request aborted by caller', { kind: 'aborted', retryable: false }),
+  )
 }
 
 /** Rejects with what a real client rejects with for `error`: an `LlmError`. */

@@ -187,6 +187,35 @@ describe('a provider-shaped error thrown by a FakeAdapter is classified as the r
     expect(await settled).toMatchObject({ reason: 'daily_quota', retryable: false })
   })
 
+  it('a SignalAwareFakeAdapter keeps observing an abort until the error is classified', async () => {
+    const clock = new FakeClock()
+    const adapter = new SignalAwareFakeAdapter(
+      'google',
+      fakeProviderError('google', 'per-day-quota'),
+      { delayMs: 5 },
+    )
+    const controller = new AbortController()
+    const settled = adapter
+      .run(
+        {
+          provider: 'google',
+          model: 'm',
+          messages: request('google').messages,
+          config: {},
+        } as never,
+        { auth: { apiKey: 'k' }, signal: controller.signal, scheduler: clock } as never,
+      )
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      )
+    // The delay elapses and classification starts; the abort lands before it ends.
+    clock.advance(5)
+    controller.abort()
+    expect(await settled).toMatchObject({ name: 'AbortError' })
+    expect(adapter.abortObserved).toBe(true)
+  })
+
   it('an error that is not provider-shaped is left to core, as for any adapter', async () => {
     const out = await run('google', [fakeHttpError(503), OK])
     expect(out.error).toBeUndefined()

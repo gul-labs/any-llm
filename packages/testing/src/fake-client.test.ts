@@ -106,6 +106,29 @@ describe('FakeClient answers', () => {
       new FakeClient(fakeLlmResult()).countTokens(req, { auth: AUTH }),
     ).rejects.toThrow(/no `countTokens` answer was scripted/)
   })
+
+  it('countTokens rejects an already-aborted signal like the real client, without consuming an answer', async () => {
+    const count: TokenCount = { totalTokens: 12, accuracy: 'exact', raw: {} }
+    const client = new FakeClient(fakeLlmResult(), { countTokens: count })
+    const req = {
+      provider: 'google',
+      model: 'gemini-2.5-pro',
+      messages: request().messages,
+    }
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      client.countTokens(req, { auth: AUTH, signal: controller.signal }),
+    ).rejects.toMatchObject({ kind: 'aborted', retryable: false })
+    expect(client.calls.map((c) => c.method)).toEqual(['countTokens'])
+    // Even with nothing scripted, the abort is what is reported.
+    await expect(
+      new FakeClient(fakeLlmResult()).countTokens(req, {
+        auth: AUTH,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ kind: 'aborted' })
+  })
 })
 
 describe('FakeClient rejects an invalid script', () => {
