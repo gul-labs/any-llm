@@ -28,8 +28,10 @@ import {
   purgeLlmCallPayloads,
   type PostgresDb,
 } from './index.js'
+import { resolvePostgresTestUrl } from './test-postgres-target.js'
 
-const URL_ENV = process.env['ANY_LLM_TEST_POSTGRES_URL']
+// Validated before any driver connects: a non-loopback target throws here, at load.
+const URL_ENV = resolvePostgresTestUrl(process.env)
 const INSTALL_SQL = readFileSync(
   fileURLToPath(new URL('../sql/install.sql', import.meta.url)),
   'utf8',

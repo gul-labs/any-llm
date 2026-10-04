@@ -141,7 +141,7 @@ surface the schema relies on. Report a break on an older version as a bug.
 
 Drivers: the sink, `purgeLlmCallPayloads`, `deleteLlmCallPayloads` and both schema checks are tested on
 node-postgres, postgres-js and PGlite (`src/drivers.integration.test.ts`; the first two against a real server
-when `ANY_LLM_TEST_POSTGRES_URL` is set). `neon-http` is **not tested**: it has no transactions, so it cannot
+when `ANY_LLM_TEST_POSTGRES_URL` is set). That URL must name a throwaway Postgres on the local machine: the suites create and drop a database and write rows, so a URL whose effective target is not loopback (`127.0.0.0/8`, `::1`, `localhost` or a unix socket path; a `host` or `hostaddr` query parameter, a `service` parameter, `PGHOST` and `PGHOSTADDR` count) is refused before any driver connects, with no override. `neon-http` is **not tested**: it has no transactions, so it cannot
 write payloads (a record with a payload fails and is logged as `llm.call.sink.failed`), and a ledger-only sink on
 it is not tested either.
 

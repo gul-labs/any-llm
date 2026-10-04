@@ -3228,7 +3228,10 @@ CASCADE` under the expected name, so a host's own `llm_call_payloads` is renamed
 - `maxChars` below 1,000, an `async` `redact` / `include`, a sink without `acceptsPayloads` and a `db` without
   `transaction()` are now refused or warned about at construction.
 - Node-postgres coverage runs only where a server is available (`ANY_LLM_TEST_POSTGRES_URL`); CI runs the
-  same behaviour on PGlite.
+  same behaviour on PGlite. The suites create and drop databases, so one shared test-setup helper
+  (`test-postgres-target.ts`) refuses any URL whose effective libpq target (the URL host, `host` and `hostaddr`
+  parameters, `PGHOST`, `PGHOSTADDR`, a `service` parameter) is not loopback, before either driver connects; there is
+  no override.
 
 ---
 
