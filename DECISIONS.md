@@ -3688,7 +3688,7 @@ dayBoundary?, scope? })`; `quotaPolicyForGemini` and `quotaPolicyForXai` call it
    (`rpm`, `tpm`). xAI states requests per second and tokens per minute and documents no daily limit, so the
    preset has no `rpd` and no boundary.
 4. **Tokens per minute, estimated and reconciled.** `ProviderQuotaRule.tpm` (a positive integer).
-   `RateLimiter.acquire(key, signal, hint?: { estimatedInputTokens? })` and `Release = (usage?: Usage) =>
+   `RateLimiter.acquire(key, signal, hint?: RateLimitHint)` (`{ estimatedInputTokens?, nowMs? }`; see Amendment B) and `Release = (usage?: Usage) =>
 void` (ADR-008's port, widened). The engine hands `acquire` `estimateInputTokens(effectiveReq)` on every
    attempt and calls `Release` with the attempt's normalized usage when there is one (a success, a billed
    failure) and with none otherwise. `estimateInputTokens` is exported from core: the characters of system,

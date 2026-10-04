@@ -314,7 +314,7 @@ export interface RateLimiter {
   acquire(
     key: string,
     signal?: AbortSignal,
-    hint?: { estimatedInputTokens?: number },
+    hint?: RateLimitHint, // { estimatedInputTokens?, nowMs? }: the estimate, and the engine clock's reading
   ): Promise<Release>
 }
 export interface IdGenerator {

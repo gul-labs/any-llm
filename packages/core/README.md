@@ -539,8 +539,9 @@ is released when that attempt ends.
 
 - **The limiter is fed.** `acquire(key, signal, hint)` receives `hint.estimatedInputTokens`, a cheap
   estimate of the attempt's input tokens (`estimateInputTokens(req)`, exported: text characters divided by
-  4; media and file parts are not counted, so it is an estimate and a floor, never a count), and the
-  `Release` the engine calls receives the attempt's normalized `Usage` when there is one (a success, or a
+  4; media and file parts are not counted, so it is an estimate and a floor, never a count) and
+  `hint.nowMs`, the engine clock's reading, so a limiter that names time windows agrees with a client built
+  with a `FakeClock`, and the `Release` the engine calls receives the attempt's normalized `Usage` when there is one (a success, or a
   billed failure that carries `usage`) and nothing otherwise (a timeout, an abort, a transport failure).
   A token-aware limiter (see `@gullabs/quota`'s `tpm`) paces on the first and reconciles with the second;
   a concurrency limiter ignores both.
