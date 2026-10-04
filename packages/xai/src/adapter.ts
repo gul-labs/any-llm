@@ -1319,7 +1319,7 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
  *
  * @internal
  */
-export interface XaiAdapterSeams {
+interface XaiAdapterSeams {
   clientFactory?: (
     auth: AuthMaterial,
     transport?: XaiTransport,

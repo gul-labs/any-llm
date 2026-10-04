@@ -147,16 +147,16 @@ export interface UsageSinkContext {
 // ---------------------------------------------------------------------------
 
 /** Default for {@link PayloadsConfig.maxChars}. */
-export const DEFAULT_PAYLOAD_MAX_CHARS = 200_000
+const DEFAULT_PAYLOAD_MAX_CHARS = 200_000
 
 /** Smallest accepted {@link PayloadsConfig.maxChars}: below it the JSON skeleton alone does not fit. */
-export const MIN_PAYLOAD_MAX_CHARS = 1000
+const MIN_PAYLOAD_MAX_CHARS = 1000
 
 /** Appended to a string cut at `maxChars`. */
-export const PAYLOAD_TRUNCATED_MARKER = '[truncated]'
+const PAYLOAD_TRUNCATED_MARKER = '[truncated]'
 
 /** Replaces a string or JSON value dropped to bring the whole payload under `4 × maxChars`. */
-export const PAYLOAD_DROPPED_MARKER = '[dropped: over the payload size cap]'
+const PAYLOAD_DROPPED_MARKER = '[dropped: over the payload size cap]'
 
 /**
  * Largest decoded inline media part that is hashed. A larger part is stored as
@@ -188,7 +188,7 @@ const MAX_URI_CHARS = 2048
 // ---------------------------------------------------------------------------
 
 /** Where a payload was dropped; the engine logs it. */
-export type PayloadStage = 'include' | 'snapshot' | 'redact' | 'cap' | 'timeout' | 'build'
+type PayloadStage = 'include' | 'snapshot' | 'redact' | 'cap' | 'timeout' | 'build'
 
 /**
  * A payload that could not be built. `message` is a fixed sentence that never
@@ -295,7 +295,7 @@ export function resolvePayloadsConfig(config: unknown): Readonly<PayloadsConfig>
 // ---------------------------------------------------------------------------
 
 /** What the engine hands {@link snapshotPayloadSource}. */
-export interface PayloadSource {
+interface PayloadSource {
   system?: string
   messages: readonly Message[]
   tools?: readonly ToolDefinition[]
@@ -307,7 +307,7 @@ export interface PayloadSource {
  * copies, so a host that changes its request while the call is in flight
  * changes nothing stored. Media data is not copied (it is a string).
  */
-export interface PayloadSnapshot {
+interface PayloadSnapshot {
   system?: string
   messages: Array<{ role: 'user' | 'assistant'; parts: Part[] }>
   tools?: Array<{ name: string; schemaJson: string }>

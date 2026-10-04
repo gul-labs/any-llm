@@ -18,7 +18,7 @@ import { LlmError, llmErrorOptionsOf } from '@gullabs/core'
 import type { LlmErrorOptions } from '@gullabs/core'
 
 /** The providers `fakeProviderError` builds errors for. */
-export type ErrorProvider = 'google' | 'xai'
+type ErrorProvider = 'google' | 'xai'
 
 const PROVIDER_MARK = Symbol.for('@gullabs/testing.provider-error')
 

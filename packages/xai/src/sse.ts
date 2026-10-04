@@ -21,7 +21,7 @@ export interface SseFrame {
   data: string
 }
 
-export interface SseReadOptions {
+interface SseReadOptions {
   /** Called once for every chunk of bytes read, before it is parsed. */
   onChunk?: () => void
   /**

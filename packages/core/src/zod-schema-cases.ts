@@ -15,9 +15,9 @@
 
 import { z } from 'zod'
 
-export type Verdict = { verdict: 'accept' } | { verdict: 'reject'; reason: string }
+type Verdict = { verdict: 'accept' } | { verdict: 'reject'; reason: string }
 
-export interface ZodSchemaCase {
+interface ZodSchemaCase {
   readonly name: string
   readonly description: string
   readonly build: () => z.ZodType

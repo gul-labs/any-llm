@@ -44,7 +44,7 @@ export function rawSseResponse(body: string): Response {
   })
 }
 
-export interface SynthesizeOptions {
+interface SynthesizeOptions {
   /** Emit no `output_item.done` events, so items exist only as added + deltas. */
   omitDone?: boolean
   /** Replace the terminal event's response (default: the response itself). */

@@ -43,7 +43,7 @@
 
 import type { ModelLimits } from '@gullabs/core'
 
-export type GoogleModelId =
+type GoogleModelId =
   | 'gemini-2.5-pro'
   | 'gemini-2.5-flash'
   | 'gemini-2.5-flash-lite'

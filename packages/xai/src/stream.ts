@@ -46,7 +46,7 @@
 import type { XaiResponseShape, XaiUsageShape } from './client.js'
 
 /** Why a streamed call failed outside an HTTP error response. */
-export type XaiStreamFailure =
+type XaiStreamFailure =
   | { kind: 'ended_early'; lastEventType: string | undefined }
   | { kind: 'error_event'; code: string | undefined; message: string | undefined }
   | { kind: 'malformed'; detail: string }
@@ -70,7 +70,7 @@ export type XaiStreamFailure =
  * generating (a reasoning call burns tokens before its first visible event), so
  * a retry would repeat that spend and cannot resume it.
  */
-export interface XaiStreamProgress {
+interface XaiStreamProgress {
   /** True once any output event or the terminal event arrived. */
   progressed: boolean
   /** Characters of text, reasoning summary, arguments and tool input received. */
@@ -78,7 +78,7 @@ export interface XaiStreamProgress {
 }
 
 /** What a stream failure carries beside its {@link XaiStreamFailure}. */
-export interface XaiStreamErrorContext {
+interface XaiStreamErrorContext {
   progress?: XaiStreamProgress
   /** The terminal response's usage, exact (ticks included), when one arrived. */
   terminalUsage?: XaiUsageShape
@@ -193,7 +193,7 @@ export interface XaiSseFrame {
 }
 
 /** The reduced result of a stream that reached a terminal event. */
-export interface ReducedXaiStream {
+interface ReducedXaiStream {
   /** The terminal event's response, with `output` reconciled. */
   response: XaiResponseShape
   /** Diagnostics for what reconciliation did; empty when events and final agree. */

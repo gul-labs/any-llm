@@ -101,7 +101,7 @@ const LONG_CONTEXT_THRESHOLD = 200_000
  * does, but the adapter's warning does not claim it understates (see
  * {@link classifyUnpricedXaiToolCounters}).
  */
-export const XAI_SERVER_TOOL_COUNTERS: Readonly<
+const XAI_SERVER_TOOL_COUNTERS: Readonly<
   Record<string, 'priced' | 'superseded' | 'fee_unpriced' | 'token_only'>
 > = Object.freeze({
   web_search_calls: 'priced',

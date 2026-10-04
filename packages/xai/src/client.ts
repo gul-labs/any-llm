@@ -80,7 +80,7 @@ export interface XaiInputItem {
 }
 
 /** Live-verified store:false replay item. */
-export interface XaiFunctionCallInputItem {
+interface XaiFunctionCallInputItem {
   type: 'function_call'
   call_id: string
   name: string
@@ -88,7 +88,7 @@ export interface XaiFunctionCallInputItem {
 }
 
 /** Live-verified store:false replay item. */
-export interface XaiFunctionCallOutputInputItem {
+interface XaiFunctionCallOutputInputItem {
   type: 'function_call_output'
   call_id: string
   output: string
@@ -201,7 +201,7 @@ export interface XaiMessageOutputItem {
 }
 
 /** Server-tool or function-call output items we do not collapse as messages. */
-export interface XaiOtherOutputItem {
+interface XaiOtherOutputItem {
   type: string
   [key: string]: unknown
 }

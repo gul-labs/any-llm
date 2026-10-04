@@ -200,15 +200,12 @@ describe('FakeGoogleCacheStore', () => {
   })
 
   it('delete removes the cache and its getOrCreate entry; a second delete is success, as a gone cache is in the real store', async () => {
-    const seen: string[] = []
-    const caches = new FakeGoogleCacheStore({ onDeleteError: (name) => seen.push(name) })
+    const caches = new FakeGoogleCacheStore()
     const handle = await caches.getOrCreate(key, factory)
 
     await caches.delete(handle)
     expect(caches.size).toBe(0)
-    expect(seen).toEqual([])
-    await caches.delete(handle)
-    expect(seen).toEqual([])
+    await expect(caches.delete(handle)).resolves.toBeUndefined()
 
     const again = await caches.getOrCreate(key, factory)
     expect(again.cacheName).not.toBe(handle.cacheName)

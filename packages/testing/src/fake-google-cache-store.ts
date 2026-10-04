@@ -52,8 +52,6 @@ export interface FakeGoogleCacheStoreOptions {
   expirySkewSeconds?: number
   /** Tokens each created cache reports as `totalTokenCount`; a function sees the create input. */
   tokenCount?: number | ((input: FakeGoogleCacheCreateInput) => number)
-  /** Called on a swallowed delete failure. Default: ignore. */
-  onDeleteError?: (cacheName: string, err: unknown) => void
   /** When true, concurrent `getOrCreate` calls for one key share one create, as the real store's `coalesce`. */
   coalesce?: boolean
   /**
@@ -114,7 +112,6 @@ export class FakeGoogleCacheStore {
   private readonly now: () => number
   private readonly skewMs: number
   private readonly tokenCount: FakeGoogleCacheStoreOptions['tokenCount']
-  private readonly onDeleteError: (cacheName: string, err: unknown) => void
   private readonly inflight = new Map<string, Promise<FakeGoogleCacheHandle>>()
   private readonly coalesce: boolean
   private readonly preflight: FakeGoogleCacheStoreOptions['preflight']
@@ -133,11 +130,6 @@ export class FakeGoogleCacheStore {
     this.now = opts.now ?? (() => Date.now())
     this.skewMs = (opts.expirySkewSeconds ?? DEFAULT_SKEW_SECONDS) * 1000
     this.tokenCount = opts.tokenCount
-    this.onDeleteError =
-      opts.onDeleteError ??
-      (() => {
-        /* fail-open default */
-      })
   }
 
   /** Caches the "provider" currently holds (created and not deleted). */

@@ -27,7 +27,7 @@
 
 import type { ModelLimits } from '@gullabs/core'
 
-export type XaiModelId = 'grok-4.5' | 'grok-4.6' | 'grok-4.7'
+type XaiModelId = 'grok-4.5' | 'grok-4.6' | 'grok-4.7'
 
 /** One frozen object per model: no descriptor can change another's limits. */
 const grok4Limits = (): ModelLimits =>

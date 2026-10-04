@@ -22,7 +22,7 @@ const webSearchFlags = {
   }),
 }
 
-export const XaiWebSearchToolSchema = z
+const XaiWebSearchToolSchema = z
   .union([
     z.strictObject({
       type: z.literal('web_search'),
@@ -64,7 +64,7 @@ const xSearchFlags = {
   }),
 }
 
-export const XaiXSearchToolSchema = z
+const XaiXSearchToolSchema = z
   .union([
     z.strictObject({
       type: z.literal('x_search'),
@@ -91,7 +91,7 @@ export const XaiXSearchToolSchema = z
  * Admitted tools combinations: at most one web_search and at most one x_search.
  * Both orders are admitted so callers are not rejected for listing order.
  */
-export const XaiToolsSchema = z
+const XaiToolsSchema = z
   .union([
     z.tuple([XaiWebSearchToolSchema]),
     z.tuple([XaiXSearchToolSchema]),

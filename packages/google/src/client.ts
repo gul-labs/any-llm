@@ -95,7 +95,7 @@ export const GOOGLE_MAX_TIMEOUT_MS = MAX_TIMER_MS - TRANSPORT_TIMEOUT_BUFFER_MS
 // ---------------------------------------------------------------------------
 
 /** A single text/thought part in a Gemini candidate content. */
-export interface GeminiPartShape {
+interface GeminiPartShape {
   text?: string
   /**
    * Present and `true` on thought-summary parts.
@@ -111,7 +111,7 @@ export interface GeminiPartShape {
 }
 
 /** A candidate returned by Gemini generateContent. */
-export interface GeminiCandidateShape {
+interface GeminiCandidateShape {
   content?: {
     parts?: GeminiPartShape[]
   }
@@ -164,7 +164,7 @@ export interface GeminiUsageMetadataShape {
 }
 
 /** One entry of `usageMetadata.promptTokensDetails` / `cacheTokensDetails`. */
-export interface GeminiModalityTokenCount {
+interface GeminiModalityTokenCount {
   modality?: string
   tokenCount?: number
 }
@@ -203,12 +203,12 @@ export interface GeminiResponseShape {
  * the `PartMediaResolutionLevel` string enum (we only emit the LOW/MEDIUM/HIGH
  * subset our normalized `mediaResolution` maps to).
  */
-export interface GeminiPartMediaResolution {
+interface GeminiPartMediaResolution {
   level?: 'MEDIA_RESOLUTION_LOW' | 'MEDIA_RESOLUTION_MEDIUM' | 'MEDIA_RESOLUTION_HIGH'
 }
 
 /** A text part in a content object we construct. */
-export interface GeminiTextContentPart {
+interface GeminiTextContentPart {
   text: string
   /** Replayed signature for this part (real field: `Part.thoughtSignature`). */
   thoughtSignature?: string
@@ -218,7 +218,7 @@ export interface GeminiTextContentPart {
  * An inline binary media part in a content object we construct.
  * `data` must be raw base64 — no `data:…;base64,` prefix.
  */
-export interface GeminiInlineDataContentPart {
+interface GeminiInlineDataContentPart {
   inlineData: {
     /** IANA media type, e.g. `"image/png"`. */
     mimeType: string
@@ -233,7 +233,7 @@ export interface GeminiInlineDataContentPart {
  * A provider-hosted file reference part in a content object we construct.
  * The Gemini service dereferences `fileUri` server-side.
  */
-export interface GeminiFileDataContentPart {
+interface GeminiFileDataContentPart {
   fileData: {
     /** IANA media type of the referenced file. */
     mimeType: string
@@ -249,13 +249,13 @@ export interface GeminiFileDataContentPart {
  * Each member (including the optional per-part `mediaResolution`) is a
  * structural subset of the real `@google/genai` `Part` type for the fields we use.
  */
-export interface GeminiFunctionCallPart {
+interface GeminiFunctionCallPart {
   functionCall: { id?: string; name: string; args?: unknown }
   /** Replayed signature for this call (real field: `Part.thoughtSignature`). */
   thoughtSignature?: string
 }
 
-export interface GeminiFunctionResponsePart {
+interface GeminiFunctionResponsePart {
   functionResponse: { id?: string; name: string; response: unknown }
 }
 
@@ -278,7 +278,7 @@ export interface GeminiContent {
  * - thinkingBudget: 0 = DISABLED, -1 = AUTOMATIC
  * - thinkingLevel: ThinkingLevel enum ("LOW", "MEDIUM", "HIGH", "MINIMAL")
  */
-export interface GeminiThinkingConfig {
+interface GeminiThinkingConfig {
   includeThoughts?: boolean
   thinkingBudget?: number
   /**

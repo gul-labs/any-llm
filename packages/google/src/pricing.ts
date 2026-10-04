@@ -64,7 +64,7 @@ export const GEMINI_PRICED_TIERS = ['standard', 'flex'] as const
 export type GeminiPricedTier = (typeof GEMINI_PRICED_TIERS)[number]
 
 /** Audio input rates for a model that prices audio apart from text (µUSD per million tokens). */
-export interface GeminiAudioRates {
+interface GeminiAudioRates {
   /** Non-cached audio input tokens. */
   inputPerM: number
   /** Cached audio input tokens. */
@@ -72,7 +72,7 @@ export interface GeminiAudioRates {
 }
 
 /** {@link ModelRates} plus the audio input rates, for models that publish them. */
-export interface GeminiRates extends ModelRates {
+interface GeminiRates extends ModelRates {
   /**
    * Present only on a model whose pricing page lists a separate audio input
    * price. Priced on the audio tokens `promptTokensDetails` reports; every other

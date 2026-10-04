@@ -44,14 +44,14 @@ export type FakeAdapterEntry = AdapterResult | Error
 /**
  * Internal discriminated-union queue entry.
  */
-export type QueueEntry =
+type QueueEntry =
   { kind: 'result'; result: AdapterResult } | { kind: 'throw'; error: unknown }
 
 /**
  * Throw when a result-shaped scripted entry lacks the required assistant
  * `message`. Shared with the signal-aware fake; not part of the public surface.
  */
-export function assertResultHasMessage(entry: Record<string, unknown>): void {
+function assertResultHasMessage(entry: Record<string, unknown>): void {
   const message = entry['message'] as
     { role?: unknown; parts?: unknown } | null | undefined
   if (

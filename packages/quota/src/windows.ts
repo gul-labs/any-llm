@@ -102,7 +102,7 @@ export function msUntilNextLocalDay(nowMs: number, timeZone: string): number {
 }
 
 /** `YYYY-MM-DD`, the UTC date of `nowMs`. */
-export function utcDate(nowMs: number): string {
+function utcDate(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10)
 }
 
@@ -142,7 +142,7 @@ export function msUntilDayEnds(nowMs: number, boundary: DayBoundary | undefined)
 }
 
 /** The calendar-minute window identity, `YYYYMMDDHHMM` (UTC). */
-export function minuteBucket(nowMs: number): string {
+function minuteBucket(nowMs: number): string {
   const d = new Date(nowMs)
   const y = d.getUTCFullYear()
   const m = String(d.getUTCMonth() + 1).padStart(2, '0')
@@ -160,7 +160,7 @@ export function msUntilNextMinute(nowMs: number): number {
 }
 
 /** One counter a store checks: its key, its limit, what a call adds and when it ends. */
-export interface QuotaWindow {
+interface QuotaWindow {
   kind: 'rpm' | 'rpd' | 'tpm'
   key: string
   limit: number

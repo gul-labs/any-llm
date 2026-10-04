@@ -169,11 +169,6 @@ export type {
   StoredTool,
   UsageSinkContext,
 } from './payload.js'
-export {
-  DEFAULT_PAYLOAD_MAX_CHARS,
-  MIN_PAYLOAD_MAX_CHARS,
-  PAYLOAD_MAX_INLINE_MEDIA_BYTES,
-} from './payload.js'
 
 // Utilities
 export { canonicalJson } from './canonical-json.js'

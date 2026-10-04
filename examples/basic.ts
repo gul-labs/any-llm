@@ -156,23 +156,5 @@ console.log({
 
 console.log('\n========================================\n')
 
-// ---------------------------------------------------------------------------
-// REAL GEMINI CALL — uncomment to use with a live API key and a Drizzle DB
-// ---------------------------------------------------------------------------
-//
-// import { drizzleUsageSink, llmCalls } from '@gullabs/drizzle'
-// import { drizzle } from 'drizzle-orm/node-postgres'
-// import pg from 'pg'
-//
-// const db = drizzle(new pg.Pool({ connectionString: process.env.DATABASE_URL }))
-//
-// const realClient = createClient({
-//   ...composeProviders([googleProvider()]), // uses the real @google/genai SDK
-//   sink: drizzleUsageSink({ db }),          // writes to your llm_calls table
-// })
-//
-// const realResult = await realClient.runStructured(codeReview, { diff: '- let x = 1\n+ const x = 1' }, {
-//   auth: { apiKey: process.env.GEMINI_API_KEY! }, // pass per-call — never read from env internally
-// })
-// console.log('Real output:', realResult.output)
-// console.log('Real cost (µUSD):', realResult.cost?.microUsd)
+// A live call is the same code with a real provider (see its package README) in place
+// of the fake adapter and `drizzleUsageSink({ db })` as the sink (see the root README).
