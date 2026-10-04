@@ -440,9 +440,13 @@ export function quotaPolicy(opts: QuotaPolicyOptions): ProviderQuotaPolicy {
     getRule(input: QuotaPolicyInput): ProviderQuotaRule | undefined {
       if (input.provider !== opts.provider) return undefined
 
+      // Own properties only: a model named `toString` or `constructor` must get
+      // the defaults, not a function inherited from `Object.prototype`.
+      const limitsOf = (model: string): QuotaLimits | undefined =>
+        Object.hasOwn(opts.models, model) ? opts.models[model] : undefined
       if (
-        opts.models[input.model] === undefined &&
-        (input.aliases ?? []).some((alias) => opts.models[alias] !== undefined)
+        limitsOf(input.model) === undefined &&
+        (input.aliases ?? []).some((alias) => limitsOf(alias) !== undefined)
       ) {
         throw new LlmError(
           `Quota limits for "${input.model}" are keyed by one of its aliases; limits are looked up by the canonical model id "${input.model}", so the alias key would never match. Key the limits by "${input.model}".`,
@@ -450,7 +454,7 @@ export function quotaPolicy(opts: QuotaPolicyOptions): ProviderQuotaPolicy {
         )
       }
 
-      const limits = opts.models[input.model] ?? opts.defaults
+      const limits = limitsOf(input.model) ?? opts.defaults
       if (limits === undefined) return undefined
 
       const rule: ProviderQuotaRule = {

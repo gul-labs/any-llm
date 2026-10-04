@@ -11,6 +11,7 @@ import {
   checkProviderQuota,
   enforceProviderQuota,
   providerQuotaMiddleware,
+  quotaPolicy,
   quotaPolicyForGemini,
   type QuotaEvent,
   type QuotaStore,
@@ -396,5 +397,39 @@ describe('@gullabs/quota', () => {
 
     expect(store.checkAndConsume).not.toHaveBeenCalled()
     expect(next).not.toHaveBeenCalled()
+  })
+})
+
+describe('quotaPolicy looks models up by own property', () => {
+  it.each(['toString', 'constructor', 'hasOwnProperty', '__proto__', 'valueOf'])(
+    'a model named %s gets the defaults, not an inherited value',
+    (model) => {
+      const policy = quotaPolicy({
+        provider: 'google',
+        models: { listed: { rpm: 50 } },
+        defaults: { rpm: 1 },
+      })
+      const input = { provider: 'google', model }
+      expect(policy.getRule(input)).toMatchObject({ rpm: 1 })
+      expect(policy.getRule({ ...input, aliases: ['toString'] })).toMatchObject({
+        rpm: 1,
+      })
+      expect(policy.getRule({ provider: 'google', model: 'listed' })).toMatchObject({
+        rpm: 50,
+      })
+    },
+  )
+
+  it('without defaults such a model is unlimited, and an own entry of that name still applies', () => {
+    const none = quotaPolicy({ provider: 'google', models: { listed: { rpm: 50 } } })
+    expect(none.getRule({ provider: 'google', model: 'constructor' })).toBeUndefined()
+    const own = quotaPolicy({
+      provider: 'google',
+      models: { constructor: { rpm: 7 } },
+      defaults: { rpm: 1 },
+    })
+    expect(own.getRule({ provider: 'google', model: 'constructor' })).toMatchObject({
+      rpm: 7,
+    })
   })
 })
