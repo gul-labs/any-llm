@@ -244,12 +244,19 @@ class XaiFilesHttpError extends Error {
   }
 }
 
-async function throwHttpFailure(res: Response): Promise<never> {
+async function throwHttpFailure(
+  res: Response,
+  signal: AbortSignal,
+  operation: string,
+): Promise<never> {
   const status = res.status
   let bodyText = ''
   try {
     bodyText = await res.text()
-  } catch {
+  } catch (e) {
+    // The call's own deadline (or the caller's abort) ended the body read: that
+    // is the answer, not the status line of a response that was never read.
+    if (signal.aborted) throw abortedError(signal, `xAI file ${operation} aborted`, e)
     bodyText = ''
   }
 
@@ -556,7 +563,7 @@ export class XaiFileStore {
 
       if (!res.ok) {
         try {
-          await throwHttpFailure(res)
+          await throwHttpFailure(res, bound, 'upload')
         } catch (e) {
           throw classifyStoreError(e)
         }
@@ -600,7 +607,7 @@ export class XaiFileStore {
 
       if (!res.ok) {
         try {
-          await throwHttpFailure(res)
+          await throwHttpFailure(res, bound, 'get')
         } catch (e) {
           throw classifyStoreError(e)
         }
@@ -647,7 +654,7 @@ export class XaiFileStore {
 
       if (!res.ok) {
         try {
-          await throwHttpFailure(res)
+          await throwHttpFailure(res, bound, 'list')
         } catch (e) {
           throw classifyStoreError(e)
         }
@@ -699,7 +706,7 @@ export class XaiFileStore {
         }
 
         if (!res.ok) {
-          await throwHttpFailure(res)
+          await throwHttpFailure(res, bound, 'delete')
         }
       } catch (err) {
         if (isNotFoundError(err)) {
@@ -761,7 +768,7 @@ export class XaiFileStore {
 
       if (!res.ok) {
         try {
-          await throwHttpFailure(res)
+          await throwHttpFailure(res, bound, 'getContent')
         } catch (e) {
           throw classifyStoreError(e)
         }

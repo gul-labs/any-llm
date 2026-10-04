@@ -143,6 +143,44 @@ describe('XaiFileStore headers, deadline and ids', () => {
     }
   })
 
+  it('a deadline that ends the read of a non-2xx body is the timeout, not the HTTP status', async () => {
+    // Headers arrive with a 500; the body never finishes and errors when aborted.
+    const stalledBody: Handler = (_url, init) =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            init.signal?.addEventListener('abort', () => {
+              controller.error(init.signal?.reason)
+            })
+          },
+        }),
+        { status: 500 },
+      )
+    const store = new XaiFileStore({
+      auth,
+      fetch: fetchOf(stalledBody).fetch,
+      timeoutMs: 30,
+    })
+    for (const call of [
+      () => store.get('f'),
+      () => store.list(),
+      () => store.getContent('f'),
+      () => store.upload({ data: new Uint8Array(1), filename: 'a.txt' }),
+      () => store.delete('f', { failClosed: true }),
+    ]) {
+      const err = await call().catch((e: unknown) => e)
+      expect(err).toMatchObject({ kind: 'timeout', retryable: true, provider: 'xai' })
+      expect((err as LlmError).httpStatus).toBeUndefined()
+    }
+
+    // A caller abort during the same read is `aborted`.
+    const patient = new XaiFileStore({ auth, fetch: fetchOf(stalledBody).fetch })
+    const controller = new AbortController()
+    const pending = patient.get('f', controller.signal)
+    setTimeout(() => controller.abort(), 20)
+    expect(await pending.catch((e: unknown) => e)).toMatchObject({ kind: 'aborted' })
+  })
+
   it('a fail-open delete that times out reports it to onDeleteError', async () => {
     const seen: unknown[] = []
     const store = new XaiFileStore({
