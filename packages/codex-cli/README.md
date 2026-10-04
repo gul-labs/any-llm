@@ -172,7 +172,9 @@ to the child. It builds an allowlisted copy of `process.env`: `PATH`, `HOME`,
 `XDG_*`, the Windows profile variables, the proxy variables (`HTTPS_PROXY`,
 `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`, either case), `SSL_CERT_FILE`/`SSL_CERT_DIR`,
 and the CLI's own `CODEX_HOME` and `CODEX_CA_CERTIFICATE`. `CODEX_API_KEY`,
-`OPENAI_API_KEY`, `OPENAI_BASE_URL` and everything else are dropped.
+`OPENAI_API_KEY`, `OPENAI_BASE_URL` and everything else are dropped. No token variable is
+forwarded; `CODEX_HOME` points the CLI at the login it reads from disk, and a proxy URL in
+`HTTPS_PROXY` can carry credentials.
 
 `codexCliAdapter({ env })` adds variables on top, and they win over the allowlisted
 ones. It is the one way to pass anything else on, for example a non-default

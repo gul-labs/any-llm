@@ -78,8 +78,8 @@ function isInherited(name: string, windows: boolean): boolean {
 
 /**
  * Build the child's environment: the allowlisted part of `parent`, then `extra`
- * on top. `extra` wins, and is passed through unfiltered, because it is the
- * host's explicit choice.
+ * on top. `extra` wins (on Windows whatever the spelling of the name), and is passed
+ * through unfiltered, because it is the host's explicit choice.
  */
 export function buildChildEnv(
   parent: NodeJS.ProcessEnv,
@@ -90,7 +90,18 @@ export function buildChildEnv(
   for (const [name, value] of Object.entries(parent)) {
     if (value !== undefined && isInherited(name, windows)) env[name] = value
   }
-  if (extra !== undefined) Object.assign(env, extra)
+  if (extra !== undefined) {
+    if (windows) {
+      // Windows names are case-insensitive and the OS hands the child only the
+      // first match: an inherited `PATH` would beat the host's `Path`. Drop the
+      // inherited spelling of every name the host sets.
+      const overridden = new Set(Object.keys(extra).map((name) => name.toUpperCase()))
+      for (const name of Object.keys(env)) {
+        if (overridden.has(name.toUpperCase())) delete env[name]
+      }
+    }
+    Object.assign(env, extra)
+  }
   return env
 }
 

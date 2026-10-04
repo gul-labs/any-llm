@@ -825,6 +825,10 @@ and `runStructured()` call. `auth` is required; there is no default and no fallb
 Vertex AI auth is removed entirely for this version. It will return when an explicit, non-ADC
 credential shape is designed (see ROADMAP.md).
 
+The guarantee covers the library's own code (core and the API adapters). The CLI adapters run a local CLI that
+resolves its own login, and their runners forward an allowlisted copy of the host environment to it, including a
+few ambient credential variables (ADR-046, which states them); the library reads none of them.
+
 A CI source-invariant test asserts:
 
 1. No file under `packages/core/src` or `packages/google/src` reads `process.env`.
@@ -4149,10 +4153,19 @@ over the saved login. The cost is invisible to the library's own ledger, which i
 2. **`env` is the explicit opt-in.** `claudeCliAdapter({ env })` and `codexCliAdapter({ env })` take a record of
    string values, validated at construction (`bad_request` for a non-string, an empty or `=`-bearing name, a NUL),
    copied and frozen, handed to the runner as `ClaudeCliRunOptions.env` / `CodexCliRunOptions.env`, and merged over
-   the allowlisted copy. A host that wants a key used passes it there, and then the billing is its decision.
-3. **This is a scrub, not a credential read.** The library still never takes a credential from the environment:
-   the one `process.env` read is the runner's filter, the permanence test allows exactly that call, and no value is
-   interpreted. The ledger row stays unpriced; ADR-026's `cliSession` auth is unchanged.
+   the allowlisted copy (on Windows, where names are case-insensitive and the OS passes the child the first
+   match, a host name replaces the inherited one whatever its case). A host that wants a key used passes it there, and then the billing is its decision.
+3. **This is a scrub, not a credential read, but some ambient credentials still reach the child.** The library never
+   interprets a credential from the environment: the one `process.env` read is the runner's filter, the permanence
+   test allows exactly that call, and no value is parsed or logged. The allowlist does keep variables the CLI
+   treats as credentials, so a host that exports them is using them: for `claude-cli`, `CLAUDE_CODE_OAUTH_TOKEN`
+   (the subscription token) and the mTLS variables `CLAUDE_CODE_CLIENT_CERT`, `CLAUDE_CODE_CLIENT_KEY` and
+   `CLAUDE_CODE_CLIENT_KEY_PASSPHRASE`; for both, the proxy variables (a proxy URL can carry credentials), and
+   `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, which point the CLI at the login it reads from disk. `codex-cli` keeps no
+   token variable. `env` adds to the allowlisted copy and cannot remove from it, so a host that does not want the
+   ambient Claude token or client key used unsets them before the call. The ledger row stays unpriced; ADR-026's
+   `cliSession` auth is unchanged. ADR-019's guarantee (no read of a credential from the environment) holds for
+   core, `google` and `xai`; for the CLI adapters it is this ADR.
 4. **Related runner fixes.** A call waits for a semaphore slot before it makes its scratch directory and leaves the
    queue on abort. The adapters classify failure text with word-anchored patterns (an explicit rate-limit signal
    wins over an incidental "auth"). A `codex` process ended by a signal with no `turn.completed` is a `server`

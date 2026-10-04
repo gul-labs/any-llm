@@ -109,7 +109,8 @@ interpolation and config-layer merging before handing off to the shared core.
    equal to `apiKey`) throws `LlmError('bad_request', retryable: false)`. The resolved
    `AuthMaterial` is then threaded through `AdapterCtx` unchanged on every retry attempt — it is
    **not** re-resolved per attempt. There is no `AuthProvider` port and no environment/ambient
-   credential lookup; the caller supplies `{ apiKey }` on every `generate()` / `runStructured()`
+   credential lookup in the library (the CLI adapters' runners forward an allowlisted host environment to the
+   local CLI, ADR-046); the caller supplies `{ apiKey }` on every `generate()` / `runStructured()`
    call. `keyId`, when present, is captured onto `LlmCallRecord.authKeyId` for per-key attribution
    (ADR-026) — see item 9 below (`buildRecord`).
 

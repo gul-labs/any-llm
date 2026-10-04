@@ -126,6 +126,13 @@ the CLI's own documented settings for a subscription login: `CLAUDE_CONFIG_DIR`,
 `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/
 `_FOUNDRY` and everything else are dropped.
 
+The list does keep credentials: the library never interprets an environment credential,
+but `CLAUDE_CODE_OAUTH_TOKEN` and the mTLS variables `CLAUDE_CODE_CLIENT_CERT`,
+`CLAUDE_CODE_CLIENT_KEY` and `CLAUDE_CODE_CLIENT_KEY_PASSPHRASE` are forwarded from the
+host environment to the CLI, so a host that has them exported is using them (and a proxy
+URL in `HTTPS_PROXY` can carry credentials too). `env` adds to the copy and cannot remove
+from it: to keep the CLI off an ambient token, unset the variable before the call.
+
 `claudeCliAdapter({ env })` adds variables on top, and they win over the allowlisted
 ones. It is the one way to pass anything else on. Putting an API key there is the
 explicit opt-in: the call is then billed to it. `env` is validated at construction

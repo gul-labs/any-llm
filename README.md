@@ -169,7 +169,7 @@ async function generateWithFallback(messages: Message[], externalId: string) {
 
 ## Auth
 
-The library never reads credentials from the environment or any ambient source. There is no `envAuth()`, no `AuthProvider` port, and no client-level `auth` on `createClient`. Pass `auth` on every call:
+The library never reads credentials from the environment or any ambient source (one exception to know about: the CLI adapters' runners pass an allowlisted copy of the host environment to the local CLI, and that copy includes `CLAUDE_CODE_OAUTH_TOKEN` for `claude-cli`; see ADR-046 in [DECISIONS.md](./DECISIONS.md)). There is no `envAuth()`, no `AuthProvider` port, and no client-level `auth` on `createClient`. Pass `auth` on every call:
 
 ```ts no-check
 client.generate(request, { auth: { apiKey } })

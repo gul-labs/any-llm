@@ -13,7 +13,8 @@ forward-compatibility decisions that don't fit cleanly in either of the above.
 **P1 — The host owns the world; the library owns the contract.**
 Everything environmental (DB, logger, telemetry sink, clock, id generation, secrets) is a port
 the host implements. Credentials are no exception: the caller passes `auth` on every call; the
-library never reads from `process.env` or any ambient source. The core is pure and deterministic
+library never reads from `process.env` or any ambient source (the CLI runners' allowlist filter is the one
+read, and it forwards some ambient credentials to the CLI child; ADR-046). The core is pure and deterministic
 given its ports.
 
 **P2 — Typed core + raw passthrough + raw capture.**
@@ -65,7 +66,10 @@ providers with different config schemas.
 ## Auth and Credentials
 
 **No-ambient-reads invariant.** The library never reads credentials from `process.env`, a
-credentials file, an instance metadata service, or any other ambient source. There is no
+credentials file, an instance metadata service, or any other ambient source. The CLI adapters are the one
+exception to state: their runners forward an allowlisted copy of the host environment to the local CLI, which
+includes `CLAUDE_CODE_OAUTH_TOKEN` and the `CLAUDE_CODE_CLIENT_*` variables for `claude-cli` (ADR-046); the
+library interprets none of them. There is no
 `envAuth()` helper and no `AuthProvider` port. The `AuthMaterial` type is
 `{ apiKey: string, keyId?: string }` (plus the `{ cliSession: true }` variant below).
 
@@ -364,7 +368,8 @@ type AuthMaterial = { apiKey: string; keyId?: string } | { cliSession: true }
 This is the union anticipated by the "Additional providers" planned seam (see above), realized
 here instead of for OAuth/bearer tokens. It preserves P1: the caller still declares auth
 explicitly on every call, and the library still never reads `process.env` or a keychain — the
-CLI binary owns and resolves its own credentials out of band. The Google adapter narrows to
+CLI binary owns and resolves its own credentials out of band (its runner forwards an allowlisted copy of
+the host environment, ambient `CLAUDE_CODE_OAUTH_TOKEN` included; ADR-046). The Google adapter narrows to
 `{ apiKey }` and throws `invalid_auth` if absent; the CLI adapters narrow to `{ cliSession: true }`
 and throw `invalid_auth` (with a message pointing at the CLI login command) otherwise.
 

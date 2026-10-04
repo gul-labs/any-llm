@@ -42,6 +42,29 @@ describe('buildChildEnv', () => {
     expect(buildChildEnv({ Path: 'x' }, undefined, false)).toEqual({})
   })
 
+  it('a host name replaces the inherited one whatever its case on Windows, and only there', () => {
+    // The OS passes the child the first match, so a leftover `PATH` would win over `Path`.
+    expect(
+      buildChildEnv(
+        { PATH: 'C:\\inherited', SystemRoot: 'C:\\Windows' },
+        { Path: 'C:\\host' },
+        true,
+      ),
+    ).toEqual({ SystemRoot: 'C:\\Windows', Path: 'C:\\host' })
+    expect(
+      buildChildEnv(
+        { Path: 'C:\\inherited', PATH: 'C:\\other' },
+        { pAtH: 'C:\\host' },
+        true,
+      ),
+    ).toEqual({ pAtH: 'C:\\host' })
+    // Elsewhere names are case-sensitive: both spellings stay.
+    expect(buildChildEnv({ PATH: '/inherited' }, { Path: '/host' }, false)).toEqual({
+      PATH: '/inherited',
+      Path: '/host',
+    })
+  })
+
   it('does not read undefined entries', () => {
     expect(buildChildEnv({ PATH: undefined }, undefined, false)).toEqual({})
   })
