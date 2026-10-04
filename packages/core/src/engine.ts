@@ -543,6 +543,14 @@ const EMPTY_USAGE: Usage = {
 // ---------------------------------------------------------------------------
 
 /**
+ * Microtask turns the engine waits, after a timeout or abort won the race over a
+ * dispatched adapter call, for the adapter's own failure (see the attempt's
+ * catch block). An adapter that unwinds from the abort signal in microtasks
+ * (a stream reader rejecting, a few `await`s) settles well inside this.
+ */
+const LATE_ADAPTER_FAILURE_TURNS = 64
+
+/**
  * Whether a failed attempt that reported no usage is known to have cost nothing.
  *
  * True when nothing was dispatched (the attempt ended while it still waited for
@@ -2283,6 +2291,9 @@ export function createClient(config: ClientConfig): Client {
       let release: Release | undefined
       let queueDelayMs: number | undefined
       let dispatchStartMs: number | undefined
+      // The adapter call, once dispatched: a timeout or abort that wins the race
+      // leaves it running with the abort signal just delivered.
+      let dispatchedRun: Promise<AdapterResult> | undefined
       let payloadPlan: ReturnType<typeof planPayload>
       // Set while this attempt holds the once-per-client shutdown advisory.
       let reservedAdvisoryKey: string | undefined
@@ -2406,6 +2417,7 @@ export function createClient(config: ClientConfig): Client {
         // Step 7: Run adapter — raced against all cancellation promises.
         dispatchStartMs = ctx.clock.now()
         const runPromise = adapter.run(adapterReq, adapterCtx)
+        dispatchedRun = runPromise
         const adapterResult =
           raceParts.length > 0
             ? await Promise.race([runPromise, ...raceParts])
@@ -2628,6 +2640,48 @@ export function createClient(config: ClientConfig): Client {
         // adapter that throws the signal's own abort reason (a DOMException, a
         // host cancellation error) is an abort, with that reason kept as cause.
         const err = classifyThrown(rawErr, ctx.signal, deadline.ownReason())
+        // A timeout or abort that won the race over a dispatched adapter call
+        // ends the attempt before the adapter has seen the signal. A few
+        // microtask turns later the adapter's own failure is in, and when it
+        // carries the usage of what the provider did before it stopped (an
+        // estimate for a stream cut mid-answer), the attempt keeps that usage
+        // instead of booking an unpriced attempt. The cancellation error stays
+        // the error: only the usage and served tier are adopted. Only
+        // microtasks are awaited (no timer, so a fake clock cannot stall it): an
+        // adapter that needs I/O to wind down after the abort is not waited for.
+        if (
+          err.usage === undefined &&
+          dispatchedRun !== undefined &&
+          (err.kind === 'timeout' || err.kind === 'aborted')
+        ) {
+          const lateRun: { settled: boolean; failure?: unknown } = { settled: false }
+          dispatchedRun.then(
+            () => {
+              lateRun.settled = true
+            },
+            (lateErr: unknown) => {
+              lateRun.settled = true
+              lateRun.failure = lateErr
+            },
+          )
+          for (
+            let turn = 0;
+            turn < LATE_ADAPTER_FAILURE_TURNS && !lateRun.settled;
+            turn += 1
+          ) {
+            await Promise.resolve()
+          }
+          const late = lateRun.failure
+          if (late instanceof LlmError && late !== err && late.usage !== undefined) {
+            const owned = err as { usage?: Usage; servedServiceTier?: string }
+            owned.usage = late.usage
+            if (
+              err.servedServiceTier === undefined &&
+              late.servedServiceTier !== undefined
+            )
+              owned.servedServiceTier = late.servedServiceTier
+          }
+        }
 
         // Some providers return a billed HTTP 200 with no usable output. Keep
         // that attempt's usage and snapshot cost even though it is retryable.

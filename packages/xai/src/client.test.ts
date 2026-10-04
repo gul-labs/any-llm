@@ -371,6 +371,7 @@ describe('buildXaiClient — response metadata (real SDK, stubbed fetch)', () =>
           'x-ratelimit-remaining-requests': '99',
           'x-ratelimit-remaining-tokens': '149000',
         },
+        streamProgressed: false,
       },
     ])
   })
@@ -379,7 +380,7 @@ describe('buildXaiClient — response metadata (real SDK, stubbed fetch)', () =>
     const client = await buildXaiClient(AUTH, withHeaders({}))
     const seen: unknown[] = []
     await client.responses.create(PARAMS, { onResponse: (meta) => seen.push(meta) })
-    expect(seen).toEqual([{}])
+    expect(seen).toEqual([{ streamProgressed: false }])
   })
 
   it('does not send onResponse to the SDK as a request option', async () => {

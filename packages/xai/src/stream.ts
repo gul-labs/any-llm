@@ -54,8 +54,16 @@ export type XaiStreamFailure =
   | { kind: 'idle'; idleTimeoutMs: number }
   /** The connection failed after output began; `cause` is the transport error. */
   | { kind: 'cut'; detail: string }
-  /** `transport.fetch` answered 200 with a body that is not an event stream. */
-  | { kind: 'not_event_stream'; contentType: string }
+  /**
+   * The engine's deadline or the caller's signal stopped the call after output
+   * began; `cause` is the abort reason.
+   */
+  | { kind: 'aborted' }
+  /**
+   * `transport.fetch` answered 200 with a body that is not an event stream.
+   * `bodySnippet` is the first 500 characters of that body, secrets redacted.
+   */
+  | { kind: 'not_event_stream'; contentType: string; bodySnippet?: string }
 
 /**
  * What a stream had delivered when it failed. Output events mean the model was
@@ -120,6 +128,10 @@ function describeFailure(failure: XaiStreamFailure, cause: unknown): string {
       return `xAI stream is malformed: ${failure.detail}`
     case 'deadline':
       return `the stream was still open after the ${failure.timeoutMs} ms request timeout`
+    case 'aborted':
+      return `xAI stream was stopped after output began${
+        cause instanceof Error ? `: ${cause.message}` : ''
+      }`
     case 'idle':
       return `the stream sent no bytes (heartbeats included) for ${failure.idleTimeoutMs} ms`
     case 'cut':
@@ -186,6 +198,12 @@ export interface ReducedXaiStream {
   response: XaiResponseShape
   /** Diagnostics for what reconciliation did; empty when events and final agree. */
   notes: string[]
+  /**
+   * True when output events arrived before the terminal event (the terminal
+   * event itself does not count). A `response.failed` after output began is
+   * not retried: the run already spent tokens.
+   */
+  outputBegan: boolean
 }
 
 const TERMINAL_EVENTS = new Set([
@@ -193,6 +211,21 @@ const TERMINAL_EVENTS = new Set([
   'response.incomplete',
   'response.failed',
 ])
+
+/**
+ * The largest event index (`output_index`, `content_index`, `summary_index`,
+ * `annotation_index`) the reducer accepts. Real responses have a handful of items
+ * and parts; an index beyond this is a broken or hostile upstream, and writing
+ * it would make a sparse list millions of entries long.
+ */
+const MAX_STREAM_INDEX = 10_000
+
+/** A string field of an `error` event: at its top level, else in a nested `error` object. */
+function errorField(event: PlainRecord, name: string): string | undefined {
+  const nested = isRecord(event['error']) ? event['error'] : undefined
+  const value = event[name] ?? nested?.[name]
+  return typeof value === 'string' ? value : undefined
+}
 
 /** Item types whose content the adapter reads; a divergence in one is reported. */
 const CONSUMED_ITEM_TYPES = new Set(['message', 'reasoning', 'function_call'])
@@ -271,13 +304,8 @@ export class XaiStreamReducer {
     if (isRecord(parsed) && typeof parsed['type'] !== 'string') {
       // An `event: error` frame, or a payload that is only an error object, is
       // the stream's error event; anything else typeless is not an event.
-      const nested = isRecord(parsed['error']) ? parsed['error'] : undefined
-      if (frame.event === 'error' || nested !== undefined) {
-        const pick = (name: string): string | undefined => {
-          const value = parsed[name] ?? nested?.[name]
-          return typeof value === 'string' ? value : undefined
-        }
-        return this.push({ type: 'error', code: pick('code'), message: pick('message') })
+      if (frame.event === 'error' || isRecord(parsed['error'])) {
+        return this.push({ ...parsed, type: 'error' })
       }
     }
     return this.push(parsed)
@@ -314,22 +342,20 @@ export class XaiStreamReducer {
         throw new XaiStreamError(
           {
             kind: 'error_event',
-            code: typeof event['code'] === 'string' ? event['code'] : undefined,
-            message: typeof event['message'] === 'string' ? event['message'] : undefined,
+            code: errorField(event, 'code'),
+            message: errorField(event, 'message'),
           },
           this.context(),
         )
       case 'response.output_item.added':
       case 'response.output_item.done': {
-        const index = event['output_index']
+        const rawIndex = event['output_index']
+        const index =
+          typeof rawIndex === 'number' && Number.isInteger(rawIndex) && rawIndex >= 0
+            ? this.index(rawIndex, 'output_index')
+            : undefined
         const item = event['item']
-        if (
-          typeof index !== 'number' ||
-          !Number.isInteger(index) ||
-          index < 0 ||
-          !isRecord(item) ||
-          typeof item['type'] !== 'string'
-        ) {
+        if (index === undefined || !isRecord(item) || typeof item['type'] !== 'string') {
           this.skipped.push(`a ${type} event with no integer output_index or typed item`)
           return false
         }
@@ -340,6 +366,29 @@ export class XaiStreamReducer {
         this.applyDelta(type, event)
         return false
     }
+  }
+
+  /**
+   * An event index, or `undefined` when the event has none or it is not a
+   * non-negative integer (the event is then skipped, noted). An index above
+   * {@link MAX_STREAM_INDEX} is a malformed stream, not a value to write.
+   */
+  private index(value: unknown, name: string): number | undefined {
+    if (typeof value !== 'number') return undefined
+    if (!Number.isInteger(value) || value < 0) {
+      this.skipped.push(`an event whose ${name} is not a non-negative integer`)
+      return undefined
+    }
+    if (value > MAX_STREAM_INDEX) {
+      throw new XaiStreamError(
+        {
+          kind: 'malformed',
+          detail: `${name} ${value} is above the ${MAX_STREAM_INDEX} this client accepts`,
+        },
+        this.context(),
+      )
+    }
+    return value
   }
 
   /** The error for a stream that ended without a terminal event. */
@@ -388,6 +437,7 @@ export class XaiStreamReducer {
           status: status === 'failed' || status === 'cancelled' ? status : 'failed',
         } as unknown as XaiResponseShape,
         notes: [],
+        outputBegan: this.progressed,
       }
     }
     // Likewise `response.incomplete` is an incomplete response whatever its object says.
@@ -397,6 +447,7 @@ export class XaiStreamReducer {
     return {
       response: { ...response, status, output } as unknown as XaiResponseShape,
       notes: [...this.skippedNotes(), ...notes],
+      outputBegan: this.progressed,
     }
   }
 
@@ -421,8 +472,8 @@ export class XaiStreamReducer {
     )
     if (entry === undefined) return
     const item = entry.item
-    const contentIndex = event['content_index']
-    const summaryIndex = event['summary_index']
+    const contentIndex = this.index(event['content_index'], 'content_index')
+    const summaryIndex = this.index(event['summary_index'], 'summary_index')
     const textAt = (
       list: unknown,
       index: unknown,
@@ -469,8 +520,8 @@ export class XaiStreamReducer {
       case 'response.output_text.annotation.added': {
         const part = textAt(content(), contentIndex, { type: 'output_text', text: '' })
         if (!Array.isArray(part['annotations'])) part['annotations'] = []
-        const index = event['annotation_index']
-        if (typeof index === 'number' && event['annotation'] !== undefined) {
+        const index = this.index(event['annotation_index'], 'annotation_index')
+        if (index !== undefined && event['annotation'] !== undefined) {
           ;(part['annotations'] as unknown[])[index] = clone(event['annotation'])
         }
         return

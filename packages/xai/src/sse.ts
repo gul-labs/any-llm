@@ -25,8 +25,8 @@ export interface SseReadOptions {
   /** Called once for every chunk of bytes read, before it is parsed. */
   onChunk?: () => void
   /**
-   * Rejects when the request is aborted. Raced against every read so a body that
-   * does not itself react to the abort cannot hold the call open.
+   * Rejects when the request is aborted. Every read waits on it too, so a body
+   * that does not itself react to the abort cannot hold the call open.
    */
   aborted?: Promise<never>
 }
@@ -34,6 +34,10 @@ export interface SseReadOptions {
 /**
  * Reads `body` to its end, yielding each dispatched frame. Cancels the body when
  * the consumer stops early or the read fails.
+ *
+ * Linear in the bytes read: only each new chunk is scanned for line ends, and the
+ * pieces of a line still open are joined once when it ends, so one event of many
+ * megabytes in small chunks costs no more than the same bytes in few.
  */
 export async function* readSseFrames(
   body: ReadableStream<Uint8Array>,
@@ -41,7 +45,10 @@ export async function* readSseFrames(
 ): AsyncGenerator<SseFrame, void, undefined> {
   const reader = body.getReader()
   const decoder = new TextDecoder('utf-8')
-  let buffer = ''
+  /** The pieces of the line still open (no line end seen yet). */
+  let pieces: string[] = []
+  /** The last chunk ended with CR: a LF opening the next chunk is the same line end. */
+  let skipLf = false
   let event: string | undefined
   let data: string[] = []
   let first = true
@@ -55,25 +62,57 @@ export async function* readSseFrames(
     if (name === 'event') event = value
     else if (name === 'data') data.push(value)
   }
+  // One reaction on `aborted` for the whole read, not one per chunk.
+  const abort: { happened: boolean; error: Error } = {
+    happened: false,
+    error: new Error('aborted'),
+  }
+  let wake: ((error: unknown) => void) | undefined
+  options.aborted?.catch((error: unknown) => {
+    abort.happened = true
+    abort.error = error instanceof Error ? error : new Error(String(error))
+    wake?.(error)
+  })
+  const nextChunk = (): Promise<
+    Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>['read']>>
+  > => {
+    if (abort.happened) return Promise.reject(abort.error)
+    return new Promise((resolve, reject) => {
+      wake = reject
+      reader.read().then(resolve, reject)
+    })
+  }
   try {
     for (;;) {
-      const read = reader.read()
-      const result = await (options.aborted === undefined
-        ? read
-        : Promise.race([read, options.aborted]))
+      const result = await nextChunk()
       if (!result.done) options.onChunk?.()
-      buffer += result.done
+      let text = result.done
         ? decoder.decode()
         : decoder.decode(result.value, { stream: true })
-      if (first && buffer.length > 0) {
-        buffer = buffer.replace(/^\uFEFF/, '')
+      if (first && text.length > 0) {
+        text = text.replace(/^\uFEFF/, '')
         first = false
       }
-      // A CR that ends the buffer may be the first half of a CRLF: hold it back.
-      const hold = !result.done && buffer.endsWith('\r') ? '\r' : ''
-      const lines = buffer.slice(0, buffer.length - hold.length).split(/\r\n|\n|\r/)
-      buffer = (lines.pop() ?? '') + hold
-      for (const line of lines) {
+      let start = 0
+      if (skipLf && text.length > 0) {
+        skipLf = false
+        if (text.charCodeAt(0) === 0x0a) start = 1
+      }
+      const lineEnd = /[\r\n]/g
+      lineEnd.lastIndex = start
+      for (let end = lineEnd.exec(text); end !== null; end = lineEnd.exec(text)) {
+        pieces.push(text.slice(start, end.index))
+        const line = pieces.length === 1 ? (pieces[0] as string) : pieces.join('')
+        pieces = []
+        start = end.index + 1
+        if (text.charCodeAt(end.index) === 0x0d) {
+          if (start < text.length) {
+            if (text.charCodeAt(start) === 0x0a) start += 1
+          } else if (!result.done) {
+            skipLf = true
+          }
+        }
+        lineEnd.lastIndex = start
         if (line !== '') {
           field(line)
         } else {
@@ -84,11 +123,13 @@ export async function* readSseFrames(
           data = []
         }
       }
+      if (start < text.length) pieces.push(text.slice(start))
       // A frame still open when the body ends was cut off and is dropped, as the
       // EventSource specification says: it never reached its blank line.
       if (result.done) return
     }
   } finally {
+    wake = undefined
     // Release the connection whether the consumer finished, stopped or failed.
     reader.cancel().catch(() => undefined)
   }

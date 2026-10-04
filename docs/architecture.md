@@ -238,6 +238,10 @@ attempt. Steps:
 
 5. **Adapter invocation.** `adapter.run(resolvedReq, adapterCtx)` is raced against the
    cancellation promises. The adapter receives the merged abort signal (caller + timeout).
+   When a timeout or abort wins the race, the engine waits up to 64 microtask turns for the
+   adapter's own failure and, if it carries `usage` (an estimate for a stream cut mid-answer),
+   adopts that usage and `servedServiceTier` onto the cancellation error; the cancellation
+   error stays the error.
 
 6. **Usage normalization.** `normalizeUsage(adapterResult.usage)` enforces the GROSS token
    convention: clamps `cachedInputTokens ≤ inputTokens` and `thinkingTokens ≤ outputTokens`;
@@ -711,8 +715,8 @@ them with the final response object (which a live capture showed can omit the `r
 the request deadline (`timeoutMs + 5 000 ms`, or one hour) to the whole stream, because the SDK `timeout`
 alone covers only the wait for headers; `transport.idleTimeoutMs` (off by default) ends a stream that sends
 no bytes at all. A stream that fails before any output event is a retryable `server` error with no usage (an
-unpriced attempt); one that fails after output began is never retried and carries a lower-bound usage
-estimate priced `'estimated'` (ADR-040 Amendment A). Search budgets stay observed after the call.
+unpriced attempt); one that fails after output began is never retried and carries a usage
+estimate priced `'estimated'` (ADR-040 Amendments A and B). Search budgets stay observed after the call.
 
 ---
 

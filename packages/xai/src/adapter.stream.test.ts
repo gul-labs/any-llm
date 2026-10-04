@@ -1137,7 +1137,7 @@ describe('idleTimeoutMs bounds a half-open connection (P2-5)', () => {
       (e: unknown) => e,
     )
     expect(Date.now() - started).toBeGreaterThanOrEqual(200)
-    expect(classifyXaiError(err).message).toContain('SDK deadline')
+    expect(classifyXaiError(err).message).toContain('client deadline')
   })
 
   it('is off by default: a silent stream is bounded by the deadline alone', async () => {
@@ -1149,7 +1149,7 @@ describe('idleTimeoutMs bounds a half-open connection (P2-5)', () => {
       () => undefined,
       (e: unknown) => e,
     )
-    expect(classifyXaiError(err).message).toContain('SDK deadline')
+    expect(classifyXaiError(err).message).toContain('client deadline')
   })
 
   it('after output the idle error carries the usage estimate', async () => {
@@ -1355,7 +1355,7 @@ describe('the SDK timeout and the caller signal on a stream', () => {
       reason: 'transport_timeout',
       provider: 'xai',
     })
-    expect(classified.message).toContain('SDK deadline')
+    expect(classified.message).toContain('client deadline')
     expect(classified.message).toContain('60 ms')
   })
 

@@ -174,7 +174,7 @@ export interface Usage {
 //                         is unpriced (ADR-044), else absent
 //   search_budget_exceeded  1 when an xAI `searchBudget` ceiling was exceeded (reported after the call), else absent
 //   usage_estimated       1 on the usage an xAI adapter ESTIMATED for a stream that failed after output began
-//                         (a lower bound, priced 'estimated'; ADR-040 Amendment A), else absent
+//                         (an estimate, priced 'estimated'; ADR-040 Amendments A and B), else absent
 // `normalizeUsage` also warns, and the engine reports the cost as 'estimated', when totalTokens
 // is larger than inputTokens + outputTokens (the provider counted tokens the fields omit).
 
@@ -586,10 +586,12 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
   call is answered). A stream that fails BEFORE any output event (a dropped connection, an empty body) is a
   retryable `server` error with no usage (an unpriced attempt); one that fails AFTER output began (a cut, an
   early end, a malformed body, an `error` event) is never retried (`retryable: false`) and carries a
-  lower-bound usage ESTIMATE (`usage.details.usage_estimated`, priced `'estimated'`); an `error` event sets
-  `mayHaveBilled`, so even `rate_limited` / `bad_request` is an unpriced attempt, not known-free; `error`
-  events and `response.failed` classify through the `error.code` table (`rate_limit_exceeded` mid-stream is
-  not retried). `transport.fetch` must return the request's `text/event-stream` response (a buffered JSON
+  usage ESTIMATE (the whole wire input over 4, replayed state included, plus received output over 4;
+  `usage.details.usage_estimated`, priced `'estimated'`; it also rides on an engine deadline or caller abort
+  after output began, ADR-040 Amendment B); an `error` event and a `response.failed` set `mayHaveBilled`, so
+  even `rate_limited` / `bad_request` is an unpriced attempt, not known-free, and a `response.failed` after
+  output is never retried; `error` events and `response.failed` classify through the `error.code` table
+  (`rate_limit_exceeded` mid-stream is not retried). `transport.fetch` must return the request's `text/event-stream` response (a buffered JSON
   body is a non-retryable `bad_request`). Each call has a whole-call deadline of
   `timeoutMs + 5 000`, or one hour when `timeoutMs` is unset: the SDK `timeout` for the header wait and
   the client's own timer for the rest of the stream (the SDK `timeout` alone does not bound a stream).

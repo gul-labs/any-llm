@@ -9,7 +9,7 @@
  * @module
  */
 
-import { LlmError } from '@gullabs/core'
+import { LlmError, redactSecrets } from '@gullabs/core'
 import type { AuthMaterial } from '@gullabs/core'
 import { readSseFrames } from './sse.js'
 import { XaiStreamError, XaiStreamReducer } from './stream.js'
@@ -61,15 +61,13 @@ export interface XaiInputImagePart {
 }
 
 /**
- * A file attachment content item within an xAI Responses API input message.
- * Prefer `file_id` for private uploads (via {@link XaiFileStore}); `file_url`
- * is for publicly reachable documents. Attaching either implicitly enables
- * xAI's `attachment_search` agentic tool.
+ * A file attachment content item within an xAI Responses API input message:
+ * a private upload made through {@link XaiFileStore}. Attaching one implicitly
+ * enables xAI's `attachment_search` agentic tool.
  */
 export interface XaiInputFilePart {
   type: 'input_file'
-  file_id?: string
-  file_url?: string
+  file_id: string
 }
 
 /** Union of content-part shapes an input message may carry. */
@@ -114,9 +112,12 @@ export interface XaiReplayState {
  * conventions even though the live fixture's request-echo does not surface
  * them (only the schema is echoed back).
  */
-export type XaiTextFormat =
-  | { type: 'json_schema'; name: string; schema: unknown; strict: boolean }
-  | { type: 'text' }
+export interface XaiTextFormat {
+  type: 'json_schema'
+  name: string
+  schema: unknown
+  strict: boolean
+}
 
 /**
  * Parameters for `client.responses.create`.
@@ -311,6 +312,12 @@ export interface XaiResponseMeta {
    * adapter reports each as a warning.
    */
   streamNotes?: string[]
+  /**
+   * True when output events arrived before the response's terminal event. A
+   * `response.failed` after output began is not retried (the run already spent
+   * tokens). Set by the real client; absent from a fake one.
+   */
+  streamProgressed?: boolean
 }
 
 /** Per-request options the adapter passes to `responses.create`. */
@@ -364,10 +371,11 @@ export function readXaiResponseMeta(
  * Host-supplied HTTP transport for every `responses.create` call.
  *
  * Node's `fetch` enforces its own 300 s header and body timers, independent of
- * the SDK `timeout`. A non-streamed call that waits longer than that is killed
- * unless the host passes a `fetch` whose dispatcher raises those timers (for
- * example undici's `fetch` with `new Agent({ headersTimeout, bodyTimeout })`
- * in `fetchOptions.dispatcher`). See ADR-032 and the package README.
+ * the SDK `timeout`. A call whose response headers take longer than that (a
+ * tool-using call that streams nothing for minutes) is killed unless the host
+ * passes a `fetch` whose dispatcher raises those timers (for example undici's
+ * `fetch` with `new Agent({ headersTimeout, bodyTimeout })` in
+ * `fetchOptions.dispatcher`). See ADR-032 and the package README.
  *
  * `fetch` must return the request's own `text/event-stream` response: the call
  * always streams (ADR-040), and a `fetch` that buffers the answer into a JSON
@@ -514,6 +522,13 @@ export async function buildXaiClient(
           }
           return undefined
         }
+        /** Why the call stopped when it did not reach a terminal event, if known. */
+        const stopped = (): unknown => {
+          const ours = failure()
+          if (ours !== undefined) return ours
+          if (signal?.aborted === true) return abortFailure(signal, reducer)
+          return undefined
+        }
         try {
           const response = await send(
             { ...params, stream: true },
@@ -541,12 +556,6 @@ export async function buildXaiClient(
             }, idleTimeoutMs)
           }
           touch()
-          const contentType = response.headers.get('content-type')
-          if (contentType !== null && !/text\/event-stream/i.test(contentType)) {
-            void response.body?.cancel().catch(() => undefined)
-            throw new XaiStreamError({ kind: 'not_event_stream', contentType })
-          }
-          if (response.body === null) throw reducer.endedEarly()
           const aborted = new Promise<never>((_resolve, reject) => {
             const onAbort = (): void => {
               reject(new Error('aborted'))
@@ -555,6 +564,24 @@ export async function buildXaiClient(
             else controller.signal.addEventListener('abort', onAbort, { once: true })
           })
           aborted.catch(() => undefined)
+          const contentType = response.headers.get('content-type')
+          if (contentType !== null && !/text\/event-stream/i.test(contentType)) {
+            const bodySnippet = await readBodySnippet(response.body, aborted)
+            throw new XaiStreamError(
+              {
+                kind: 'not_event_stream',
+                contentType,
+                ...(bodySnippet !== undefined ? { bodySnippet } : {}),
+              },
+              {
+                cause: {
+                  contentType,
+                  ...(bodySnippet !== undefined ? { bodySnippet } : {}),
+                },
+              },
+            )
+          }
+          if (response.body === null) throw reducer.endedEarly()
           let terminal = false
           try {
             for await (const frame of readSseFrames(response.body, {
@@ -567,21 +594,18 @@ export async function buildXaiClient(
               }
             }
           } catch (err) {
-            const ours = failure()
-            if (ours !== undefined) throw ours
-            if (signal?.aborted === true) throw abortError(signal)
-            throw streamFailure(err, reducer)
+            const why: unknown = stopped() ?? streamFailure(err, reducer)
+            throw why
           }
           if (!terminal) {
-            const ours = failure()
-            if (ours !== undefined) throw ours
-            if (signal?.aborted === true) throw abortError(signal)
-            throw reducer.endedEarly()
+            const why: unknown = stopped() ?? reducer.endedEarly()
+            throw why
           }
-          const { response: reduced, notes } = reducer.result()
+          const { response: reduced, notes, outputBegan } = reducer.result()
           onResponse?.({
             ...readXaiResponseMeta(response.headers),
             ...(notes.length > 0 ? { streamNotes: notes } : {}),
+            streamProgressed: outputBegan,
           })
           return reduced
         } finally {
@@ -605,6 +629,53 @@ function abortError(signal: AbortSignal): unknown {
     name: 'AbortError',
     cause: reason,
   })
+}
+
+/**
+ * The failure of a call the engine's deadline or the caller's signal stopped
+ * while it streamed. Once output began it is an {@link XaiStreamError} of kind
+ * `aborted` carrying what was received (so the adapter can attach the usage
+ * ESTIMATE) with the abort reason as `cause`; before that it is the plain abort
+ * error, which carries no usage and is booked unpriced.
+ */
+function abortFailure(signal: AbortSignal, reducer: XaiStreamReducer): unknown {
+  if (!reducer.progress().progressed) return abortError(signal)
+  return new XaiStreamError(
+    { kind: 'aborted' },
+    { ...reducer.context(), cause: signal.reason },
+  )
+}
+
+/** Characters of an unexpected 200 body kept in the error's cause. */
+const BODY_SNIPPET_CHARS = 500
+
+/**
+ * The start of a body that was not an event stream, for the error's `cause`:
+ * at most {@link BODY_SNIPPET_CHARS} characters, secrets redacted. A body that
+ * will not read (aborted, reset) gives no snippet. Cancels the body.
+ */
+async function readBodySnippet(
+  body: ReadableStream<Uint8Array> | null,
+  aborted: Promise<never>,
+): Promise<string | undefined> {
+  if (body === null) return undefined
+  const reader = body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let text = ''
+  try {
+    while (text.length < 2 * BODY_SNIPPET_CHARS) {
+      const chunk = await Promise.race([reader.read(), aborted])
+      if (chunk.done) break
+      text += decoder.decode(chunk.value, { stream: true })
+    }
+  } catch {
+    // An unreadable body only loses the snippet.
+  } finally {
+    reader.cancel().catch(() => undefined)
+  }
+  // Redacted before it is cut, so a cut never leaves half a secret behind.
+  const snippet = redactSecrets(text).slice(0, BODY_SNIPPET_CHARS)
+  return snippet.length > 0 ? snippet : undefined
 }
 
 /**

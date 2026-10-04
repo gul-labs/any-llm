@@ -3581,6 +3581,46 @@ through the reducer, the real SDK and the adapter, including the request body an
 synthetic: error events, cuts and the idle case (injected through a stubbed `fetch`). Not measured: a tool
 call past 300 s, billing of a cut or aborted stream (P9b), and an `error` event's real shape.
 
+### Amendment B (2026-10-03, final audit): one policy for every way a started run can end
+
+A final audit of `@gullabs/xai` (each point reproduced against the real SDK with a stubbed `fetch`) found
+that the rules of Amendment A were applied to some endings of a started run and not to others. Decisions
+(they supersede Amendment A where they differ):
+
+1. **A terminal `response.failed` obeys point 2 and point 4.** It is not retried once output events arrived
+   before it (`retryable: mapped.retryable && !outputBegan`; before any output the code keeps its own
+   retryability), and a failed response is always `mayHaveBilled`: the provider had started work, so
+   `rate_limited` and `bad_request` codes without usage are an unpriced attempt, not known-free. The client
+   reports whether output began as `XaiResponseMeta.streamProgressed`.
+2. **An engine deadline or a caller abort keeps the estimate.** The client turns an abort that arrives after
+   output began into an `XaiStreamError` of kind `aborted` (the abort reason as `cause`); the adapter returns
+   an error with the reason's own kind and `reason` (an `LlmError` reason is copied, anything else is
+   `aborted`) carrying the usage estimate. Before any output the plain abort error is thrown, no usage, an
+   unpriced attempt, as before. The engine ends an attempt the moment its deadline or the caller's signal
+   wins the race, before the adapter has seen the signal, and used to discard the adapter's failure that
+   followed. **Core change:** after a timeout or abort wins over a dispatched adapter call, the engine waits
+   up to 64 microtask turns (no timer, so a fake clock cannot stall it) for the adapter's own failure and
+   adopts its `usage` and `servedServiceTier` onto the cancellation error, which stays the error. An adapter
+   that needs I/O to wind down is not waited for. Every adapter benefits; xAI is the first that returns
+   usage on an abort.
+3. **The estimate counts what was sent.** Input is the JSON length of the whole wire input over 4:
+   `input` (a replayed `'state'` history, every encrypted reasoning blob and search item, included),
+   `instructions`, `tools` and `text.format`. It replaces core's `estimateInputTokens(req)`, which counts only
+   the new messages and by contract not opaque state. Inline image data URLs count nothing. Limits, stated
+   on the estimate: hidden reasoning, tool fees and the provider's prompt overhead are not counted; cached
+   input is priced as uncached; characters per token varies with language and JSON syntax. It is the order of
+   magnitude of the spend, not a bill, and it is no longer called a lower bound.
+4. **Stream indices are bounded.** An `output_index`, `content_index`, `summary_index` or `annotation_index`
+   above 10,000 is a malformed stream (a typed non-retryable `server` error after output, with the estimate):
+   a single `content_index: 4000000000` made the reducer iterate a four-billion-entry sparse array for 91 s.
+   A negative or fractional index on a delta is skipped and noted. The SSE reader is linear in the bytes
+   (only new chunks are scanned; the pieces of an open line are joined once), and one listener serves every
+   read.
+5. **Smaller rules.** A typed `error` event with a nested `error` object keeps its code and message, like the
+   same body without a type. A 200 that is not an event stream carries up to 500 characters of the body,
+   secrets redacted, in the error's `cause`. The client's own whole-call timer reports "client deadline" and
+   the timeout the caller configured, not the SDK's timer and not the value plus the 5 s buffer.
+
 ---
 
 ## ADR-041: Quota windows, token pacing, the scheduler port and the test package

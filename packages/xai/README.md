@@ -444,21 +444,28 @@ that is not event JSON. Frames that are not events (a bare `event: keepalive`, `
 
 **A stream that fails after output began is not retried.** A reasoning call burns tokens before its first
 visible event, a retry repeats that spend and cannot resume it, and whether xAI bills a cut call is unknown.
-So a connection cut, a body that ends before the final event, a malformed body or a mid-stream `error` event
-that arrives after the first output event is a `server` (or the `error` code's kind) with `retryable: false`
-and the transport error as `cause`; Node's own timers keep their `timeout` kind. A failure before any output
-event (the connection dropped, an empty body) stays retryable. A mid-stream `rate_limit_exceeded` is never
-retried, and a mid-stream `error` event is never booked as known-free: unlike an HTTP 429 it arrives inside
-a run that started, so even `rate_limited` and `bad_request` count as an unpriced attempt
-(`callCost.unpricedAttempts`).
+So a connection cut, a body that ends before the final event, a malformed body, a mid-stream `error` event or
+a terminal `response.failed` that arrives after the first output event is a `server` (or the error code's
+kind) with `retryable: false` and the transport error as `cause`; Node's own timers keep their `timeout`
+kind. A failure before any output event (the connection dropped, an empty body) stays retryable, and so does
+a `response.failed` with a retryable code (`server_error`, `rate_limit_exceeded`) before any output. A
+mid-stream `rate_limit_exceeded` `error` event is never retried. A mid-stream `error` event and a
+`response.failed` are never booked as known-free: unlike an HTTP 429 they arrive inside a run that started,
+so even `rate_limited` and `bad_request` count as an unpriced attempt (`callCost.unpricedAttempts`).
 
-**The usage of a stream that failed after output began is an estimate.** The error carries a lower bound,
-not xAI's count: input is the request's length divided by 4, output is the characters of text, reasoning
-summary and arguments received divided by 4 (`usage.details.usage_estimated = 1`). The cost is priced
-`'estimated'`, never exact, and understates (hidden reasoning tokens, the provider's own prompt overhead and
-tool fees are not counted). Usage in a `response.created` / `response.in_progress` snapshot is never used (it
-was `null` in every capture). A failure before output carries no usage, so the engine counts that attempt as
-unpriced, not free. A failure after the final event carries the final usage, exact.
+**The usage of a stream that failed after output began is an estimate.** The error carries an estimate, not
+xAI's count: input is the length of the whole wire input divided by 4 (the replayed `'state'` history of a
+`grok-4.7` turn, `instructions`, tool declarations and the output schema included; image data counts
+nothing), output is the characters of text, reasoning summary and arguments received divided by 4
+(`usage.details.usage_estimated = 1`). The cost is priced `'estimated'`, never exact. Its limits: hidden
+reasoning tokens, the provider's own prompt overhead and tool fees are not counted (it usually understates);
+cached input is priced as uncached (it can overstate); characters per token varies with language and with
+JSON syntax. Read it as the order of magnitude of the spend. Usage in a `response.created` /
+`response.in_progress` snapshot is never used (it was `null` in every capture). A failure before output
+carries no usage, so the engine counts that attempt as unpriced, not free. A failure after the final event
+carries the final usage, exact. The estimate also rides on an engine `timeoutMs` deadline or a caller abort
+that stops a call after output began: the attempt is booked `'estimated'`, not unpriced (before any output it
+stays unpriced).
 
 ### Testing streamed calls
 

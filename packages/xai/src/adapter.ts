@@ -15,7 +15,6 @@ import {
   assertJsonSchemaProfile,
   assertInputMimeTypesAdmitted,
   assertModelMatchesDescriptor,
-  estimateInputTokens,
 } from '@gullabs/core'
 import type {
   ProviderAdapter,
@@ -818,18 +817,20 @@ function xaiTransportTimeoutKind(
  *
  * A streamed call that failed mid-stream arrives as an `XaiStreamError`; see
  * {@link classifyStreamError} (`estimatedInputTokens` is the request's input
- * estimate, used only for a failure after output began).
+ * estimate, used only for a failure after output began; `requestTimeoutMs` is
+ * the timeout the caller configured, quoted by the client-deadline message).
  */
 export function classifyXaiError(
   rawErr: unknown,
   deadline?: XaiSdkDeadline,
   estimatedInputTokens = 0,
+  requestTimeoutMs?: number,
 ): LlmError {
   if (rawErr instanceof LlmError) {
     return rawErr
   }
   if (rawErr instanceof XaiStreamError) {
-    return classifyStreamError(rawErr, estimatedInputTokens)
+    return classifyStreamError(rawErr, estimatedInputTokens, requestTimeoutMs)
   }
 
   const base = classifyError(rawErr)
@@ -952,12 +953,17 @@ function classifyFailedResponseCode(
 }
 
 /**
- * The lower-bound usage of a stream that failed after output began, as an
- * ESTIMATE (ADR-040 Amendment A): input is the request's length over 4, output
- * is the characters received over 4. Hidden reasoning tokens, tool fees and the
- * provider's own prompt overhead are not counted, so the real spend is higher.
- * The `usage_estimated` detail makes the pricing source report the cost as
- * `'estimated'`; no `cost_in_usd_ticks` is ever attached.
+ * The usage of a stream that failed after output began, as an ESTIMATE (ADR-040
+ * Amendment A): input is the length of the wire input over 4
+ * ({@link estimateWireInputTokens}), output is the characters received over 4.
+ * Its limits: hidden reasoning tokens, tool fees and the provider's own prompt
+ * overhead are not counted, so the real spend is usually higher; cached input is
+ * not known, so cached tokens are priced as uncached, which is higher than the
+ * bill; image and file inputs carry no text and count nothing; characters per
+ * token is a rule of thumb that varies with language and with the JSON syntax of
+ * replayed state. Treat it as the order of magnitude of what was spent, never as
+ * a bill. The `usage_estimated` detail makes the pricing source report the cost
+ * as `'estimated'`; no `cost_in_usd_ticks` is ever attached.
  */
 function estimatedStreamUsage(outputChars: number, inputTokens: number): Usage {
   const outputTokens = Math.ceil(outputChars / 4)
@@ -968,7 +974,7 @@ function estimatedStreamUsage(outputChars: number, inputTokens: number): Usage {
     raw: {
       estimated: true,
       basis:
-        'lower bound: request length / 4 for input, received output characters / 4 for output',
+        'estimate: wire input characters / 4 for input (replayed state included, media not counted), received output characters / 4 for output; hidden reasoning is not counted',
       outputChars,
     },
   }
@@ -991,6 +997,7 @@ function estimatedStreamUsage(outputChars: number, inputTokens: number): Usage {
 function classifyStreamError(
   err: XaiStreamError,
   estimatedInputTokens: number,
+  requestTimeoutMs: number | undefined,
 ): LlmError {
   const failure = err.failure
   const { progressed, outputChars } = err.progress
@@ -1033,13 +1040,39 @@ function classifyStreamError(
         : new LlmError(err.message, { kind: 'server', retryable: false, ...common })
     }
     case 'deadline':
-      // The same limit again, the same spend again.
-      return new LlmError(`xAI request hit the SDK deadline: ${err.message}`, {
-        kind: 'timeout',
-        retryable: false,
-        reason: 'transport_timeout',
-        ...common,
-      })
+      // The same limit again, the same spend again. The client's own timer, set
+      // a buffer past the configured timeout so the engine's deadline fires
+      // first; the message quotes the configured value.
+      return new LlmError(
+        `xAI request hit the client deadline: the stream was still open after the ${
+          requestTimeoutMs ?? failure.timeoutMs
+        } ms request timeout`,
+        {
+          kind: 'timeout',
+          retryable: false,
+          reason: 'transport_timeout',
+          ...common,
+        },
+      )
+    case 'aborted': {
+      // The engine's deadline or the caller stopped a call that was generating:
+      // the abort reason keeps its kind, the estimate rides along.
+      const reason: unknown = err.cause
+      return reason instanceof LlmError
+        ? new LlmError(reason.message, {
+            kind: reason.kind,
+            retryable: reason.retryable,
+            ...(reason.reason !== undefined ? { reason: reason.reason } : {}),
+            ...common,
+            cause: reason,
+          })
+        : new LlmError('Request aborted by caller', {
+            kind: 'aborted',
+            retryable: false,
+            ...common,
+            cause: reason ?? err,
+          })
+    }
     case 'idle':
       return new LlmError(`xAI request hit the idle timeout: ${err.message}`, {
         kind: 'timeout',
@@ -1071,8 +1104,19 @@ function classifyStreamError(
   }
 }
 
-/** The error for a response with `status` `failed` or `cancelled` (see step 6b). */
-function failedResponseError(response: XaiResponseShape): LlmError {
+/**
+ * The error for a response with `status` `failed` or `cancelled` (see step 6b).
+ *
+ * `streamProgressed` is true when output events arrived before the failure: the
+ * run already spent tokens, so a retry would repeat that spend and it is not
+ * retried, whatever the code (the policy of an `error` event). A failed response
+ * is always `mayHaveBilled`: the provider had accepted the request and started
+ * work, so a `rate_limited` or `bad_request` code without usage is not known-free.
+ */
+function failedResponseError(
+  response: XaiResponseShape,
+  streamProgressed: boolean,
+): LlmError {
   const reported = isPlainRecord(response.error) ? response.error : undefined
   const code = typeof reported?.['code'] === 'string' ? reported['code'] : undefined
   const detail =
@@ -1087,7 +1131,8 @@ function failedResponseError(response: XaiResponseShape): LlmError {
       : `xAI response failed${code !== undefined ? ` (error.code "${code}")` : ''}${detail}`,
     {
       kind,
-      retryable,
+      retryable: retryable && !streamProgressed,
+      mayHaveBilled: true,
       provider: 'xai',
       // Usage is attached only when the failed response billed tokens.
       ...(isPlainRecord(response.usage) &&
@@ -1101,6 +1146,36 @@ function failedResponseError(response: XaiResponseShape): LlmError {
       cause: response.error ?? { status: response.status },
     },
   )
+}
+
+/**
+ * Input tokens of the request body as the failure estimate counts them: the
+ * JSON length of everything the provider reads as text (`input` with any replayed
+ * `'state'` history, `instructions`, `tools`, `text.format`) over 4, rounded up.
+ * The request's own new messages are not enough: on `continuation: 'state'` the
+ * whole history, every encrypted reasoning blob and search item, is sent again
+ * and billed as input. Inline image data URLs are not counted (they are not text).
+ * See {@link estimatedStreamUsage} for the estimate's limits.
+ */
+function estimateWireInputTokens(params: XaiResponseCreateParams): number {
+  const withoutImageBytes = (key: string, value: unknown): unknown =>
+    key === 'image_url' && typeof value === 'string' && value.startsWith('data:')
+      ? ''
+      : value
+  try {
+    const wire = JSON.stringify(
+      {
+        input: params.input,
+        instructions: params.instructions,
+        tools: params.tools,
+        text: params.text,
+      },
+      withoutImageBytes,
+    )
+    return Math.ceil(wire.length / 4)
+  } catch {
+    return 0
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1635,7 +1710,8 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
                 elapsedMs: performance.now() - sdkCallStart.startedAt,
               }
             : undefined,
-          estimateInputTokens(req),
+          estimateWireInputTokens(params),
+          genConfig.timeoutMs ?? XAI_DEFAULT_TIMEOUT_MS,
         )
       }
 
@@ -1650,7 +1726,7 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       //     a billed, usable answer is never thrown away for it.
       // ------------------------------------------------------------------
       if (response.status === 'failed' || response.status === 'cancelled') {
-        throw failedResponseError(response)
+        throw failedResponseError(response, responseMeta?.streamProgressed === true)
       }
       // A terminal response that carries no token counts cannot be priced or
       // mapped. It is billed, so the attempt is unpriced and a retry would
