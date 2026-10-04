@@ -21,3 +21,7 @@ This repository is public. Plans, probe output, and notes that name a host
 project, a customer, production data, or local paths go in `.private/`
 (gitignored), never under `docs/`. Public design records (`DECISIONS.md`,
 `SPEC.md`, `docs/`) describe hosts generically.
+
+## No live Gemini / Google API calls
+
+Do not make live calls to the Gemini / Google generative-AI API from this repository's scripts, tests, probes or agents. The only exception is a call made with a free-tier API key on a model the free tier allows (check Google's pricing and rate-limits pages first); never use a key attached to a billing account. Use pinned fixtures, stubbed-`fetch` tests and public documentation instead. When briefing a subagent, include this rule.
