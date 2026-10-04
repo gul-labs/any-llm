@@ -446,7 +446,7 @@ describe('retention and deletion', () => {
     await expect(assertLlmCallPayloadsSchema(db)).resolves.toBeUndefined()
     await pg.exec(`DROP TABLE llm_call_payloads`)
     await expect(assertLlmCallPayloadsSchema(db)).rejects.toThrow(
-      /0003-llm-call-payloads\.sql/,
+      /0004-llm-call-payloads\.sql/,
     )
   })
 

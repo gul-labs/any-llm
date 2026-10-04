@@ -1,17 +1,11 @@
 import { inArray, sql } from 'drizzle-orm'
 import { LlmError } from '@gullabs/core'
 import { llmCallPayloads, llmCalls } from './schema.js'
+import { resultRows } from './sink.js'
 import type { PostgresDb } from './sink.js'
-import type { SelectableDb } from './sink.js'
 
 /** Rows per `DELETE` statement of {@link purgeLlmCallPayloads}. */
 const DEFAULT_PURGE_BATCH = 5000
-
-/** Rows of a statement result, whichever shape the driver returns. */
-function resultRows(result: unknown): Array<Record<string, unknown>> {
-  if (Array.isArray(result)) return result as Array<Record<string, unknown>>
-  return ((result as { rows?: unknown }).rows ?? []) as Array<Record<string, unknown>>
-}
 
 /**
  * Deletes every stored payload written before `olderThan`, in bounded batches,
@@ -59,7 +53,7 @@ export async function purgeLlmCallPayloads(
       WITH batch AS (
         SELECT ${llmCallPayloads.attemptId} AS attempt_id
           FROM ${llmCallPayloads}
-         WHERE ${llmCallPayloads.createdAt} < ${olderThan}
+         WHERE ${llmCallPayloads.createdAt} < ${olderThan.toISOString()}::timestamptz
          LIMIT ${batchSize}
       ), gone AS (
         DELETE FROM ${llmCallPayloads}
@@ -144,13 +138,13 @@ export async function deleteLlmCallPayloads(
  *
  * @throws Error when the select fails; the message points at `sql/upgrades/`.
  */
-export async function assertLlmCallPayloadsSchema(db: SelectableDb): Promise<void> {
+export async function assertLlmCallPayloadsSchema(db: PostgresDb): Promise<void> {
   try {
     await db.select().from(llmCallPayloads).limit(0)
   } catch (cause) {
     throw new Error(
       'llm_call_payloads could not be read with every column @gullabs/drizzle writes. ' +
-        'Apply @gullabs/drizzle/sql/upgrades/0003-llm-call-payloads.sql (or sql/install.sql on a ' +
+        'Apply @gullabs/drizzle/sql/upgrades/0004-llm-call-payloads.sql (or sql/install.sql on a ' +
         `fresh database) before enabling ClientConfig.payloads. Driver error: ${cause instanceof Error ? cause.message : String(cause)}`,
       { cause },
     )

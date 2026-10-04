@@ -28,7 +28,8 @@
   },
   "files": [
     "dist",
-    "sql"
+    "sql",
+    "NOTICE"
   ],
   "scripts": {
     "build": "tsup"
@@ -42,7 +43,8 @@
     "@gullabs/core": "workspace:*",
     "@types/pg": "^8.23.1",
     "drizzle-orm": "^0.45.3",
-    "pg": "^8.23.1"
+    "pg": "^8.23.1",
+    "postgres": "^3.4.9"
   },
   "engines": {
     "node": ">=22.12.0"

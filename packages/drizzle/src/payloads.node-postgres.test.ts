@@ -10,7 +10,7 @@
  *   initdb -D /tmp/pg -A trust -U postgres && pg_ctl -D /tmp/pg -o "-p 54329" start
  *   ANY_LLM_TEST_POSTGRES_URL=postgres://postgres@127.0.0.1:54329/postgres pnpm vitest run payloads.node-postgres
  *
- * It exists because node-postgres checks a client out of a pool per transaction:
+ * It exists because node-postgres checks a client out of a pool per transaction (`drivers.integration.test.ts` runs the same cases on every driver):
  * the sink must keep every statement (ledger insert, savepoint, payload insert)
  * on that one client, and a payload failure must roll back to the savepoint and
  * not poison the connection for the next call.

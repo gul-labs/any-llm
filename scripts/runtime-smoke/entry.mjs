@@ -135,8 +135,16 @@ async function attempt(what, body) {
 }
 
 const calls = []
-// A structural stand-in for a Drizzle Postgres database: it records the rows.
+// A structural stand-in for a Drizzle Postgres database: it records the rows. A
+// transaction handle (it has `rollback`) has a nested `transaction`, like Drizzle's.
 const fakeDb = (() => {
+  const tx = () => ({
+    ...handle(),
+    rollback() {},
+    async transaction(fn) {
+      return fn(tx())
+    },
+  })
   const handle = () => ({
     insert(table) {
       return {
@@ -154,7 +162,7 @@ const fakeDb = (() => {
   return {
     ...handle(),
     async transaction(fn) {
-      return fn(handle())
+      return fn(tx())
     },
   }
 })()

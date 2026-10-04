@@ -18,11 +18,11 @@ Core:
 
 Drizzle:
 
-- **A record without a payload is one `INSERT` on `db`, with no transaction** (it works on `neon-http` again). A record with a payload runs in one transaction with the payload insert behind a uniquely named savepoint. A `db` with no `transaction()` and no `transaction` helper is `bad_request` at `drizzleUsageSink(...)`; there is no fallback. The sink declares `acceptsPayloads: true`.
+- **A record without a payload is one `INSERT` on `db`, with no transaction**. A record with a payload runs in one transaction with the payload insert in a nested transaction. A `db` with no `transaction()` and no `transaction` helper is `bad_request` at `drizzleUsageSink(...)`; there is no fallback. The sink declares `acceptsPayloads: true`.
 - A `transaction` helper that hands every call the same ambient transaction no longer loses payloads: the sink serializes its writes per handle. If that host transaction rolls back, the ledger rows roll back with it. Set `idle_in_transaction_session_timeout` and `statement_timeout` for the sink's role.
 - `purgeLlmCallPayloads(db, { olderThan, batchSize? })` deletes in batches (default 5,000) and returns a count without selecting the ids. `batchSize` outside 1 to 1,000,000 is `bad_request`.
 - `assertLlmCallsSchema(db)` and `assertLlmCallPayloadsSchema(db)` no longer take a `table` argument. A sparse `callIds` array is `bad_request`.
-- `sql/upgrades/0003-llm-call-payloads.sql` now stops unless an existing `llm_call_payloads` has exactly our columns, types, nullability and default, primary key and foreign key (a same-named table of another shape is renamed first). It is one `BEGIN` / `COMMIT` transaction with `SET LOCAL lock_timeout`; drop those two lines if your migration runner wraps each file in a transaction.
+- `sql/upgrades/0004-llm-call-payloads.sql` now stops unless an existing `llm_call_payloads` has exactly our columns, types, nullability and default, primary key and foreign key (a same-named table of another shape is renamed first). It is one `BEGIN` / `COMMIT` transaction with `SET LOCAL lock_timeout`; drop those two lines if your migration runner wraps each file in a transaction.
 
 Testing: `RecordingSink` declares `acceptsPayloads`.
 

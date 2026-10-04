@@ -1,4 +1,3 @@
-import { PgDialect } from 'drizzle-orm/pg-core'
 import { describe, expect, it } from 'vitest'
 import { drizzleUsageSink, llmCallPayloads, llmCalls, type PostgresDb } from './index.js'
 import type { JsonValue, LlmCallPayload, LlmCallRecord, Logger } from '@gullabs/core'
@@ -52,28 +51,41 @@ function makeRecord(overrides: Partial<LlmCallRecord> = {}): LlmCallRecord {
 interface MockOptions {
   /** Throw from the insert into this table (by object identity). */
   failInsertInto?: unknown
-  /** What happened, in order: begin, commit, and every statement `execute` ran. */
+  /** The error that insert throws (default: a Drizzle-shaped error over a driver error). */
+  failWith?: Error
+  /** What happened, in order: begin, commit, rollback and the nested transactions. */
   log?: string[]
+  /** Await this long inside every insert, so concurrent writes can interleave. */
+  insertDelayMs?: number
+  /** The highest number of nested transactions open at once on one handle. */
+  stats?: { maxOpenNested: number }
 }
-
-const dialect = new PgDialect()
 
 /**
  * A structural stand-in for a Drizzle Postgres database. `db.insert` is the
- * direct (no transaction) path; `db.transaction` hands the callback a handle
- * whose inserts are recorded as `tx`, and whose `execute` records the SQL text
- * (the savepoint statements).
+ * direct (no transaction) path; `db.transaction` hands the callback a transaction
+ * handle (it has `rollback`, like Drizzle's `PgTransaction`) whose inserts are
+ * recorded as `tx` and whose own `transaction` is a nested transaction
+ * (`savepoint` / `release`, or `rollback to savepoint` when the callback throws).
  */
 function makeDb(spy: InsertCall[], options: MockOptions = {}): PostgresDb {
   const log = options.log ?? []
+  const stats = options.stats ?? { maxOpenNested: 0 }
+  let openNested = 0
   const handle = (kind: 'db' | 'tx') => ({
     insert(table: unknown) {
       return {
         values(values: Record<string, unknown>) {
           return {
             async onConflictDoNothing({ target }: { target: unknown }) {
+              if (options.insertDelayMs !== undefined) {
+                await new Promise((resolve) => setTimeout(resolve, options.insertDelayMs))
+              }
               if (table === options.failInsertInto) {
-                throw new Error('insert failed', { cause: new Error('driver: boom') })
+                throw (
+                  options.failWith ??
+                  new Error('insert failed', { cause: new Error('driver: boom') })
+                )
               }
               spy.push({
                 handle: kind,
@@ -88,18 +100,41 @@ function makeDb(spy: InsertCall[], options: MockOptions = {}): PostgresDb {
         },
       }
     },
-    async execute(query: Parameters<PgDialect['sqlToQuery']>[0]) {
-      log.push(dialect.sqlToQuery(query).sql)
-      return undefined
-    },
+    ...(kind === 'tx'
+      ? {
+          rollback() {
+            throw new Error('rollback')
+          },
+          async transaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> {
+            log.push('savepoint')
+            openNested += 1
+            stats.maxOpenNested = Math.max(stats.maxOpenNested, openNested)
+            try {
+              const result = await fn(handle('tx'))
+              log.push('release')
+              return result
+            } catch (error) {
+              log.push('rollback to savepoint')
+              throw error
+            } finally {
+              openNested -= 1
+            }
+          },
+        }
+      : {}),
   })
   return {
     ...handle('db'),
     async transaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> {
       log.push('begin')
-      const result = await fn(handle('tx'))
-      log.push('commit')
-      return result
+      try {
+        const result = await fn(handle('tx'))
+        log.push('commit')
+        return result
+      } catch (error) {
+        log.push('rollback')
+        throw error
+      }
     },
   } as unknown as PostgresDb
 }
@@ -291,21 +326,13 @@ function recordingLogger(): { logger: Logger; errors: Array<[unknown, string]> }
 }
 
 describe('drizzleUsageSink payloads (ADR-038)', () => {
-  it('writes the ledger row on the transaction, then the payload behind a uniquely named savepoint', async () => {
+  it('writes the ledger row on the transaction, then the payload in a nested transaction', async () => {
     const calls: InsertCall[] = []
     const log: string[] = []
     await drizzleUsageSink({ db: makeDb(calls, { log }) }).record(makeRecord(), {
       payload: PAYLOAD,
     })
-    expect(log).toHaveLength(4)
-    const name = /^SAVEPOINT (any_llm_payload_sp_\d+)$/.exec(log[1] ?? '')?.[1]
-    expect(name).toBeDefined()
-    expect(log).toEqual([
-      'begin',
-      `SAVEPOINT ${name}`,
-      `RELEASE SAVEPOINT ${name}`,
-      'commit',
-    ])
+    expect(log).toEqual(['begin', 'savepoint', 'release', 'commit'])
     expect(calls.map((c) => [c.handle, c.table])).toEqual([
       ['tx', llmCalls],
       ['tx', llmCallPayloads],
@@ -319,23 +346,12 @@ describe('drizzleUsageSink payloads (ADR-038)', () => {
     })
   })
 
-  it('a record with no payload is one INSERT on db: no transaction, no savepoint', async () => {
+  it('a record with no payload is one INSERT on db: no transaction, no nested transaction', async () => {
     const calls: InsertCall[] = []
     const log: string[] = []
     await drizzleUsageSink({ db: makeDb(calls, { log }) }).record(makeRecord())
     expect(log).toEqual([])
     expect(calls.map((c) => [c.handle, c.table])).toEqual([['db', llmCalls]])
-  })
-
-  it('every write gets its own savepoint name', async () => {
-    const calls: InsertCall[] = []
-    const log: string[] = []
-    const sink = drizzleUsageSink({ db: makeDb(calls, { log }) })
-    await sink.record(makeRecord(), { payload: PAYLOAD })
-    await sink.record(makeRecord({ attemptId: 'attempt_2' }), { payload: PAYLOAD })
-    const names = log.filter((l) => l.startsWith('SAVEPOINT '))
-    expect(names).toHaveLength(2)
-    expect(new Set(names).size).toBe(2)
   })
 
   it('the host transaction helper takes over every write, a record without a payload too', async () => {
@@ -352,7 +368,7 @@ describe('drizzleUsageSink payloads (ADR-038)', () => {
     await sink.record(makeRecord({ attemptId: 'attempt_2' }))
     expect(dbLog).toEqual([])
     expect(dbCalls).toEqual([])
-    expect(hostLog.filter((l) => !l.includes('SAVEPOINT'))).toEqual([
+    expect(hostLog.filter((l) => l === 'begin' || l === 'commit')).toEqual([
       'begin',
       'commit',
       'begin',
@@ -365,7 +381,7 @@ describe('drizzleUsageSink payloads (ADR-038)', () => {
     ])
   })
 
-  it('a failing payload insert rolls back to the savepoint, is logged as llm.call.payload.failed with the driver error, and record() resolves', async () => {
+  it('a failing payload insert rolls back its nested transaction, is logged as llm.call.payload.failed with the driver error, and record() resolves', async () => {
     const calls: InsertCall[] = []
     const { logger, errors } = recordingLogger()
     const log: string[] = []
@@ -376,14 +392,7 @@ describe('drizzleUsageSink payloads (ADR-038)', () => {
     ).resolves.toBeUndefined()
     // The ledger row was written and the outer transaction committed.
     expect(calls.map((c) => c.table)).toEqual([llmCalls])
-    const name = /^SAVEPOINT (\S+)$/.exec(log[1] ?? '')?.[1]
-    expect(log).toEqual([
-      'begin',
-      `SAVEPOINT ${name}`,
-      `ROLLBACK TO SAVEPOINT ${name}`,
-      `RELEASE SAVEPOINT ${name}`,
-      'commit',
-    ])
+    expect(log).toEqual(['begin', 'savepoint', 'rollback to savepoint', 'commit'])
     expect(errors).toHaveLength(1)
     expect(errors[0]?.[1]).toBe('llm.call.payload.failed')
     expect(errors[0]?.[0]).toMatchObject({
@@ -401,13 +410,156 @@ describe('drizzleUsageSink payloads (ADR-038)', () => {
         makeRecord(),
         { payload: PAYLOAD },
       ),
-    ).rejects.toThrow('insert failed')
+    ).rejects.toThrow('driver: boom')
     expect(calls).toEqual([])
-    expect(log).toEqual(['begin'])
+    expect(log).toEqual(['begin', 'rollback'])
   })
 
   it('declares acceptsPayloads, so the engine hands it payloads', () => {
     expect(drizzleUsageSink({ db: makeDb([]) }).acceptsPayloads).toBe(true)
+  })
+})
+
+/** What Drizzle >= 0.44 throws for a failed statement: the SQL and every parameter in the message. */
+function drizzleQueryError(rootMessage: string, code: string, secret: string): Error {
+  return Object.assign(
+    new Error(
+      `Failed query: insert into "llm_calls" (...) values ($1) params: ${secret}`,
+      {
+        cause: Object.assign(new Error(rootMessage), { code }),
+      },
+    ),
+    { query: 'insert into "llm_calls" (...) values ($1)', params: [secret] },
+  )
+}
+
+describe('drizzleUsageSink: a failed ledger insert never carries the row (P2-2)', () => {
+  it('rejects with the driver message and SQLSTATE, not the SQL or its parameters, and has no cause', async () => {
+    const secret = 'CUSTOMER REASONING sk-ant-api03-abcdefghijklmnopqrstuvwxyz'
+    const error = await drizzleUsageSink({
+      db: makeDb([], {
+        failInsertInto: llmCalls,
+        failWith: drizzleQueryError(
+          'column "error_reason" does not exist',
+          '42703',
+          secret,
+        ),
+      }),
+    })
+      .record(makeRecord({ reasoningText: secret, metadata: { tenant: secret } }))
+      .catch((e: unknown) => e as Error)
+    expect(error).toBeInstanceOf(Error)
+    expect(String(error)).toContain('column "error_reason" does not exist')
+    expect(String(error)).toContain('SQLSTATE 42703')
+    expect(String(error)).toContain('attempt_1')
+    expect(String(error)).toMatch(/assertLlmCallsSchema/)
+    expect(String(error)).not.toMatch(/CUSTOMER|params|Failed query|sk-ant/)
+    expect((error as Error).cause).toBeUndefined()
+    expect(JSON.stringify(Object.entries(error as Error))).not.toContain('CUSTOMER')
+  })
+
+  it('reduces a query error with no driver error under it to a fixed text', async () => {
+    const bare = Object.assign(new Error('Failed query: ... params: SECRET'), {
+      query: 'insert',
+      params: ['SECRET'],
+    })
+    const error = await drizzleUsageSink({
+      db: makeDb([], { failInsertInto: llmCalls, failWith: bare }),
+    })
+      .record(makeRecord())
+      .catch((e: unknown) => e as Error)
+    expect(String(error)).toContain('query failed')
+    expect(String(error)).not.toContain('SECRET')
+  })
+
+  it('keeps a raw driver error (Drizzle before it wrapped them) as it is, capped and redacted', async () => {
+    const raw = Object.assign(
+      new Error(`invalid input syntax for type integer: "12.5" ${'x'.repeat(1000)}`),
+      { code: '22P02' },
+    )
+    const error = await drizzleUsageSink({
+      db: makeDb([], { failInsertInto: llmCalls, failWith: raw }),
+    })
+      .record(makeRecord())
+      .catch((e: unknown) => e as Error)
+    expect(String(error)).toContain('invalid input syntax for type integer')
+    expect(String(error)).toContain('SQLSTATE 22P02')
+    expect(String(error).length).toBeLessThan(600)
+  })
+
+  it('the payload failure log is capped and carries no parameters either', async () => {
+    const { logger, errors } = recordingLogger()
+    await drizzleUsageSink({
+      db: makeDb([], {
+        failInsertInto: llmCallPayloads,
+        failWith: drizzleQueryError(
+          'relation "llm_call_payloads" does not exist',
+          '42P01',
+          'SECRET',
+        ),
+      }),
+    }).record(makeRecord(), { payload: PAYLOAD, logger })
+    expect(JSON.stringify(errors)).not.toContain('SECRET')
+    expect(errors[0]?.[0]).toMatchObject({
+      error: 'relation "llm_call_payloads" does not exist',
+    })
+  })
+})
+
+describe('drizzleUsageSink on a transaction handle (P2-1)', () => {
+  const ids = Array.from({ length: 6 }, (_, i) => `attempt_${i}`)
+
+  it('db as a transaction handle: concurrent records run one at a time, each in a nested transaction, so none crosses another', async () => {
+    const calls: InsertCall[] = []
+    const stats = { maxOpenNested: 0 }
+    const log: string[] = []
+    const hostDb = makeDb(calls, { insertDelayMs: 1, stats, log })
+    // The host's transaction: the handle `hostDb.transaction` gives its callback.
+    await hostDb.transaction(async (tx) => {
+      const sink = drizzleUsageSink({ db: tx as PostgresDb })
+      await Promise.all(
+        ids.map((id) => sink.record(makeRecord({ attemptId: id }), { payload: PAYLOAD })),
+      )
+    })
+    // Six records, each: ledger + payload.
+    expect(calls).toHaveLength(12)
+    // Never two nested transactions open at once on the shared handle.
+    expect(stats.maxOpenNested).toBe(2) // the write's own, with the payload's inside it
+    // Strictly sequential: begin, then six (savepoint savepoint release release), commit.
+    expect(log.slice(0, 2)).toEqual(['begin', 'savepoint'])
+    expect(log.filter((l) => l === 'savepoint')).toHaveLength(12)
+    expect(log.filter((l) => l.startsWith('rollback'))).toEqual([])
+  })
+
+  it('a ledger-only record on a transaction handle is also a nested transaction, so a failing insert cannot abort the host', async () => {
+    const calls: InsertCall[] = []
+    const log: string[] = []
+    const dbHandle = makeDb(calls, { log, failInsertInto: llmCalls })
+    await dbHandle.transaction(async (tx) => {
+      await expect(
+        drizzleUsageSink({ db: tx as PostgresDb }).record(makeRecord()),
+      ).rejects.toThrow('driver: boom')
+    })
+    // The failure rolled back to the savepoint and the host transaction committed.
+    expect(log).toEqual(['begin', 'savepoint', 'rollback to savepoint', 'commit'])
+  })
+
+  it('a helper that hands every call one ambient transaction serializes the writes', async () => {
+    const calls: InsertCall[] = []
+    const stats = { maxOpenNested: 0 }
+    const log: string[] = []
+    const hostDb = makeDb(calls, { insertDelayMs: 1, stats, log })
+    await hostDb.transaction(async (ambient) => {
+      const sink = drizzleUsageSink({
+        db: hostDb,
+        transaction: (fn) => fn(ambient as PostgresDb),
+      })
+      await Promise.all(
+        ids.map((id) => sink.record(makeRecord({ attemptId: id }), { payload: PAYLOAD })),
+      )
+    })
+    expect(calls).toHaveLength(12)
+    expect(stats.maxOpenNested).toBe(2)
   })
 })
 
