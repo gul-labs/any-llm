@@ -217,7 +217,7 @@ function priceCall(model: string, usage: Usage, tier: string | undefined): Cost 
       : rate.unit === 'query'
         ? Math.round(calls * rate.microUsdPerUnit)
         : rate.microUsdPerUnit
-  const microUsd = (cost.microUsd as number) + tools
+  const microUsd = cost.microUsd + tools
   return {
     ...cost,
     microUsd,
