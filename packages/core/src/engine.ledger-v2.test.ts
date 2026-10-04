@@ -330,6 +330,89 @@ describe('per-attempt telemetry and the cost of the whole call', () => {
     },
   )
 
+  describe('cost_unpriced_reason tells possibly billed from known free', () => {
+    const lost = (row: { costMicroUsd?: number | null } | undefined) => row?.costMicroUsd
+
+    it.each([
+      ['a timeout', { kind: 'timeout', retryable: true }],
+      ['an abort', { kind: 'aborted', retryable: false }],
+      ['a connection reset (no status)', { kind: 'server', retryable: true }],
+      ['an unknown failure', { kind: 'unknown', retryable: true }],
+      ['a gateway timeout', { kind: 'timeout', retryable: true, httpStatus: 504 }],
+      [
+        'a mid-stream rate_limited',
+        { kind: 'rate_limited', retryable: true, mayHaveBilled: true },
+      ],
+    ] as const)(
+      '%s after dispatch with no usage is booked as no_usage_reported',
+      async (_name, opts) => {
+        const { client, sink } = makeClient(new LlmError('lost', { ...opts }))
+        await expect(client.generate(request(), { auth: AUTH })).rejects.toBeInstanceOf(
+          LlmError,
+        )
+        const row = sink.last()
+        expect(row?.costUnpricedReason).toBe('no_usage_reported')
+        expect(lost(row)).toBeUndefined()
+        expect(row?.costConfidence).toBeUndefined()
+      },
+    )
+
+    it.each([
+      ['a 429', { kind: 'rate_limited', retryable: true, httpStatus: 429 }],
+      ['a provider 400', { kind: 'bad_request', retryable: true, httpStatus: 400 }],
+      ['a 401', { kind: 'invalid_auth', retryable: true, httpStatus: 401 }],
+      [
+        'a 503 answered by the provider',
+        { kind: 'server', retryable: true, httpStatus: 503 },
+      ],
+      ['a pre-dispatch bad_request', { kind: 'bad_request', retryable: false }],
+    ] as const)('%s is known free: no cost and no reason', async (_name, opts) => {
+      const { client, sink } = makeClient(new LlmError('refused', { ...opts }))
+      await expect(client.generate(request(), { auth: AUTH })).rejects.toBeInstanceOf(
+        LlmError,
+      )
+      const row = sink.last()
+      expect(row?.costUnpricedReason).toBeUndefined()
+      expect(lost(row)).toBeUndefined()
+    })
+
+    it('a billed failure is priced and has no reason; a refusal row before any attempt has none', async () => {
+      const { client, sink } = makeClient(billedFailure())
+      await expect(client.generate(request(), { auth: AUTH })).rejects.toBeInstanceOf(
+        LlmError,
+      )
+      expect(sink.last()?.costMicroUsd).toBe(20)
+      expect(sink.last()?.costUnpricedReason).toBeUndefined()
+    })
+
+    it("the rows with the reason are exactly the call's unpriced attempts", async () => {
+      const { client, sink } = makeClient(
+        [
+          new LlmError('slow', { kind: 'timeout', retryable: true }),
+          new LlmError('refused', {
+            kind: 'rate_limited',
+            retryable: true,
+            httpStatus: 429,
+          }),
+          ok(),
+        ],
+        { retry: true },
+      )
+      const result = await client.generate(request(), { auth: AUTH })
+      const flagged = sink.records.filter(
+        (row) => row.costUnpricedReason === 'no_usage_reported',
+      )
+      expect(flagged).toHaveLength(result.callCost?.unpricedAttempts ?? -1)
+      expect(flagged.map((row) => row.attemptNumber)).toEqual([1])
+    })
+
+    it('a success on an unpriced model keeps its own reason', async () => {
+      const { client, sink } = makeClient(ok({ model: 'unpriced' }))
+      await client.generate(request('unpriced'), { auth: AUTH })
+      expect(sink.last()?.costUnpricedReason).toMatch(/Unknown model/)
+    })
+  })
+
   it('an abort after dispatch is unpriced on the error event', async () => {
     const { client, errors } = makeClient(
       new LlmError('cancelled', { kind: 'aborted', retryable: false }),

@@ -469,7 +469,7 @@ await client.generate(request, { auth, storePayload: false }) // this call is no
 await client.runStructured(callSite, vars, { auth, storePayload: false })
 ```
 
-Every attempt that reached the provider adapter, success or failure, hands the sink one payload next to its
+Every attempt that entered the provider adapter, success or failure, hands the sink one payload next to its
 record: `sink.record(record, { payload })`. It holds the request as dispatched (`system`, messages as
 `{ role, parts }`, text verbatim, tool-call arguments and tool-result values as JSON, tools as name and schema
 hash; an inline image, audio or file part is only its media type, size and SHA-256, never the bytes; a

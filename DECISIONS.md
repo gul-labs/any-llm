@@ -2017,7 +2017,9 @@ the spend repeated.
 4. **Classification.** An undici header or body timeout (matched by `UND_ERR_HEADERS_TIMEOUT` /
    `UND_ERR_BODY_TIMEOUT`, or the class name, anywhere in the `.cause` chain), and the SDK's own
    deadline (`APIConnectionTimeoutError`), classify as `kind: 'timeout'`, `retryable: false`,
-   `reason: 'transport_timeout'` (ADR-036). A retry reaches the same limit and repeats the spend.
+   `reason: 'transport_timeout'` (ADR-036). A retry reaches the same limit and repeats the spend. This is the
+   transport's own timer; the engine's deadline (`timeoutMs`, which fires 5 s before the adapter's) is a
+   retryable `timeout` with no `reason`, and the retry middleware does not retry it because the budget is spent.
    A connect timeout (`UND_ERR_CONNECT_TIMEOUT`), an OS `ETIMEDOUT` and a TLS handshake timeout are
    not matched: nothing reached xAI, so they stay retryable. The `openai` SDK wraps every fetch
    failure whose text mentions "timed out" as `APIConnectionTimeoutError`, so the class alone is not
@@ -3078,7 +3080,7 @@ decision 3 lists every text-bearing place.
 **Decision:**
 
 1. **Opt-in per client.** `ClientConfig.payloads?: { redact?, maxChars?, include? }`. Absent, nothing is
-   captured and the sink is called exactly as before. Present, every attempt that reached the adapter, success
+   captured and the sink is called exactly as before. Present, every attempt that entered the adapter, success
    or failure, gets one payload, unless `include(request)` returns anything but `true` or the call opts out.
    `payloads` without a `sink` is `bad_request` at `createClient`, as is an unknown key, a non-function or
    `async` `redact` / `include` (detected by the function's type, plus a thenable returned at run time, which
@@ -3086,8 +3088,12 @@ decision 3 lists every text-bearing place.
    JSON skeleton alone does not fit). The config is copied and frozen at `createClient`. The sink must declare
    `UsageSink.acceptsPayloads: true` (`drizzleUsageSink` and `RecordingSink` do); otherwise `createClient` logs
    one `llm.config.payloads.sink_ignores_payloads` warning and no payload is built, so a sink that would drop
-   the second argument costs no capture work. An attempt refused before dispatch (a middleware refusal, a config
-   failure, a limiter that rejected) sent nothing and has no payload.
+   the second argument costs no capture work. An attempt refused before the adapter (a middleware refusal, a config
+   failure, routing, a limiter that rejected) sent nothing and has no payload. "Entered the adapter" is exact:
+   an attempt the adapter itself rejects before any network call (a media type, a schema keyword or stale
+   signature state, `bad_request`) is booked as an attempt, with a zero-token row and no cost, and gets a payload
+   for a request that was never sent. The payload says what the engine handed the adapter, not what went on the
+   wire.
 2. **Per-call opt-out on both entrypoints.** `generate(request, { auth, storePayload })` and
    `runStructured(callSite, vars?, { auth, storePayload })`. `false` skips the payload for the call; `true` or
    absent follows the client; `true` never switches storage on for a client that did not enable it. Any
@@ -3368,7 +3374,10 @@ present whenever an attempt ran (absent only for a refusal before any attempt), 
 all unpriced reports `{ microUsd: 0, attempts, unpricedAttempts }`. It is added to `CallSuccessEvent`
 (an `onSuccess`-only metrics hook could not read it) as well as `CallErrorEvent` and `LlmResult`. The ledger
 statement that the SQL sum equals `callCost` now holds as stated: `SUM(cost_micro_usd)` over the call's rows
-equals `microUsd`, NULL rows being the unpriced attempts.
+equals `microUsd`. A row with no cost used to say nothing about why, so a timeout (possibly billed) and a 401
+(known free) were the same NULL. A dispatched attempt that failed without reporting usage and is not known to
+cost nothing now carries `cost_unpriced_reason = 'no_usage_reported'` (no cost, confidence or lanes); a failure
+known to cost nothing keeps no cost and no reason. The reason marks the failed part of `unpricedAttempts`.
 
 **Item 8 (Gemini audio confidence).** Four corrections to when an audio-priced call is `'estimated'`:
 
@@ -3485,7 +3494,10 @@ error` frame goes through the same `error.code` table: `server_error` and `rate_
    openai SDK `timeout` covers a stream only until the response headers arrive, so the client applies the
    same deadline to the rest of the stream with its own timer: a stream that outlives it ends as
    `kind: 'timeout'`, `retryable: false`, `reason: 'transport_timeout'` (the retry reaches the same limit
-   and repeats the spend). ~~There is no idle timer~~ (Amendment A adds the optional `idleTimeoutMs`); a
+   and repeats the spend). That is the adapter's deadline, which is the whole call only when `timeoutMs` is
+   unset: with a `timeoutMs` the engine's own timer fires 5 s earlier and ends the call as `kind: 'timeout'`,
+   `retryable: true`, no `reason` (`retryMiddleware` still makes no further attempt, because the budget is
+   spent). ~~There is no idle timer~~ (Amendment A adds the optional `idleTimeoutMs`); a
    stream that keeps sending is cut at the deadline too.
    The SDK ends a stream quietly when its request is aborted, so the client checks the caller's signal
    afterwards and throws the abort (an `LlmError` abort reason, the engine's deadline, reaches the caller

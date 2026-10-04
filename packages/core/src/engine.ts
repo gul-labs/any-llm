@@ -552,6 +552,14 @@ const EMPTY_USAGE: Usage = {
 const LATE_ADAPTER_FAILURE_TURNS = 64
 
 /**
+ * `llm_calls.cost_unpriced_reason` of a dispatched attempt that failed without
+ * reporting usage and is not known to have cost nothing (see
+ * {@link failedAttemptCostsNothing}): the provider may have billed it, the amount
+ * is unknown. A row known to be free has neither a cost nor a reason.
+ */
+const NO_USAGE_REPORTED = 'no_usage_reported'
+
+/**
  * Whether a failed attempt that reported no usage is known to have cost nothing.
  *
  * True when nothing was dispatched (the attempt ended while it still waited for
@@ -1469,6 +1477,7 @@ function buildErrorRecord(
   toolNames: string[] | undefined,
   cost?: Cost,
   usageWarnings?: readonly Warning[],
+  costUnpricedReason?: string,
 ): ReturnType<typeof buildRecord> {
   // The adapter's notes (`err.warnings`) and the clamp notes from normalising a
   // billed failure's usage: the row would otherwise hold clamped numbers with
@@ -1485,6 +1494,9 @@ function buildErrorRecord(
     model,
     usage,
     ...(cost !== undefined ? { cost } : {}),
+    ...(cost === undefined && costUnpricedReason !== undefined
+      ? { costUnpricedReason }
+      : {}),
     latencyMs,
     ...(queueDelayMs !== undefined ? { queueDelayMs } : {}),
     // buildRecord overrides status from error.kind via errorKindToStatus.
@@ -2723,6 +2735,13 @@ export function createClient(config: ClientConfig): Client {
         // already captured by `queueDelayMs` (see docs/ledger.md, SPEC.md).
         const latencyMs =
           dispatchStartMs !== undefined ? ctx.clock.now() - dispatchStartMs : 0
+        // A failure that reported no usage is known to cost nothing only when
+        // nothing was dispatched, or the provider answered with an error that is
+        // never billed (see `failedAttemptCostsNothing`); any other may have been
+        // billed for an unknown amount, and its row says so.
+        const noUsageReported = err.usage === undefined && normalizedResult === undefined
+        const knownFree =
+          noUsageReported && failedAttemptCostsNothing(err, dispatchStartMs !== undefined)
         const errorRecord = buildErrorRecord(
           callId,
           attemptId,
@@ -2742,10 +2761,11 @@ export function createClient(config: ClientConfig): Client {
           request.tools?.map((t) => t.name),
           failureCost,
           failureNormalized?.warnings,
+          noUsageReported && !knownFree ? NO_USAGE_REPORTED : undefined,
         )
 
         // Sink error record — fail-open. A payload is kept only for an attempt
-        // that reached the adapter: one refused before dispatch sent nothing.
+        // that entered the adapter: one refused before it sent nothing.
         await recordToSink(
           sink,
           errorRecord,
@@ -2758,15 +2778,7 @@ export function createClient(config: ClientConfig): Client {
             ? payloadPlan?.({ errorMessage: err.message })
             : undefined,
         )
-        // A failure that reported no usage is known to cost nothing only when
-        // nothing was dispatched, or the provider answered with an error that is
-        // never billed (see `failedAttemptCostsNothing`).
-        noteAttemptCost(
-          failureCost,
-          err.usage === undefined &&
-            normalizedResult === undefined &&
-            failedAttemptCostsNothing(err, dispatchStartMs !== undefined),
-        )
+        noteAttemptCost(failureCost, knownFree)
         lastFailure =
           err.usage !== undefined
             ? {

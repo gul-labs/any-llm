@@ -285,7 +285,7 @@ export interface UsageSink {
   ): Promise<void>
 } // host writes to its own DB
 // Opt-in, off by default: ClientConfig.payloads = { redact?, maxChars?, include? } (ADR-038). One payload per
-// attempt that reached the adapter: { request: { system?, messages: { role, parts }[], tools?: { name,
+// attempt that entered the adapter (one the adapter rejected before the network included): { request: { system?, messages: { role, parts }[], tools?: { name,
 // schemaSha256 }[] }, response: { text?, errorMessage? } }. Media parts carry a SHA-256 and a size, never bytes
 // (over 20 MiB or invalid base64: a skipped marker); a file-uri keeps scheme, host and path only. The request is
 // snapshotted at dispatch; the payload is built after the outcome, inside the sinkTimeoutMs wait. Order is fixed
@@ -360,7 +360,7 @@ runStructured(callSite, vars?, opts?)  /  generate(request)
  11. pricing.price()  → Cost (micro-USD, frozen)   [fail-open → cost absent on pricing error]
  12. build LlmCallRecord  + sink.record()           [fail-open: swallow+log sink errors; bounded by sinkTimeoutMs]
      (ClientConfig.payloads on: snapshot the request at dispatch; inside this bounded write build the redacted,
-      capped payload of an attempt that reached the adapter and pass it as sink.record(r, { payload }); a payload
+      capped payload of an attempt that entered the adapter and pass it as sink.record(r, { payload }); a payload
       that cannot be built is dropped with llm.call.payload.dropped)
      telemetry.onAttempt (per attempt, success or failure, fail-open)
  13. telemetry.onSuccess + log 'llm.call.success'
@@ -602,8 +602,11 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
   `timeoutMs + 5 000`, or one hour when `timeoutMs` is unset: the SDK `timeout` for the header wait and
   the client's own timer for the rest of the stream (the SDK `timeout` alone does not bound a stream).
   `transport.idleTimeoutMs` (off by default) ends a stream that sends no bytes, heartbeats included, for that
-  long. A header, body, idle or deadline timeout is `kind: 'timeout'`, `retryable: false`,
-  `reason: 'transport_timeout'`. Streaming keeps Node's 300 s body timer from firing on long reasoning
+  long. An idle timeout, an undici header or body timer, the SDK's own deadline and the adapter's deadline when
+  `timeoutMs` is unset (one hour) are `kind: 'timeout'`, `retryable: false`, `reason: 'transport_timeout'`. When
+  the caller sets `timeoutMs` the engine's own timer fires first (the adapter's deadline is `timeoutMs + 5 000`)
+  and ends the call as `kind: 'timeout'`, `retryable: true`, no `reason`; `retryMiddleware` still does not retry
+  it, because the call's budget is spent. Streaming keeps Node's 300 s body timer from firing on long reasoning
   calls (live: 17 to 28 minute runs, maximum 15 s between events); a tool-using call that itself runs past
   300 s with no streamed event is untested and needs `xaiAdapter({ transport })` with an undici `fetch` and
   `Agent({ headersTimeout, bodyTimeout })`. Search budgets are observed after the call, never enforced in

@@ -10,21 +10,21 @@ ledger shape unless you have a concrete reason to stop consuming the shared sink
 
 ## What each field is for
 
-| Field                  | Owner   | Use it for                                                                                                                                 |
-| ---------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `callId`               | library | Group all attempts belonging to one logical call.                                                                                          |
-| `attemptId`            | library | Primary key for the attempt row and the foreign-key target for sidecars. Always minted by the library.                                     |
-| `attemptNumber`        | library | Distinguish first attempt vs in-process retries.                                                                                           |
-| `callSiteId`           | caller  | Prompt-family grouping and observability.                                                                                                  |
-| `externalId`           | caller  | Correlation id for host-ledger queries; give every host retry of one operation the same value.                                             |
-| `queueDelayMs`         | library | Time spent waiting in the configured rate limiter before provider dispatch; use alongside `latencyMs` when attributing spend/latency.      |
-| `metadata`             | caller  | Small, stable, non-secret host anchors persisted verbatim.                                                                                 |
-| `error_kind`           | library | Failure class (`rate_limited`, `timeout`, ...). Drives `status`; authoritative with `retryable`.                                           |
-| `error_reason`         | library | Why, within the kind, from the closed `LlmErrorReason` set (`quota_window`, `transport_timeout`, ...). NULL when the error has none.       |
-| `cost_micro_usd`       | library | What the library priced, in micro-USD. NULL when the call could not be priced (see `cost_unpriced_reason`) or has no cost.                 |
-| `cost_confidence`      | library | `'exact'` or `'estimated'`: whether `cost_micro_usd` can be trusted as the bill (see below). NULL on rows written before record version 2. |
-| `cost_details`         | library | `{ input, cached, output, tools }` in micro-USD, summing to `cost_micro_usd`; `tools` is the tool-fee lane. NULL when unpriced.            |
-| `cost_unpriced_reason` | library | Why `cost_micro_usd` is NULL (unknown model, unpriced tier, missing tool counter). NULL otherwise.                                         |
+| Field                  | Owner   | Use it for                                                                                                                                    |
+| ---------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `callId`               | library | Group all attempts belonging to one logical call.                                                                                             |
+| `attemptId`            | library | Primary key for the attempt row and the foreign-key target for sidecars. Always minted by the library.                                        |
+| `attemptNumber`        | library | Distinguish first attempt vs in-process retries.                                                                                              |
+| `callSiteId`           | caller  | Prompt-family grouping and observability.                                                                                                     |
+| `externalId`           | caller  | Correlation id for host-ledger queries; give every host retry of one operation the same value.                                                |
+| `queueDelayMs`         | library | Time spent waiting in the configured rate limiter before provider dispatch; use alongside `latencyMs` when attributing spend/latency.         |
+| `metadata`             | caller  | Small, stable, non-secret host anchors persisted verbatim.                                                                                    |
+| `error_kind`           | library | Failure class (`rate_limited`, `timeout`, ...). Drives `status`; authoritative with `retryable`.                                              |
+| `error_reason`         | library | Why, within the kind, from the closed `LlmErrorReason` set (`quota_window`, `transport_timeout`, ...). NULL when the error has none.          |
+| `cost_micro_usd`       | library | What the library priced, in micro-USD. NULL when the call could not be priced (see `cost_unpriced_reason`) or has no cost.                    |
+| `cost_confidence`      | library | `'exact'` or `'estimated'`: whether `cost_micro_usd` can be trusted as the bill (see below). NULL on rows written before record version 2.    |
+| `cost_details`         | library | `{ input, cached, output, tools }` in micro-USD, summing to `cost_micro_usd`; `tools` is the tool-fee lane. NULL when unpriced.               |
+| `cost_unpriced_reason` | library | Why `cost_micro_usd` is NULL: an unknown model, an unpriced tier, a missing tool counter, or `no_usage_reported` (see below). NULL otherwise. |
 
 Rules that matter:
 
@@ -57,6 +57,16 @@ Rules that matter:
   says, in `served_service_tier`. Rows written before record version 2 have NULL in all three cost columns: their
   confidence was never stored and cannot be recovered (`record_schema_version = 1`). Refusal rows (no
   attempt ran) have no cost.
+- A dispatched attempt that failed **without reporting usage** (a timeout, an abort, a network failure, a
+  stream cut before its usage arrived) may have been billed for an amount the library cannot know. Its row has
+  no cost (`cost_micro_usd`, `cost_confidence` and `cost_details` are NULL) and `cost_unpriced_reason =
+'no_usage_reported'`. A failure known to cost nothing (a failure that ended before dispatch, `bad_request`,
+  `invalid_auth`, `rate_limited`, or an HTTP error answer that is not a timeout or abort) has no cost and no
+  reason. So `cost_unpriced_reason = 'no_usage_reported'` finds the attempts that may have billed, and
+  `cost_micro_usd IS NULL AND cost_unpriced_reason IS NULL` the ones that did not (a refusal row has no
+  cost either). Those rows are the failed part of `callCost.unpricedAttempts` (which also counts an attempt
+  whose usage the library has no price for, and carries that reason instead). A failure that did report usage
+  is priced like a success.
 - Money you can reconcile: the ledger writes `cost_micro_usd` per attempt, NULL when the attempt has no
   price (an unpriced model, or a failure that reported no usage). `LlmResult.callCost` is
   `{ microUsd, attempts, unpricedAttempts }` for one call in process: `microUsd` equals the SQL
@@ -64,7 +74,7 @@ Rules that matter:
   `unpricedAttempts` counts the attempts that were dispatched but have no priced usage, such as a timeout
   or an abort. The provider may have billed those, so when `unpricedAttempts > 0` both the SQL sum and
   `microUsd` are a **lower bound** (a call with two timeouts and a success has `unpricedAttempts: 2`). Find
-  such calls in SQL with the rows whose `status` is `timeout` or `aborted` and `cost_micro_usd IS NULL`.
+  such calls in SQL with the rows whose `cost_unpriced_reason` is `no_usage_reported`.
   `callCost` is on `CallSuccessEvent`, `CallErrorEvent` and `LlmResult`; `Telemetry.onAttempt` reports each
   attempt as it happens.
 - Provider-controlled text can carry what Postgres cannot store: U+0000 (rejected by `text` and `jsonb`) and an
@@ -273,12 +283,18 @@ rows) for the ledger columns. While the status CHECKs are `NOT VALID` that `UPDA
 
 ## Prompt and response text (opt-in)
 
-A client that sets `ClientConfig.payloads` hands the sink one payload per attempt that reached the provider, and
+A client that sets `ClientConfig.payloads` hands the sink one payload per attempt that entered the adapter (`adapter.run` was called), and
 `drizzleUsageSink({ db })` stores it in `llm_call_payloads`, keyed by `attempt_id` (FK to `llm_calls`, `ON DELETE
 CASCADE`, index on `created_at`): `request` is `{ system?, messages, tools? }` with media parts as a media type,
 size and SHA-256 (never bytes; a part over 20 MiB or not valid base64 is stored as a marker) and tools as name
 and schema hash; `response` is `{ text?, errorMessage? }`. `sql/upgrades/0004-llm-call-payloads.sql` adds the
-table to an existing database. A payload is written in the same transaction as the ledger row, in a nested
+table to an existing database. "Entered the adapter" is exact: an attempt the adapter itself rejects before any
+network call (a media type, schema keyword or stale signature state it refuses, `bad_request`) is still an
+attempt. The engine books it with a zero-token row (no cost, no reason, a near-zero latency, counted in
+`callCost.attempts` but not as unpriced, `Telemetry.onAttempt` fires) and stores a payload for it, though no
+request was sent. An attempt refused before the adapter (a middleware, per-attempt config validation, routing,
+the rate limiter) has no payload; a refusal outside any attempt is the `attempt_number` 0 row. When you count
+dispatched requests from the ledger, exclude `bad_request` rows with zero tokens. A payload is written in the same transaction as the ledger row, in a nested
 transaction (a savepoint, through Drizzle's `transaction()`): a payload failure never costs the ledger row, on
 every supported driver. The transaction is also why a host rollback takes the ledger row too, when `db` is
 your transaction handle or your `transaction` helper joins a transaction of yours. In that case the sink runs

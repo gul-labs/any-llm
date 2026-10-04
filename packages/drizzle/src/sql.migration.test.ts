@@ -414,6 +414,71 @@ describe('install.sql (fresh install)', () => {
   })
 })
 
+describe('cost_unpriced_reason separates possibly billed from known free (engine to PGlite)', () => {
+  it('a dispatched failure with no usage carries no_usage_reported; a known-free one has neither cost nor reason', async () => {
+    const pg = new PGlite()
+    await pg.exec(sqlFile('install.sql'))
+    const db = drizzle({ client: pg })
+    const client = createClient({
+      adapters: [
+        new FakeAdapter('google', [
+          new LlmError('slow', { kind: 'timeout', retryable: true }),
+          new LlmError('bad key', {
+            kind: 'invalid_auth',
+            retryable: false,
+            httpStatus: 401,
+          }),
+        ]),
+      ],
+      modelRegistry: createModelRegistry([
+        makePermissiveTestDescriptor({ model: 'm1', provider: 'google' }),
+      ]),
+      sink: drizzleUsageSink({ db }),
+      clock: new FakeClock(),
+      ids: new FakeIds(),
+    })
+    const req = {
+      provider: 'google',
+      model: 'm1',
+      messages: [
+        { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'hi' }] },
+      ],
+    }
+    const auth = { apiKey: 'k' }
+    await expect(client.generate(req, { auth })).rejects.toMatchObject({
+      kind: 'timeout',
+    })
+    await expect(client.generate(req, { auth })).rejects.toMatchObject({
+      kind: 'invalid_auth',
+    })
+
+    const rows = await pg.query<{
+      error_kind: string
+      cost_micro_usd: string | null
+      cost_confidence: string | null
+      cost_unpriced_reason: string | null
+    }>(
+      `SELECT error_kind, cost_micro_usd, cost_confidence, cost_unpriced_reason FROM llm_calls ORDER BY created_at, error_kind`,
+    )
+    const byKind = Object.fromEntries(rows.rows.map((r) => [r.error_kind, r]))
+    expect(byKind['timeout']).toMatchObject({
+      cost_micro_usd: null,
+      cost_confidence: null,
+      cost_unpriced_reason: 'no_usage_reported',
+    })
+    expect(byKind['invalid_auth']).toMatchObject({
+      cost_micro_usd: null,
+      cost_confidence: null,
+      cost_unpriced_reason: null,
+    })
+    // The query that finds the calls that may have billed.
+    const possiblyBilled = await pg.query(
+      `SELECT 1 FROM llm_calls WHERE cost_unpriced_reason = 'no_usage_reported'`,
+    )
+    expect(possiblyBilled.rows).toHaveLength(1)
+  })
+})
+
 describe('upgrades/0001-add-error-reason.sql (from the 0.7.2 shape)', () => {
   it('the 0.7.2 fixture has no error_reason column before the upgrade', async () => {
     const pg = new PGlite()

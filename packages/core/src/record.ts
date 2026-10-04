@@ -155,8 +155,12 @@ export interface LlmCallRecord {
    */
   costDetails?: Cost['details']
   /**
-   * Why the call is unpriced (an unknown model, an unpriced tier or tool
-   * counter). Present only when `costMicroUsd` is `null`.
+   * Why the attempt has no price: an unknown model, an unpriced tier or tool
+   * counter (with `costMicroUsd` `null`), or `no_usage_reported` (no
+   * `costMicroUsd` at all): a dispatched attempt that failed without reporting
+   * usage (a timeout, an abort, a network failure, a stream cut before its usage),
+   * which the provider may have billed. A failure known to cost nothing has
+   * neither a cost nor a reason.
    */
   costUnpricedReason?: string
 
@@ -266,6 +270,11 @@ export interface BuildRecordInput {
   usage: Usage
   /** Computed cost (absent when model is unpriced or cost failed). */
   cost?: Cost
+  /**
+   * Why a dispatched attempt has no cost although the provider may have billed
+   * it (it reported no usage). Ignored when `cost` is present.
+   */
+  costUnpricedReason?: string
   /** Wall-clock latency in milliseconds. */
   latencyMs: number
   /** Time spent waiting in the configured RateLimiter before provider dispatch. */
@@ -1012,7 +1021,9 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
             ? { costUnpricedReason: input.cost.unpricedReason }
             : {}),
         }
-      : {}),
+      : input.costUnpricedReason !== undefined
+        ? { costUnpricedReason: input.costUnpricedReason }
+        : {}),
     // JSONB lanes.
     tokenDetails,
     rawUsage,

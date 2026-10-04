@@ -166,7 +166,7 @@ const client = createClient({
 })
 ```
 
-With `payloads` set, each attempt that reached the provider writes one `llm_call_payloads` row next to its
+With `payloads` set, each attempt that entered the adapter (including one the adapter rejected before any network call: a request that was never sent still has its payload) writes one `llm_call_payloads` row next to its
 `llm_calls` row (see [`@gullabs/core`](../core/README.md#payload-storage-opt-in) for what is captured, the
 bound-redact-cap order and the patterns, and ADR-038). Skip a call with `storePayload: false` on `generate` or
 `runStructured`. Run `sql/upgrades/0004-llm-call-payloads.sql` (or install from `sql/install.sql`) first; call
