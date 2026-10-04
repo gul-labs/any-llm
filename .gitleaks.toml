@@ -1,22 +1,53 @@
 [extend]
 useDefault = true
 
-[allowlist]
-description = "Repo-specific false positives"
-# Test files and recorded fixtures only. The redaction and payload tests need
-# credential-shaped strings to prove they are scrubbed; they are synthetic, and the
-# tests assemble them from fragments where that is trivial. Paths are matched, so the
-# allowlist survives squash merges and line drift (a .gitleaksignore fingerprint does
-# not), and it never disables a rule for source, docs, workflows or examples.
+# Targeted allowances for synthetic values only. The redaction and payload tests need
+# credential-shaped strings to prove they are scrubbed, and one recorded xai fixture
+# carries our own cache-key probe label. Each entry below allows ONE exact value in
+# the ONE file that holds it: `condition = "AND"` means the finding must match the
+# path and the regex together, and the regex is anchored to the whole secret. So a
+# different or real credential in the same file, and the same value anywhere else, is
+# still reported. Matching on the value (not a commit fingerprint) survives squash
+# merges and line drift. Never add a path-only allowlist here, and never extend one
+# of these to a wider pattern: to cover a new synthetic value, add its own entry, or
+# assemble it from fragments in the test so it never appears whole.
+
+# Redaction tests: a Google API key, the AWS documentation access key id, and short
+# fragments of them.
+[[allowlists]]
+description = "Synthetic Google API keys in the redaction and payload tests"
+condition = "AND"
 paths = [
-  '''^packages/[^/]+/src/(?:.+/)?[^/]+\.test\.ts$''',
-  '''^packages/[^/]+/src/(?:.+/)?__fixtures__/.+''',
+  '''^packages/core/src/(?:engine\.hardening|engine\.payloads|record|redact)\.test\.ts$''',
 ]
 regexes = [
-  # "anyllm-probe-1" is our own recorded prompt_cache_key probe label used in
-  # xai live-API test fixtures to detect prompt-caching behavior. It is a
-  # constant, non-secret label (not an API key/token) that happens to match
-  # the generic-api-key heuristic. See packages/xai/src/__fixtures__/07-caching.json
-  # and packages/xai/src/adapter.fixtures.test.ts.
-  '''^anyllm-probe-1$''',
+  '''^(?:key=)?AIzaSy(?:SECRETKEY1234567890|A1234567890abcdefghijklmnop(?:qrstuv1?)?)$''',
+  '''^AIzaShort12345678$''',
 ]
+
+[[allowlists]]
+description = "The AWS documentation example access key id in the redaction and payload tests"
+condition = "AND"
+paths = ['''^packages/core/src/(?:engine\.payloads|redact)\.test\.ts$''']
+regexes = ['''^AKIAABCDEFGHIJKLMNOP(?:/2026)?$''']
+
+[[allowlists]]
+description = "The jwt.io example token in the redaction tests"
+condition = "AND"
+paths = ['''^packages/core/src/redact\.test\.ts$''']
+regexes = [
+  '''^eyJhbGciOiJSUzI1NiJ9\.eyJzdWIiOiJ1c2VyMSJ9\.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c$''',
+]
+
+# "anyllm-probe-1" is our own recorded prompt_cache_key probe label (a constant, not a
+# credential) that the generic-api-key heuristic matches because the field is named
+# "...key". See packages/xai/src/__fixtures__/07-caching.json and
+# packages/xai/src/adapter.fixtures.test.ts.
+[[allowlists]]
+description = "The xai cache-key probe label in the recorded caching fixture and its test"
+condition = "AND"
+paths = [
+  '''^packages/xai/src/__fixtures__/07-caching\.json$''',
+  '''^packages/xai/src/adapter\.fixtures\.test\.ts$''',
+]
+regexes = ['''^anyllm-probe-1$''']
