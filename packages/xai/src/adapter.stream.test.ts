@@ -977,17 +977,11 @@ describe('reconciliation is enrichment: a complete, billed stream is never throw
   })
 
   it('any failure to map a complete, billed response is a typed non-retryable error carrying its exact usage', async () => {
-    const strange = {
-      ...response,
-      output: [{ id: 'msg_1', type: 'message', role: 'assistant', content: [null] }],
-    }
+    // A client that hands over a response whose `output` is not a list (the
+    // stream reducer always builds one, so only an injected client can).
+    const strange = { ...response, output: 5 } as unknown as never
     const err = await failure(
-      streamingAdapter(
-        respond([
-          { type: 'response.created', response: { id: 'resp_fixture' } },
-          { type: 'response.completed', response: strange },
-        ]),
-      ).run(req45(), CTX),
+      xaiAdapter({ client: makeFakeXai(strange) }).run(req45(), CTX),
     )
     expect(err).toMatchObject({ kind: 'server', retryable: false, provider: 'xai' })
     expect(err.message).toContain('could not be mapped')

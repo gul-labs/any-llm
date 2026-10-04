@@ -2139,7 +2139,7 @@ describe('xai function calling', () => {
     ])
   })
 
-  it('keeps unparsable function_call arguments as the raw string', async () => {
+  it('rejects a completed function_call whose arguments are not JSON, keeping the usage', async () => {
     const client = makeFakeXai({
       id: 'resp-fn-bad',
       model: 'grok-4.5',
@@ -2155,14 +2155,18 @@ describe('xai function calling', () => {
       usage: { input_tokens: 1, output_tokens: 1 },
     })
     const adapter = xaiAdapter({ client })
-    const result = await adapter.run(
-      makeResolvedReq({
-        modelDescriptor: grok45ModelDescriptor,
-        tools: [tool],
-      }),
-      FAKE_CTX,
-    )
-    expect(result.toolCalls?.[0]?.args).toBe('not-json')
+    const err = await adapter
+      .run(
+        makeResolvedReq({
+          modelDescriptor: grok45ModelDescriptor,
+          tools: [tool],
+        }),
+        FAKE_CTX,
+      )
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(LlmError)
+    expect(err).toMatchObject({ kind: 'server', retryable: false })
+    expect((err as LlmError).usage?.outputTokens).toBe(1)
   })
 
   it('combines server-side search tools with function tools', async () => {

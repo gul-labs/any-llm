@@ -178,13 +178,25 @@ export interface XaiOutputTextPart {
   annotations?: unknown[]
 }
 
-/** A `type: 'message'` item in `output`. */
+/**
+ * A refusal content segment of a `type: 'message'` output item (the OpenAI
+ * Responses grammar xAI mirrors; not yet captured from xAI).
+ */
+export interface XaiRefusalPart {
+  type: 'refusal'
+  refusal: string
+}
+
+/**
+ * A `type: 'message'` item in `output`. A part of any other type may arrive at
+ * runtime; the adapter ignores it with a warning.
+ */
 export interface XaiMessageOutputItem {
   type: 'message'
   id?: string
   role?: string
   status?: string
-  content: XaiOutputTextPart[]
+  content: Array<XaiOutputTextPart | XaiRefusalPart>
 }
 
 /** Server-tool or function-call output items we do not collapse as messages. */

@@ -85,6 +85,18 @@ function isXaiReasoningItem(
   )
 }
 
+/** A message content part's text, or `undefined` for a part that carries none. */
+function partText(part: unknown): string | undefined {
+  return isPlainRecord(part) && typeof part['text'] === 'string'
+    ? part['text']
+    : undefined
+}
+
+/** `value` cut to 500 characters, for a note that quotes provider text. */
+function boundedNote(value: string): string {
+  return value.length > 500 ? `${value.slice(0, 500)}...` : value
+}
+
 function badXaiRequest(message: string): LlmError {
   return new LlmError(message, { kind: 'bad_request', retryable: false })
 }
@@ -1671,9 +1683,12 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       // ------------------------------------------------------------------
       try {
         let text = ''
-        let reasoningText: string | undefined
+        const reasoningChunks: string[] = []
         const messageItems: XaiMessageOutputItem[] = []
         const toolCalls: NonNullable<AdapterResult['toolCalls']> = []
+        // Function calls that did not complete: never a tool call to run.
+        const droppedCalls: string[] = []
+        const droppedItems = new Set<unknown>()
         // Output order of the representable items (message and function_call);
         // the assistant message is built from it once the last message item is known.
         const outputOrder: Array<
@@ -1685,19 +1700,47 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
             messageItems.push(item)
             outputOrder.push(item)
           } else if (isXaiReasoningItem(item)) {
-            const joined = item.summary.map((s) => s.text).join('')
-            if (joined.length > 0) {
-              reasoningText = (reasoningText ?? '') + joined
+            for (const part of item.summary as unknown[]) {
+              const summary = partText(part)
+              if (summary !== undefined && summary.length > 0) {
+                reasoningChunks.push(summary)
+              }
             }
           } else if (item.type === 'function_call') {
             const callId = typeof item['call_id'] === 'string' ? item['call_id'] : ''
             const name = typeof item['name'] === 'string' ? item['name'] : ''
+            // A response that did not complete (cut by the output cap, or ended
+            // abnormally) holds no call to run: its arguments may stop mid-string,
+            // and a call beside an abnormal stop is not one the model finished.
+            if (
+              response.status !== 'completed' ||
+              (typeof item['status'] === 'string' && item['status'] !== 'completed')
+            ) {
+              droppedCalls.push(name.length > 0 ? name : callId)
+              droppedItems.add(item)
+              continue
+            }
             let args: JsonValue = {}
             if (typeof item['arguments'] === 'string') {
               try {
                 args = JSON.parse(item['arguments']) as JsonValue
-              } catch {
-                args = item['arguments']
+              } catch (cause) {
+                // A completed call whose arguments are not JSON cannot be run, and
+                // the response is billed: a typed error that carries the usage.
+                throw new LlmError(
+                  `xAI response ${String(response.id)} holds a completed function call "${name}" whose arguments are not valid JSON.`,
+                  {
+                    kind: 'server',
+                    retryable: false,
+                    provider: 'xai',
+                    usage: mapUsage(response.usage),
+                    ...(typeof response.service_tier === 'string' &&
+                    response.service_tier.length > 0
+                      ? { servedServiceTier: response.service_tier }
+                      : {}),
+                    cause,
+                  },
+                )
               }
             }
             if (callId.length > 0 && name.length > 0) {
@@ -1707,6 +1750,8 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
             }
           }
         }
+        const reasoningText =
+          reasoningChunks.length > 0 ? reasoningChunks.join('\n\n') : undefined
 
         // xAI's Responses API convention: when multiple `type: 'message'`
         // output items are present, the LAST one is the response — earlier
@@ -1716,11 +1761,33 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
         // (e.g. two JSON documents back-to-back); joining `output_text` parts
         // WITHIN a single message item is still correct (segmentation, not
         // duplication).
+        let refusal: string | undefined
         if (messageItems.length > 0) {
           const lastMessage = messageItems[
             messageItems.length - 1
           ] as XaiMessageOutputItem
-          text = lastMessage.content.map((part) => part.text).join('')
+          const ignoredTypes = new Map<string, number>()
+          for (const part of lastMessage.content as unknown[]) {
+            const own = partText(part)
+            if (own !== undefined) {
+              text += own
+            } else if (isPlainRecord(part) && part['type'] === 'refusal') {
+              const said = typeof part['refusal'] === 'string' ? part['refusal'] : ''
+              refusal = `${refusal === undefined ? '' : `${refusal} `}${said}`
+            } else {
+              const type =
+                isPlainRecord(part) && typeof part['type'] === 'string'
+                  ? part['type']
+                  : 'unknown'
+              ignoredTypes.set(type, (ignoredTypes.get(type) ?? 0) + 1)
+            }
+          }
+          for (const [type, count] of ignoredTypes) {
+            warnings.push({
+              type: 'other',
+              message: `xai: ignored ${count} message content part(s) of type "${type}" that carry no text; the answer text is built from the output_text parts.`,
+            })
+          }
 
           if (messageItems.length > 1) {
             warnings.push({
@@ -1757,7 +1824,31 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
         }
 
         const usage = mapUsage(response.usage)
-        const finishReason = mapFinishReason(response)
+        let finishReason = mapFinishReason(response)
+        if (refusal !== undefined) {
+          // The model declined: not a cut answer, so the cap keeps its own reason.
+          if (finishReason !== 'length') finishReason = 'content_filter'
+          warnings.push({
+            type: 'other',
+            message: `xai: the model refused to answer${
+              refusal.length > 0 ? `: "${boundedNote(refusal)}"` : ''
+            }; the result carries no text for it and finishReason is "${finishReason}".`,
+          })
+        }
+        if (droppedCalls.length > 0) {
+          const named = droppedCalls.map((name) => `"${name}"`).join(', ')
+          const reason = response.incomplete_details?.reason
+          warnings.push({
+            type: 'other',
+            message: `xai: dropped ${droppedCalls.length} function call(s) (${named}) because the response ended with status "${String(response.status)}"${
+              typeof reason === 'string' ? ` (${reason})` : ''
+            }, not "completed": ${
+              reason === 'max_output_tokens'
+                ? 'the call was cut by the output cap and its arguments are incomplete'
+                : 'a call beside an abnormal end is not a call to run'
+            }. The result carries no tool call; finishReason is "${finishReason}".`,
+          })
+        }
 
         const expectedToolCounters = expectedServerToolCounters(
           xaiProviderConfig.tools,
@@ -1874,7 +1965,13 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
           // cannot represent. The next request appends only new user/tool-result
           // messages; callers do not repeat normalized history with state.
           const state: XaiReplayState = {
-            xai: { model, input: [...params.input, ...response.output] },
+            xai: {
+              model,
+              input: [
+                ...params.input,
+                ...response.output.filter((item) => !droppedItems.has(item)),
+              ],
+            },
           }
           transientProviderState = state as unknown as JsonValue
         }
@@ -2106,10 +2203,12 @@ function collectXaiCitations(
 
   const lastMessage = messageItems.at(-1)
   if (lastMessage !== undefined) {
-    const joined = lastMessage.content.map((part) => part.text).join('')
+    const joined = (lastMessage.content as unknown[])
+      .map((part) => partText(part) ?? '')
+      .join('')
     let partOffset = 0
-    for (const part of lastMessage.content) {
-      const annotations = part.annotations
+    for (const part of lastMessage.content as unknown[]) {
+      const annotations = isPlainRecord(part) ? part['annotations'] : undefined
       if (Array.isArray(annotations)) {
         for (const ann of annotations) {
           if (!isPlainRecord(ann)) continue
@@ -2140,7 +2239,7 @@ function collectXaiCitations(
           }
         }
       }
-      partOffset += part.text.length
+      partOffset += (partText(part) ?? '').length
     }
   }
 

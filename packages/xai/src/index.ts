@@ -38,6 +38,7 @@ export type {
   XaiReasoningSummaryPart,
   XaiReasoningOutputItem,
   XaiOutputTextPart,
+  XaiRefusalPart,
   XaiMessageOutputItem,
   XaiOutputItem,
   XaiUsageShape,
