@@ -505,7 +505,14 @@ describe('assertJsonSchemaProfile', () => {
     ['a word boundary', '\\bfoo'],
     ['an inline modifier', '(?i:abc)'],
   ])('rejects a pattern with %s', (construct, pattern) => {
-    expect(profiled({ type: 'string', pattern }).message).toContain(construct)
+    const message = profiled({ type: 'string', pattern }).message
+    if (construct === 'an inline modifier') {
+      // Regex modifiers need a newer V8 than Node 22.12: there the engine itself
+      // refuses the pattern, so the rejection is the same but names the engine error.
+      expect(message).toMatch(/an inline modifier|is not a valid regular expression/)
+      return
+    }
+    expect(message).toContain(construct)
   })
 
   it('accepts the regex subset: classes, groups, ranges, escaped parens, class contents', () => {
