@@ -684,7 +684,7 @@ describe('buildRecord — 16 KiB cap on reasoningText and errorMessage (D-01)', 
   })
 
   it('truncates errorMessage after redaction; the live error keeps the full message', () => {
-    const secretLine = 'key=AIzaSyA1234567890abcdefghijklmnopqrstuv1'
+    const secretLine = `key=${['AIza', 'SyA1234567890abcdefghijklmnopqrstuv1'].join('')}`
     const message = `${secretLine} ${'x'.repeat(40_000)}`
     const err = new LlmError(message, { kind: 'server', retryable: false })
     const r = buildRecord(makeBaseInput({ error: err, status: 'api_error' }))
@@ -795,7 +795,7 @@ describe('buildRecord — text Postgres cannot store (U+0000, lone surrogates)',
 
 describe('buildRecord — the ledger row redacts what it stores (P1-2, P2-1)', () => {
   const NUL = '\u0000'
-  const KEY = 'AIzaSyA1234567890abcdefghijklmnopqrstuv'
+  const KEY = ['AIza', 'SyA1234567890abcdefghijklmnopqrstuv'].join('')
 
   it('redacts secrets in reasoningText, and does so before the byte cap', () => {
     const r = buildRecord(

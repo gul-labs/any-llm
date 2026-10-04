@@ -352,7 +352,7 @@ describe('P1-1: a host callback that returns a rejecting promise is never an unh
 // ---------------------------------------------------------------------------
 
 describe('P2-1: a malformed auth is invalid_auth and never echoes the value', () => {
-  const SECRET = 'AIzaSySECRETKEY1234567890'
+  const SECRET = ['AIza', 'SySECRETKEY1234567890'].join('')
   it.each([
     ['a string', SECRET],
     ['null', null],

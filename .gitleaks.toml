@@ -3,6 +3,15 @@ useDefault = true
 
 [allowlist]
 description = "Repo-specific false positives"
+# Test files and recorded fixtures only. The redaction and payload tests need
+# credential-shaped strings to prove they are scrubbed; they are synthetic, and the
+# tests assemble them from fragments where that is trivial. Paths are matched, so the
+# allowlist survives squash merges and line drift (a .gitleaksignore fingerprint does
+# not), and it never disables a rule for source, docs, workflows or examples.
+paths = [
+  '''^packages/[^/]+/src/(?:.+/)?[^/]+\.test\.ts$''',
+  '''^packages/[^/]+/src/(?:.+/)?__fixtures__/.+''',
+]
 regexes = [
   # "anyllm-probe-1" is our own recorded prompt_cache_key probe label used in
   # xai live-API test fixtures to detect prompt-caching behavior. It is a
