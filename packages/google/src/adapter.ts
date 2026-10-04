@@ -1378,8 +1378,11 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
       // adapter is called outside the engine.
       const timers: Scheduler = ctx.scheduler ?? PLATFORM_SCHEDULER
       let tierTimeoutHandle: TimerHandle | undefined
+      // Set when this adapter's own client-side ceiling fired (see below).
+      let ceilingFiredMs: number | undefined
 
       const clearTierTimeout = (): void => {
+        ceilingFiredMs = undefined
         if (tierTimeoutHandle !== undefined) {
           timers.clearTimeout(tierTimeoutHandle)
           tierTimeoutHandle = undefined
@@ -1408,6 +1411,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
             'TimeoutError',
           )
           tierTimeoutHandle = timers.setTimeout(() => {
+            ceilingFiredMs = defaultTimeoutMs
             tierController.abort(timeoutReason)
           }, defaultTimeoutMs)
           config.abortSignal =
@@ -1492,14 +1496,36 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         )
         return client.models.generateContent(params)
       }
+      // What ended a call that nobody asked to end, when it was this adapter's
+      // own timer or the SDK's: the client-side ceiling, or the SDK's transport
+      // timer (it aborts its own request with a plain `AbortError`). The caller's
+      // abort and the engine's deadline abort `ctx.signal`, and the engine answers
+      // those itself. Not retryable: the same limit is reached again, and Google
+      // may already have run, and billed, the request.
+      const transportTimeoutOf = (rawErr: unknown): string | undefined => {
+        if (ctx.signal?.aborted === true) return undefined
+        if (ceilingFiredMs !== undefined) {
+          return `Google call hit the ${ceilingFiredMs}ms client-side ceiling`
+        }
+        const sdkTimeoutMs = config.httpOptions?.timeout
+        if (
+          sdkTimeoutMs !== undefined &&
+          rawErr instanceof Error &&
+          rawErr.name === 'AbortError'
+        ) {
+          return `Google call hit the SDK transport timeout of ${sdkTimeoutMs}ms`
+        }
+        return undefined
+      }
       try {
         response = await dispatch()
       } catch (rawErr) {
         // Classify SDK errors → LlmError
-        const typed = classifyGoogleError(
-          rawErr,
-          servedServiceTier !== undefined ? { servedServiceTier } : undefined,
-        )
+        const transportTimeout = transportTimeoutOf(rawErr)
+        const typed = classifyGoogleError(rawErr, {
+          ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),
+          ...(transportTimeout !== undefined ? { transportTimeout } : {}),
+        })
 
         if (
           config.serviceTier === 'flex' &&
@@ -1520,7 +1546,13 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
           try {
             response = await dispatch()
           } catch (fallbackRawErr) {
-            throw classifyGoogleError(fallbackRawErr, { servedServiceTier: 'standard' })
+            const fallbackTransportTimeout = transportTimeoutOf(fallbackRawErr)
+            throw classifyGoogleError(fallbackRawErr, {
+              servedServiceTier: 'standard',
+              ...(fallbackTransportTimeout !== undefined
+                ? { transportTimeout: fallbackTransportTimeout }
+                : {}),
+            })
           }
         } else {
           throw typed
@@ -1557,7 +1589,10 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
         const reason = response.promptFeedback?.blockReason ?? 'NO_CANDIDATES'
         const thoughtTokens = response.usageMetadata?.thoughtsTokenCount ?? 0
         // The usual cause of a candidate-less 200 that billed reasoning is a
-        // cap spent on thinking, so name it. The payload does not prove the cause.
+        // cap spent on thinking, so name it. The payload does not prove the cause,
+        // but the same request with the same cap is billed again and fails the
+        // same way, so such a failure is not retried; a candidate-less 200 that
+        // billed no reasoning has no such evidence and stays retryable.
         const reasoningHint =
           !hasBlockReason && thoughtTokens > 0
             ? `. The call billed ${thoughtTokens} reasoning tokens, and maxOutputTokens (${
@@ -1573,7 +1608,7 @@ export function geminiAdapter(opts?: GeminiAdapterOptions): ProviderAdapter {
           }${reasoningHint}`,
           {
             kind: hasBlockReason ? 'content_filter' : 'server',
-            retryable: !hasBlockReason,
+            retryable: !hasBlockReason && thoughtTokens === 0,
             provider: 'google',
             ...billedFailure(response.usageMetadata),
             ...(servedServiceTier !== undefined ? { servedServiceTier } : {}),

@@ -1557,7 +1557,7 @@ describe('full-stack integration', () => {
         },
         { auth: { apiKey: 'test-key' } },
       ),
-    ).rejects.toMatchObject({ kind: 'server', retryable: true })
+    ).rejects.toMatchObject({ kind: 'server', retryable: false })
 
     const record = sink.last()!
     expect(record.status).toBe('api_error')

@@ -149,6 +149,13 @@ const STALE_CACHE_MESSAGE = 'CachedContent not found'
 export interface ClassifyGoogleErrorExtra {
   /** Service tier actually attempted by the provider when known. */
   servedServiceTier?: string
+  /**
+   * Set by the adapter when its own client-side ceiling, or the SDK's transport
+   * timer, ended the call (the caller and the engine's deadline had not
+   * aborted): what happened, in words. The error is then a `timeout` that is not
+   * retryable, `reason: 'transport_timeout'`.
+   */
+  transportTimeout?: string
 }
 
 /**
@@ -172,6 +179,27 @@ export function classifyGoogleError(
   let retryable = base.retryable
   let reason = base.reason
   let retryAfterMs = base.retryAfterMs
+  let message = base.message
+
+  // A transport-level timeout (no HTTP answer) is not retried: the same limit
+  // is reached again, and the provider may already have run, and billed, the
+  // request. An HTTP 408 or 504 is an answer from Google and keeps core's rule.
+  // An already-classified error is not second-guessed.
+  if (extra?.transportTimeout !== undefined) {
+    kind = 'timeout'
+    retryable = false
+    reason = 'transport_timeout'
+    retryAfterMs = undefined
+    message = extra.transportTimeout
+  } else if (
+    !(rawErr instanceof LlmError) &&
+    base.kind === 'timeout' &&
+    base.httpStatus === undefined
+  ) {
+    retryable = false
+    reason = 'transport_timeout'
+    retryAfterMs = undefined
+  }
 
   if (body !== undefined && base.httpStatus !== undefined) {
     if (errorInfoReasons(body).some((r) => API_KEY_REASONS.has(r))) {
@@ -196,7 +224,7 @@ export function classifyGoogleError(
     }
   }
 
-  return new LlmError(base.message, {
+  return new LlmError(message, {
     kind,
     retryable,
     ...(reason !== undefined ? { reason } : {}),

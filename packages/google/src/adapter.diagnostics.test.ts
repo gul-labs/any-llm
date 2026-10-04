@@ -112,7 +112,9 @@ describe('reasoning used up the output cap (R1.9)', () => {
 
     expect(err).toBeInstanceOf(LlmError)
     expect(err.kind).toBe('server')
-    expect(err.retryable).toBe(true)
+    // Billed reasoning and no answer: the same request with the same cap fails
+    // the same way, so it is not retried.
+    expect(err.retryable).toBe(false)
     expect(err.message).toContain('NO_CANDIDATES')
     expect(err.message).toContain('113 reasoning tokens')
     expect(err.message).toContain('maxOutputTokens (100) includes reasoning tokens')
