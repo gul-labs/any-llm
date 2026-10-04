@@ -48,6 +48,12 @@ const fileHandle: GoogleFileHandle = {
 }
 
 describe('isGoogleNotFoundError', () => {
+  it('an error with no status at all is matched by its message', () => {
+    expect(isGoogleNotFoundError(new Error('The file was not found'))).toBe(true)
+    expect(isGoogleNotFoundError(new Error('CachedContent not found'))).toBe(true)
+    expect(isGoogleNotFoundError(new Error('connection reset'))).toBe(false)
+  })
+
   it.each([
     ['a 404', { status: 404, message: 'x' }],
     ['NOT_FOUND', { status: 'NOT_FOUND' }],
@@ -76,6 +82,25 @@ describe('isGoogleNotFoundError', () => {
     ],
     ['the empty-key 403', apiError(fixtures.captured['emptyApiKey']!)],
     ['a 500', { status: 500, message: 'not found upstream' }],
+    [
+      'a 500 whose message says "file not found"',
+      { status: 500, message: 'file not found' },
+    ],
+    [
+      'an HTTP 500 ApiError whose body says "file not found"',
+      apiError({
+        status: 500,
+        body: { error: { code: 500, message: 'File not found', status: 'INTERNAL' } },
+      }),
+    ],
+    [
+      'a 503 whose message says "CachedContent not found"',
+      { httpStatus: 503, message: 'CachedContent not found' },
+    ],
+    [
+      'a gRPC status other than NOT_FOUND',
+      { status: 'INTERNAL', message: 'file not found' },
+    ],
     ['a string', 'files/gone'],
   ])('%s is not not-found', (_name, err) => {
     expect(isGoogleNotFoundError(err)).toBe(false)
@@ -107,6 +132,26 @@ describe('GoogleFileStore.delete of a file Google no longer has', () => {
     const store = new GoogleFileStore({ auth, client, onDeleteError })
     await store.delete(fileHandle)
     expect(onDeleteError).not.toHaveBeenCalled()
+  })
+
+  it('a 500 whose message says "file not found" is a failed delete: failClosed throws, the callback fires', async () => {
+    const failure = apiError({
+      status: 500,
+      body: { error: { code: 500, message: 'File not found', status: 'INTERNAL' } },
+    })
+    const client: GeminiFilesClientLike = {
+      upload: vi.fn(),
+      get: vi.fn(),
+      delete: vi.fn().mockRejectedValue(failure),
+    }
+    const closed = new GoogleFileStore({ auth, client })
+    await expect(closed.delete(fileHandle, { failClosed: true })).rejects.toBeInstanceOf(
+      LlmError,
+    )
+    const onDeleteError = vi.fn()
+    const open = new GoogleFileStore({ auth, client, onDeleteError })
+    await open.delete(fileHandle)
+    expect(onDeleteError).toHaveBeenCalledTimes(1)
   })
 
   it('a 403 with an unrelated message is still a failure', async () => {

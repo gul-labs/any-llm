@@ -582,7 +582,7 @@ describe('GoogleFileStore', () => {
       }),
     })
 
-    // Injected clock: starts at 0, advances past deadline (5000) after first sleep
+    // Injected clock: starts at 0, is past the deadline (5000) once the first wait ends
     let tick = 0
     const now = () => (tick === 0 ? 0 : 5_001)
     const countingSleep = (): Promise<void> => {
@@ -601,8 +601,8 @@ describe('GoogleFileStore', () => {
     const err = await store.upload(new Uint8Array([1]), 'image/png').catch((e) => e)
     expect(err).toBeInstanceOf(LlmError)
     expect(err).toMatchObject({ kind: 'server', retryable: false })
-    // Exactly one poll happened before the virtual clock crossed the deadline
-    expect(client.get).toHaveBeenCalledTimes(1)
+    // The virtual clock crossed the deadline during the wait: no poll started
+    expect(client.get).not.toHaveBeenCalled()
   })
 
   // NEW: client.upload throwing → classified LlmError (not raw object)
@@ -805,7 +805,8 @@ describe('GoogleFileStore', () => {
 
     await clock.advanceAsync(0)
     expect(client.get).not.toHaveBeenCalled()
-    expect(clock.pendingTimers).toBe(1)
+    // the wait, and the deadline it is raced against
+    expect(clock.pendingTimers).toBe(2)
     await clock.advanceAsync(3_000)
     expect(client.get).toHaveBeenCalledTimes(1)
     await clock.advanceAsync(3_000)
@@ -816,6 +817,109 @@ describe('GoogleFileStore', () => {
     expect(err).toBeInstanceOf(LlmError)
     expect(err).toMatchObject({ kind: 'server', retryable: false })
     expect(clock.pendingTimers).toBe(0)
+  })
+
+  describe('polling never returns a handle after its deadline', () => {
+    const processing = {
+      name: 'files/abc123',
+      uri: 'https://example.com/files/abc123',
+      mimeType: 'image/png',
+      state: 'PROCESSING',
+    }
+    const active = { ...processing, state: 'ACTIVE' }
+
+    it('a poll interval longer than the time left ends at the deadline: no poll starts, no handle comes back', async () => {
+      const clock = new FakeClock()
+      const client = makeClient({
+        upload: vi.fn().mockResolvedValue(processing),
+        get: vi.fn().mockResolvedValue(active),
+      })
+      const store = new GoogleFileStore({
+        auth: fakeAuth,
+        client,
+        scheduler: clock,
+        now: () => clock.now(),
+        poll: { timeoutMs: 1_000, intervalMs: 3_000 },
+      })
+      const settled = store
+        .upload(new Uint8Array([1]), 'image/png')
+        .catch((e: unknown) => e)
+      await clock.advanceAsync(1_000)
+      const err = await settled
+      expect(err).toBeInstanceOf(LlmError)
+      expect(err).toMatchObject({ kind: 'server', retryable: false, provider: 'google' })
+      expect((err as LlmError).message).toContain('Timed out waiting')
+      expect(client.get).not.toHaveBeenCalled()
+      // only the abandoned wait itself is left; it fires and does nothing
+      await clock.advanceAsync(3_000)
+      expect(clock.pendingTimers).toBe(0)
+      expect(client.get).not.toHaveBeenCalled()
+    })
+
+    it('a wait a custom sleep let run past the deadline does not buy another poll', async () => {
+      let nowMs = 0
+      const client = makeClient({
+        upload: vi.fn().mockResolvedValue(processing),
+        get: vi.fn().mockResolvedValue(active),
+      })
+      const store = new GoogleFileStore({
+        auth: fakeAuth,
+        client,
+        sleep: () => {
+          nowMs = 1_500
+          return Promise.resolve()
+        },
+        now: () => nowMs,
+        poll: { timeoutMs: 1_000, intervalMs: 3_000 },
+      })
+      const err = await store.upload(new Uint8Array([1]), 'image/png').catch((e) => e)
+      expect(err).toMatchObject({ kind: 'server', retryable: false })
+      expect(client.get).not.toHaveBeenCalled()
+    })
+
+    it('an ACTIVE answer that arrives after the deadline is the timeout error, not a handle', async () => {
+      let nowMs = 0
+      const client = makeClient({
+        upload: vi.fn().mockResolvedValue(processing),
+        get: vi.fn().mockImplementation(() => {
+          nowMs = 1_001
+          return Promise.resolve(active)
+        }),
+      })
+      const store = new GoogleFileStore({
+        auth: fakeAuth,
+        client,
+        sleep: fastSleep,
+        now: () => nowMs,
+        poll: { timeoutMs: 1_000, intervalMs: 0 },
+      })
+      const err = await store.upload(new Uint8Array([1]), 'image/png').catch((e) => e)
+      expect(err).toBeInstanceOf(LlmError)
+      expect(err).toMatchObject({ kind: 'server', retryable: false })
+      expect((err as LlmError).message).toContain('Timed out waiting')
+      expect(client.get).toHaveBeenCalledTimes(1)
+    })
+
+    it('an ACTIVE answer inside the deadline is still a handle', async () => {
+      let nowMs = 0
+      const client = makeClient({
+        upload: vi.fn().mockResolvedValue(processing),
+        get: vi.fn().mockImplementation(() => {
+          nowMs = 999
+          return Promise.resolve(active)
+        }),
+      })
+      const store = new GoogleFileStore({
+        auth: fakeAuth,
+        client,
+        sleep: fastSleep,
+        now: () => nowMs,
+        poll: { timeoutMs: 1_000, intervalMs: 0 },
+      })
+      await expect(store.upload(new Uint8Array([1]), 'image/png')).resolves.toMatchObject(
+        { name: 'files/abc123' },
+      )
+    })
   })
 
   describe('a stalled get() during polling', () => {

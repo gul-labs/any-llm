@@ -148,7 +148,10 @@ const STALE_CACHE_MESSAGE = 'CachedContent not found'
 /**
  * Whether a raw error from a delete call says the resource is already gone, so
  * the delete is idempotent: HTTP 404 or `NOT_FOUND`, or HTTP 403 whose message
- * says the resource is not found or "may not exist". Google answers an unknown
+ * says the resource is not found or "may not exist"; an error with no status at
+ * all is not-found when its message names a file or cache that was not found.
+ * Any other known status (a 500 whose message says "file not found") is a
+ * failed delete. Google answers an unknown
  * or expired file id (and an unknown or expired cache) with that 403, not a 404:
  * the `CachedContent not found (or permission denied)` shape is a live capture
  * (probe P6); the Files API wording ("You do not have permission to access the
@@ -165,10 +168,20 @@ export function isGoogleNotFoundError(err: unknown): boolean {
   if (hasStatus(404) || obj['status'] === 'NOT_FOUND' || obj['code'] === 'NOT_FOUND') {
     return true
   }
+  const body = parseGoogleErrorBody(err)
   const message =
-    parseGoogleErrorBody(err)?.message ??
-    (typeof obj['message'] === 'string' ? obj['message'] : '')
-  if (hasStatus(403) && /may not exist|not found/i.test(message)) return true
+    body?.message ?? (typeof obj['message'] === 'string' ? obj['message'] : '')
+  if (hasStatus(403)) return /may not exist|not found/i.test(message)
+  // Message-only detection is for an error that carries no status at all. An
+  // error with a known status is not-found only in the documented cases above:
+  // a 500 whose message mentions a file that was not found is a failed delete.
+  const statusKnown =
+    body?.status !== undefined ||
+    typeof obj['status'] === 'string' ||
+    [obj['status'], obj['httpStatus'], obj['code']].some(
+      (value) => typeof value === 'number',
+    )
+  if (statusKnown) return false
   return /not\s*found|404/i.test(message) && /file|cachedcontent/i.test(message)
 }
 

@@ -373,6 +373,43 @@ export class GoogleFileStore {
     }
   }
 
+  /**
+   * `work` raced against the abort promise and the time left until `deadline`
+   * (the deadline is a non-retryable `server` error). `work` is observed, so a
+   * late rejection after the race is lost is not unhandled; the deadline timer
+   * is always cleared.
+   */
+  private async raceDeadline<T>(
+    work: Promise<T>,
+    name: string,
+    deadline: number,
+    abortRacePromise: Promise<never> | undefined,
+  ): Promise<T> {
+    work.catch(() => {})
+    const remainingMs = deadline - this.now()
+    let deadlineTimer: ReturnType<Scheduler['setTimeout']> | undefined
+    const deadlineRace = new Promise<never>((_, reject) => {
+      // Too far out for a timer: the abort is then the only early exit.
+      if (remainingMs > MAX_TIMER_MS) return
+      deadlineTimer = this.scheduler.setTimeout(
+        () => {
+          reject(pollTimeoutError(name))
+        },
+        Math.max(remainingMs, 0),
+      )
+    })
+    deadlineRace.catch(() => {})
+    try {
+      return await Promise.race(
+        abortRacePromise !== undefined
+          ? [work, deadlineRace, abortRacePromise]
+          : [work, deadlineRace],
+      )
+    } finally {
+      if (deadlineTimer !== undefined) this.scheduler.clearTimeout(deadlineTimer)
+    }
+  }
+
   /** Polls `name` until ACTIVE; see {@link GoogleFileStore.upload}. */
   private async pollUntilActive(
     client: GeminiFilesClientLike,
@@ -387,17 +424,25 @@ export class GoogleFileStore {
         throw pollTimeoutError(name)
       }
 
-      // Sleep — race against the abort promise so we wake up immediately
-      // when the signal fires rather than waiting the full interval.
-      const sleepCall = this.sleep(this.intervalMs)
-      await (abortRacePromise !== undefined
-        ? Promise.race([sleepCall, abortRacePromise])
-        : sleepCall)
+      // The wait is raced against the abort and the rest of the polling
+      // deadline: a poll interval longer than the time left ends at the
+      // deadline, not after it.
+      await this.raceDeadline(
+        this.sleep(this.intervalMs),
+        name,
+        deadline,
+        abortRacePromise,
+      )
 
-      // The poll request is raced against the abort and the rest of the polling
-      // deadline: a `get()` that stalls ends at whichever comes first instead of
-      // holding `upload()` open. The losing request is observed, so a late
-      // rejection is not unhandled.
+      // The clock is checked again before a request starts: a wait that a custom
+      // `sleep` let run past the deadline must not buy one more poll.
+      if (this.now() >= deadline) {
+        throw pollTimeoutError(name)
+      }
+
+      // The poll request is raced the same way, so a `get()` that stalls ends at
+      // whichever comes first instead of holding `upload()` open. The losing
+      // request is observed, so a late rejection is not unhandled.
       const pollCall = (async (): Promise<FileResp> => {
         try {
           return await client.get({ name })
@@ -405,30 +450,7 @@ export class GoogleFileStore {
           throw classifyGoogleError(e)
         }
       })()
-      pollCall.catch(() => {})
-      const remainingMs = deadline - this.now()
-      let deadlineTimer: ReturnType<Scheduler['setTimeout']> | undefined
-      const deadlineRace = new Promise<never>((_, reject) => {
-        // Too far out for a timer: the abort is then the only early exit.
-        if (remainingMs > MAX_TIMER_MS) return
-        deadlineTimer = this.scheduler.setTimeout(
-          () => {
-            reject(pollTimeoutError(name))
-          },
-          Math.max(remainingMs, 0),
-        )
-      })
-      deadlineRace.catch(() => {})
-      let pollResp: FileResp
-      try {
-        pollResp = await Promise.race(
-          abortRacePromise !== undefined
-            ? [pollCall, deadlineRace, abortRacePromise]
-            : [pollCall, deadlineRace],
-        )
-      } finally {
-        if (deadlineTimer !== undefined) this.scheduler.clearTimeout(deadlineTimer)
-      }
+      const pollResp = await this.raceDeadline(pollCall, name, deadline, abortRacePromise)
 
       // Also guard here: the signal may have fired during client.get()
       // before we looped back to the sleep race.
@@ -437,6 +459,12 @@ export class GoogleFileStore {
           kind: 'aborted',
           retryable: false,
         })
+      }
+
+      // A response that arrives after the deadline is not accepted, `ACTIVE`
+      // included: the caller was promised an answer by then.
+      if (this.now() >= deadline) {
+        throw pollTimeoutError(name)
       }
 
       if (pollResp.state === 'ACTIVE') {
