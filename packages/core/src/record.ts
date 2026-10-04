@@ -722,6 +722,112 @@ export function cleanDeep<T>(value: T, state: { changed: boolean }): T {
   return value
 }
 
+// ---------------------------------------------------------------------------
+// Bounded JSON (host-supplied and provider-supplied JSON lanes)
+// ---------------------------------------------------------------------------
+
+/** Deepest nesting a JSON lane of a record keeps; deeper is replaced by a marker. */
+const RECORD_JSON_MAX_DEPTH = 64
+
+/** Most values (objects, arrays, scalars) one JSON lane of a record keeps. */
+const RECORD_JSON_MAX_NODES = 100_000
+
+/**
+ * A copy-on-write, bounded projection of a JSON lane of a record, total over
+ * any input: a circular reference, nesting deeper than
+ * {@link RECORD_JSON_MAX_DEPTH}, more than {@link RECORD_JSON_MAX_NODES} values,
+ * a getter or `toJSON` that throws, and a `bigint`, function or symbol are each
+ * replaced by a short marker string, and one human-readable line per kind of
+ * replacement is appended to `notes`. A value with nothing to replace is
+ * returned as the same object, so ordinary data aliases its input.
+ *
+ * A billed call must always produce its ledger row, and `metadata` (and the
+ * provider options inside the generation config) are host input that no
+ * validator has seen.
+ */
+function boundJson(value: unknown, lane: string, notes: string[]): unknown {
+  const budget = { nodes: 0 }
+  const ancestors = new Set<object>()
+  const note = (why: string, marker: string): void => {
+    const line = `The ledger record's ${lane} held ${why}; it was replaced with "${marker}".`
+    if (!notes.includes(line)) notes.push(line)
+  }
+  const walk = (node: unknown, depth: number): unknown => {
+    switch (typeof node) {
+      case 'bigint':
+        note('a bigint', '[unserializable]')
+        return '[unserializable]'
+      case 'function':
+      case 'symbol':
+        note(`a ${typeof node}`, '[unserializable]')
+        return '[unserializable]'
+      case 'object':
+        break
+      default:
+        return node
+    }
+    if (node === null) return node
+    if (ancestors.has(node)) {
+      note('a circular reference', '[circular]')
+      return '[circular]'
+    }
+    if (depth >= RECORD_JSON_MAX_DEPTH) {
+      note(`nesting deeper than ${RECORD_JSON_MAX_DEPTH} levels`, '[too deep]')
+      return '[too deep]'
+    }
+    budget.nodes += 1
+    if (budget.nodes > RECORD_JSON_MAX_NODES) {
+      note(`more than ${RECORD_JSON_MAX_NODES} values`, '[truncated]')
+      return '[truncated]'
+    }
+    ancestors.add(node)
+    try {
+      const toJSON = (node as { toJSON?: unknown }).toJSON
+      if (typeof toJSON === 'function') {
+        return walk((toJSON as () => unknown).call(node), depth + 1)
+      }
+      if (Array.isArray(node)) {
+        let copy: unknown[] | undefined
+        for (let i = 0; i < node.length; i += 1) {
+          const item: unknown = node[i]
+          const bounded = walk(item, depth + 1)
+          if (bounded !== item) {
+            copy ??= node.slice()
+            copy[i] = bounded
+          }
+        }
+        return copy ?? node
+      }
+      const pairs: Array<readonly [string, unknown]> = []
+      let changed = false
+      for (const key of Object.keys(node)) {
+        let item: unknown
+        let bounded: unknown
+        try {
+          item = (node as Record<string, unknown>)[key]
+          bounded = walk(item, depth + 1)
+        } catch {
+          item = undefined
+          bounded = '[unreadable]'
+          note('a property that could not be read', '[unreadable]')
+        }
+        if (bounded !== item) changed = true
+        pairs.push([key, bounded])
+      }
+      if (!changed) return node
+      const out: Record<string, unknown> = {}
+      for (const [key, bounded] of pairs) setOwn(out, key, bounded)
+      return out
+    } catch {
+      note('a value that could not be read', '[unreadable]')
+      return '[unreadable]'
+    } finally {
+      ancestors.delete(node)
+    }
+  }
+  return walk(value, 0)
+}
+
 const CLEANED_TEXT_WARNING =
   'the ledger record held U+0000 or an unpaired surrogate, which Postgres cannot store; U+0000 was removed and each unpaired surrogate replaced with U+FFFD.'
 
@@ -755,6 +861,10 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
 
   // Validate and clamp usage subset invariants (fail-open: clamp + warn).
   const { usage, clampWarnings } = sanitizeUsage(input.usage)
+
+  // Every JSON lane is bounded first: this function is total, so a billed
+  // attempt always gets its row whatever the host put in `metadata`.
+  const jsonNotes: string[] = []
 
   // Merge caller warnings with any clamp warnings. The engine normalises usage
   // once and passes its warnings in; re-sanitising the same usage must not
@@ -808,7 +918,9 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
     input.toolCalls !== undefined && input.toolCalls.length > 0
       ? input.toolCalls.map((call) => ({
           ...call,
-          args: redactJsonValue(cleanDeep(call.args, state)) as JsonValue,
+          args: redactJsonValue(
+            cleanDeep(boundJson(call.args, 'toolCalls', jsonNotes) as JsonValue, state),
+          ) as JsonValue,
         }))
       : undefined
 
@@ -818,7 +930,10 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
   // through untouched. We shallow-copy before redacting so the caller's original
   // config object is never mutated.
   let gcMut: Record<string, unknown> = {
-    ...(input.generationConfig as unknown as Record<string, unknown>),
+    ...(boundJson(input.generationConfig, 'generationConfig', jsonNotes) as Record<
+      string,
+      unknown
+    >),
   }
   if (gcMut['providerOptions'] !== undefined) {
     gcMut = {
@@ -836,6 +951,18 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
   // Cast Usage.details → JsonValue.
   // Record<string, number> is a valid JSON object when all values are numbers.
   const tokenDetails = usage.details as unknown as JsonValue
+
+  const metadata = boundJson(input.metadata, 'metadata', jsonNotes) as JsonValue
+  const citations =
+    input.citations !== undefined && input.citations.length > 0
+      ? (boundJson(input.citations, 'citations', jsonNotes) as Citation[])
+      : undefined
+  const providerMetadata =
+    input.providerMetadata !== undefined
+      ? (boundJson(input.providerMetadata, 'providerMetadata', jsonNotes) as JsonValue)
+      : undefined
+  const rawUsage = boundJson(usage.raw, 'rawUsage', jsonNotes) as JsonValue
+  for (const message of jsonNotes) allWarnings.push({ type: 'other', message })
 
   // Build the record using conditional spreads for every optional property so
   // `exactOptionalPropertyTypes` is satisfied (we never assign `undefined`).
@@ -884,17 +1011,13 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
       : {}),
     // JSONB lanes.
     tokenDetails,
-    rawUsage: usage.raw,
-    ...(input.citations !== undefined && input.citations.length > 0
-      ? { citations: input.citations }
-      : {}),
+    rawUsage,
+    ...(citations !== undefined ? { citations } : {}),
     ...(toolCalls !== undefined ? { toolCalls } : {}),
     ...(input.toolNames !== undefined && input.toolNames.length > 0
       ? { toolNames: input.toolNames, toolCount: input.toolNames.length }
       : {}),
-    ...(input.providerMetadata !== undefined
-      ? { providerMetadata: input.providerMetadata }
-      : {}),
+    ...(providerMetadata !== undefined ? { providerMetadata } : {}),
     ...(allWarnings.length > 0 ? { warnings: allWarnings } : {}),
     generationConfig,
     // Reasoning capture.
@@ -912,7 +1035,7 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
           errorMessage: errorText.text,
         }
       : {}),
-    metadata: input.metadata,
+    metadata,
     createdAt: input.createdAt,
   }
 

@@ -192,3 +192,6 @@ export {
 
 // Secret redaction (best-effort; for persisted/logged error text)
 export { redactSecrets } from './redact.js'
+
+// The guard for host callbacks that must not affect a call (sync throw or rejected promise)
+export { guardHostCall } from './host-guard.js'

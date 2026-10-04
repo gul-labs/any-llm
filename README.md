@@ -187,7 +187,7 @@ The key is redacted from persisted records and logs. Vertex AI is not in this tr
 - **GROSS tokens.** `cachedInputTokens ⊆ inputTokens`, `thinkingTokens ⊆ outputTokens`. Cost must not double-count.
 - **Cost is frozen.** Integer micro-USD + `pricingVersion` on every record. Unpriced models stay `null`.
 - **Callers own output validation.** The adapter JSON-parses structured output; the engine returns it as `output: unknown` plus `outputParsed` and never validates it.
-- **Side effects fail-open.** A broken sink, logger, or pricing source cannot fail the LLM call. Rate-limiter rejection is the one exception — backpressure is real.
+- **Side effects fail-open.** A broken sink, logger, telemetry hook (`async` ones whose promise rejects included) or pricing source cannot fail the LLM call. Rate-limiter rejection is the one exception — backpressure is real.
 - **No network in tests.** Use [`@gullabs/testing`](./packages/testing).
 
 Gemini 2.5 uses `reasoning.budgetTokens`. Gemini 3 / Gemma built-ins use `reasoning.effort`. `gemini-3.1-pro-preview`, `gemini-3.7-flash`, and `gemini-3.8-flash` do not admit `effort: 'none'`. Omit `serviceTier` for provider default; set `flex` only when you want that lane. Google `priority` is documented upstream and still rejected here. The adapter records the provider's `usageMetadata.serviceTier` echo when present and falls back to the dispatched tier when absent.

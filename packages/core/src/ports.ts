@@ -337,8 +337,9 @@ export interface RateLimitHint {
  * ## Release contract
  * `acquire` resolves to a {@link Release} function that MUST be called exactly
  * once on every exit path (success or error) after a successful acquire.  The
- * engine guarantees this.  A broken (throwing) Release is swallowed by the
- * engine so it does not mask the real result or error.
+ * engine guarantees this.  A broken Release (one that throws, or returns a
+ * promise that rejects) is swallowed by the engine so it does not mask the
+ * real result or error.
  *
  * ## Honour the signal
  * `acquire` receives the call's combined abort signal and must reject when it
@@ -723,7 +724,10 @@ export interface CallErrorEvent {
  * Optional observability hook for Sentry / PostHog / OpenTelemetry integration.
  *
  * All methods are optional so hosts can implement only what they need.
- * Telemetry failures are swallowed by the engine (fail-open).
+ * Telemetry failures are swallowed by the engine (fail-open): a hook that
+ * throws, and a hook that returns a promise that rejects (an `async` hook),
+ * are both absorbed and logged once at `debug` as `llm.hook.failed`. The engine
+ * never awaits a hook, so a slow one does not slow a call.
  *
  * @remarks
  * `onStart`, `onSuccess` and `onError` fire once per logical call; `onAttempt`
@@ -833,6 +837,15 @@ export type Handler = (req: ResolvedRequest, ctx: EngineCtx) => Promise<LlmResul
  *   (config, messages, metadata), pass a new object to `next`. The engine does
  *   not copy or freeze requests, so mutating nested data in place after
  *   calling `next` is a host bug the engine cannot detect.
+ * - **`callId` is the engine's.** The engine writes rows, results and events
+ *   with the id it minted for the call, whatever `ctx.callId` a middleware
+ *   passes down.
+ * - **A result a middleware discards is still the call's result at the
+ *   deadline.** If a middleware drops what `next` returned and keeps running
+ *   past `timeoutMs` while no attempt is in flight, the deadline hands the
+ *   call the last result an attempt produced; a middleware that wants to
+ *   replace a result must return its replacement before then. The stock
+ *   middleware never does this.
  * - **Order decides what a middleware counts.** Outermost runs first. A
  *   middleware outside `retryMiddleware` runs once per logical call; one inside
  *   it runs once per attempt. A quota unit taken by a middleware outside a

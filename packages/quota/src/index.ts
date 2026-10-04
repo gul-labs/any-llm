@@ -1,5 +1,6 @@
 import {
   estimateInputTokens,
+  guardHostCall,
   LlmError,
   redactSecrets,
   type Middleware,
@@ -721,11 +722,12 @@ function admissionFor(
           scope: resolved.scope,
           error,
         })
-        try {
-          opts.onReconcileError?.(resolved.scope, error)
-        } catch {
-          // A logging hook must not turn a reconciliation failure into a throw.
-        }
+        // A logging hook must not turn a reconciliation failure into a throw, and
+        // an `async` one must not become an unhandled rejection.
+        guardHostCall(
+          () => opts.onReconcileError?.(resolved.scope, error),
+          () => {},
+        )
       }
     },
   }
@@ -1151,7 +1153,14 @@ async function evaluateQuotaDecision(
   }
 
   if (store === undefined) {
-    onWindowChecksSkipped?.(resolved.scope)
+    if (onWindowChecksSkipped !== undefined) {
+      // Typed `=> void`, but the host's may be `async`: the guard reads the result.
+      const skipped: (scope: string) => unknown = onWindowChecksSkipped
+      guardHostCall(
+        () => skipped(resolved.scope),
+        () => {},
+      )
+    }
     return { decision: { kind: 'allow' } }
   }
 
@@ -1272,11 +1281,13 @@ function messageForDeny(reason: QuotaDenyReason, scope: string): string {
 function emitEvent(onEvent: QuotaEventHandler | undefined, event: QuotaEvent): void {
   if (onEvent === undefined) return
 
-  try {
-    onEvent(event)
-  } catch {
-    // User-supplied event handlers must not alter quota enforcement behavior.
-  }
+  // User-supplied event handlers must not alter quota enforcement behavior: a
+  // throw and the rejection of a returned promise are both absorbed.
+  const handler: (event: QuotaEvent) => unknown = onEvent
+  guardHostCall(
+    () => handler(event),
+    () => {},
+  )
 }
 
 function parseRateLimiterKey(key: string): { provider: string; model: string } {

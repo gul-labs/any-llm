@@ -375,8 +375,9 @@ Four levels: `debug`, `info`, `warn`, `error`. Engine events:
 | `llm.call.payload.dropped`  | `warn` — a payload could not be built (a throwing or async `redact` or `include`, over the size cap, a sink wait that ended first); fields `stage`, `errorName`, `error` (a fixed sentence); the call is unaffected |
 | `llm.call.payload.failed`   | `error` — logged by `@gullabs/drizzle`: the payload insert failed and was rolled back; the ledger row committed                                                                                                     |
 
-Host logger exceptions are swallowed by `makeSafeLogger` — fail-open; a bad logger never breaks a
-call.
+A host logger that throws, or returns a promise that rejects, never breaks a call and never becomes an
+unhandled rejection: the failure is logged once, at `debug`, as `llm.hook.failed` (fields `callId`, `phase`,
+`error`), and a logger that always fails is not logged about again.
 
 ### Telemetry
 
@@ -385,7 +386,9 @@ All four methods (`onStart`, `onAttempt`, `onSuccess`, `onError`) are optional. 
 and `onError` fire once per logical call; `onAttempt` fires once per provider attempt, after the attempt's
 ledger row was handed to the sink, with `attemptNumber`, `usage`, `cost` and, on failure, `errorKind`,
 `reason` and `retryable` (a refusal that never reached an attempt emits none). The opaque value returned by
-`onStart` is forwarded as `span` to the others. Hook failures are swallowed fail-open. `CallErrorEvent`
+`onStart` is forwarded as `span` to the others. Hook failures are swallowed fail-open, including a hook
+written `async` whose promise rejects (no unhandled rejection; the failure is one `debug` event,
+`llm.hook.failed`, with the `phase`). The engine never awaits a hook. `CallErrorEvent`
 carries `errorKind`, `retryable`, `reason` when the error has one, and `usage` and `cost` of the last
 failing attempt when it reported usage. `LlmResult.callCost` is `{ microUsd, attempts, unpricedAttempts }`
 (`result.cost` is the successful attempt alone): `microUsd` sums the attempts that were priced, retries and
@@ -523,7 +526,7 @@ ledger row is written on every attempt and carries text too:
 | `llm_calls.reasoning_text`                             | The model's reasoning text, when the provider returns it (16 KiB cap)                                                                                                  | Yes                                                           | No                                                                     |
 | `llm_calls.tool_calls`                                 | The tool calls the model made: id, name, arguments as JSON                                                                                                             | Yes: every string, and the value of a key named like a secret | No                                                                     |
 | `llm_calls.error_message`                              | The error text of a failed attempt (provider error text, which can echo part of a request; 16 KiB cap)                                                                 | Yes                                                           | No                                                                     |
-| `llm_calls.metadata`                                   | Your `CallMetadata` bag, verbatim                                                                                                                                      | No, never scanned                                             | No                                                                     |
+| `llm_calls.metadata`                                   | Your `CallMetadata` bag, verbatim (a circular, over-deep or unreadable part becomes a marker plus a row warning; the call and its row are never lost)                  | No, never scanned                                             | No                                                                     |
 | `llm_calls.citations`                                  | Source URL, title and source name of a grounded answer                                                                                                                 | No                                                            | No                                                                     |
 | `llm_calls.provider_metadata`, `raw_usage`, `warnings` | Provider-reported JSON and engine diagnostics                                                                                                                          | No                                                            | No                                                                     |
 | `llm_calls.generation_config`                          | The call's settings; `providerOptions` is scrubbed (the Google adapter admits only `httpOptions.timeout`, so no headers are ever in it)                                | Partly                                                        | No                                                                     |
@@ -569,7 +572,11 @@ is released when that attempt ends.
   middleware outside the offender is not refunded: the offender is a host bug.
 - **Treat the request as immutable once passed to `next`.** To change data (config, messages,
   metadata), pass a new object to `next`. The engine does not copy or freeze requests, so mutating
-  nested data in place after calling `next` is a host bug it cannot detect.
+  nested data in place after calling `next` is a host bug it cannot detect. The engine takes one shallow
+  snapshot of your `LlmRequest` (and, for `runStructured`, the call site and options) when the call starts,
+  so reassigning `request.metadata` or `externalId` mid-call changes nothing; **do not mutate nested
+  objects (`messages`, `tools`, `metadata`) while a call is in flight.** `ctx.callId` is not read back: the
+  engine keeps the id it minted.
 - **`spendPreflightMiddleware({ limitMicroUsd, key, spentSoFar })` is an advisory spend check.** Your
   `spentSoFar(key)` reads the total (micro-USD) from your own ledger; at or above `limitMicroUsd` the call
   fails before dispatch with `rate_limited`, `retryable: false`, `reason: 'spend_ceiling'` (so retry does not

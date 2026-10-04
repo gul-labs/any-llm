@@ -499,7 +499,8 @@ The Gemini adapter sets `config.httpOptions.timeout` on every request according 
    deadline in this case.
 4. **`serviceTier === 'standard'`, no `timeoutMs`** — transport timeout = `STANDARD_DEFAULT_TIMEOUT_MS`
    (currently 300 000 ms, 5 minutes), backed by a client-side `AbortController` so the ceiling is a
-   real client-side cutoff rather than only an SDK transport hint.
+   real client-side cutoff rather than only an SDK transport hint. A call that reaches it (or the SDK's
+   own timer) is a non-retryable `timeout` with `reason: 'transport_timeout'` (ADR-036 Amendment B).
 
 The computed `httpOptions` is built from the computed base and then the caller's value is spread on
 top, so extra keys in a caller-supplied `httpOptions` object are preserved alongside any fields the
@@ -939,7 +940,7 @@ The library ships three observability primitives:
 2. **`Telemetry` port** (`onStart` / `onSuccess` / `onError`, all optional) for OTel / Sentry /
    PostHog integration. Events fire once per logical call; `onStart` may return an opaque span
    handle that is forwarded to the terminal hooks. Hook failures are swallowed fail-open and emit a
-   `debug` breadcrumb (`llm.telemetry.hook.failed`).
+   `debug` breadcrumb (`llm.hook.failed`, Amendment A).
 
 3. **Per-attempt `LlmCallRecord`** with `callId` (stable across retries), `attemptId`
    (minted per attempt; it only absorbs an at-least-once sink re-delivering the same record, ADR-031), `attemptNumber` (1-based ordinal), `latencyMs`, token counts, `costMicroUsd`,
@@ -980,6 +981,33 @@ handle) so a one-file wrapper is all a host needs to bridge it to any APM system
 - The `metadata` field is the caller's domain anchor (tenantId, runId, traceId, etc.) and is
   stored verbatim; it must not contain secrets.
 - Items listed as deferred are tracked in ROADMAP.md under "Deferred observability."
+
+### Amendment A (2026-10-03): host callbacks may be `async`; the record is total
+
+1. **One guard for every host callback that must not affect a call.** Telemetry hooks, the logger's four
+   methods, a limiter's `Release`, and the `@gullabs/quota` handlers (`onEvent`, `onReconcileError`,
+   `onWindowChecksSkipped`) are called through `guardHostCall`, which absorbs a synchronous throw and attaches
+   a rejection handler to a returned promise. `async onError(e) { await flush() }` is the natural way to write
+   a hook and TypeScript accepts it for a `=> void` member; a guard that only caught a throw left its
+   rejection unhandled, which ends the process on Node's default after a call that was already billed.
+   `onStart`'s return value is still the span, a rejected promise included, with its rejection handled.
+   `Scheduler.clearTimeout` is guarded the same way (a throw never leaves a call half cleaned up).
+   `shouldRetry` must return a boolean synchronously (a promise would be truthy for every error): a promise is
+   `bad_request`, with the judged error as `cause`. `payloads.include` and `payloads.redact` already had to
+   be synchronous and already handled a returned promise.
+2. **The failure is one stable `debug` event, `llm.hook.failed`,** with `callId`, `phase` (`onStart`,
+   `onAttempt`, `onSuccess`, `onError`, `release`, `logger.<method>`) and the redacted error. It replaces
+   `llm.telemetry.hook.failed` (greenfield: no alias). The logger's own failures are reported through the same
+   logger once and that report is guarded silently, so a logger that always fails cannot recurse.
+3. **`buildRecord` is total over host JSON.** `metadata`, the generation config, tool-call arguments,
+   citations, provider metadata and `rawUsage` are projected through a bounded copy before the record is
+   built: a circular reference, nesting past 64 levels, more than 100,000 values, a getter or `toJSON` that
+   throws, a `bigint`, function or symbol each become a short marker (`[circular]`, `[too deep]`, `[truncated]`,
+   `[unreadable]`, `[unserializable]`) with one warning on the row naming the lane. This is not mapping input:
+   the call is not refused, because a billed attempt must always get its row ("callId => the final error is in
+   the ledger"), and ordinary data is stored as the same object with no warning. Before this, a circular
+   `metadata` lost a billed result, its row and `onError`.
+4. **A billed failure keeps its usage-clamp warnings** on its row, as a success does.
 
 ---
 
@@ -2911,6 +2939,25 @@ emits the reason, and a closed union holds only members that are emitted. The xA
 `usage.details.search_budget_exceeded`, never an error. A later in-flight abort adds the member back with
 its emitter.
 
+### Amendment B (2026-10-03, engine audit): Google's billed repeats are not retried
+
+xAI's `transport_timeout` rule ("the same limit again, the same spend again", ADR-032) did not reach Google,
+and two Google paths repeated a billed call under the default `retryMiddleware` (three attempts).
+
+1. **The adapter's own tier ceiling and the SDK's transport timer.** When no `timeoutMs` is set the adapter arms
+   a client-side ceiling (5 minutes standard, 25 minutes flex, ADR-012). When it fires, or when the SDK's own
+   timer aborts its request (the SDK aborts with a plain `AbortError` and no reason) while neither the
+   caller nor the engine's deadline has aborted `ctx.signal`, the error is `timeout`, `retryable: false`,
+   `reason: 'transport_timeout'` (`classifyGoogleError` also does this for any `TimeoutError` or undici timer
+   that carries no HTTP status). Three tries of a 5-minute ceiling were 15 minutes of possibly billed
+   generation (a Flex call, 75), booked as `unpricedAttempts: 3`; now it is one attempt and one `timeout` row.
+   An HTTP 408 or 504 is an answer from Google and keeps core's rule; an already-classified `LlmError` is not
+   second-guessed; the caller's own abort stays `aborted`.
+2. **A candidate-less 200 that billed reasoning tokens** (`thoughtsTokenCount > 0`, no block reason) is the cap
+   spent on thinking: the same request with the same `maxOutputTokens` fails the same way and is billed
+   again. It is `server`, `retryable: false`, usage attached. A candidate-less 200 with no reasoning evidence
+   keeps `retryable: true`. A host that wants a retry with a higher cap does it itself.
+
 ---
 
 ## ADR-037: Middleware cannot reroute
@@ -2976,6 +3023,29 @@ The owner decided hosts own routing and fallback; the library offers neither.
   section.
 - Middleware can still pass a new request object with changed config, messages or metadata to
   `next`.
+
+### Amendment A (2026-10-03): the whole call identity is pinned; the host's objects are not shared
+
+1. **`callId` is the engine's own.** `runAttempt` stamps rows, results and attempt events with the id the
+   call minted, not with `ctx.callId` of whatever context a middleware passed down, so `start`, `attempt`,
+   `success` and refusal rows cannot disagree. `ctx.signal` and `ctx.clock` stay the middleware's to wrap.
+2. **One snapshot of the request per call.** `generate` takes a shallow copy of the `LlmRequest` before its
+   first await; `runStructured` does the same for the call site and the options. A host that reassigns
+   `request.metadata` or `externalId` while an async `validateConfig` runs changes nothing. Nested objects
+   (`messages`, `tools`, `metadata`, tool schemas) are shared: **a host must not mutate them while a call is in
+   flight** (the payload snapshot, ADR-038, copies what it stores at dispatch).
+3. **A host's error object is never re-stamped.** An `LlmError` that is an abort reason, or that an adapter
+   throws from several calls, may be shared across calls. `abortedError` and the cooperative-abort path copy a
+   host `LlmError` reason (same kind, retryability, reason, status, delay, usage, warnings and issues, the
+   original as `cause`); the engine's own deadline error passes through. `attachCallContext` copies an error
+   that already carries another call's `callId` instead of stamping it, so no call throws another's ids and a
+   stale `attemptId` can no longer suppress a refusal row.
+4. **`signal` is validated by shape, before any timer.** A value that is not an `AbortSignal` is
+   `bad_request` (`issues[0].path` `signal`), and the call takes the usual refusal path (one row, `onError`):
+   the signal is never touched and no deadline timer is armed. The deadline is built inside the `try` that
+   owns its cleanup, after the signal check and with its signals merged before its timer is armed.
+5. **`failedAttemptCostsNothing` needs a 4xx or 5xx status.** A 1xx-3xx status on a failure that reported no
+   usage no longer proves the provider answered with an error, so the attempt stays in `unpricedAttempts`.
 
 ---
 
@@ -3811,7 +3881,8 @@ descriptors may carry a date too. Nothing about a model without `shutdownDate` c
    `type: 'other'` alone), so a host matches on the type and the date instead of a regex.
 2. **Once per client and model.** The engine attaches the advisory to the first successful call per
    `(provider, model)` on a client and not again, so it no longer lands in every ledger row for 90 days. A
-   new client warns once for itself.
+   new client warns once for itself. An attempt that fails after it chose the advisory gives it back, so the
+   next success carries it (an outer middleware that discards a result cannot be seen from here).
 3. **Wording follows the date.** Before: "is scheduled to shut down on D (in N days); move to a model without
    a shutdown date before then". On the day: "today". After: "was scheduled to shut down on D (N days ago)
    and may stop being served at any time". A clock that is not a finite number yields no warning (it read

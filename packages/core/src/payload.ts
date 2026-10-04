@@ -21,6 +21,7 @@
 
 import { canonicalJson } from './canonical-json.js'
 import { LlmError } from './errors.js'
+import { isThenable } from './host-guard.js'
 import { cleanText, redactJsonValue, redactSecrets, setOwn } from './redact.js'
 import { cleanDeep } from './record.js'
 import { Sha256, sha256Hex } from './sha256.js'
@@ -287,15 +288,6 @@ export function resolvePayloadsConfig(config: unknown): Readonly<PayloadsConfig>
       ? { include: record['include'] as PayloadsConfig['include'] & object }
       : {}),
   })
-}
-
-/** True when `value` is a Promise or any other thenable. */
-export function isThenable(value: unknown): value is PromiseLike<unknown> {
-  return (
-    (typeof value === 'object' || typeof value === 'function') &&
-    value !== null &&
-    typeof (value as { then?: unknown }).then === 'function'
-  )
 }
 
 // ---------------------------------------------------------------------------

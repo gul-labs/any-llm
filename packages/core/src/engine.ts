@@ -22,11 +22,15 @@ import { providerCostDriftWarning } from './cost.js'
 import { assertMessagesShape, assertPartsShape } from './input-shapes.js'
 import { assertTimerMs } from './timer.js'
 import { estimateInputTokens } from './estimate.js'
-import { redactSecrets } from './redact.js'
+import {
+  describeHostFailure,
+  guardHostCall,
+  isThenable,
+  makeSafeLogger,
+} from './host-guard.js'
 import {
   buildPayload,
   describePayloadError,
-  isThenable,
   PayloadDropped,
   resolvePayloadsConfig,
   snapshotPayloadSource,
@@ -182,6 +186,12 @@ export interface ClientConfig {
    * {@link ClientConfig.clock}: the deadline is read off the clock and enforced
    * by these timers, so a scheduler that runs on a different scale than the
    * clock makes `expired()` and the timer disagree.
+   *
+   * Building a large payload (`payloads`, ADR-038) yields to the event loop
+   * every few MiB. The yield sets a zero-delay timer on this scheduler and also
+   * a real macrotask, and the first to run ends the wait: a scheduler that only
+   * fires when a test advances it (a `FakeClock`) cannot stall the build, and a
+   * host that counts timers still sees the zero-delay one.
    */
   scheduler?: Scheduler
   /**
@@ -194,11 +204,18 @@ export interface ClientConfig {
   /**
    * Structured logger.  Defaults to a no-op implementation.
    * Canonical event names: `llm.call.start`, `llm.call.success`, `llm.call.error`.
+   *
+   * A logger method that throws, or returns a promise that rejects, never
+   * affects a call and is never an unhandled rejection; the failure is logged
+   * once, at `debug`, as `llm.hook.failed`.
    */
   logger?: Logger
   /**
    * Optional observability hook (Sentry / PostHog / OTel).
-   * All callbacks are optional; failures are swallowed (fail-open).
+   * All callbacks are optional; failures are swallowed (fail-open): a hook that
+   * throws and a hook that returns a promise that rejects (an `async` hook) are
+   * both absorbed and logged once at `debug` as `llm.hook.failed`. The engine
+   * never awaits a hook.
    */
   telemetry?: Telemetry
   /**
@@ -301,7 +318,10 @@ export interface ClientConfig {
 export interface GenerateOptions {
   /** API key credentials for this call. Required on every call. */
   auth: AuthMaterial
-  /** Caller-supplied abort signal. Classifies as `'aborted'` when fired. */
+  /**
+   * Caller-supplied abort signal. Classifies as `'aborted'` when fired. A value
+   * that is not an `AbortSignal` is `bad_request` (`issues[0].path` `signal`).
+   */
   signal?: AbortSignal
   /**
    * `false` opts this call out of payload storage (`ClientConfig.payloads`).
@@ -395,6 +415,12 @@ export interface Client {
    * `opts.auth` is required on every call — the library never reads credentials
    * from the environment.
    *
+   * The request is snapshotted (shallowly) when the call starts: reassigning
+   * `request.metadata`, `externalId` and the other top-level fields while the
+   * call runs changes nothing. Nested objects (`messages`, `tools`, `metadata`,
+   * tool schemas) are shared with the host, which must not mutate them while a
+   * call is in flight.
+   *
    * @returns An {@link LlmResult} on success. Rejects only with {@link LlmError}:
    * anything else thrown on the way (a host registry, a middleware, a bug) is
    * classified, with the original kept as `cause`.
@@ -476,35 +502,6 @@ function markEstimated(cost: Cost): Cost {
   return cost.confidence === 'estimated' ? cost : { ...cost, confidence: 'estimated' }
 }
 
-/**
- * Wraps a {@link Logger} so that any thrown error from a log method is silently
- * swallowed.  A host logger that throws must NEVER break or mask an LLM call.
- */
-function makeSafeLogger(logger: Logger): Logger {
-  return {
-    info(o: object, m: string): void {
-      try {
-        logger.info(o, m)
-      } catch {}
-    },
-    warn(o: object, m: string): void {
-      try {
-        logger.warn(o, m)
-      } catch {}
-    },
-    error(o: object, m: string): void {
-      try {
-        logger.error(o, m)
-      } catch {}
-    },
-    debug(o: object, m: string): void {
-      try {
-        logger.debug(o, m)
-      } catch {}
-    },
-  }
-}
-
 const NOOP_TELEMETRY: Telemetry = {}
 
 /**
@@ -551,11 +548,12 @@ const EMPTY_USAGE: Usage = {
  * True when nothing was dispatched (the attempt ended while it still waited for
  * the rate limiter), when the failure is one providers do not bill (`bad_request`,
  * `invalid_auth`, `rate_limited`), or when the provider answered with an HTTP
- * error status that is not a timeout or abort. False for a timeout or abort after
- * dispatch, for a failure that carried no status (a connection reset, an
- * unknown failure): the provider may have run, and billed, the request, and for
- * an error that says the provider had started work (`mayHaveBilled`), whatever
- * its kind.
+ * error status (4xx or 5xx) that is not a timeout or abort. False for a timeout
+ * or abort after dispatch, for a failure that carried no status or a 1xx, 2xx or
+ * 3xx one (a connection reset, an unknown failure, an SDK that reports the status
+ * of a response whose body then failed): the provider may have run, and billed,
+ * the request, and for an error that says the provider had started work
+ * (`mayHaveBilled`), whatever its kind.
  */
 function failedAttemptCostsNothing(err: LlmError, dispatched: boolean): boolean {
   if (!dispatched) return true
@@ -569,8 +567,33 @@ function failedAttemptCostsNothing(err: LlmError, dispatched: boolean): boolean 
     case 'aborted':
       return false
     default:
-      return err.httpStatus !== undefined
+      return err.httpStatus !== undefined && err.httpStatus >= 400
   }
+}
+
+/**
+ * A new {@link LlmError} with the same kind, retryability, reason, status,
+ * delay, provider, usage, warnings and issues as `err`, and `err` as `cause`.
+ * It carries no `callId` or `attemptId`. Used wherever the engine would
+ * otherwise stamp call context onto, or throw, an error object it does not own.
+ */
+function cloneLlmError(err: LlmError): LlmError {
+  return new LlmError(err.message, {
+    kind: err.kind,
+    retryable: err.retryable,
+    ...(err.reason !== undefined ? { reason: err.reason } : {}),
+    ...(err.httpStatus !== undefined ? { httpStatus: err.httpStatus } : {}),
+    ...(err.retryAfterMs !== undefined ? { retryAfterMs: err.retryAfterMs } : {}),
+    ...(err.provider !== undefined ? { provider: err.provider } : {}),
+    ...(err.servedServiceTier !== undefined
+      ? { servedServiceTier: err.servedServiceTier }
+      : {}),
+    ...(err.usage !== undefined ? { usage: err.usage } : {}),
+    ...(err.mayHaveBilled === true ? { mayHaveBilled: true } : {}),
+    ...(err.warnings !== undefined ? { warnings: err.warnings } : {}),
+    ...(err.issues !== undefined ? { issues: err.issues } : {}),
+    cause: err,
+  })
 }
 
 /**
@@ -578,16 +601,20 @@ function failedAttemptCostsNothing(err: LlmError, dispatched: boolean): boolean 
  * reason is an abort. A cooperative adapter or middleware that rejects with
  * `signal.reason` (a host cancellation error, any custom `Error`) is reporting
  * the abort it was handed, and `classifyError` alone would call that `unknown`.
- * The reason is kept as `cause`. An `LlmError` reason (the deadline's
- * `timeout`) already passes through `classifyError` unchanged.
+ * The reason is kept as `cause`. An `LlmError` reason the engine created for
+ * this call (`ownReason`: the deadline's `timeout`) passes through unchanged; an
+ * `LlmError` reason the host supplied is copied, because the host may abort
+ * many calls with one shared object.
  */
-function classifyThrown(rawErr: unknown, signal: AbortSignal | undefined): LlmError {
-  if (
-    !(rawErr instanceof LlmError) &&
-    rawErr !== undefined &&
-    signal?.aborted === true &&
-    rawErr === signal.reason
-  ) {
+function classifyThrown(
+  rawErr: unknown,
+  signal: AbortSignal | undefined,
+  ownReason?: unknown,
+): LlmError {
+  if (rawErr !== undefined && signal?.aborted === true && rawErr === signal.reason) {
+    if (rawErr instanceof LlmError) {
+      return rawErr === ownReason ? rawErr : cloneLlmError(rawErr)
+    }
     return new LlmError('Request aborted by caller', {
       kind: 'aborted',
       retryable: false,
@@ -598,18 +625,55 @@ function classifyThrown(rawErr: unknown, signal: AbortSignal | undefined): LlmEr
 }
 
 /**
- * The error for a signal that is already aborted: its reason when that is an
- * `LlmError` (the deadline's `timeout`), else an `aborted` error carrying the
+ * The error for a signal that is already aborted: a copy of its reason when
+ * that is a host `LlmError`, the reason itself when it is the engine's own
+ * (`ownReason`, the deadline's `timeout`), else an `aborted` error carrying the
  * reason as `cause`.
  */
-function abortedError(signal: AbortSignal): LlmError {
+function abortedError(signal: AbortSignal, ownReason?: unknown): LlmError {
   const reason: unknown = signal.reason
-  if (reason instanceof LlmError) return reason
+  if (reason instanceof LlmError) {
+    return reason === ownReason ? reason : cloneLlmError(reason)
+  }
   return new LlmError('Request aborted by caller', {
     kind: 'aborted',
     retryable: false,
     ...(reason !== undefined ? { cause: reason } : {}),
   })
+}
+
+/**
+ * Whether `value` can be used as an abort signal: an object with a boolean
+ * `aborted` and `addEventListener` / `removeEventListener`. Checked by shape,
+ * not `instanceof`, so a signal from another realm passes.
+ */
+function isAbortSignalLike(value: unknown): value is AbortSignal {
+  if (typeof value !== 'object' || value === null) return false
+  const signal = value as Partial<Record<keyof AbortSignal, unknown>>
+  return (
+    typeof signal.aborted === 'boolean' &&
+    typeof signal.addEventListener === 'function' &&
+    typeof signal.removeEventListener === 'function'
+  )
+}
+
+/** The `bad_request` for a `signal` option that is not an `AbortSignal`. */
+function invalidSignalError(): LlmError {
+  return new LlmError('signal must be an AbortSignal.', {
+    kind: 'bad_request',
+    retryable: false,
+    issues: [{ path: 'signal', message: 'must be an AbortSignal.' }],
+  })
+}
+
+/** `scheduler.clearTimeout`, which can never throw into the call that cleans up. */
+function clearTimer(scheduler: Scheduler, handle: TimerHandle): void {
+  guardHostCall(
+    () => {
+      scheduler.clearTimeout(handle)
+    },
+    () => {},
+  )
 }
 
 /** Matches every `{{name}}` placeholder recognised by {@link interpolate}. */
@@ -915,19 +979,26 @@ function buildCancellationRace(
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeoutRejectFn = reject
     })
-    timer = scheduler.setTimeout(() => {
-      // REJECT FIRST — schedules the 'timeout' LlmError into the microtask
-      // queue before the abort signal fires.  This guarantees 'timeout' wins
-      // Promise.race even when the adapter rejects synchronously on abort.
-      timeoutRejectFn(
-        new LlmError(`Request timed out after ${ms}ms`, {
-          kind: 'timeout',
-          retryable: true,
-        }),
-      )
-      // Abort AFTER scheduling the rejection — cooperative adapters stop early.
-      controller.abort()
-    }, ms)
+    try {
+      timer = scheduler.setTimeout(() => {
+        // REJECT FIRST — schedules the 'timeout' LlmError into the microtask
+        // queue before the abort signal fires.  This guarantees 'timeout' wins
+        // Promise.race even when the adapter rejects synchronously on abort.
+        timeoutRejectFn(
+          new LlmError(`Request timed out after ${ms}ms`, {
+            kind: 'timeout',
+            retryable: true,
+          }),
+        )
+        // Abort AFTER scheduling the rejection — cooperative adapters stop early.
+        controller.abort()
+      }, ms)
+    } catch (armErr) {
+      // A scheduler that cannot arm the timer: nothing else is left behind.
+      callerAbortCleanup?.()
+      for (const part of raceParts) part.catch(() => {})
+      throw armErr
+    }
     raceParts.push(timeoutPromise)
   }
 
@@ -951,7 +1022,7 @@ function buildCancellationRace(
   // Idempotent cleanup — safe to call on both success and error paths.
   function cleanup(): void {
     if (timer !== undefined) {
-      scheduler.clearTimeout(timer)
+      clearTimer(scheduler, timer)
       timer = undefined
     }
     callerAbortCleanup?.()
@@ -985,6 +1056,11 @@ interface CallDeadline {
    * billed success into a timeout nor holds the call.
    */
   gate: Promise<LlmResult> | undefined
+  /**
+   * The error this call's deadline aborted `signal` with, once it has fired:
+   * the one `LlmError` reason that is the engine's own, not a host's.
+   */
+  ownReason(this: void): unknown
   /** True once the deadline has passed. */
   expired(this: void): boolean
   /** The error for a call that ran out of time (see {@link CallDeadline.gate}). */
@@ -1038,6 +1114,7 @@ function buildCallDeadline(
       signal: callerSignal,
       elapsed: undefined,
       gate: undefined,
+      ownReason: () => undefined,
       expired: () => false,
       error: () =>
         new LlmError('Request timed out', { kind: 'timeout', retryable: true }),
@@ -1081,39 +1158,49 @@ function buildCallDeadline(
   let finished = false
   let produced: LlmResult | undefined
   let settleTimer: TimerHandle | undefined
+  let abortReason: LlmError | undefined
   const fire = (): void => {
     if (fired || finished) return
     fired = true
     if (produced !== undefined) {
       // The provider answered and the row is written: the result stands.
       settleGate.resolve(produced)
-      controller.abort(
-        new LlmError(`Request timed out after ${timeoutMs}ms`, {
-          kind: 'timeout',
-          retryable: true,
-        }),
-      )
+      abortReason = new LlmError(`Request timed out after ${timeoutMs}ms`, {
+        kind: 'timeout',
+        retryable: true,
+      })
+      controller.abort(abortReason)
       return
     }
     const err = deadlineError()
+    abortReason = err
     // REJECT FIRST, abort second (see buildCancellationRace, Invariant A).
     settleGate.reject(err)
     controller.abort(err)
   }
-  const timer = scheduler.setTimeout(() => {
-    timerFired = true
-    elapsedController.abort()
-    if (inFlight === 0) fire()
-  }, timeoutMs)
+  // Merged before the timer is armed: nothing that can throw runs after it, so
+  // a caller signal the merge rejects cannot leave a timer behind.
   const merged =
     callerSignal === undefined
       ? undefined
       : mergeSignals([callerSignal, controller.signal])
+  let timer: TimerHandle
+  try {
+    timer = scheduler.setTimeout(() => {
+      timerFired = true
+      elapsedController.abort()
+      if (inFlight === 0) fire()
+    }, timeoutMs)
+  } catch (armErr) {
+    merged?.cleanup()
+    throw armErr
+  }
   return {
     deadlineAt,
     signal: merged?.signal ?? controller.signal,
     elapsed: elapsedController.signal,
     gate,
+    ownReason: () => abortReason,
     expired: () => fired || clock.now() >= deadlineAt,
     error: deadlineError,
     attemptStarted() {
@@ -1135,8 +1222,8 @@ function buildCallDeadline(
     },
     cleanup() {
       finished = true
-      scheduler.clearTimeout(timer)
-      if (settleTimer !== undefined) scheduler.clearTimeout(settleTimer)
+      clearTimer(scheduler, timer)
+      if (settleTimer !== undefined) clearTimer(scheduler, settleTimer)
       merged?.cleanup()
     },
   }
@@ -1386,7 +1473,12 @@ function buildErrorRecord(
   authKeyId: string | undefined,
   toolNames: string[] | undefined,
   cost?: Cost,
+  usageWarnings?: readonly Warning[],
 ): ReturnType<typeof buildRecord> {
+  // The adapter's notes (`err.warnings`) and the clamp notes from normalising a
+  // billed failure's usage: the row would otherwise hold clamped numbers with
+  // no trace of the change.
+  const warnings = [...(err.warnings ?? []), ...(usageWarnings ?? [])]
   return buildRecord({
     callId,
     attemptId,
@@ -1405,9 +1497,7 @@ function buildErrorRecord(
     ...(err.servedServiceTier !== undefined
       ? { servedServiceTier: err.servedServiceTier }
       : {}),
-    ...(err.warnings !== undefined && err.warnings.length > 0
-      ? { warnings: [...err.warnings] }
-      : {}),
+    ...(warnings.length > 0 ? { warnings } : {}),
     generationConfig: resolvedConfig,
     metadata: metadata ?? {},
     createdAt: new Date(startMs).toISOString(),
@@ -1536,12 +1626,12 @@ async function recordToSink(
     // A dropped ledger row. The event name and fields are stable: alert on
     // `llm.call.sink.failed`, and use `attemptId` to find the lost row.
     logger.error(
-      { ...fields, error: redactSecrets(String(sinkErr)) },
+      { ...fields, error: describeHostFailure(sinkErr) },
       'llm.call.sink.failed',
     )
   } finally {
-    if (timer !== undefined) scheduler.clearTimeout(timer)
-    if (graceTimer !== undefined) scheduler.clearTimeout(graceTimer)
+    if (timer !== undefined) clearTimer(scheduler, timer)
+    if (graceTimer !== undefined) clearTimer(scheduler, graceTimer)
     for (const off of detach) off()
   }
 }
@@ -1551,33 +1641,41 @@ async function recordToSink(
 // ---------------------------------------------------------------------------
 
 /**
- * Attaches `callId` and `attemptId` to an `LlmError` if not already set.
+ * Returns `err` carrying this call's `callId` and, when given, `attemptId`.
  *
  * `LlmError` fields are `readonly` at the TypeScript level (compile-time only).
  * We use `Object.defineProperty` to set them at runtime when they were not
  * supplied to the constructor — which is the case for errors thrown by adapters
  * before the engine had a chance to enrich them.
  *
- * This helper is idempotent: if either field is already set, it is left as-is.
+ * Idempotent for the call's own error: an error that already carries this
+ * `callId` is returned as it is, and a field that is already set is not
+ * overwritten. An error that carries ANOTHER call's `callId` is an object a
+ * host (or an adapter) throws from more than one call; it is never re-stamped
+ * or handed on, a copy with this call's ids (`cause` = the original) is
+ * returned instead.
  */
 function attachCallContext(
   err: LlmError,
   ctx: { callId: string; attemptId?: string },
-): void {
-  if (err.callId === undefined) {
-    Object.defineProperty(err, 'callId', {
+): LlmError {
+  const target =
+    err.callId !== undefined && err.callId !== ctx.callId ? cloneLlmError(err) : err
+  if (target.callId === undefined) {
+    Object.defineProperty(target, 'callId', {
       value: ctx.callId,
       enumerable: true,
       configurable: true,
     })
   }
-  if (ctx.attemptId !== undefined && err.attemptId === undefined) {
-    Object.defineProperty(err, 'attemptId', {
+  if (ctx.attemptId !== undefined && target.attemptId === undefined) {
+    Object.defineProperty(target, 'attemptId', {
       value: ctx.attemptId,
       enumerable: true,
       configurable: true,
     })
   }
+  return target
 }
 
 // ---------------------------------------------------------------------------
@@ -1642,24 +1740,26 @@ function attachCallContext(
  * the further narrowing (e.g. the Google adapter rejects `CliSessionAuth`,
  * the CLI adapters reject `ApiKeyAuth`).
  */
-function requireAuth(auth: AuthMaterial | undefined): AuthMaterial {
-  if (auth === undefined) {
-    throw new LlmError(
+function requireAuth(candidate: AuthMaterial | undefined): AuthMaterial {
+  // One message for every malformed shape, and it never contains the value:
+  // `'apiKey' in 'AIza...'` is a V8 TypeError that echoes the string, and a
+  // host logs `err.message`.
+  const invalid = (): LlmError =>
+    new LlmError(
       'Missing or invalid auth; pass { auth: { apiKey } } or { auth: { cliSession: true } } per call',
       { kind: 'invalid_auth', retryable: false },
     )
+  const material: unknown = candidate
+  if (typeof material !== 'object' || material === null || Array.isArray(material)) {
+    throw invalid()
   }
+  const auth = candidate as AuthMaterial
 
   const isValidApiKeyAuth =
     'apiKey' in auth && typeof auth.apiKey === 'string' && auth.apiKey.trim() !== ''
   const isValidCliSessionAuth = 'cliSession' in auth && auth.cliSession
 
-  if (!isValidApiKeyAuth && !isValidCliSessionAuth) {
-    throw new LlmError(
-      'Missing or invalid auth; pass { auth: { apiKey } } or { auth: { cliSession: true } } per call',
-      { kind: 'invalid_auth', retryable: false },
-    )
-  }
+  if (!isValidApiKeyAuth && !isValidCliSessionAuth) throw invalid()
 
   // keyId (ADR-026): opaque caller-supplied attribution label, ApiKeyAuth-only.
   // "Reject, don't map" — validate strictly, never silently drop or coerce.
@@ -1896,7 +1996,7 @@ export function createClient(config: ClientConfig): Client {
     resolvedConfig: ResolvedConfig,
     descriptor: ModelDescriptor,
     callSiteId: string | undefined,
-    callerSignal: AbortSignal | undefined,
+    callerSignalInput: AbortSignal | undefined,
     callAuth: AuthMaterial,
     // D4: only `generate()` enforces `requireInputContract` here.
     // `runStructured()` enforces its own callsite-level check (missing
@@ -1949,23 +2049,24 @@ export function createClient(config: ClientConfig): Client {
             unpricedAttempts:
               attemptCosts.unpriced + (attemptCosts.attempts - attemptCosts.noted),
           }
-    const emitAttempt = (event: AttemptEvent): void => {
-      try {
-        telemetry.onAttempt?.(event, span)
-      } catch (hookErr) {
+    // Every host callback that must not affect the call (telemetry hooks, a
+    // limiter's Release) goes through this: a synchronous throw and the
+    // rejection of a returned promise are both absorbed and logged once, as
+    // `llm.hook.failed` with the phase.
+    const hook = <R>(phase: string, call: () => R): R | undefined =>
+      guardHostCall(call, (error) => {
         safeLogger.debug(
-          {
-            callId,
-            phase: 'onAttempt',
-            error: redactSecrets(String(hookErr)),
-          },
-          'llm.telemetry.hook.failed',
+          { callId, phase, error: describeHostFailure(error) },
+          'llm.hook.failed',
         )
-      }
+      })
+    const emitAttempt = (event: AttemptEvent): void => {
+      hook('onAttempt', () => telemetry.onAttempt?.(event, span))
     }
 
-    let span: unknown
-    try {
+    // Whatever `onStart` returns is the span, a rejecting promise included: the
+    // other hooks get it as it is, and its rejection is already handled.
+    const span: unknown = hook('onStart', () => {
       const startEvent: CallStartEvent = {
         callId,
         provider: callProvider,
@@ -1973,13 +2074,8 @@ export function createClient(config: ClientConfig): Client {
         metadata: request.metadata ?? {},
         ...(callSiteId !== undefined ? { callSiteId } : {}),
       }
-      span = telemetry.onStart?.(startEvent)
-    } catch (err) {
-      safeLogger.debug(
-        { callId, phase: 'onStart', error: redactSecrets(String(err)) },
-        'llm.telemetry.hook.failed',
-      )
-    }
+      return telemetry.onStart?.(startEvent)
+    })
 
     safeLogger.info(
       {
@@ -2021,31 +2117,58 @@ export function createClient(config: ClientConfig): Client {
       ...(request.toolChoice !== undefined ? { toolChoice: request.toolChoice } : {}),
     }
 
-    // The logical-call deadline (`timeoutMs`) starts here, so middleware time
-    // counts against it (R4.1). It is merged into the signal middleware see.
+    // A `signal` that is not an AbortSignal is refused inside the epilogue's
+    // `try` below (one refusal row, `onError`, `llm.call.error`) and is never
+    // touched: no listener is added to it and no timer is armed for it.
+    const signalProblem =
+      callerSignalInput !== undefined && !isAbortSignalLike(callerSignalInput)
+        ? invalidSignalError()
+        : undefined
+    const callerSignal = signalProblem === undefined ? callerSignalInput : undefined
+
+    // The logical-call deadline (`timeoutMs`) starts inside the `try` below, so
+    // middleware time counts against it (R4.1) and nothing that can throw runs
+    // between arming its timer and the `finally` that clears it. Until then the
+    // deadline is inert (no timer).
     let lastAttemptError: LlmError | undefined
-    const deadline = buildCallDeadline(
+    let deadline = buildCallDeadline(
       callerSignal,
-      resolvedConfig.timeoutMs,
+      undefined,
       clock,
       scheduler,
       () => lastAttemptError,
     )
     // A sink write stops waiting on the caller's abort and on the deadline
     // timer, which fires even while an attempt (its sink write) is in flight.
-    const sinkInterrupts = [callerSignal, deadline.elapsed]
+    let sinkInterrupts: Array<AbortSignal | undefined> = [callerSignal, undefined]
 
     // EngineCtx carries stable call-level state.  ctx.signal is the caller
     // signal merged with the logical-call deadline; each attempt adds its own
     // timeout on top of it inside runAttempt.
-    const engineCtx: EngineCtx = {
-      callId,
-      clock,
-      scheduler,
-      logger: safeLogger,
-      ...(deadline.signal !== undefined ? { signal: deadline.signal } : {}),
-      ...(deadline.deadlineAt !== undefined ? { deadlineAt: deadline.deadlineAt } : {}),
-    }
+    let engineCtx: EngineCtx = { callId, clock, scheduler, logger: safeLogger }
+
+    // One turn of the event loop between steps of a large payload. The injected
+    // scheduler's zero-delay timer is set (a host that counts or drives timers
+    // sees it) and so is a real macrotask: whichever runs first ends the wait and
+    // the other is dropped, so a scheduler that never fires on its own (a
+    // `FakeClock` nobody advances) cannot stall the build.
+    const yieldToEventLoop = (): Promise<void> =>
+      new Promise<void>((resolve) => {
+        const state: { handle?: TimerHandle; settled: boolean } = { settled: false }
+        const done = (): void => {
+          if (state.settled) return
+          state.settled = true
+          if (state.handle !== undefined) clearTimer(scheduler, state.handle)
+          resolve()
+        }
+        state.handle = scheduler.setTimeout(done, 0)
+        // A scheduler that ran the callback before returning its handle.
+        if (state.settled) clearTimer(scheduler, state.handle)
+        const macrotask = (globalThis as { setImmediate?: (cb: () => void) => unknown })
+          .setImmediate
+        if (typeof macrotask === 'function') macrotask(done)
+        else globalThis.setTimeout(done, 0)
+      })
 
     // Payload plan for one attempt (ADR-038), made at dispatch: whether storage
     // applies (client on, sink takes payloads, the call did not opt out, `include`
@@ -2062,7 +2185,7 @@ export function createClient(config: ClientConfig): Client {
       const dropped = (error: unknown): void => {
         const { stage, errorName, reason } = describePayloadError(error)
         ctx.logger.warn(
-          { callId: ctx.callId, attemptId, stage, errorName, error: reason },
+          { callId, attemptId, stage, errorName, error: reason },
           'llm.call.payload.dropped',
         )
       }
@@ -2095,10 +2218,7 @@ export function createClient(config: ClientConfig): Client {
       return (response) => async (control) => {
         try {
           return await buildPayload(snapshot, response, payloads, {
-            yieldNow: () =>
-              new Promise<void>((resolve) => {
-                scheduler.setTimeout(resolve, 0)
-              }),
+            yieldNow: yieldToEventLoop,
             cancelled: control.cancelled,
           })
         } catch (payloadErr) {
@@ -2143,7 +2263,7 @@ export function createClient(config: ClientConfig): Client {
 
       // A2: Attempt-start debug log so operators can trace individual attempts.
       ctx.logger.debug(
-        { callId: ctx.callId, attemptNumber, model: req.model },
+        { callId, attemptNumber, model: req.model },
         'llm.call.attempt.start',
       )
 
@@ -2159,6 +2279,8 @@ export function createClient(config: ClientConfig): Client {
       let queueDelayMs: number | undefined
       let dispatchStartMs: number | undefined
       let payloadPlan: ReturnType<typeof planPayload>
+      // Set while this attempt holds the once-per-client shutdown advisory.
+      let reservedAdvisoryKey: string | undefined
       // Cancellation cleanup — idempotent; safe to call on both paths.
       let cleanup: () => void = () => {}
       let effectiveReq: ResolvedRequest = req
@@ -2237,11 +2359,8 @@ export function createClient(config: ClientConfig): Client {
           // the wait) is already handled.
           void Promise.resolve(acquirePromise).then(
             (lateRelease) => {
-              try {
-                lateRelease()
-              } catch {
-                /* intentionally swallowed */
-              }
+              const late: Release | (() => unknown) = lateRelease
+              hook('release', () => late())
             },
             () => {},
           )
@@ -2252,10 +2371,12 @@ export function createClient(config: ClientConfig): Client {
         // An abort that arrived before dispatch (a signal already aborted, or
         // one that fired between attempts) must not reach the provider: a
         // limiter that resolves at once would otherwise win the race above.
-        if (ctx.signal?.aborted === true) throw abortedError(ctx.signal)
+        if (ctx.signal?.aborted === true) {
+          throw abortedError(ctx.signal, deadline.ownReason())
+        }
 
         ctx.logger.debug(
-          { callId: ctx.callId, attemptNumber, queueDelayMs },
+          { callId, attemptNumber, queueDelayMs },
           'llm.call.attempt.dispatch',
         )
 
@@ -2293,11 +2414,9 @@ export function createClient(config: ClientConfig): Client {
 
         // Release the rate-limiter slot with the call's usage — swallow errors
         // so a broken Release cannot mask the successful result.
-        try {
-          release(normalizedResult.usage)
-        } catch {
-          /* intentionally swallowed */
-        }
+        const slot: (usage?: Usage) => unknown = release
+        const slotUsage = normalizedResult.usage
+        hook('release', () => slot(slotUsage))
         release = undefined
 
         // Step 8: surface the adapter's parsed structured output — caller owns validation.
@@ -2350,10 +2469,7 @@ export function createClient(config: ClientConfig): Client {
             type: 'other',
             message: `Cost computation failed: ${String(costErr)}`,
           })
-          ctx.logger.warn(
-            { callId: ctx.callId, error: String(costErr) },
-            'llm.call.cost.failed',
-          )
+          ctx.logger.warn({ callId, error: String(costErr) }, 'llm.call.cost.failed')
         }
 
         // Reasoning that eats the whole output cap leaves no answer; say so
@@ -2377,11 +2493,17 @@ export function createClient(config: ClientConfig): Client {
 
         // Collect all warnings (adapter + normalize + reasoning cap + cost + shutdown).
         // Once per client and model: the first successful call carries it, not all of them.
+        // The key is reserved here, with no await in between, so concurrent first
+        // calls do not all carry it; the catch below gives it back when this
+        // attempt fails before it has a result.
         let shutdownAdvisory = shutdownWarning(callDescriptor, ctx.clock.now())
         if (shutdownAdvisory !== undefined) {
           const advisedKey = `${provider}\u0000${effectiveReq.model}`
           if (shutdownAdvised.has(advisedKey)) shutdownAdvisory = undefined
-          else shutdownAdvised.add(advisedKey)
+          else {
+            shutdownAdvised.add(advisedKey)
+            reservedAdvisoryKey = advisedKey
+          }
         }
         const allWarnings: Warning[] = [
           ...adapterResult.warnings,
@@ -2394,7 +2516,7 @@ export function createClient(config: ClientConfig): Client {
         // Step 10: Build LlmCallRecord.
         const latencyMs = ctx.clock.now() - dispatchStartMs
         const record = buildSuccessRecord(
-          ctx.callId,
+          callId,
           attemptId,
           callSiteId,
           provider,
@@ -2425,7 +2547,7 @@ export function createClient(config: ClientConfig): Client {
           sink,
           record,
           ctx.logger,
-          ctx.callId,
+          callId,
           sinkTimeoutMs,
           sinkInterrupts,
           scheduler,
@@ -2433,7 +2555,7 @@ export function createClient(config: ClientConfig): Client {
         )
         noteAttemptCost(cost)
         emitAttempt({
-          callId: ctx.callId,
+          callId,
           attemptId,
           attemptNumber,
           provider,
@@ -2447,7 +2569,7 @@ export function createClient(config: ClientConfig): Client {
 
         // Step 12: Return LlmResult.
         const result: LlmResult = {
-          callId: ctx.callId,
+          callId,
           attemptId,
           usage: normalizedResult.usage,
           model: adapterResult.model,
@@ -2494,11 +2616,13 @@ export function createClient(config: ClientConfig): Client {
       } catch (rawErr) {
         // Invariant B: cleanup on every error path.
         cleanup()
+        // No result was produced: the shutdown advisory is not used up.
+        if (reservedAdvisoryKey !== undefined) shutdownAdvised.delete(reservedAdvisoryKey)
 
         // Classify error (LlmError passes through unchanged). A cooperative
         // adapter that throws the signal's own abort reason (a DOMException, a
         // host cancellation error) is an abort, with that reason kept as cause.
-        const err = classifyThrown(rawErr, ctx.signal)
+        const err = classifyThrown(rawErr, ctx.signal, deadline.ownReason())
 
         // Some providers return a billed HTTP 200 with no usable output. Keep
         // that attempt's usage and snapshot cost even though it is retryable.
@@ -2506,11 +2630,9 @@ export function createClient(config: ClientConfig): Client {
           err.usage !== undefined ? normalizeUsage(err.usage) : undefined
 
         // Free the rate-limiter slot; a billed failure hands its usage over.
-        try {
-          release?.(failureNormalized?.usage)
-        } catch {
-          /* intentionally swallowed */
-        }
+        const heldSlot: ((usage?: Usage) => unknown) | undefined = release
+        const slotUsage = failureNormalized?.usage
+        if (heldSlot !== undefined) hook('release', () => heldSlot(slotUsage))
         release = undefined
         const failureUsage =
           failureNormalized !== undefined
@@ -2529,10 +2651,7 @@ export function createClient(config: ClientConfig): Client {
               failureCost = markEstimated(failureCost)
             }
           } catch (costErr) {
-            ctx.logger.warn(
-              { callId: ctx.callId, error: String(costErr) },
-              'llm.call.cost.failed',
-            )
+            ctx.logger.warn({ callId, error: String(costErr) }, 'llm.call.cost.failed')
           }
         }
 
@@ -2547,7 +2666,7 @@ export function createClient(config: ClientConfig): Client {
         const latencyMs =
           dispatchStartMs !== undefined ? ctx.clock.now() - dispatchStartMs : 0
         const errorRecord = buildErrorRecord(
-          ctx.callId,
+          callId,
           attemptId,
           callSiteId,
           provider,
@@ -2564,6 +2683,7 @@ export function createClient(config: ClientConfig): Client {
           authKeyIdOf(callAuth),
           request.tools?.map((t) => t.name),
           failureCost,
+          failureNormalized?.warnings,
         )
 
         // Sink error record — fail-open. A payload is kept only for an attempt
@@ -2572,7 +2692,7 @@ export function createClient(config: ClientConfig): Client {
           sink,
           errorRecord,
           ctx.logger,
-          ctx.callId,
+          callId,
           sinkTimeoutMs,
           sinkInterrupts,
           scheduler,
@@ -2597,7 +2717,7 @@ export function createClient(config: ClientConfig): Client {
               }
             : undefined
         emitAttempt({
-          callId: ctx.callId,
+          callId,
           attemptId,
           attemptNumber,
           provider,
@@ -2613,12 +2733,13 @@ export function createClient(config: ClientConfig): Client {
         })
 
         // Enrich the error with call context (idempotent — does not overwrite
-        // if already set, e.g. by an outer middleware).
-        attachCallContext(err, { callId: ctx.callId, attemptId })
+        // if already set, e.g. by an outer middleware; an error another call
+        // already carries is copied, never re-stamped).
+        const stamped = attachCallContext(err, { callId, attemptId })
 
         // Rethrow: the call-level epilogue (or retry middleware) handles
         // the final fate of this error.
-        throw err
+        throw stamped
       }
     }
 
@@ -2718,9 +2839,28 @@ export function createClient(config: ClientConfig): Client {
     // telemetry.onSuccess / onError and the call-level logger events fire
     // ONCE here, after the chain (including any retry middleware) settles.
     try {
-      // A signal that is already aborted never starts the call. The refusal
-      // takes the same path as any other pre-attempt failure (one synthetic
-      // row, `onError`, `llm.call.error`).
+      // Everything that can fail before an attempt starts is inside this `try`,
+      // so each failure takes the same path: one refusal row, `onError`,
+      // `llm.call.error`.
+      if (signalProblem !== undefined) throw signalProblem
+      deadline = buildCallDeadline(
+        callerSignal,
+        resolvedConfig.timeoutMs,
+        clock,
+        scheduler,
+        () => lastAttemptError,
+      )
+      sinkInterrupts = [callerSignal, deadline.elapsed]
+      engineCtx = {
+        callId,
+        clock,
+        scheduler,
+        logger: safeLogger,
+        ...(deadline.signal !== undefined ? { signal: deadline.signal } : {}),
+        ...(deadline.deadlineAt !== undefined ? { deadlineAt: deadline.deadlineAt } : {}),
+      }
+
+      // A signal that is already aborted never starts the call.
       if (callerSignal?.aborted === true) throw abortedError(callerSignal)
 
       // D4 (generate() path only) / D3: input-contract enforcement. Runs
@@ -2761,7 +2901,7 @@ export function createClient(config: ClientConfig): Client {
       const callCost = callCostOf()
       const result =
         callCost !== undefined ? { ...chainedResult, callCost } : chainedResult
-      try {
+      hook('onSuccess', () => {
         const successEvent: CallSuccessEvent = {
           callId,
           attemptId: result.attemptId,
@@ -2774,13 +2914,8 @@ export function createClient(config: ClientConfig): Client {
           ...(callCost !== undefined ? { callCost } : {}),
           ...(callSiteId !== undefined ? { callSiteId } : {}),
         }
-        telemetry.onSuccess?.(successEvent, span)
-      } catch (err) {
-        safeLogger.debug(
-          { callId, phase: 'onSuccess', error: redactSecrets(String(err)) },
-          'llm.telemetry.hook.failed',
-        )
-      }
+        return telemetry.onSuccess?.(successEvent, span)
+      })
       safeLogger.info(
         {
           callId,
@@ -2792,16 +2927,19 @@ export function createClient(config: ClientConfig): Client {
       )
       return result
     } catch (rawErr) {
-      const err = classifyThrown(rawErr, deadline.signal)
+      // Ensure the error carries call context (idempotent). The call-level
+      // attempt id is never stamped onto an error that did not come from that
+      // attempt, and an error object another call already carries (a host's
+      // shared error) is copied here, which drops its foreign attempt id.
+      const err = attachCallContext(
+        classifyThrown(rawErr, deadline.signal, deadline.ownReason()),
+        { callId },
+      )
       // An error with an attempt id came out of `runAttempt`, which already
       // wrote its row. Anything else was thrown by a middleware or the
       // prologue (input-contract refusal, boundary refusal, quota deferral,
       // retry budget exhausted, abort during back-off).
       const attemptRecorded = err.attemptId !== undefined
-      // Ensure the error carries call context (idempotent). The call-level
-      // attempt id is never stamped onto an error that did not come from that
-      // attempt.
-      attachCallContext(err, { callId })
       const latencyMs = clock.now() - callStartMs
 
       // D5: generic refusal row. "callId => the call's final error is in the
@@ -2852,7 +2990,7 @@ export function createClient(config: ClientConfig): Client {
         )
       }
 
-      try {
+      hook('onError', () => {
         const attemptIdForEvent = err.attemptId ?? lastAttemptId
         const errorCallCost = callCostOf()
         const errorEvent: CallErrorEvent = {
@@ -2876,17 +3014,8 @@ export function createClient(config: ClientConfig): Client {
             : {}),
           ...(errorCallCost !== undefined ? { callCost: errorCallCost } : {}),
         }
-        telemetry.onError?.(errorEvent, span)
-      } catch (hookErr) {
-        safeLogger.debug(
-          {
-            callId,
-            phase: 'onError',
-            error: redactSecrets(String(hookErr)),
-          },
-          'llm.telemetry.hook.failed',
-        )
-      }
+        return telemetry.onError?.(errorEvent, span)
+      })
       safeLogger.error(
         {
           callId,
@@ -3066,7 +3195,13 @@ export function createClient(config: ClientConfig): Client {
   // -------------------------------------------------------------------------
 
   const impl = {
-    async generate(request: LlmRequest, opts: GenerateOptions): Promise<LlmResult> {
+    async generate(liveRequest: LlmRequest, opts: GenerateOptions): Promise<LlmResult> {
+      // One shallow snapshot of the request, before the first await: every field
+      // read later (`metadata`, `externalId`, `tools`, `messages`, ...) is read
+      // from this copy, so a host that reassigns a field of its own object while
+      // the call validates changes nothing. Nested objects are shared, not copied:
+      // see the `Client.generate` contract.
+      const request: LlmRequest = { ...liveRequest }
       if (typeof request.provider !== 'string' || request.provider.length === 0) {
         throw new LlmError(
           'request.provider is required — model identity is (provider, model).',
@@ -3084,6 +3219,7 @@ export function createClient(config: ClientConfig): Client {
       const runtimeOpts = opts as GenerateOptions | undefined
       const callAuth = requireAuth(runtimeOpts?.auth)
       const storePayload = resolveStorePayload(runtimeOpts?.storePayload)
+      const signal = runtimeOpts?.signal
       // Config resolution: libDefaults → request.config
       const descriptor = checkDescriptor(resolved, provider, model)
       assertProviderStateAdmitted(request.transientProviderState, descriptor, model)
@@ -3095,7 +3231,7 @@ export function createClient(config: ClientConfig): Client {
         resolvedConfig,
         descriptor,
         request.callSiteId,
-        runtimeOpts?.signal,
+        signal,
         callAuth,
         config.requireInputContract === true,
         storePayload,
@@ -3103,10 +3239,13 @@ export function createClient(config: ClientConfig): Client {
     },
 
     async runStructured(
-      callSite: CallSite,
+      liveCallSite: CallSite,
       varsOrOpts: Record<string, string> | RunStructuredOptions,
       opts?: RunStructuredOptions,
     ): Promise<LlmResult> {
+      // Shallow snapshots of the host's objects, before the first await (see
+      // `generate`): the call site and the options are read after awaits below.
+      const callSite: CallSite = { ...liveCallSite }
       // D4: FIRST check in the runStructured prologue — before D2 validation,
       // D1 interpolation, and request building (before even the overload
       // detection / provider / auth checks below). Row-less (pre-callId).
@@ -3132,11 +3271,11 @@ export function createClient(config: ClientConfig): Client {
       if (opts !== undefined) {
         // Three-arg form: (callSite, vars, opts)
         vars = varsOrOpts as Record<string, string>
-        resolvedOpts = opts
+        resolvedOpts = { ...opts }
       } else {
         // Two-arg form: (callSite, opts)
         vars = {}
-        resolvedOpts = varsOrOpts as RunStructuredOptions
+        resolvedOpts = { ...(varsOrOpts as RunStructuredOptions) }
       }
 
       if (typeof callSite.provider !== 'string' || callSite.provider.length === 0) {
@@ -3296,6 +3435,9 @@ export function createClient(config: ClientConfig): Client {
       }
       const runtimeOpts = opts as CountTokensOptions | undefined
       const callAuth = requireAuth(runtimeOpts?.auth)
+      if (runtimeOpts?.signal !== undefined && !isAbortSignalLike(runtimeOpts.signal)) {
+        throw invalidSignalError()
+      }
       const countTimeoutMs = runtimeOpts?.timeoutMs
       if (countTimeoutMs !== undefined) {
         assertTimerMs(countTimeoutMs, 'countTokens: timeoutMs', 'timeoutMs')
@@ -3333,8 +3475,7 @@ export function createClient(config: ClientConfig): Client {
 
       // A signal that is already aborted never reaches the adapter.
       if (runtimeOpts?.signal?.aborted === true) {
-        const err = abortedError(runtimeOpts.signal)
-        attachCallContext(err, { callId })
+        const err = attachCallContext(abortedError(runtimeOpts.signal), { callId })
         safeLogger.error(
           {
             callId,
@@ -3362,6 +3503,7 @@ export function createClient(config: ClientConfig): Client {
           countAdapterTokens(request, {
             auth: callAuth,
             logger: safeLogger,
+            scheduler,
             modelDescriptor: descriptor,
             ...(cancellation.combinedSignal !== undefined
               ? { signal: cancellation.combinedSignal }
@@ -3386,8 +3528,9 @@ export function createClient(config: ClientConfig): Client {
         return result
       } catch (rawErr) {
         cancellation.cleanup()
-        const err = classifyThrown(rawErr, runtimeOpts?.signal)
-        attachCallContext(err, { callId })
+        const err = attachCallContext(classifyThrown(rawErr, runtimeOpts?.signal), {
+          callId,
+        })
         const latencyMs = clock.now() - startMs
         safeLogger.error(
           {

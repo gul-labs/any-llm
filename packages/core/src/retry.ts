@@ -13,6 +13,7 @@
  */
 
 import { LlmError, classifyError } from './errors.js'
+import { isThenable } from './host-guard.js'
 import { MAX_TIMER_MS } from './timer.js'
 import type { Middleware, Handler, EngineCtx, Scheduler, TimerHandle } from './ports.js'
 import type { ResolvedRequest } from './ports.js'
@@ -97,6 +98,8 @@ export interface RetryPolicy {
   /**
    * Predicate that decides whether to retry a specific error.
    * Called with the `LlmError` and the 1-based attempt number that just failed.
+   * Must return a boolean synchronously: a returned promise is refused with
+   * `bad_request` (it would be truthy for every error).
    * @default `(err) => err.retryable === true`
    */
   shouldRetry?(this: void, err: LlmError, attempt: number): boolean
@@ -397,7 +400,18 @@ export function retryMiddleware(
           if (attempt >= maxAttempts) throw err
 
           // Policy veto — propagate without sleeping.
-          if (!shouldRetryFn(err, attempt)) throw err
+          const verdict = shouldRetryFn(err, attempt) as boolean | PromiseLike<unknown>
+          if (isThenable(verdict)) {
+            // A promise is truthy, so it would retry every error; and a rejecting
+            // one would be an unhandled rejection. Refuse it, with the error that
+            // was being judged as the cause.
+            void Promise.resolve(verdict).then(undefined, () => {})
+            throw new LlmError(
+              'retryMiddleware: shouldRetry must return a boolean synchronously; it returned a promise.',
+              { kind: 'bad_request', retryable: false, cause: err },
+            )
+          }
+          if (!verdict) throw err
 
           // ── Provider delay, then deadline check ───────────────────────────
           // A provider delay is never undercut: a wait longer than `maxDelayMs`

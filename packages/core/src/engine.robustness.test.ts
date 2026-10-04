@@ -684,7 +684,7 @@ describe('engine — rejects only with LlmError (R4.8)', () => {
     }
   })
 
-  it('a missing request is an LlmError, not a TypeError', async () => {
+  it('a missing request is a bad_request LlmError, not a TypeError', async () => {
     const client = createClient({
       adapters: [new FakeAdapter('google', OK)],
       modelRegistry: REGISTRY,
@@ -697,7 +697,7 @@ describe('engine — rejects only with LlmError (R4.8)', () => {
     )
 
     expect(err).toBeInstanceOf(LlmError)
-    expect((err as LlmError).cause).toBeInstanceOf(TypeError)
+    expect(err).toMatchObject({ kind: 'bad_request', retryable: false })
   })
 
   it('a middleware that throws a string is an LlmError whose cause is the string', async () => {
