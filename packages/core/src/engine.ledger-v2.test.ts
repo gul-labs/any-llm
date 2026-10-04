@@ -555,3 +555,32 @@ describe('R7.4 provider-reported total versus the priced total', () => {
     ).toBeUndefined()
   })
 })
+
+describe('a failed attempt keeps the tier it asked for', () => {
+  it('serviceTier is the requested tier and servedServiceTier is the tier the error says it was served at', async () => {
+    const { client, sink } = makeClient([
+      new LlmError('Capacity', {
+        kind: 'server',
+        retryable: false,
+        servedServiceTier: 'standard',
+      }),
+    ])
+    await client
+      .generate({ ...request(), config: { serviceTier: 'flex' } }, { auth: AUTH })
+      .catch(() => undefined)
+    expect(sink.records).toHaveLength(1)
+    expect(sink.records[0]).toMatchObject({
+      status: 'api_error',
+      serviceTier: 'flex',
+      servedServiceTier: 'standard',
+    })
+  })
+
+  it('a request that named no tier has none on its failed row', async () => {
+    const { client, sink } = makeClient([
+      new LlmError('Down', { kind: 'server', retryable: false }),
+    ])
+    await client.generate(request(), { auth: AUTH }).catch(() => undefined)
+    expect(sink.records[0]?.serviceTier ?? null).toBeNull()
+  })
+})

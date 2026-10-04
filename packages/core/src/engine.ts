@@ -1494,6 +1494,11 @@ function buildErrorRecord(
     ...(queueDelayMs !== undefined ? { queueDelayMs } : {}),
     // buildRecord overrides status from error.kind via errorKindToStatus.
     status: 'api_error',
+    // The tier this attempt asked for, as on a success row; the tier it was
+    // served at (when the error says) is the separate `servedServiceTier`.
+    ...(resolvedConfig.serviceTier !== undefined
+      ? { serviceTier: resolvedConfig.serviceTier }
+      : {}),
     ...(err.servedServiceTier !== undefined
       ? { servedServiceTier: err.servedServiceTier }
       : {}),
@@ -3047,7 +3052,7 @@ export function createClient(config: ClientConfig): Client {
     if (tools !== undefined && request.output?.jsonSchema !== undefined) {
       issues.push({
         path: 'tools',
-        message: 'tools cannot be combined with structured output in this iteration.',
+        message: 'tools cannot be combined with structured output.',
       })
     }
     const names = new Set<string>()

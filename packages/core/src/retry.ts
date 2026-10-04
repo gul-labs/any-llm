@@ -19,11 +19,19 @@ import type { Middleware, Handler, EngineCtx, Scheduler, TimerHandle } from './p
 import type { ResolvedRequest } from './ports.js'
 import type { LlmResult } from './types.js'
 
+/**
+ * The tier a retry is pinned to: the tier the failed attempt was served at, when
+ * the request named a tier and the model supports the served one (a flex call
+ * the provider moved to standard retries at standard). A request that named no
+ * tier is never pinned: a retry must send the request the first attempt sent,
+ * and an explicit tier can change what an adapter arms (a client-side ceiling,
+ * a transport timeout) that the first attempt never had.
+ */
 function revalidatePinnedServiceTier(
   req: ResolvedRequest,
   tier: string | undefined,
 ): string | undefined {
-  if (tier === undefined) {
+  if (tier === undefined || req.config.serviceTier === undefined) {
     return undefined
   }
 

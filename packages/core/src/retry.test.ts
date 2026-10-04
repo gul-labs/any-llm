@@ -548,10 +548,42 @@ describe('retryMiddleware', () => {
     expect(seenTiers).toEqual([undefined, undefined])
   })
 
+  it('does not give a request that named no tier one: an untiered retry is the first attempt again', async () => {
+    const seenTiers: Array<string | undefined> = []
+    const req: ResolvedRequest = {
+      ...makeReq(),
+      modelDescriptor: makeTestDescriptor({
+        model: 'tiered-model',
+        provider: 'google',
+        capabilities: { serviceTiers: ['flex', 'standard'] },
+      }),
+    }
+
+    let calls = 0
+    const handler: Handler = async (attemptReq) => {
+      calls++
+      seenTiers.push(attemptReq.config.serviceTier)
+      if (calls === 1) {
+        throw new LlmError('Billed failure', {
+          kind: 'server',
+          retryable: true,
+          servedServiceTier: 'standard',
+        })
+      }
+      return DUMMY_RESULT
+    }
+
+    const mw = retryMiddleware({ maxAttempts: 2 }, { sleep: NO_SLEEP, random: () => 0 })
+    await mw.intercept(req, makeCtx(), handler)
+
+    expect(seenTiers).toEqual([undefined, undefined])
+  })
+
   it('pins a served service tier from a non-Google descriptor vocabulary', async () => {
     const seenTiers: Array<string | undefined> = []
     const req: ResolvedRequest = {
       ...makeReq(),
+      config: { serviceTier: 'default' },
       modelDescriptor: makeTestDescriptor({
         model: 'priority-tiered-model',
         provider: 'google',
@@ -576,7 +608,7 @@ describe('retryMiddleware', () => {
     const mw = retryMiddleware({ maxAttempts: 2 }, { sleep: NO_SLEEP, random: () => 0 })
     await mw.intercept(req, makeCtx(), handler)
 
-    expect(seenTiers).toEqual([undefined, 'priority'])
+    expect(seenTiers).toEqual(['default', 'priority'])
   })
 })
 
