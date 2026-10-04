@@ -10,6 +10,7 @@
 
 import { LlmError } from '@gullabs/core'
 import type { AuthMaterial } from '@gullabs/core'
+import type { GoogleGenAI } from '@google/genai'
 
 // ---------------------------------------------------------------------------
 // Auth narrowing — Google only accepts ApiKeyAuth
@@ -76,12 +77,18 @@ export const STANDARD_DEFAULT_TIMEOUT_MS = 300_000
 export const TRANSPORT_TIMEOUT_BUFFER_MS = 5_000
 
 /**
- * Largest `timeoutMs` the gemini config schemas accept. Node timers fire after
- * 1 ms (with a warning) above 2^31 - 1 ms, and the SDK deadline is `timeoutMs`
- * plus {@link TRANSPORT_TIMEOUT_BUFFER_MS}; a larger value is rejected, not
- * clamped.
+ * Largest delay a Node timer holds: above 2^31 - 1 ms a timer fires after 1 ms
+ * (with a warning). The SDK arms one for every `httpOptions.timeout`, so a
+ * larger transport timeout is rejected, not clamped.
  */
-export const GOOGLE_MAX_TIMEOUT_MS = 2_147_483_647 - TRANSPORT_TIMEOUT_BUFFER_MS
+export const MAX_TIMER_MS = 2_147_483_647
+
+/**
+ * Largest `timeoutMs` the gemini config schemas accept. The SDK deadline is
+ * `timeoutMs` plus {@link TRANSPORT_TIMEOUT_BUFFER_MS} and must itself fit a
+ * timer ({@link MAX_TIMER_MS}); a larger value is rejected, not clamped.
+ */
+export const GOOGLE_MAX_TIMEOUT_MS = MAX_TIMER_MS - TRANSPORT_TIMEOUT_BUFFER_MS
 
 // ---------------------------------------------------------------------------
 // Response shape — mirrors the @google/genai surface we actually consume
@@ -310,14 +317,10 @@ export interface GeminiGenerateConfig {
    * We use this to set a transport-level timeout that is >= the AbortSignal
    * deadline so the SDK fetch does not preempt the abort.
    *
-   * Real field: GenerateContentConfig.httpOptions.timeout (milliseconds).
-   * Real field: GenerateContentConfig.httpOptions.headers (Record<string,string>).
-   *   (No current use of custom headers here: Vertex AI auth — and the
-   *   Vertex flex-routing header injection this field once supported — was
-   *   removed from this library; see ADR-019 in DECISIONS.md. Only
-   *   API-key auth is supported below.)
+   * Real field: GenerateContentConfig.httpOptions.timeout (milliseconds). No
+   * other `httpOptions` field is admitted.
    */
-  httpOptions?: { timeout?: number; headers?: Record<string, string> }
+  httpOptions?: { timeout?: number }
   tools?: Array<{
     functionDeclarations?: Array<{
       name: string
@@ -402,6 +405,29 @@ export interface GeminiClientLike {
 // ---------------------------------------------------------------------------
 
 /**
+ * Root of the Gemini Developer API. The SDK client is built with it as its
+ * explicit `baseUrl` and the REST `countTokens` below builds its URL from it,
+ * so one endpoint serves every call. Pinning it also keeps the SDK from taking
+ * a base URL out of the process environment (`GOOGLE_GEMINI_BASE_URL`), which
+ * would send the call's API key to a host the caller never named.
+ */
+const GEMINI_API_ROOT = 'https://generativelanguage.googleapis.com'
+
+/**
+ * A real `GoogleGenAI` client for `auth`, pinned to {@link GEMINI_API_ROOT}.
+ * Shared by the generation client and both stores.
+ *
+ * @internal
+ */
+export async function newGoogleGenAI(auth: AuthMaterial): Promise<GoogleGenAI> {
+  const { GoogleGenAI: Sdk } = await import('@google/genai')
+  return new Sdk({
+    apiKey: requireApiKey(auth),
+    httpOptions: { baseUrl: `${GEMINI_API_ROOT}/` },
+  })
+}
+
+/**
  * Build a real @google/genai client from AuthMaterial.
  *
  * Returns a GeminiClientLike wrapper around the real GoogleGenAI client.
@@ -414,9 +440,7 @@ export async function buildGoogleClient(auth: AuthMaterial): Promise<GeminiClien
   // The cast is safe: GeminiGenerateParams is a structural subset of
   // GenerateContentParameters; GeminiResponseShape is a subset of
   // GenerateContentResponse.
-  const { GoogleGenAI } = await import('@google/genai')
-
-  const ai = new GoogleGenAI({ apiKey: requireApiKey(auth) })
+  const ai = await newGoogleGenAI(auth)
 
   return {
     models: {
@@ -453,7 +477,7 @@ export async function buildGoogleClient(auth: AuthMaterial): Promise<GeminiClien
  * Base of the Gemini Developer API (`v1beta`), the version the SDK's Developer
  * API client uses. Only the REST `countTokens` below builds a URL itself.
  */
-const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta'
+const GEMINI_API_BASE = `${GEMINI_API_ROOT}/v1beta`
 
 /** Longest non-structured error body kept in an error message (characters). */
 const MAX_ERROR_BODY_CHARS = 500

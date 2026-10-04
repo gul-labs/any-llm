@@ -1,5 +1,5 @@
 {
-  "_note": "Gemini error bodies. `captured` entries are live responses from probe P6 (2026-10-03), bodies verbatim; the probe keys were synthetic and are not echoed by Google. `docDerived` entries are NOT captures (ADR-013): they carry only structure taken from the field names in googleapis/googleapis google/rpc/error_details.proto (RetryInfo.retry_delay, a protobuf Duration written as decimal seconds with an 's' suffix; QuotaFailure.Violation.quota_id; ErrorInfo.reason), read 2026-10-03, and from Google's Flex page (ai.google.dev/gemini-api/docs/flex-inference, dated 2026-09-23) for the 503 text. They deliberately have no `message` text and no quotaValue or quotaDimensions values, because none was captured; `quotaId` values are illustrative names that follow the PerDay / PerMinute naming and exist only to exercise the substring match. No Gemini 429 body survives: the probe log (RESULTS.md, P3) records that Gemma returned HTTP 429 with the words 'exceeded your current quota' on 22 of 92 calls at 8-way concurrency, but those bodies were overwritten, so whether a real 429 carries QuotaFailure or RetryInfo is unverified. The code therefore reads those details only when present and treats every 429 as the ordinary rate limit.",
+  "_note": "Gemini error bodies. `captured` entries are live responses from probe P6 (2026-10-03), bodies verbatim; the probe keys were synthetic and are not echoed by Google. `docDerived` entries are NOT captures (ADR-013): they carry only structure taken from the field names in googleapis/googleapis google/rpc/error_details.proto (RetryInfo.retry_delay, a protobuf Duration written as decimal seconds with an 's' suffix; QuotaFailure.Violation.quota_id; ErrorInfo.reason), read 2026-10-03, and from Google's Flex page (ai.google.dev/gemini-api/docs/flex-inference, dated 2026-09-23) for the 503 text. They deliberately have no `message` text and no quotaValue or quotaDimensions values, because none was captured; `quotaId` values are illustrative names that follow the PerDay / PerMinute naming and exist only to exercise the substring match. No Gemini 429 body survives: the probe log (RESULTS.md, P3) records that Gemma returned HTTP 429 with the words 'exceeded your current quota' on 22 of 92 calls at 8-way concurrency, but those bodies were overwritten, so whether a real 429 carries QuotaFailure or RetryInfo is unverified. The code therefore reads those details only when present and treats every 429 as the ordinary rate limit. `reported` entries are NOT captures and NOT derived from a proto or doc page (ADR-013): they carry a message text that public bug reports quote (googleapis/deprecated-generative-ai-python issue 692, read 2026-10-03) for a Files API call on an unknown or expired file id, with the file id replaced by a placeholder; the status code and message were not captured by this repository and the shape is unverified against a live call.",
   "captured": {
     "invalidApiKey": {
       "status": 400,
@@ -154,6 +154,18 @@
         "error": {
           "code": 429,
           "status": "RESOURCE_EXHAUSTED"
+        }
+      }
+    }
+  },
+  "reported": {
+    "staleFile": {
+      "status": 403,
+      "body": {
+        "error": {
+          "code": 403,
+          "message": "You do not have permission to access the File files/abc123 or it may not exist.",
+          "status": "PERMISSION_DENIED"
         }
       }
     }

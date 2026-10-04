@@ -10,8 +10,8 @@
 import type { AuthMaterial, Logger, Scheduler } from '@gullabs/core'
 import { LlmError, assertMediaTypeAdmitted, redactSecrets } from '@gullabs/core'
 
-import { requireApiKey } from './client.js'
-import { classifyGoogleError } from './errors.js'
+import { newGoogleGenAI } from './client.js'
+import { classifyGoogleError, isGoogleNotFoundError } from './errors.js'
 import { GEMINI_INPUT_MIME_TYPES } from './model-limits.js'
 import { PLATFORM_SCHEDULER } from './platform-scheduler.js'
 
@@ -115,9 +115,7 @@ const sleepOn =
     })
 
 async function buildFilesClient(auth: AuthMaterial): Promise<GeminiFilesClientLike> {
-  const { GoogleGenAI } = await import('@google/genai')
-
-  const ai = new GoogleGenAI({ apiKey: requireApiKey(auth) })
+  const ai = await newGoogleGenAI(auth)
 
   return {
     async upload(params) {
@@ -323,25 +321,52 @@ export class GoogleFileStore {
 
     // Build an abort-race promise so future aborts wake up the sleep race
     // immediately rather than waiting the full interval.  Created only when
-    // the signal is NOT already aborted (guard above handles that case).
+    // the signal is NOT already aborted (guard above handles that case). It is
+    // observed from the start (a loop that ends before the first race, or after
+    // the last, must not leave a rejection nobody handles), and its listener is
+    // removed on every way out of the loop.
+    let onAbort: (() => void) | undefined
     const abortRacePromise: Promise<never> | undefined =
       signal !== undefined
         ? new Promise<never>((_, reject) => {
-            signal.addEventListener(
-              'abort',
-              () => {
-                reject(
-                  new LlmError('File upload polling aborted', {
-                    kind: 'aborted',
-                    retryable: false,
-                  }),
-                )
-              },
-              { once: true },
-            )
+            onAbort = () => {
+              reject(
+                new LlmError('File upload polling aborted', {
+                  kind: 'aborted',
+                  retryable: false,
+                }),
+              )
+            }
+            signal.addEventListener('abort', onAbort, { once: true })
           })
         : undefined
+    abortRacePromise?.catch(() => {})
 
+    try {
+      return await this.pollUntilActive(
+        client,
+        name,
+        fallback,
+        deadline,
+        signal,
+        abortRacePromise,
+      )
+    } finally {
+      if (signal !== undefined && onAbort !== undefined) {
+        signal.removeEventListener('abort', onAbort)
+      }
+    }
+  }
+
+  /** Polls `name` until ACTIVE; see {@link GoogleFileStore.upload}. */
+  private async pollUntilActive(
+    client: GeminiFilesClientLike,
+    name: string,
+    fallback: { name: string; uri: string; mimeType: string },
+    deadline: number,
+    signal: AbortSignal | undefined,
+    abortRacePromise: Promise<never> | undefined,
+  ): Promise<GoogleFileHandle> {
     for (;;) {
       if (this.now() >= deadline) {
         // `server`, not `timeout`: ADR-036 makes every `timeout` retryable, and
@@ -370,9 +395,7 @@ export class GoogleFileStore {
 
       // Also guard here: the signal may have fired during client.get()
       // before we looped back to the sleep race.
-      // Cast needed: TS 5.6 persists readonly-property narrowing across awaits,
-      // making it think `aborted` is still `false | undefined` after the preflight.
-      if ((signal?.aborted as boolean | undefined) === true) {
+      if (signal?.aborted === true) {
         throw new LlmError('File upload polling aborted', {
           kind: 'aborted',
           retryable: false,
@@ -506,26 +529,4 @@ async function abortable<T>(
   } finally {
     if (onAbort !== undefined) signal.removeEventListener('abort', onAbort)
   }
-}
-
-/** Detect Gemini/SDK not-found shapes so delete stays idempotent. */
-function isGoogleNotFoundError(err: unknown): boolean {
-  if (err instanceof LlmError && err.httpStatus === 404) {
-    return true
-  }
-  if (typeof err !== 'object' || err === null) {
-    return false
-  }
-  const obj = err as Record<string, unknown>
-  if (obj['status'] === 404 || obj['httpStatus'] === 404 || obj['code'] === 404) {
-    return true
-  }
-  if (obj['status'] === 'NOT_FOUND' || obj['code'] === 'NOT_FOUND') {
-    return true
-  }
-  const msg = typeof obj['message'] === 'string' ? obj['message'] : ''
-  if (/not\s*found|404/i.test(msg) && /file/i.test(msg)) {
-    return true
-  }
-  return false
 }

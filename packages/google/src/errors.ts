@@ -30,7 +30,7 @@
 import { LlmError, classifyError, parseRetryAfter } from '@gullabs/core'
 
 /** The structured body the SDK serializes into `ApiError.message`. */
-export interface GoogleErrorBody {
+interface GoogleErrorBody {
   /** `error.status`, the gRPC status name (`RESOURCE_EXHAUSTED`, `UNAVAILABLE`, ...). */
   status?: string
   /** `error.message`. */
@@ -48,7 +48,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * an `LlmError` whose `cause` is one. `undefined` when the value carries no
  * parseable `{ error: {...} }` body (a transport failure, a plain `Error`).
  */
-export function parseGoogleErrorBody(rawErr: unknown): GoogleErrorBody | undefined {
+function parseGoogleErrorBody(rawErr: unknown): GoogleErrorBody | undefined {
   const source = rawErr instanceof LlmError ? rawErr.cause : rawErr
   if (!(source instanceof Error)) return undefined
   let parsed: unknown
@@ -144,6 +144,33 @@ function retryDelayMs(body: GoogleErrorBody): number | undefined {
 
 const API_KEY_REASONS = new Set(['API_KEY_INVALID', 'API_KEY_EXPIRED'])
 const STALE_CACHE_MESSAGE = 'CachedContent not found'
+
+/**
+ * Whether a raw error from a delete call says the resource is already gone, so
+ * the delete is idempotent: HTTP 404 or `NOT_FOUND`, or HTTP 403 whose message
+ * says the resource is not found or "may not exist". Google answers an unknown
+ * or expired file id (and an unknown or expired cache) with that 403, not a 404:
+ * the `CachedContent not found (or permission denied)` shape is a live capture
+ * (probe P6); the Files API wording ("You do not have permission to access the
+ * File ... or it may not exist") is quoted by public bug reports and is not
+ * captured here (`error-bodies-2026-10-03.json`, `reported`). A real permission
+ * failure carries the same status and cannot be told apart, which is why a
+ * file or cache delete treats the shape as success.
+ */
+export function isGoogleNotFoundError(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false
+  const obj = err as Record<string, unknown>
+  const hasStatus = (status: number): boolean =>
+    obj['status'] === status || obj['httpStatus'] === status || obj['code'] === status
+  if (hasStatus(404) || obj['status'] === 'NOT_FOUND' || obj['code'] === 'NOT_FOUND') {
+    return true
+  }
+  const message =
+    parseGoogleErrorBody(err)?.message ??
+    (typeof obj['message'] === 'string' ? obj['message'] : '')
+  if (hasStatus(403) && /may not exist|not found/i.test(message)) return true
+  return /not\s*found|404/i.test(message) && /file|cachedcontent/i.test(message)
+}
 
 /** Optional extra fields threaded onto the returned {@link LlmError}. */
 export interface ClassifyGoogleErrorExtra {

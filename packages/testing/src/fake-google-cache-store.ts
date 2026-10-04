@@ -24,6 +24,8 @@ export interface FakeGoogleCacheHandle {
   model: string
   /** Tokens the cache holds, when the store was given a `tokenCount`. */
   totalTokenCount?: number
+  /** The kinds of tool the cache was created with (the keys of each tool object); empty when none. */
+  toolKinds?: readonly string[]
 }
 
 /** Mirrors `CacheKey`. */
@@ -71,6 +73,18 @@ export interface FakeGoogleCacheStoreOptions {
    * nothing and does not count in `created`.
    */
   failCreate?: Error | readonly Error[]
+}
+
+/** The distinct keys (with a value) of a list of opaque tool objects. */
+function toolKindsOf(tools: readonly unknown[] | undefined): string[] {
+  const kinds = new Set<string>()
+  for (const tool of tools ?? []) {
+    if (typeof tool !== 'object' || tool === null) continue
+    for (const [kind, value] of Object.entries(tool)) {
+      if (value !== undefined) kinds.add(kind)
+    }
+  }
+  return [...kinds]
 }
 
 const DEFAULT_SKEW_SECONDS = 30
@@ -165,6 +179,7 @@ export class FakeGoogleCacheStore {
       model: input.model,
       expiresAt: new Date(this.now() + input.ttlSeconds * 1000),
       ...(tokens !== undefined ? { totalTokenCount: tokens } : {}),
+      toolKinds: toolKindsOf(input.tools),
     }
     this.caches.set(handle.cacheName, handle)
     return { ...handle }
@@ -237,17 +252,9 @@ export class FakeGoogleCacheStore {
         break
       }
     }
-    if (!this.caches.delete(handle.cacheName)) {
-      this.onDeleteError(
-        handle.cacheName,
-        new LlmError('simulated delete failure: cache not found', {
-          kind: 'bad_request',
-          retryable: false,
-          httpStatus: 404,
-          provider: 'google',
-        }),
-      )
-    }
+    // A cache that is already gone is success, as in the real store (a 404, or
+    // the 403 "CachedContent not found" Google sends for an expired one).
+    this.caches.delete(handle.cacheName)
   }
 
   private isLive(handle: FakeGoogleCacheHandle): boolean {

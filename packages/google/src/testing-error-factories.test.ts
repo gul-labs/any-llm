@@ -17,7 +17,7 @@ import {
   type GoogleErrorScenario,
 } from '@gullabs/testing'
 import { geminiAdapter } from './adapter.js'
-import { classifyGoogleError, parseGoogleErrorBody } from './errors.js'
+import { classifyGoogleError } from './errors.js'
 import { defaultGeminiRegistry } from './models.js'
 
 describe('fakeProviderError("google", ...) classifies as the adapter classifies it', () => {
@@ -64,12 +64,6 @@ describe('fakeProviderError("google", ...) classifies as the adapter classifies 
     expect(
       classifyGoogleError(fakeProviderError('google', 'stale-cached-content')),
     ).toMatchObject({ kind: 'bad_request', reason: 'cache_not_found' })
-  })
-
-  it('the SDK error’s message is the structured body this package parses', () => {
-    const body = parseGoogleErrorBody(fakeProviderError('google', 'per-minute-quota'))
-    expect(body?.status).toBe('RESOURCE_EXHAUSTED')
-    expect(body?.details).toHaveLength(2)
   })
 
   it('fakeNetworkError is a retryable server error, as the adapter treats a transport failure', () => {

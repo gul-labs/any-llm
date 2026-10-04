@@ -13,8 +13,8 @@
 import type { AuthMaterial, Logger } from '@gullabs/core'
 import type { Content, Tool, ToolConfig } from '@google/genai'
 
-import { requireApiKey } from './client.js'
-import { classifyGoogleError } from './errors.js'
+import { newGoogleGenAI } from './client.js'
+import { classifyGoogleError, isGoogleNotFoundError } from './errors.js'
 import { LlmError, redactSecrets } from '@gullabs/core'
 
 // ---------------------------------------------------------------------------
@@ -43,6 +43,16 @@ export interface GoogleCacheHandle {
    * Absent when the response had no `usageMetadata`. Kept across a TTL refresh.
    */
   totalTokenCount?: number
+  /**
+   * The kinds of tool the cache holds, from the `tools` given to `create` (the
+   * keys of each `Tool`: `googleSearch`, `functionDeclarations`, ...); empty when
+   * it holds none. Pass it with the name as
+   * `providerOptions.google.cachedContent: { cacheName, toolKinds }` so a cached
+   * `googleSearch` is priced as Search: the request carries no tool, so nothing
+   * else says Search runs. Absent on a handle built by hand, where the content of
+   * the cache is unknown. Kept across a TTL refresh.
+   */
+  toolKinds?: readonly string[]
 }
 
 /** Key used to look up or create an entry in the in-process cache map. */
@@ -141,10 +151,33 @@ export interface GoogleCacheStoreOptions {
 const DEFAULT_SKEW_SECONDS = 30
 const DEFAULT_EXTENSION_SECONDS = 3600
 
-async function buildCachesClient(auth: AuthMaterial): Promise<GeminiCachesClientLike> {
-  const { GoogleGenAI } = await import('@google/genai')
+/** The distinct kinds (keys with a value) of a list of `Tool` objects. */
+function toolKindsOf(tools: readonly Tool[] | undefined): string[] {
+  const kinds = new Set<string>()
+  for (const tool of tools ?? []) {
+    for (const [kind, value] of Object.entries(tool)) {
+      if (value !== undefined) kinds.add(kind)
+    }
+  }
+  return [...kinds]
+}
 
-  const ai = new GoogleGenAI({ apiKey: requireApiKey(auth) })
+/**
+ * When a cache expires: the server's `expireTime` when it parses, else
+ * `fallbackMs`. An unparseable `expireTime` would make an Invalid Date, which is
+ * never live, so every `getOrCreate` would create (and bill storage for) a new
+ * cache.
+ */
+function expiryOf(expireTime: string | undefined, fallbackMs: number): Date {
+  if (expireTime !== undefined && expireTime.length > 0) {
+    const parsed = new Date(expireTime)
+    if (!Number.isNaN(parsed.getTime())) return parsed
+  }
+  return new Date(fallbackMs)
+}
+
+async function buildCachesClient(auth: AuthMaterial): Promise<GeminiCachesClientLike> {
+  const ai = await newGoogleGenAI(auth)
 
   return {
     async create(params) {
@@ -280,6 +313,12 @@ export class GoogleCacheStore {
     toolConfig?: ToolConfig
     displayName?: string
   }): Promise<GoogleCacheHandle> {
+    if (!Number.isInteger(input.ttlSeconds) || input.ttlSeconds <= 0) {
+      throw new LlmError(
+        `GoogleCacheStore.create: ttlSeconds must be a positive integer, got ${String(input.ttlSeconds)}.`,
+        { kind: 'bad_request', retryable: false, provider: 'google' },
+      )
+    }
     if (this.preflight !== undefined) {
       const counted = await this.preflight.countTokens({
         model: input.model,
@@ -337,11 +376,7 @@ export class GoogleCacheStore {
       })
     }
 
-    const fallbackExpiry = new Date(this.now() + input.ttlSeconds * 1000)
-    const expiresAt =
-      resp.expireTime !== undefined && resp.expireTime.length > 0
-        ? new Date(resp.expireTime)
-        : fallbackExpiry
+    const expiresAt = expiryOf(resp.expireTime, this.now() + input.ttlSeconds * 1000)
 
     const totalTokenCount = resp.usageMetadata?.totalTokenCount
     return {
@@ -351,6 +386,7 @@ export class GoogleCacheStore {
       ...(typeof totalTokenCount === 'number' && Number.isFinite(totalTokenCount)
         ? { totalTokenCount }
         : {}),
+      toolKinds: toolKindsOf(input.tools),
     }
   }
 
@@ -377,8 +413,10 @@ export class GoogleCacheStore {
 
     // Return existing live entry if available.
     const existing = this.entries.get(mapKey)
-    if (existing !== undefined && this.isLive(existing.handle)) {
-      return existing.handle
+    if (existing !== undefined) {
+      if (this.isLive(existing.handle)) return existing.handle
+      // An expired entry is dropped now, not kept until the next create.
+      this.entries.delete(mapKey)
     }
 
     // If coalescing, piggyback on an in-flight create for this key.
@@ -462,11 +500,7 @@ export class GoogleCacheStore {
         config: { ttl: `${extensionSeconds}s` },
       })
 
-      const fallbackExpiry = new Date(this.now() + extensionSeconds * 1000)
-      const newExpiresAt =
-        resp.expireTime !== undefined && resp.expireTime.length > 0
-          ? new Date(resp.expireTime)
-          : fallbackExpiry
+      const newExpiresAt = expiryOf(resp.expireTime, this.now() + extensionSeconds * 1000)
 
       const newHandle: GoogleCacheHandle = {
         cacheName: handle.cacheName,
@@ -475,6 +509,7 @@ export class GoogleCacheStore {
         ...(handle.totalTokenCount !== undefined
           ? { totalTokenCount: handle.totalTokenCount }
           : {}),
+        ...(handle.toolKinds !== undefined ? { toolKinds: handle.toolKinds } : {}),
       }
 
       // Update the entries map entry if this handle is tracked.
@@ -493,9 +528,11 @@ export class GoogleCacheStore {
   }
 
   /**
-   * Delete a cached content resource.
+   * Delete a cached content resource. Idempotent: a cache that is already gone
+   * (HTTP 404, or the 403 `CachedContent not found` Google sends for an expired
+   * one) is success, not an error.
    *
-   * Errors are forwarded to `onDeleteError` and NOT rethrown.
+   * Any other error is forwarded to `onDeleteError` and NOT rethrown.
    * The handle is removed from the in-process entries map regardless.
    */
   async delete(handle: GoogleCacheHandle): Promise<void> {
@@ -511,6 +548,7 @@ export class GoogleCacheStore {
       const client = await this.getClient()
       await client.delete({ name: handle.cacheName })
     } catch (err) {
+      if (isGoogleNotFoundError(err)) return
       this.onDeleteError(handle.cacheName, err)
     }
   }

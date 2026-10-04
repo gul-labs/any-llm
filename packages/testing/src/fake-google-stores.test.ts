@@ -115,9 +115,22 @@ describe('FakeGoogleCacheStore', () => {
       model: 'm1',
       expiresAt: new Date(5_000 + 60_000),
       totalTokenCount: 2,
+      toolKinds: [],
     })
     expect(caches.created).toBe(1)
     expect(caches.size).toBe(1)
+  })
+
+  it('the handle records the kinds of the tools it was created with', async () => {
+    const caches = new FakeGoogleCacheStore()
+    const withTools = await caches.create({
+      model: 'm',
+      ttlSeconds: 60,
+      tools: [{ googleSearch: {} }, { functionDeclarations: [] }],
+    })
+    expect(withTools.toolKinds).toEqual(['googleSearch', 'functionDeclarations'])
+    const without = await caches.create({ model: 'm', ttlSeconds: 60 })
+    expect(without.toolKinds).toEqual([])
   })
 
   it('totalTokenCount is absent unless configured', async () => {
@@ -186,7 +199,7 @@ describe('FakeGoogleCacheStore', () => {
     )
   })
 
-  it('delete removes the cache and its getOrCreate entry; a second delete reports to onDeleteError', async () => {
+  it('delete removes the cache and its getOrCreate entry; a second delete is success, as a gone cache is in the real store', async () => {
     const seen: string[] = []
     const caches = new FakeGoogleCacheStore({ onDeleteError: (name) => seen.push(name) })
     const handle = await caches.getOrCreate(key, factory)
@@ -195,7 +208,7 @@ describe('FakeGoogleCacheStore', () => {
     expect(caches.size).toBe(0)
     expect(seen).toEqual([])
     await caches.delete(handle)
-    expect(seen).toEqual([handle.cacheName])
+    expect(seen).toEqual([])
 
     const again = await caches.getOrCreate(key, factory)
     expect(again.cacheName).not.toBe(handle.cacheName)
