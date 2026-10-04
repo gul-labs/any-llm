@@ -499,12 +499,16 @@ export interface LlmCallRecord {
 `drizzleUsageSink({ db, transaction? })`, and the SQL for it: `sql/install.sql` (fresh install) and
 `sql/upgrades/*.sql`. A record without a payload is one INSERT on `db`; when the engine hands the sink a payload,
 the write is one transaction that inserts the matching `llm_call_payloads` row (keyed by `attempt_id`, FK to
-`llm_calls` ON DELETE CASCADE) behind a uniquely named savepoint: a payload failure is logged as
-`llm.call.payload.failed` and the ledger row commits, a ledger failure aborts both (ADR-038). A `db` without
-`transaction()` is `bad_request` at construction. `purgeLlmCallPayloads(db, { olderThan, batchSize? })` (batched)
+`llm_calls` ON DELETE CASCADE) in a nested transaction: a payload failure is logged as
+`llm.call.payload.failed` and the ledger row commits (on every Drizzle Postgres driver), a ledger failure aborts
+both and rejects with the database's message and SQLSTATE, never the SQL or its parameters (ADR-038, ADR-045). A
+transaction handle is a valid `db`: writes then run one at a time, each in a nested transaction, and the host owns
+the commit. A `db` without `transaction()` is `bad_request` at construction. `purgeLlmCallPayloads(db, { olderThan, batchSize? })` (batched)
 and `deleteLlmCallPayloads(db, { callIds })` are the host's retention tools; there is no delete by `externalId`. `status` and `error_kind` carry CHECK constraints over the closed core unions;
 `error_reason` is plain text with no CHECK constraint (ADR-036). The table has indexes on `call_id`,
-`external_id`, `created_at` and `(call_site_id, created_at)`. Insert is `onConflictDoNothing` on `attemptId`, which only absorbs an
+`external_id`, `created_at` and `(call_site_id, created_at)`, and partial indexes on `error_reason` and
+`auth_key_id`; `cost_micro_usd` is BIGINT. `assertLlmCallsSchema(db)` also rejects a NOT NULL column the sink
+cannot satisfy. Insert is `onConflictDoNothing` on `attemptId`, which only absorbs an
 at-least-once sink re-delivering the same record; every attempt has its own minted `attemptId`.
 Core imports no ORM; a host with a different store implements `UsageSink` directly.
 

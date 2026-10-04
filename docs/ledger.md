@@ -47,7 +47,10 @@ Rules that matter:
   `googleSearch`, and when a response carries grounding metadata the request did not declare, in which case
   the observed queries are priced and a warning says so) and `web_search_calls` (the observed number of searches;
   absent when the provider did not say, `0` when it said none ran) stay in `token_details`, which is
-  otherwise token counts, so do not sum its values. `tool_use_prompt` (Gemini 2.5 Search-result tokens) is
+  otherwise token counts and, for xAI, `cost_in_usd_ticks` (the provider-reported cost of the response in
+  1e-10 USD, so `cost_in_usd_ticks / 10000` is micro-USD): it is the only persisted trace of what xAI
+  itself billed, and the way to reconcile an xAI row whose `cost_micro_usd` is NULL or `'estimated'`. Do
+  not sum the values of `token_details`. `tool_use_prompt` (Gemini 2.5 Search-result tokens) is
   recorded and not priced. `usage_missing` (`1`) marks a Google 200 that carried no `usageMetadata`: the
   tokens are recorded as zero, `cost_micro_usd` is NULL and the confidence `estimated`. A failed attempt's
   row keeps the tier the attempt asked for in `service_tier` and the tier it was served at, when the error
@@ -138,19 +141,54 @@ also decide whether and how to clean dependent sidecar rows.
 - `sql/install.sql` creates the current `llm_calls` table, its indexes and its CHECK constraints, and the
   opt-in `llm_call_payloads` table, on a database that has neither.
 - `sql/upgrades/NNNN-*.sql` moves an existing table forward. Apply every file you have not yet applied, in
-  order. Each is idempotent. `0001-add-error-reason.sql` takes the table published in 0.7.2 and adds
-  `error_reason`. `0002-ledger-v2.sql` adds `cost_confidence`, `cost_details` and `cost_unpriced_reason`,
-  the `created_at` and `(call_site_id, created_at)` indexes, and CHECK constraints on `status` and
-  `error_kind` (not on `error_reason`). The CHECKs are added `NOT VALID`, so they apply to new rows at once
-  and never scan the table inside the upgrade; `0002-validate-checks.sql` validates the existing rows
-  afterwards. The file sets `lock_timeout` so a blocked statement fails rather than stalling sink writes, and
-  every statement is idempotent on its own (re-run it after a failure). Rows written by `@gullabs/core`
-  0.2.0 (`status` / `error_kind` = `parse_error`) block validation until you fix them; the validate file
-  documents the query that finds them and a suggested `UPDATE`, and the library does not rewrite your
-  history. The two indexes are built without `CONCURRENTLY` (a SHARE lock, so writes wait): on a very large
+  numeric order; the numbers are unique, so a numeric-prefix runner (golang-migrate, Flyway) accepts the
+  directory. Each file is idempotent. `0001-add-error-reason.sql` takes the table published in 0.7.2 and adds
+  `error_reason`. `0002-ledger-v2.sql` adds `cost_confidence`, `cost_details` and `cost_unpriced_reason`, the
+  `created_at` and `(call_site_id, created_at)` indexes, partial indexes on `error_reason` and `auth_key_id`,
+  widens `cost_micro_usd` to `BIGINT`, and adds CHECK constraints on `status` and `error_kind` (not on
+  `error_reason`). The CHECKs are added `NOT VALID`, so they apply to new rows at once and never scan the table
+  inside the upgrade. The file sets `lock_timeout` so a blocked statement fails rather than stalling sink
+  writes, and every statement is idempotent on its own (re-run it after a failure). Two statements are not
+  instant: the index builds (without `CONCURRENTLY` they take a SHARE lock, so writes wait: on a very large
   table create them first with `CREATE INDEX CONCURRENTLY IF NOT EXISTS` under the same names, outside a
-  transaction (`CONCURRENTLY` cannot run inside one). The `drizzle-orm` peer floor (0.36) is declared, not
-  tested.
+  transaction) and the `INTEGER` to `BIGINT` change, which rewrites the table under an exclusive lock (run it
+  in a quiet period; leaving the column `INTEGER` is safe until one attempt costs more than 2,147,483,647
+  micro-USD, about $2,147). `0003-validate-checks.sql` is **optional** and can fail: it validates the existing
+  rows against the CHECKs, and rows written by `@gullabs/core` 0.2.0 (`status` / `error_kind` =
+  `parse_error`) block it until you fix them. It documents the query that finds them and a suggested
+  `UPDATE`; the library does not rewrite your history. A runner that applies every file in the directory
+  stops there on such a database: fix the rows, or skip that one file, and continue with
+  `0004-llm-call-payloads.sql`, which adds the opt-in payload table.
+
+**Skipping validation, and `UPDATE` on legacy rows.** Leaving the CHECKs `NOT VALID` is safe for inserts, but
+Postgres enforces a `NOT VALID` CHECK on every row an `UPDATE` writes, so while they are not validated any
+`UPDATE` that touches a legacy row (`parse_error` in `status` or `error_kind`) fails, whatever column it sets:
+
+```text
+ERROR:  new row for relation "llm_calls" violates check constraint "llm_calls_error_kind_check"
+DETAIL:  Failing row contains (...)
+```
+
+(the constraint is `llm_calls_error_kind_check` or `llm_calls_status_check`, whichever the row breaks first). Your
+own maintenance is affected, for example the tenant-deletion `UPDATE` below when one of the calls is a legacy
+row. A `DELETE` is not. Run the cleanup `UPDATE` documented in `0003-validate-checks.sql` first (it files the
+legacy rows under valid values and keeps the originals in `metadata`); after that every `UPDATE` works whether
+or not you ever validate.
+
+**drizzle-kit.** `schema.ts` is exported so your queries are typed and `drizzle-kit push` can check a
+database against it, but the SQL files are the authority for an existing database. `drizzle-kit generate`
+cannot emit `NOT VALID` CHECKs, `CREATE INDEX CONCURRENTLY` or a `lock_timeout`, so a migration it generates
+from `schema.ts` scans and locks the table and fails on legacy rows. Do not generate migrations for these
+tables; apply the shipped files.
+
+**Tested `drizzle-orm` versions.** The peer range is `>=0.36 <1`; the test suite runs the version in the
+package's dev dependencies (0.45.x). The 0.36 floor is not in CI; it was run by hand for this release (the whole suite on PGlite, node-postgres and
+postgres-js, and `tsc`) and passed.
+
+**Drivers.** The sink, the retention helpers and `assertLlmCallsSchema` are tested on node-postgres,
+postgres-js and PGlite (the first two against a real server, see `drivers.integration.test.ts`). `neon-http`
+is not tested; it has no transactions, so it cannot write payloads (a record with a payload fails and is
+logged as `llm.call.sink.failed`), and a ledger-only sink on it is not tested either.
 
 Run the upgrade SQL **before** you deploy the new sink, and do it on every release that ships one: all
 `@gullabs/*` packages version in lockstep, so bumping core for an unrelated fix means bumping
@@ -169,8 +207,18 @@ Two ways to find out before rows are lost:
   abandoned and logged as `llm.call.sink.interrupted` (same fields, plus `graceMs`). The row may or
   may not be written later in either case, so alert on both events.
 - Call `assertLlmCallsSchema(db)` from `@gullabs/drizzle`. It selects every column the schema names with
-  `LIMIT 0`, writes nothing, and rejects with an error that points at `sql/upgrades/`. It needs no client,
-  so run it from a deploy or CI step, a readiness endpoint, or at boot.
+  `LIMIT 0`, writes nothing, and rejects with an error that points at `sql/upgrades/`. It also reads the
+  catalog for a column that would make the insert fail: a `NOT NULL` column without a default that the sink
+  does not write, or one the schema allows to be NULL. Tables made by `@gullabs/drizzle` 0.1.1 to 0.4.0 have
+  `raw_usage NOT NULL`, which rejects every error, timeout and refusal row; no upgrade script covers those
+  shapes. The error names the column and the fix, one line each, for example
+  `ALTER TABLE llm_calls ALTER COLUMN "raw_usage" DROP NOT NULL` (or `SET DEFAULT` for a column you added).
+  It needs no client, so run it from a deploy or CI step, a readiness endpoint, or at boot.
+- The failure log carries the cause. A dropped ledger row logs `llm_calls insert failed for attempt <id>:` and
+  the database's own message and SQLSTATE (`42703` for a missing column, `42P01` for a missing table,
+  `23502` for a NOT NULL violation), with a pointer to `assertLlmCallsSchema` and `sql/upgrades/` for those.
+  It never carries the SQL or the bound parameters: reasoning text, tool arguments and `metadata` do not reach
+  the log.
 
 ## What each table holds
 
@@ -220,7 +268,8 @@ const sink: UsageSink = {
 A tenant deletion that follows these docs has two parts: `deleteLlmCallPayloads(db, { callIds })` for the payload
 rows, and your own `UPDATE llm_calls SET reasoning_text = NULL, tool_calls = NULL, error_message = NULL,
 citations = NULL, metadata = '{}' WHERE call_id = ANY($1)` (or `DELETE`, which also cascades to the payload
-rows) for the ledger columns.
+rows) for the ledger columns. While the status CHECKs are `NOT VALID` that `UPDATE` fails on a legacy row (see
+"Skipping validation" above): fix the legacy rows first.
 
 ## Prompt and response text (opt-in)
 
@@ -228,10 +277,13 @@ A client that sets `ClientConfig.payloads` hands the sink one payload per attemp
 `drizzleUsageSink({ db })` stores it in `llm_call_payloads`, keyed by `attempt_id` (FK to `llm_calls`, `ON DELETE
 CASCADE`, index on `created_at`): `request` is `{ system?, messages, tools? }` with media parts as a media type,
 size and SHA-256 (never bytes; a part over 20 MiB or not valid base64 is stored as a marker) and tools as name
-and schema hash; `response` is `{ text?, errorMessage? }`. `sql/upgrades/0003-llm-call-payloads.sql` adds the
-table to an existing database. A payload is written in the same transaction as the ledger row, behind a
-savepoint: a payload failure never costs the ledger row. The transaction is also why a host rollback takes the
-ledger row too, when your `transaction` helper joins a transaction of yours. See the
+and schema hash; `response` is `{ text?, errorMessage? }`. `sql/upgrades/0004-llm-call-payloads.sql` adds the
+table to an existing database. A payload is written in the same transaction as the ledger row, in a nested
+transaction (a savepoint, through Drizzle's `transaction()`): a payload failure never costs the ledger row, on
+every supported driver. The transaction is also why a host rollback takes the ledger row too, when `db` is
+your transaction handle or your `transaction` helper joins a transaction of yours. In that case the sink runs
+its writes one at a time, each in a nested transaction of its own, so concurrent records all succeed and a
+failing write never aborts your transaction; the commit or rollback stays yours. See the
 [`@gullabs/drizzle` README](../packages/drizzle/README.md#payload-storage) and ADR-038.
 
 Payloads can contain customer data. Retention and tenant deletion are the host's duty: schedule
@@ -315,12 +367,21 @@ host retention/deletion is implemented even though this repo’s canonical ledge
 
 ## Query examples (index-coverage note)
 
+### Reading sums
+
+`cost_micro_usd` is `BIGINT`. Drizzle reads the column itself as a JS number (`mode: 'number'`, safe to 2^53
+micro-USD, about $9 billion), but a Postgres aggregate over it is not: `SUM(bigint)` is `numeric`, and
+`count(*)` is `bigint`. node-postgres and postgres-js return `bigint` and `numeric` as **strings**. Cast in SQL
+(`sum(cost_micro_usd)::float8`, exact below 2^53) or convert in code (`Number(row.spend)`, or
+``sql<number>`sum(${llmCalls.costMicroUsd})`.mapWith(Number)`` in Drizzle). The library's own helpers do this:
+`purgeLlmCallPayloads` selects `count(*)::int`.
+
 Spend by day (index-backed on `created_at` for a time window):
 
 ```sql
 select
   date_trunc('day', created_at) as day,
-  sum(cost_micro_usd) as spend_micro_usd
+  sum(cost_micro_usd)::float8 as spend_micro_usd
 from llm_calls
 where cost_micro_usd is not null
   and created_at >= now() - interval '30 days'
@@ -340,6 +401,19 @@ select
 from llm_calls
 where cost_details is not null
 group by 1, 2;
+```
+
+Calls the quota layer deferred, and spend per key. `error_reason` and `auth_key_id` each have a partial index
+(only rows where the column is set), so a query on them can use an index instead of scanning the table. `model` has no index: a
+per-model query over a long window scans the window (see the retries example):
+
+```sql
+select call_id, created_at from llm_calls where error_reason = 'quota_window' order by created_at desc;
+
+select auth_key_id, sum(cost_micro_usd)::float8 as spend_micro_usd
+from llm_calls
+where auth_key_id is not null and created_at >= now() - interval '30 days'
+group by 1;
 ```
 
 Failures by call-site over a window (the `created_at` index bounds the scan; `(call_site_id, created_at)` serves one call site over a window):

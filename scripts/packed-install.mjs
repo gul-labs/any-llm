@@ -247,7 +247,10 @@ try {
       'package/sql/install.sql',
       'package/sql/upgrades/0001-add-error-reason.sql',
       'package/sql/upgrades/0002-ledger-v2.sql',
-      'package/sql/upgrades/0003-llm-call-payloads.sql',
+      'package/sql/upgrades/0003-validate-checks.sql',
+      'package/sql/upgrades/0004-llm-call-payloads.sql',
+      'package/LICENSE',
+      'package/NOTICE',
     ]) {
       record(
         listing.split('\n').includes(file),
@@ -548,7 +551,8 @@ ${callSite}`,
         'install.sql',
         'upgrades/0001-add-error-reason.sql',
         'upgrades/0002-ledger-v2.sql',
-        'upgrades/0003-llm-call-payloads.sql',
+        'upgrades/0003-validate-checks.sql',
+        'upgrades/0004-llm-call-payloads.sql',
       ]) {
         const viaRequire = require.resolve('@gullabs/drizzle/sql/' + f)
         const viaImport = fileURLToPath(import.meta.resolve('@gullabs/drizzle/sql/' + f))

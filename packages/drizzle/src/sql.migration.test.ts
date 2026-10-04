@@ -9,17 +9,19 @@
  * - `upgrades/0002-ledger-v2.sql` takes the previously published shape (0.7.2 plus
  *   upgrade 0001, which already has `error_reason`) to the same column, index and
  *   CHECK definitions as a fresh install (the CHECKs NOT VALID until
- *   `upgrades/0002-validate-checks.sql` runs), keeps existing rows, and is safe to
- *   run twice, statement by statement and not only as one transaction.
- * - `upgrades/0003-llm-call-payloads.sql` takes the previous shape (0.7.2 plus 0001 and
- *   0002) to the same tables, columns, index and foreign key as a fresh install,
- *   leaves `llm_calls` and its rows alone, is idempotent statement by statement,
- *   and refuses to run over a table of the same name that is not ours.
+ *   `upgrades/0003-validate-checks.sql` runs; `cost_micro_usd` widened to BIGINT;
+ *   the two partial indexes), keeps existing rows, and is safe to run twice,
+ *   statement by statement and not only as one transaction.
+ * - `upgrades/0004-llm-call-payloads.sql` takes the previous shape (0.7.2 plus
+ *   0001 and 0002) to the same tables, columns, index and foreign key as a fresh
+ *   install, leaves `llm_calls` and its rows alone, is idempotent statement by
+ *   statement, and refuses to run over a table of the same name that is not ours.
+ * - The upgrade files carry unique, ordered numeric prefixes (`package.test.ts`).
  * - Definitions (types, defaults, index and CHECK expressions as Postgres
  *   reports them) are compared, never just names: `schema.ts` against
  *   `install.sql`, and the upgraded table against a fresh install.
- * - The declared `drizzle-orm` peer floor (0.36) is declared, not tested: only the
- *   dev dependency version is installed.
+ * - The declared `drizzle-orm` peer floor (0.36) is not in CI: only the dev
+ *   dependency version is installed (the floor was run by hand for the release).
  * - `status` and `error_kind` carry CHECK constraints; `error_reason` carries
  *   none, so a reason added to the core union later needs no SQL.
  *
@@ -256,9 +258,11 @@ describe('install.sql (fresh install)', () => {
     ).toEqual(notNull)
 
     expect(await indexNames(pg)).toEqual([
+      'llm_calls_auth_key_id_idx',
       'llm_calls_call_id_idx',
       'llm_calls_call_site_created_at_idx',
       'llm_calls_created_at_idx',
+      'llm_calls_error_reason_idx',
       'llm_calls_external_id_idx',
       'llm_calls_pkey',
     ])
@@ -271,12 +275,18 @@ describe('install.sql (fresh install)', () => {
 
     // Indexes: rebuild each declared index from its columns and compare Postgres's
     // own rendering, so a wrong column list or order fails (names alone would not).
+    const partial = (i: (typeof config.indexes)[number]): string => {
+      if (i.config.where === undefined) return ''
+      const rendered = new PgDialect().sqlToQuery(i.config.where)
+      expect(rendered.params).toEqual([])
+      return ` WHERE (${rendered.sql.replaceAll('"llm_calls".', '').replaceAll('"', '')})`
+    }
     const declaredIndexes = config.indexes
       .map((i) => ({
         indexname: i.config.name ?? '',
         indexdef: `CREATE ${i.config.unique ? 'UNIQUE ' : ''}INDEX ${i.config.name ?? ''} ON public.llm_calls USING btree (${i.config.columns
           .map((c) => (c as { name: string }).name)
-          .join(', ')})`,
+          .join(', ')})${partial(i)}`,
       }))
       .sort((x, y) => x.indexname.localeCompare(y.indexname))
     expect((await indexDefs(pg)).filter((i) => i.indexname !== 'llm_calls_pkey')).toEqual(
@@ -474,8 +484,9 @@ describe('upgrades/0001-add-error-reason.sql (from the 0.7.2 shape)', () => {
 /** The previously published shape: 0.7.2 plus upgrade 0001. */
 const AFTER_0001_SQL = `${PUBLISHED_0_7_2_SQL}\n${sqlFile('upgrades/0001-add-error-reason.sql')}`
 
+const LEDGER_DOC = fileURLToPath(new URL('../../../docs/ledger.md', import.meta.url))
 const UPGRADE_0002 = 'upgrades/0002-ledger-v2.sql'
-const VALIDATE_0002 = 'upgrades/0002-validate-checks.sql'
+const VALIDATE_0003 = 'upgrades/0003-validate-checks.sql'
 
 /** Strips the NOT VALID suffix Postgres appends to an unvalidated CHECK's definition. */
 function withoutNotValid(def: string): string {
@@ -524,7 +535,7 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
     ).toBe(true)
     expect(freshChecks.every((c) => c.convalidated)).toBe(true)
 
-    await upgraded.exec(sqlFile(VALIDATE_0002))
+    await upgraded.exec(sqlFile(VALIDATE_0003))
     expect(await checkConstraints(upgraded)).toEqual(freshChecks)
 
     const old = await upgraded.query(
@@ -543,11 +554,43 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
     ])
   })
 
+  it('widens cost_micro_usd to BIGINT keeping old values, so one attempt above 2^31 micro-USD is stored, and adds the two partial indexes', async () => {
+    const pg = new PGlite()
+    await pg.exec(AFTER_0001_SQL)
+    await pg.exec(OLD_ROW_SQL)
+    await pg.exec(`UPDATE llm_calls SET cost_micro_usd = 2147483647`)
+    // The 0.7.2 column is INTEGER: the overflow the upgrade removes.
+    await expect(
+      pg.exec(`UPDATE llm_calls SET cost_micro_usd = 2147483648`),
+    ).rejects.toThrow(/integer out of range/)
+    await pg.exec(sqlFile(UPGRADE_0002))
+
+    const cost = (await describeTable(pg)).find((c) => c.column_name === 'cost_micro_usd')
+    expect(cost?.data_type).toBe('bigint')
+    expect((await pg.query(`SELECT cost_micro_usd FROM llm_calls`)).rows).toEqual([
+      { cost_micro_usd: 2147483647 },
+    ])
+    const db = drizzle({ client: pg })
+    await drizzleUsageSink({ db }).record(makeRecord({ costMicroUsd: 5_000_000_000 }))
+    const rows = await db.select({ c: llmCalls.costMicroUsd }).from(llmCalls)
+    expect(rows.map((r) => r.c).sort()).toEqual([2147483647, 5_000_000_000])
+
+    const defs = Object.fromEntries(
+      (await indexDefs(pg)).map((i) => [i.indexname, i.indexdef]),
+    )
+    expect(defs['llm_calls_error_reason_idx']).toMatch(
+      /WHERE \(error_reason IS NOT NULL\)$/,
+    )
+    expect(defs['llm_calls_auth_key_id_idx']).toMatch(
+      /WHERE \(auth_key_id IS NOT NULL\)$/,
+    )
+  })
+
   it('sets lock_timeout before it touches the table, so a blocked statement fails instead of stalling sink writes', () => {
     const statements = splitStatements(sqlFile(UPGRADE_0002))
     expect(statements[0]).toMatch(/^SET lock_timeout = '\d+s?';$/)
     expect(statements[statements.length - 1]).toBe('RESET lock_timeout;')
-    expect(splitStatements(sqlFile(VALIDATE_0002))[0]).toMatch(/^SET lock_timeout/)
+    expect(splitStatements(sqlFile(VALIDATE_0003))[0]).toMatch(/^SET lock_timeout/)
   })
 
   it('runs each statement on its own twice with the same result (idempotent per statement, not as one transaction)', async () => {
@@ -586,7 +629,7 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
     await runStatementwise(pg, sqlFile(UPGRADE_0002))
     expect(await oids()).toEqual(before)
     // Validation then leaves the same constraints in place, only validated.
-    await runStatementwise(pg, sqlFile(VALIDATE_0002))
+    await runStatementwise(pg, sqlFile(VALIDATE_0003))
     expect(await oids()).toEqual(before)
   })
 
@@ -668,17 +711,48 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
       ).rejects.toThrow()
     })
 
+    it('while the CHECKs are NOT VALID any UPDATE of a legacy row fails with the documented text, a DELETE and the cleanup UPDATE do not (P3-2)', async () => {
+      const pg = await legacyTable()
+      await runStatementwise(pg, sqlFile(UPGRADE_0002))
+      // The tenant-deletion recipe of docs/ledger.md, aimed at a legacy row.
+      await expect(
+        pg.exec(
+          `UPDATE llm_calls SET reasoning_text = NULL WHERE call_id = ANY(ARRAY['legacy_1'])`,
+        ),
+      ).rejects.toThrow(
+        'new row for relation "llm_calls" violates check constraint "llm_calls_error_kind_check"',
+      )
+      // The error text the validate file and the ledger guide quote.
+      for (const doc of [sqlFile(VALIDATE_0003), readFileSync(LEDGER_DOC, 'utf8')]) {
+        expect(doc).toContain(
+          'new row for relation "llm_calls" violates check constraint "llm_calls_error_kind_check"',
+        )
+      }
+      // Rows that satisfy the constraints update fine; a DELETE is not checked.
+      await pg.exec(
+        `UPDATE llm_calls SET reasoning_text = NULL WHERE call_id = 'old_call'`,
+      )
+      await pg.exec(`DELETE FROM llm_calls WHERE attempt_id = 'legacy_attempt_1'`)
+      // The documented cleanup UPDATE files the rest under valid values; after that
+      // every UPDATE works even though the constraints were never validated.
+      await pg.exec(documentedStatement(sqlFile(VALIDATE_0003), 'UPDATE llm_calls'))
+      await pg.exec(
+        `UPDATE llm_calls SET reasoning_text = NULL WHERE call_id = 'legacy_2'`,
+      )
+      expect((await checkConstraints(pg)).every((c) => !c.convalidated)).toBe(true)
+    })
+
     it('validation fails, changing nothing, until the legacy rows are fixed with the documented query', async () => {
       const pg = await legacyTable()
       await runStatementwise(pg, sqlFile(UPGRADE_0002))
 
-      const errors = await runStatementwise(pg, sqlFile(VALIDATE_0002))
+      const errors = await runStatementwise(pg, sqlFile(VALIDATE_0003))
       expect(errors.length).toBeGreaterThan(0)
       expect(errors.join('\n')).toMatch(/violated by some row|check constraint/)
       expect((await checkConstraints(pg)).every((c) => !c.convalidated)).toBe(true)
 
       // The query the validate file documents finds exactly the legacy rows ...
-      const doc = sqlFile(VALIDATE_0002)
+      const doc = sqlFile(VALIDATE_0003)
       const find = documentedStatement(doc, 'SELECT status, error_kind, count(*)')
       const found = await pg.query<{ status: string; error_kind: string; rows: string }>(
         find,
@@ -691,7 +765,7 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
       // ... and the documented fix, run by the host, makes validation succeed
       // while keeping the original values in metadata.
       await pg.exec(documentedStatement(doc, 'UPDATE llm_calls'))
-      expect(await runStatementwise(pg, sqlFile(VALIDATE_0002))).toEqual([])
+      expect(await runStatementwise(pg, sqlFile(VALIDATE_0003))).toEqual([])
       expect((await checkConstraints(pg)).every((c) => c.convalidated)).toBe(true)
       const fixed = await pg.query<{
         status: string
@@ -718,7 +792,7 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
         },
       ])
       // Validating twice is a no-op.
-      expect(await runStatementwise(pg, sqlFile(VALIDATE_0002))).toEqual([])
+      expect(await runStatementwise(pg, sqlFile(VALIDATE_0003))).toEqual([])
 
       // The result equals a fresh install's definitions.
       const fresh = new PGlite()
@@ -809,6 +883,42 @@ describe('a table that was not migrated is detectable, and the engine logs every
     expect(err.cause).toBeDefined()
   })
 
+  it('a table made by 0.1.1 to 0.4.0 (raw_usage NOT NULL) goes through every upgrade, assertLlmCallsSchema names raw_usage, and the one-line fix makes it pass (P2-4)', async () => {
+    const pg = new PGlite()
+    await pg.exec(
+      PUBLISHED_0_7_2_SQL.replace(
+        'raw_usage             JSONB,',
+        'raw_usage             JSONB        NOT NULL,',
+      ),
+    )
+    for (const file of [
+      'upgrades/0001-add-error-reason.sql',
+      UPGRADE_0002,
+      VALIDATE_0003,
+      'upgrades/0004-llm-call-payloads.sql',
+    ]) {
+      expect(await runStatementwise(pg, sqlFile(file)), file).toEqual([])
+    }
+    const db = drizzle({ client: pg })
+    // Every column is there, so the old check passed; the new one reads nullability.
+    const error = (await assertLlmCallsSchema(db).catch((e: unknown) => e)) as Error
+    expect(error).toBeInstanceOf(Error)
+    expect(error.message).toContain('"raw_usage"')
+    expect(error.message).toContain(
+      'ALTER TABLE llm_calls ALTER COLUMN "raw_usage" DROP NOT NULL',
+    )
+    // The failure it predicts: every error row is rejected.
+    await expect(
+      drizzleUsageSink({ db }).record(makeRecord({ rawUsage: null })),
+    ).rejects.toThrow(/raw_usage/)
+
+    // The documented fix (ledger guide) is the statement the error quotes.
+    await pg.exec('ALTER TABLE llm_calls ALTER COLUMN "raw_usage" DROP NOT NULL')
+    await expect(assertLlmCallsSchema(db)).resolves.toBeUndefined()
+    await drizzleUsageSink({ db }).record(makeRecord({ rawUsage: null }))
+    expect((await pg.query('SELECT 1 FROM llm_calls')).rows).toHaveLength(1)
+  })
+
   it('through the engine, every row (success, attempt failure, refusal) is dropped with an error-level llm.call.sink.failed and the call is unaffected', async () => {
     const pg = new PGlite()
     await pg.exec(PUBLISHED_0_7_2_SQL)
@@ -870,11 +980,11 @@ describe('a table that was not migrated is detectable, and the engine logs every
 })
 
 // ---------------------------------------------------------------------------
-// llm_call_payloads: fresh install and upgrade 0003
+// llm_call_payloads: fresh install and upgrade 0004
 // ---------------------------------------------------------------------------
 
 const PAYLOADS = 'llm_call_payloads'
-const UPGRADE_0003 = 'upgrades/0003-llm-call-payloads.sql'
+const UPGRADE_0004 = 'upgrades/0004-llm-call-payloads.sql'
 
 /** The previously published shape of the whole schema: 0.7.2 plus upgrades 0001 and 0002. */
 const AFTER_0002_SQL = `${AFTER_0001_SQL}\n${sqlFile(UPGRADE_0002)}`
@@ -983,7 +1093,7 @@ describe('install.sql: llm_call_payloads', () => {
   })
 })
 
-describe('upgrades/0003-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 and 0002)', () => {
+describe('upgrades/0004-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 and 0002)', () => {
   it('the previous shape has no payload table', async () => {
     const pg = new PGlite()
     await pg.exec(AFTER_0002_SQL)
@@ -999,7 +1109,7 @@ describe('upgrades/0003-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
       indexes: await indexDefs(upgraded),
       checks: await checkConstraints(upgraded),
     }
-    await upgraded.exec(sqlFile(UPGRADE_0003))
+    await upgraded.exec(sqlFile(UPGRADE_0004))
 
     const fresh = new PGlite()
     await fresh.exec(sqlFile('install.sql'))
@@ -1028,17 +1138,17 @@ describe('upgrades/0003-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
   })
 
   it('is one transaction with a transaction-local lock_timeout set before it touches a table', () => {
-    const statements = splitStatements(sqlFile(UPGRADE_0003))
+    const statements = splitStatements(sqlFile(UPGRADE_0004))
     expect(statements[0]).toBe('BEGIN;')
     expect(statements[1]).toMatch(/^SET LOCAL lock_timeout = '\d+s?';$/)
     expect(statements[statements.length - 1]).toBe('COMMIT;')
-    expect(sqlFile(UPGRADE_0003)).not.toMatch(/^SET lock_timeout/m)
+    expect(sqlFile(UPGRADE_0004)).not.toMatch(/^SET lock_timeout/m)
   })
 
   it('leaves no lock_timeout behind on the connection, after success or after the guard fails', async () => {
     const ok = new PGlite()
     await ok.exec(AFTER_0002_SQL)
-    await runStatementwise(ok, sqlFile(UPGRADE_0003))
+    await runStatementwise(ok, sqlFile(UPGRADE_0004))
     expect(
       (await ok.query<{ lock_timeout: string }>(`SHOW lock_timeout`)).rows[0],
     ).toEqual({
@@ -1048,7 +1158,7 @@ describe('upgrades/0003-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
     const bad = new PGlite()
     await bad.exec(AFTER_0002_SQL)
     await bad.exec(`CREATE TABLE llm_call_payloads (attempt_id uuid)`)
-    expect((await runStatementwise(bad, sqlFile(UPGRADE_0003))).join('\n')).toMatch(
+    expect((await runStatementwise(bad, sqlFile(UPGRADE_0004))).join('\n')).toMatch(
       /rename it first/,
     )
     expect(
@@ -1109,8 +1219,8 @@ describe('upgrades/0003-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
         indexes: await indexNames(pg, PAYLOADS),
         constraints: await constraintDefs(pg, PAYLOADS),
       }
-      await expect(pg.exec(sqlFile(UPGRADE_0003))).rejects.toThrow(/rename it first/)
-      expect(await runStatementwise(pg, sqlFile(UPGRADE_0003))).not.toEqual([])
+      await expect(pg.exec(sqlFile(UPGRADE_0004))).rejects.toThrow(/rename it first/)
+      expect(await runStatementwise(pg, sqlFile(UPGRADE_0004))).not.toEqual([])
       expect({
         table: await describeTable(pg, PAYLOADS),
         indexes: await indexNames(pg, PAYLOADS),
@@ -1124,14 +1234,14 @@ describe('upgrades/0003-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
       await pg.exec(
         `CREATE TABLE llm_call_payloads (attempt_id TEXT PRIMARY KEY, request JSONB NOT NULL, response JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), ${FK})`,
       )
-      await expect(pg.exec(sqlFile(UPGRADE_0003))).resolves.toBeDefined()
-      await expect(pg.exec(sqlFile(UPGRADE_0003))).resolves.toBeDefined()
+      await expect(pg.exec(sqlFile(UPGRADE_0004))).resolves.toBeDefined()
+      await expect(pg.exec(sqlFile(UPGRADE_0004))).resolves.toBeDefined()
     })
 
     it('accepts the table a fresh install creates', async () => {
       const pg = new PGlite()
       await pg.exec(sqlFile('install.sql'))
-      await expect(pg.exec(sqlFile(UPGRADE_0003))).resolves.toBeDefined()
+      await expect(pg.exec(sqlFile(UPGRADE_0004))).resolves.toBeDefined()
     })
   })
 
@@ -1140,7 +1250,7 @@ describe('upgrades/0003-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
     await pg.exec(AFTER_0002_SQL)
     await pg.exec(OLD_ROW_SQL)
 
-    expect(await runStatementwise(pg, sqlFile(UPGRADE_0003))).toEqual([])
+    expect(await runStatementwise(pg, sqlFile(UPGRADE_0004))).toEqual([])
     const table = await describeTable(pg, PAYLOADS)
     const indexes = await indexDefs(pg, PAYLOADS)
     const constraints = await constraintDefs(pg, PAYLOADS)
@@ -1152,7 +1262,7 @@ describe('upgrades/0003-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
       ).rows
 
     const before = await oids()
-    expect(await runStatementwise(pg, sqlFile(UPGRADE_0003))).toEqual([])
+    expect(await runStatementwise(pg, sqlFile(UPGRADE_0004))).toEqual([])
     expect(await describeTable(pg, PAYLOADS)).toEqual(table)
     expect(await indexDefs(pg, PAYLOADS)).toEqual(indexes)
     expect(await constraintDefs(pg, PAYLOADS)).toEqual(constraints)
@@ -1163,12 +1273,12 @@ describe('upgrades/0003-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
   it('keeps the rows already in the payload table on a re-run', async () => {
     const pg = new PGlite()
     await pg.exec(AFTER_0002_SQL)
-    await runStatementwise(pg, sqlFile(UPGRADE_0003))
+    await runStatementwise(pg, sqlFile(UPGRADE_0004))
     await pg.exec(OLD_ROW_SQL)
     await pg.exec(
       `INSERT INTO llm_call_payloads (attempt_id, request, response) VALUES ('old_attempt', '{"messages":[]}', '{"text":"x"}')`,
     )
-    expect(await runStatementwise(pg, sqlFile(UPGRADE_0003))).toEqual([])
+    expect(await runStatementwise(pg, sqlFile(UPGRADE_0004))).toEqual([])
     const rows = await pg.query<{ attempt_id: string }>(
       `SELECT attempt_id FROM llm_call_payloads`,
     )
@@ -1185,7 +1295,7 @@ describe('upgrades/0003-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
          CONSTRAINT llm_call_payloads_attempt_id_llm_calls_attempt_id_fk
            FOREIGN KEY (attempt_id) REFERENCES llm_calls (attempt_id) ON DELETE CASCADE)`,
     )
-    expect(await runStatementwise(pg, sqlFile(UPGRADE_0003))).toEqual([])
+    expect(await runStatementwise(pg, sqlFile(UPGRADE_0004))).toEqual([])
     expect(await indexNames(pg, PAYLOADS)).toEqual([
       'llm_call_payloads_created_at_idx',
       'llm_call_payloads_pkey',
@@ -1201,7 +1311,7 @@ describe('upgrades/0003-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
     await pg.exec(`INSERT INTO llm_call_payloads (call_id, body) VALUES ('c', 'kept')`)
     const before = await describeTable(pg, PAYLOADS)
 
-    const errors = await runStatementwise(pg, sqlFile(UPGRADE_0003))
+    const errors = await runStatementwise(pg, sqlFile(UPGRADE_0004))
     expect(errors.join('\n')).toMatch(/rename it first/)
     expect(await describeTable(pg, PAYLOADS)).toEqual(before)
     expect(
@@ -1210,7 +1320,7 @@ describe('upgrades/0003-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
 
     // After the documented rename the upgrade goes through.
     await pg.exec(`ALTER TABLE llm_call_payloads RENAME TO app_llm_call_payloads`)
-    expect(await runStatementwise(pg, sqlFile(UPGRADE_0003))).toEqual([])
+    expect(await runStatementwise(pg, sqlFile(UPGRADE_0004))).toEqual([])
     expect((await describeTable(pg, PAYLOADS)).map((c) => c.column_name).sort()).toEqual([
       'attempt_id',
       'created_at',
@@ -1225,7 +1335,7 @@ describe('upgrades/0003-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
   it('the sink writes a payload on the upgraded table and assertLlmCallPayloadsSchema passes', async () => {
     const pg = new PGlite()
     await pg.exec(AFTER_0002_SQL)
-    await pg.exec(sqlFile(UPGRADE_0003))
+    await pg.exec(sqlFile(UPGRADE_0004))
     const db = drizzle({ client: pg })
     await expect(assertLlmCallPayloadsSchema(db)).resolves.toBeUndefined()
     await drizzleUsageSink({ db }).record(makeRecord(), {
@@ -1241,12 +1351,12 @@ describe('upgrades/0003-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
     ])
   })
 
-  it('without the upgrade the schema check rejects and points at 0003; the ledger row still commits', async () => {
+  it('without the upgrade the schema check rejects and points at 0004; the ledger row still commits', async () => {
     const pg = new PGlite()
     await pg.exec(AFTER_0002_SQL)
     const db = drizzle({ client: pg })
     await expect(assertLlmCallPayloadsSchema(db)).rejects.toThrow(
-      /0003-llm-call-payloads\.sql/,
+      /0004-llm-call-payloads\.sql/,
     )
     const errors: Array<[unknown, string]> = []
     await drizzleUsageSink({ db }).record(makeRecord(), {

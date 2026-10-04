@@ -1,6 +1,9 @@
 -- @gullabs/drizzle upgrade: validate the ledger v2 CHECK constraints.
 --
--- Run this AFTER `0002-ledger-v2.sql` and AFTER cleaning legacy rows. The
+-- Optional step: run it AFTER `0002-ledger-v2.sql` and AFTER cleaning legacy
+-- rows. It can fail (on legacy rows, below), so a runner that applies every file
+-- in the directory in order stops here on such a database: fix the rows or skip
+-- this file, then continue with `0004-llm-call-payloads.sql`. The
 -- constraints `0002-ledger-v2.sql` adds are NOT VALID: they already reject bad
 -- values on new and updated rows, but rows written before the upgrade were never
 -- checked. `VALIDATE CONSTRAINT` checks them. It takes SHARE UPDATE EXCLUSIVE, so
@@ -41,8 +44,24 @@
 -- `attempt_id`) so it does not hold row locks for long.
 --
 -- If you would rather keep the old rows exactly as they are, skip this file: the
--- constraints stay NOT VALID, which is safe (new rows are still enforced) and
--- visible as `convalidated = false` in `pg_constraint`.
+-- constraints stay NOT VALID, which is safe for inserts (new rows are still
+-- enforced) and visible as `convalidated = false` in `pg_constraint`. But
+-- Postgres enforces a NOT VALID CHECK on every row an UPDATE writes, not only on
+-- new rows, so while the constraints are NOT VALID any UPDATE that touches a
+-- legacy row fails with, for example:
+--
+--   ERROR:  new row for relation "llm_calls" violates check constraint "llm_calls_error_kind_check"
+--   DETAIL:  Failing row contains (...)
+--
+-- (the constraint named is `llm_calls_error_kind_check` or `llm_calls_status_check`,
+-- whichever the legacy row breaks first)
+--
+-- This includes your own maintenance, such as nulling `reasoning_text` for a
+-- tenant deletion (`UPDATE llm_calls SET reasoning_text = NULL WHERE call_id =
+-- ANY(...)`) when one of those calls is a legacy row. A DELETE is unaffected.
+-- Either run the cleanup UPDATE above first (it files the legacy rows under valid
+-- values, after which every UPDATE works whether or not you validate), or keep
+-- your UPDATEs off the legacy rows.
 --
 -- The table name is `llm_calls`. If your Drizzle table uses another name,
 -- substitute it.

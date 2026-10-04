@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import {
+  bigint,
   boolean,
   check,
   index,
@@ -73,7 +74,11 @@ function sqlList(values: readonly string[]) {
  *   defaulted). Never null on any code path; `.notNull()` is correct.
  *
  * To create or upgrade the table, use the SQL in `sql/` (`install.sql`,
- * `upgrades/NNNN-*.sql`); it is the source of truth for existing databases.
+ * `upgrades/NNNN-*.sql`); it is the source of truth for existing databases. This
+ * schema is exported so your queries are typed, and so `drizzle-kit push` can
+ * check a database against it; do not `drizzle-kit generate` migrations from it
+ * for a table you already have: drizzle-kit cannot emit `NOT VALID` CHECKs or a
+ * `lock_timeout`, so a generated migration scans and locks the table.
  */
 export const llmCalls = pgTable(
   'llm_calls',
@@ -100,7 +105,8 @@ export const llmCalls = pgTable(
     cachedInputTokens: integer('cached_input_tokens'),
     thinkingTokens: integer('thinking_tokens'),
     totalTokens: integer('total_tokens'),
-    costMicroUsd: integer('cost_micro_usd'),
+    // BIGINT, read back as a JS number (safe to 2^53 micro-USD, about $9 billion).
+    costMicroUsd: bigint('cost_micro_usd', { mode: 'number' }),
     pricingVersion: text('pricing_version'),
     // Cost v2 (ADR-039). NULL on rows written before record version 2, on
     // refusal rows and when the provider had no pricing source.
@@ -139,6 +145,13 @@ export const llmCalls = pgTable(
     index('llm_calls_external_id_idx').on(table.externalId),
     index('llm_calls_created_at_idx').on(table.createdAt),
     index('llm_calls_call_site_created_at_idx').on(table.callSiteId, table.createdAt),
+    // Partial: most rows have no error reason and many hosts set no auth key id.
+    index('llm_calls_error_reason_idx')
+      .on(table.errorReason)
+      .where(sql`${table.errorReason} IS NOT NULL`),
+    index('llm_calls_auth_key_id_idx')
+      .on(table.authKeyId)
+      .where(sql`${table.authKeyId} IS NOT NULL`),
     check('llm_calls_status_check', sql`${table.status} IN (${sqlList(STATUS_VALUES)})`),
     check(
       'llm_calls_error_kind_check',

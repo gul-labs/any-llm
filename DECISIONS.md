@@ -3159,7 +3159,8 @@ decision 3 lists every text-bearing place.
    `bad_request` at construction, with no fallback. A record **without** a payload is one `INSERT ... ON
 CONFLICT (attempt_id) DO NOTHING` on `db`: no transaction, one round trip, and it works on a driver without
    transactions. A record **with** a payload runs in one transaction: the ledger insert, then, behind a
-   `SAVEPOINT` named uniquely per write, the payload insert (`ON CONFLICT DO NOTHING`). A payload failure is
+   `SAVEPOINT` named uniquely per write, the payload insert (`ON CONFLICT DO NOTHING`) [the hand-written
+   savepoint and the per-write names are replaced by Drizzle's nested `transaction()`: ADR-045]. A payload failure is
    rolled back to the savepoint, logged as `llm.call.payload.failed` (the driver error under Drizzle's query
    error, bounded to 300 characters, because Drizzle's own message carries the statement's parameters, which
    here are customer text) and the transaction commits. A ledger-row failure aborts the transaction, so there
@@ -3174,7 +3175,7 @@ CONFLICT (attempt_id) DO NOTHING` on `db`: no transaction, one round trip, and i
 7. **Schema and SQL.** `llm_call_payloads(attempt_id TEXT PRIMARY KEY REFERENCES llm_calls(attempt_id) ON
 DELETE CASCADE, request JSONB NOT NULL, response JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT
 now())` with an index on `created_at`; `created_at` is the record's timestamp. `sql/install.sql` creates it;
-   `sql/upgrades/0003-llm-call-payloads.sql` adds it to a table at the previous shape. The upgrade is one
+   `sql/upgrades/0004-llm-call-payloads.sql` adds it to a table at the previous shape. The upgrade is one
    transaction with a transaction-local `lock_timeout`, and it refuses (with an error) to run over a table that
    already has the name unless that table has exactly the four columns with these types, nullability and
    default, the primary key on `attempt_id` and the foreign key to `llm_calls(attempt_id)` with `ON DELETE
@@ -3201,7 +3202,7 @@ CASCADE` under the expected name, so a host's own `llm_call_payloads` is renamed
   is no longer accepted. Their `db` must have `transaction()`. A record without a payload stays a single
   INSERT; only a payload write opens a transaction.
 - Hosts with a custom `UsageSink` that wants payloads set `acceptsPayloads: true` and read the second argument.
-- Hosts that turn on `payloads` apply `sql/upgrades/0003-llm-call-payloads.sql` first. Without the table every
+- Hosts that turn on `payloads` apply `sql/upgrades/0004-llm-call-payloads.sql` first. Without the table every
   payload insert fails, is logged as `llm.call.payload.failed`, and the ledger rows still commit.
 - The ledger row now redacts `tool_calls` arguments and `reasoning_text` with core's patterns, and strips
   U+0000 before redacting `error_message`, `reasoning_text` and `provider_options`. The columns themselves are
@@ -3335,7 +3336,7 @@ No fixture has a non-zero MCP counter; the tests for it are synthetic and say so
   re-run neither drops nor re-adds a constraint. Every statement in the file is idempotent on its own, so a
   run that stops partway is finished by running the file again, in one transaction or statement by statement
   (the previous drop-and-add left a window with no constraint and re-scanned the table on each run).
-- Validation is a separate file, `sql/upgrades/0002-validate-checks.sql` (`VALIDATE CONSTRAINT`, SHARE UPDATE
+- Validation is a separate file, `sql/upgrades/0003-validate-checks.sql` (`VALIDATE CONSTRAINT`, SHARE UPDATE
   EXCLUSIVE, writes continue). Rows that `@gullabs/core` 0.2.0 wrote (`status` and `error_kind` =
   `parse_error`; no later release wrote a value outside the vocabularies) make validation fail. The file
   documents the query that finds them and one suggested `UPDATE` that keeps the original values in
@@ -4016,3 +4017,67 @@ had, and a failed attempt's ledger row lost the tier it asked for.
 **Consequences:** a host with a Search cache sees the fee and the `estimated` mark; a tool loop sees `length` or
 `content_filter` and no call on a stopped candidate; a usage-less 200 is visible as unpriced. The ledger gains
 no column.
+
+---
+
+## ADR-045: Drizzle sink on every driver, and the ledger shape it needs
+
+**Status:** Accepted (2026-10-03). Amends ADR-038 decision 6 and the SQL of ADR-039.
+
+**Context:**
+An audit ran the sink on a real postgres-js driver for the first time (ADR-038's tests were PGlite and
+node-postgres). A payload-insert failure rolled back the whole transaction there, so the billed ledger row was
+lost and `record` rejected: postgres-js fails a transaction in which any statement failed, even when a
+hand-written `ROLLBACK TO SAVEPOINT` followed. `purgeLlmCallPayloads` threw on every call there because a raw
+`Date` bound into a `sql` template is not serialised by that driver. With `db` set to a transaction handle,
+concurrent payload records crossed their savepoints (Drizzle names a nested savepoint by nesting level) and left
+the host's transaction aborted. The ledger-failure log carried Drizzle's query error: the statement and every
+bound parameter, which here is reasoning text, tool arguments and `metadata`. A client `Clock` returning
+fractions (`performance.now()`) wrote fractional milliseconds into INTEGER columns and dropped every row.
+
+**Decision:**
+
+1. **The payload is written in Drizzle's nested `transaction()`**, not a hand-written `SAVEPOINT`. A failed
+   payload insert undoes only the nested transaction, is logged as `llm.call.payload.failed`, and the outer
+   transaction commits: the ledger row survives on node-postgres, postgres-js and PGlite (the new
+   `drivers.integration.test.ts` runs the same cases on all three). The per-handle queue stays.
+2. **A transaction handle is a supported `db`.** When `db` is a transaction handle (it has `rollback`), or a host
+   `transaction` helper hands every call one ambient handle, every write, with or without a payload, runs one at a
+   time on a queue keyed by the handle, inside a nested transaction of its own. Concurrent records all succeed and
+   a failing write never aborts the host's transaction; the host owns commit and rollback, and a rollback takes the
+   sink's rows with it. A pool `db` keeps the one-INSERT and one-transaction paths and no queue.
+3. **A failed ledger insert throws the driver's message, not Drizzle's.** The sink rethrows
+   `llm_calls insert failed for attempt <id>: <driver message> (SQLSTATE <code>)`, capped at 300 characters and
+   redacted, with a pointer to `assertLlmCallsSchema` and `sql/upgrades/` for `42703`, `42P01` and `23502`. It has
+   no `cause`: the Drizzle error holds the parameters and the driver's `detail` holds the row. A query error with
+   no driver error under it is reduced to a fixed text. The payload-failure log uses the same extraction.
+4. **`purgeLlmCallPayloads` binds the cutoff as an ISO string cast `::timestamptz`**, which every driver encodes
+   alike.
+5. **Whole milliseconds.** `buildRecord` rounds `latencyMs` and `queueDelayMs`; `Clock` documents that it may
+   return fractions. Token counts and micro-USD come from providers and the pricing rounding as integers.
+6. **`assertLlmCallsSchema(db)` reads nullability.** After the `LIMIT 0` select it reads `pg_attribute` for a NOT
+   NULL column without a default (and not identity or generated) that the sink does not write, or that the schema
+   allows to be NULL. A table made by 0.1.1 to 0.4.0 has `raw_usage NOT NULL`, which rejects every error row; the
+   check names the column and the one-line fix. There is no upgrade script and no compatibility path for those
+   shapes. `assertLlmCallsSchema` and `assertLlmCallPayloadsSchema` take a `PostgresDb`; the `SelectableDb` type is
+   deleted.
+7. **SQL.** The upgrade files are numbered uniquely and in order: `0001-add-error-reason`, `0002-ledger-v2`,
+   `0003-validate-checks` (optional; it fails on `parse_error` rows), `0004-llm-call-payloads` (the migrations were
+   never published, so renumbering is safe). `cost_micro_usd` is `BIGINT` (drizzle `mode: 'number'`), so one
+   attempt cannot overflow 2^31 micro-USD; its upgrade rewrites the table and is documented as skippable. Partial
+   indexes on `error_reason` and `auth_key_id` (`WHERE ... IS NOT NULL`) serve the two queries the ledger guide
+   advertises. While the CHECKs are `NOT VALID` any `UPDATE` of a legacy row fails; the validate file and the guide
+   quote the error and the cleanup. `schema.ts` is for typed queries and `drizzle-kit push`; the SQL files are the
+   authority, and `drizzle-kit generate` is documented as unsupported for these tables.
+8. **Drivers.** node-postgres, postgres-js and PGlite are tested. `neon-http` is documented as not tested (it has
+   no transactions, so no payloads). The package ships the repository `LICENSE` and `NOTICE`.
+
+**Consequences:**
+
+- Hosts that call `assertLlmCallsSchema` pass a Drizzle database (they already did); the `SelectableDb` type is
+  gone. A table with a NOT NULL column the sink does not write now fails the check.
+- Hosts upgrade a table by applying `0002-ledger-v2.sql` again (it is idempotent) to get `BIGINT` and the two
+  indexes; the validate and payload files are renamed `0003` and `0004`.
+- An ambient transaction costs two extra statements per write (`SAVEPOINT`, `RELEASE`), and a payload write on it
+  four. A pool `db` pays nothing extra for a record without a payload.
+- The ledger-failure log line is shorter and names the cause; it no longer contains the statement.

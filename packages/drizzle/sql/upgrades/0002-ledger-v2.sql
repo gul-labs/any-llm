@@ -13,11 +13,22 @@
 --     their confidence was never stored and cannot be recovered; their
 --     `record_schema_version` is 1.
 --   * indexes on `created_at` and `(call_site_id, created_at)` for time-window
---     and per-call-site queries.
+--     and per-call-site queries, and partial indexes on `error_reason` and
+--     `auth_key_id` (only rows where the column is set) for "find the deferred
+--     calls" and per-key queries.
+--   * `cost_micro_usd` becomes BIGINT (it was INTEGER, which one attempt costing
+--     more than 2,147,483,647 micro-USD, about $2,147, would overflow and drop the
+--     row). This is the one statement here that is not instant: INTEGER to BIGINT
+--     rewrites the table under ACCESS EXCLUSIVE, so writes wait for the whole
+--     rewrite (`lock_timeout` bounds only the wait for the lock). On a large table
+--     run it in a quiet period. You may also leave the column INTEGER: the sink
+--     works either way, and only a single attempt above that cost fails. Comment
+--     the statement out to skip it; a table that skipped it differs from a fresh
+--     install only in this column type.
 --   * CHECK constraints on `status` and `error_kind` (the closed core
 --     vocabularies), added NOT VALID: they are enforced for every new and
 --     updated row at once, and existing rows are checked later by
---     `0002-validate-checks.sql`, which you run after cleaning legacy rows (see
+--     `0003-validate-checks.sql`, which you run after cleaning legacy rows (see
 --     that file). `error_reason` stays unconstrained on purpose: its vocabulary
 --     grows in core releases and a new member must never need SQL.
 --
@@ -45,6 +56,10 @@
 --         ON llm_calls (created_at);
 --       CREATE INDEX CONCURRENTLY IF NOT EXISTS llm_calls_call_site_created_at_idx
 --         ON llm_calls (call_site_id, created_at);
+--       CREATE INDEX CONCURRENTLY IF NOT EXISTS llm_calls_error_reason_idx
+--         ON llm_calls (error_reason) WHERE error_reason IS NOT NULL;
+--       CREATE INDEX CONCURRENTLY IF NOT EXISTS llm_calls_auth_key_id_idx
+--         ON llm_calls (auth_key_id) WHERE auth_key_id IS NOT NULL;
 --
 -- The table name is `llm_calls`. If your Drizzle table uses another name,
 -- substitute it (including in the catalog checks below).
@@ -58,6 +73,10 @@ ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS cost_unpriced_reason TEXT;
 CREATE INDEX IF NOT EXISTS llm_calls_created_at_idx ON llm_calls (created_at);
 CREATE INDEX IF NOT EXISTS llm_calls_call_site_created_at_idx
   ON llm_calls (call_site_id, created_at);
+CREATE INDEX IF NOT EXISTS llm_calls_error_reason_idx
+  ON llm_calls (error_reason) WHERE error_reason IS NOT NULL;
+CREATE INDEX IF NOT EXISTS llm_calls_auth_key_id_idx
+  ON llm_calls (auth_key_id) WHERE auth_key_id IS NOT NULL;
 
 DO $$
 BEGIN
@@ -85,5 +104,8 @@ BEGIN
   END IF;
 END
 $$;
+
+-- Rewrites the table when the column is still INTEGER; a no-op once it is BIGINT.
+ALTER TABLE llm_calls ALTER COLUMN cost_micro_usd TYPE BIGINT;
 
 RESET lock_timeout;

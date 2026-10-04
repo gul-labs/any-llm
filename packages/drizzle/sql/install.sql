@@ -15,6 +15,10 @@
 -- `status` and `error_kind` carry CHECK constraints over the closed core
 -- vocabularies; a new member of either is a core release that ships SQL.
 --
+-- `cost_micro_usd` is BIGINT: one attempt cannot overflow it. A `SUM()` over it is
+-- `numeric`, which node-postgres and postgres-js return as a string: cast it in SQL
+-- or convert it in code (see `docs/ledger.md`, "Reading sums").
+--
 -- The table names are `llm_calls` and `llm_call_payloads`. If your Drizzle tables
 -- use other names, substitute them throughout.
 
@@ -41,7 +45,7 @@ CREATE TABLE llm_calls (
   cached_input_tokens   INTEGER,
   thinking_tokens       INTEGER,
   total_tokens          INTEGER,
-  cost_micro_usd        INTEGER,
+  cost_micro_usd        BIGINT,
   pricing_version       TEXT,
   cost_confidence       TEXT,
   cost_details          JSONB,
@@ -73,6 +77,10 @@ CREATE INDEX llm_calls_call_id_idx ON llm_calls (call_id);
 CREATE INDEX llm_calls_external_id_idx ON llm_calls (external_id);
 CREATE INDEX llm_calls_created_at_idx ON llm_calls (created_at);
 CREATE INDEX llm_calls_call_site_created_at_idx ON llm_calls (call_site_id, created_at);
+CREATE INDEX llm_calls_error_reason_idx ON llm_calls (error_reason)
+  WHERE error_reason IS NOT NULL;
+CREATE INDEX llm_calls_auth_key_id_idx ON llm_calls (auth_key_id)
+  WHERE auth_key_id IS NOT NULL;
 
 CREATE TABLE llm_call_payloads (
   attempt_id TEXT         PRIMARY KEY,
