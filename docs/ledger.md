@@ -54,27 +54,32 @@ Rules that matter:
   recorded and not priced. `usage_missing` (`1`) marks a Google 200 that carried no `usageMetadata`: the
   tokens are recorded as zero, `cost_micro_usd` is NULL and the confidence `estimated`. A failed attempt's
   row keeps the tier the attempt asked for in `service_tier` and the tier it was served at, when the error
-  says, in `served_service_tier`. Rows written before record version 2 have NULL in all three cost columns: their
-  confidence was never stored and cannot be recovered (`record_schema_version = 1`). Refusal rows (no
-  attempt ran) have no cost.
+  says, in `served_service_tier`. Rows written before record version 2 (`record_schema_version = 1`) have NULL in all three cost columns, and their
+  `cost_micro_usd` is NULL wherever the old sink wrote no cost: their confidence was never stored and cannot be
+  recovered, and a version 1 row with no cost cannot be told from a free failure, so it is **unknown spend**, never
+  free. Refusal rows (no attempt ran) have no cost.
 - A dispatched attempt that failed **without reporting usage** (a timeout, an abort, a network failure, a
   stream cut before its usage arrived) may have been billed for an amount the library cannot know. Its row has
   no cost (`cost_micro_usd`, `cost_confidence` and `cost_details` are NULL) and `cost_unpriced_reason =
 'no_usage_reported'`. A failure known to cost nothing (a failure that ended before dispatch, `bad_request`,
   `invalid_auth`, `rate_limited`, or an HTTP error answer that is not a timeout or abort) has no cost and no
-  reason. So `cost_unpriced_reason = 'no_usage_reported'` finds the attempts that may have billed, and
-  `cost_micro_usd IS NULL AND cost_unpriced_reason IS NULL` the ones that did not (a refusal row has no
-  cost either). Those rows are the failed part of `callCost.unpricedAttempts` (which also counts an attempt
-  whose usage the library has no price for, and carries that reason instead). A failure that did report usage
-  is priced like a success.
+  reason. So, among rows with `record_schema_version = 2`, `cost_unpriced_reason IS NOT NULL` finds every attempt
+  that may have billed for an amount the library could not price (`no_usage_reported` for a failure; an
+  unknown model, an unpriced tier or a missing tool counter carry their own reason), and
+  `cost_micro_usd IS NULL AND cost_unpriced_reason IS NULL` the ones that cost nothing (a refusal row has no
+  cost either). Version 1 rows match neither: they are unknown spend. The unpriced rows are what
+  `callCost.unpricedAttempts` counts. A failure that did report usage is priced like a success. The
+  [classification query](#classifying-spend) puts every row in one of these classes.
 - Money you can reconcile: the ledger writes `cost_micro_usd` per attempt, NULL when the attempt has no
   price (an unpriced model, or a failure that reported no usage). `LlmResult.callCost` is
   `{ microUsd, attempts, unpricedAttempts }` for one call in process: `microUsd` equals the SQL
-  `SUM(cost_micro_usd)` over the call's rows (barring a dropped sink write, which is logged), and
+  `COALESCE(SUM(cost_micro_usd), 0)` over the call's rows (`SUM` over rows that are all NULL is NULL, not 0;
+  barring a dropped sink write, which is logged), and
   `unpricedAttempts` counts the attempts that were dispatched but have no priced usage, such as a timeout
   or an abort. The provider may have billed those, so when `unpricedAttempts > 0` both the SQL sum and
   `microUsd` are a **lower bound** (a call with two timeouts and a success has `unpricedAttempts: 2`). Find
-  such calls in SQL with the rows whose `cost_unpriced_reason` is `no_usage_reported`.
+  such calls in SQL with the version 2 rows whose `cost_unpriced_reason` is not NULL (the
+  [reconciliation query](#classifying-spend) below does this per call).
   `callCost` is on `CallSuccessEvent`, `CallErrorEvent` and `LlmResult`; `Telemetry.onAttempt` reports each
   attempt as it happens.
 - Provider-controlled text can carry what Postgres cannot store: U+0000 (rejected by `text` and `jsonb`) and an
@@ -398,7 +403,7 @@ Spend by day (index-backed on `created_at` for a time window):
 ```sql
 select
   date_trunc('day', created_at) as day,
-  sum(cost_micro_usd)::float8 as spend_micro_usd
+  coalesce(sum(cost_micro_usd), 0)::float8 as spend_micro_usd
 from llm_calls
 where cost_micro_usd is not null
   and created_at >= now() - interval '30 days'
@@ -412,12 +417,54 @@ Spend split by lane and confidence (tool fees against token spend, and how much 
 select
   provider,
   cost_confidence,
-  sum((cost_details ->> 'input')::bigint + (cost_details ->> 'cached')::bigint
-      + (cost_details ->> 'output')::bigint) as token_micro_usd,
-  sum((cost_details ->> 'tools')::bigint) as tool_micro_usd
+  coalesce(sum((cost_details ->> 'input')::bigint + (cost_details ->> 'cached')::bigint
+      + (cost_details ->> 'output')::bigint), 0)::float8 as token_micro_usd,
+  coalesce(sum((cost_details ->> 'tools')::bigint), 0)::float8 as tool_micro_usd
 from llm_calls
 where cost_details is not null
 group by 1, 2;
+```
+
+### Classifying spend
+
+Every attempt row is one of: priced (with its confidence), unpriced (the attempt may have billed an amount the
+library could not price), known free, or unknown (a version 1 row with no cost). Scope the version 2 classes to
+`record_schema_version = 2`: on an older row the cost columns are NULL because they were never stored, not
+because the attempt was free. Spend that is known is only the priced rows; the unpriced and unknown classes are
+a count of attempts you cannot put a price on.
+
+```sql
+select
+  case
+    when record_schema_version < 2 and cost_micro_usd is null then 'unknown'
+    when record_schema_version < 2 then 'priced, confidence not recorded'
+    when cost_micro_usd is not null and cost_confidence = 'exact' then 'priced, exact'
+    when cost_micro_usd is not null then 'priced, estimated'
+    when cost_unpriced_reason is not null then 'unpriced, may have billed'
+    else 'known free'
+  end as spend_class,
+  count(*) as attempts,
+  coalesce(sum(cost_micro_usd), 0)::float8 as spend_micro_usd
+from llm_calls
+group by 1
+order by 1;
+```
+
+Reconcile one call with `LlmResult.callCost` (`microUsd` is the sum; `unpricedAttempts` counts the version 2
+attempts with a reason). A version 1 attempt of the call is counted as `unknown_attempts`, and when it is not
+zero, or `unpriced_attempts` is not zero, the sum is a lower bound:
+
+```sql
+select
+  call_id,
+  coalesce(sum(cost_micro_usd), 0)::float8 as micro_usd,
+  count(*) filter (where record_schema_version = 2
+                   and cost_unpriced_reason is not null) as unpriced_attempts,
+  count(*) filter (where record_schema_version < 2
+                   and cost_micro_usd is null) as unknown_attempts
+from llm_calls
+where call_id = $1
+group by call_id;
 ```
 
 Calls the quota layer deferred, and spend per key. `error_reason` and `auth_key_id` each have a partial index
@@ -427,7 +474,7 @@ per-model query over a long window scans the window (see the retries example):
 ```sql
 select call_id, created_at from llm_calls where error_reason = 'quota_window' order by created_at desc;
 
-select auth_key_id, sum(cost_micro_usd)::float8 as spend_micro_usd
+select auth_key_id, coalesce(sum(cost_micro_usd), 0)::float8 as spend_micro_usd
 from llm_calls
 where auth_key_id is not null and created_at >= now() - interval '30 days'
 group by 1;
