@@ -93,7 +93,9 @@ export interface GoogleFileStoreOptions {
   scheduler?: Scheduler
   /**
    * Replaces the poll wait wholesale (instant polling in tests). When given,
-   * `scheduler` is not used for the wait.
+   * `scheduler` is not used for the wait, and the wait cannot be cancelled: if
+   * the deadline or an abort ends the upload first, a timer your `sleep` set
+   * stays pending until it fires. The default wait is cleared at once.
    */
   sleep?: (ms: number) => Promise<void>
   /** Injectable clock for deterministic tests. Default: `Date.now`. */
@@ -107,12 +109,27 @@ export interface GoogleFileStoreOptions {
 const DEFAULT_INTERVAL_MS = 3_000
 const DEFAULT_TIMEOUT_MS = 300_000
 
-const sleepOn =
+/** A poll wait, and how to end it early (a no-op for a host's own `sleep`). */
+interface Wait {
+  promise: Promise<void>
+  cancel: () => void
+}
+
+/** The default wait: its timer is cleared by `cancel`, so a lost race leaves none. */
+const waitOn =
   (scheduler: Scheduler) =>
-  (ms: number): Promise<void> =>
-    new Promise((resolve) => {
-      scheduler.setTimeout(resolve, ms)
+  (ms: number): Wait => {
+    let timer: ReturnType<Scheduler['setTimeout']> | undefined
+    const promise = new Promise<void>((resolve) => {
+      timer = scheduler.setTimeout(resolve, ms)
     })
+    return {
+      promise,
+      cancel: () => {
+        if (timer !== undefined) scheduler.clearTimeout(timer)
+      },
+    }
+  }
 
 /**
  * `server`, not `timeout`: ADR-036 makes every `timeout` retryable, and this must not be.
@@ -199,7 +216,7 @@ export class GoogleFileStore {
   private readonly logger: Logger | undefined
   private readonly intervalMs: number
   private readonly timeoutMs: number
-  private readonly sleep: (ms: number) => Promise<void>
+  private readonly startWait: (ms: number) => Wait
   private readonly scheduler: Scheduler
   private readonly now: () => number
   /** Memoised client promise — built at most once per store instance. */
@@ -227,7 +244,11 @@ export class GoogleFileStore {
     this.intervalMs = opts.poll?.intervalMs ?? DEFAULT_INTERVAL_MS
     this.timeoutMs = opts.poll?.timeoutMs ?? DEFAULT_TIMEOUT_MS
     this.scheduler = opts.scheduler ?? PLATFORM_SCHEDULER
-    this.sleep = opts.sleep ?? sleepOn(this.scheduler)
+    const customSleep = opts.sleep
+    this.startWait =
+      customSleep !== undefined
+        ? (ms) => ({ promise: customSleep(ms), cancel: () => {} })
+        : waitOn(this.scheduler)
     this.now = opts.now ?? (() => Date.now())
   }
 
@@ -427,12 +448,12 @@ export class GoogleFileStore {
       // The wait is raced against the abort and the rest of the polling
       // deadline: a poll interval longer than the time left ends at the
       // deadline, not after it.
-      await this.raceDeadline(
-        this.sleep(this.intervalMs),
-        name,
-        deadline,
-        abortRacePromise,
-      )
+      const wait = this.startWait(this.intervalMs)
+      try {
+        await this.raceDeadline(wait.promise, name, deadline, abortRacePromise)
+      } finally {
+        wait.cancel()
+      }
 
       // The clock is checked again before a request starts: a wait that a custom
       // `sleep` let run past the deadline must not buy one more poll.

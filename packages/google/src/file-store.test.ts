@@ -850,10 +850,82 @@ describe('GoogleFileStore', () => {
       expect(err).toMatchObject({ kind: 'server', retryable: false, provider: 'google' })
       expect((err as LlmError).message).toContain('Timed out waiting')
       expect(client.get).not.toHaveBeenCalled()
-      // only the abandoned wait itself is left; it fires and does nothing
-      await clock.advanceAsync(3_000)
+      // the wait that lost the race was cleared: nothing stays pending
       expect(clock.pendingTimers).toBe(0)
       expect(client.get).not.toHaveBeenCalled()
+    })
+
+    it('an abort that wins the race clears the wait: no timer stays pending', async () => {
+      const clock = new FakeClock()
+      const client = makeClient({
+        upload: vi.fn().mockResolvedValue(processing),
+        get: vi.fn().mockResolvedValue(active),
+      })
+      const store = new GoogleFileStore({
+        auth: fakeAuth,
+        client,
+        scheduler: clock,
+        now: () => clock.now(),
+        poll: { timeoutMs: 600_000, intervalMs: 300_000 },
+      })
+      const ac = new AbortController()
+      const settled = store
+        .upload(new Uint8Array([1]), 'image/png', { signal: ac.signal })
+        .catch((e: unknown) => e)
+      await clock.advanceAsync(0)
+      // the wait, and the deadline it is raced against
+      expect(clock.pendingTimers).toBe(2)
+      ac.abort()
+      const err = await settled
+      expect(err).toMatchObject({ kind: 'aborted' })
+      expect(clock.pendingTimers).toBe(0)
+    })
+
+    it('a host-supplied sleep is awaited as given: the deadline still ends the upload', async () => {
+      const clock = new FakeClock()
+      const hostTimers: ReturnType<FakeClock['setTimeout']>[] = []
+      const client = makeClient({
+        upload: vi.fn().mockResolvedValue(processing),
+        get: vi.fn().mockResolvedValue(active),
+      })
+      const store = new GoogleFileStore({
+        auth: fakeAuth,
+        client,
+        scheduler: clock,
+        now: () => clock.now(),
+        sleep: (ms) =>
+          new Promise<void>((resolve) => {
+            hostTimers.push(clock.setTimeout(resolve, ms))
+          }),
+        poll: { timeoutMs: 1_000, intervalMs: 3_000 },
+      })
+      const settled = store
+        .upload(new Uint8Array([1]), 'image/png')
+        .catch((e: unknown) => e)
+      await clock.advanceAsync(1_000)
+      expect(await settled).toMatchObject({ kind: 'server', retryable: false })
+      // only the host's own, non-cancellable timer is left
+      expect(hostTimers).toHaveLength(1)
+      expect(clock.pendingTimers).toBe(1)
+    })
+
+    it('a completed upload leaves no timer pending, whatever the poll interval', async () => {
+      const clock = new FakeClock()
+      const client = makeClient({
+        upload: vi.fn().mockResolvedValue(processing),
+        get: vi.fn().mockResolvedValue(active),
+      })
+      const store = new GoogleFileStore({
+        auth: fakeAuth,
+        client,
+        scheduler: clock,
+        now: () => clock.now(),
+        poll: { timeoutMs: 600_000, intervalMs: 300_000 },
+      })
+      const settled = store.upload(new Uint8Array([1]), 'image/png')
+      await clock.advanceAsync(300_000)
+      await expect(settled).resolves.toMatchObject({ name: 'files/abc123' })
+      expect(clock.pendingTimers).toBe(0)
     })
 
     it('a wait a custom sleep let run past the deadline does not buy another poll', async () => {
