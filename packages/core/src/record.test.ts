@@ -844,6 +844,51 @@ describe('buildRecord — the ledger row redacts what it stores', () => {
     expect(toolCalls[0]?.args).toEqual({ token: 'secret-value' })
   })
 
+  it('a credential-shaped tool-call id or name is redacted, including one split by U+0000', () => {
+    const split = `AIza${NUL}SyA1234567890abcdefghijklmnopqrstuv`
+    const r = buildRecord(
+      makeBaseInput({
+        toolCalls: [
+          { toolCallId: `call_${KEY}`, toolName: `fn Bearer abcdef123456`, args: {} },
+          { toolCallId: split, toolName: split, args: {} },
+        ],
+      }),
+    )
+    const json = JSON.stringify(r.toolCalls)
+    expect(json).not.toContain('SyA1234567890')
+    expect(json).not.toContain('abcdef123456')
+    expect(json).not.toContain('\\u0000')
+    expect(r.toolCalls?.[0]).toEqual({
+      toolCallId: 'call_AIza…REDACTED',
+      toolName: 'fn Bearer …REDACTED',
+      args: {},
+    })
+    expect(r.toolCalls?.[1]).toMatchObject({
+      toolCallId: 'AIza…REDACTED',
+      toolName: 'AIza…REDACTED',
+    })
+  })
+
+  it('a tool-call id or name longer than the text cap is cut, with a warning', () => {
+    const r = buildRecord(
+      makeBaseInput({
+        toolCalls: [
+          { toolCallId: 'i'.repeat(RECORD_TEXT_CAP_BYTES + 1), toolName: 't', args: {} },
+          { toolCallId: 'c', toolName: 'n'.repeat(RECORD_TEXT_CAP_BYTES + 1), args: {} },
+        ],
+      }),
+    )
+    for (const [field, call] of [
+      ['toolCallId', r.toolCalls?.[0]],
+      ['toolName', r.toolCalls?.[1]],
+    ] as const) {
+      const text = call?.[field] ?? ''
+      expect(Buffer.byteLength(text)).toBeLessThanOrEqual(RECORD_TEXT_CAP_BYTES)
+      expect(text.endsWith('…[truncated]')).toBe(true)
+    }
+    expect(JSON.stringify(r.warnings)).toContain('Tool-call ids and names')
+  })
+
   it('a secret split by U+0000 is redacted whole, then the NUL is stripped (error, reasoning, tool args, provider options)', () => {
     const split = `AIza${NUL}SyA1234567890abcdefghijklmnopqrstuv`
     const bearer = `Bearer ${NUL}abcdef1234567890SECRET`

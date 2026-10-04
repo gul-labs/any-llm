@@ -704,7 +704,8 @@ function capStrings(value: unknown, maxChars: number, depth = 0): unknown {
 
 interface Leaf {
   slot: Slot
-  length: number
+  /** Serialized characters saved by replacing the string with the marker. */
+  saved: number
 }
 
 /** JSON values that may be replaced whole: tool-call arguments and tool-result values. */
@@ -752,16 +753,18 @@ function capPayload(payload: unknown, maxChars: number): LlmCallPayload {
 
   const slots: Slot[] = []
   collectSlots(normalized, slots)
-  const leaves: Leaf[] = slots.map((slot) => ({ slot, length: readSlot(slot).length }))
-  leaves.sort((a, b) => b.length - a.length)
   const markerSize = JSON.stringify(PAYLOAD_DROPPED_MARKER).length
+  // Ordered by what the replacement saves once serialized (escapes count), so a
+  // string that saves nothing never stands in front of one that does.
+  const leaves: Leaf[] = slots
+    .map((slot) => ({ slot, saved: JSON.stringify(readSlot(slot)).length - markerSize }))
+    .filter((leaf) => leaf.saved > 0)
+    .sort((a, b) => b.saved - a.saved)
   let size = serialized.length
   for (const leaf of leaves) {
     if (size <= limit) break
-    const saved = JSON.stringify(readSlot(leaf.slot)).length - markerSize
-    if (saved <= 0) break
     writeSlot(leaf.slot, PAYLOAD_DROPPED_MARKER)
-    size -= saved
+    size -= leaf.saved
   }
   serialized = JSON.stringify(normalized)
   if (serialized.length > limit) {

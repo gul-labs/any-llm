@@ -3144,7 +3144,7 @@ decision 3 lists every text-bearing place.
    (d) The host's `redact(payload)`, synchronous, on a copy it may change, returning the payload to store.
    (e) The caps, last, so a redactor cannot push stored text over the limit: every string over `maxChars`
    (default 200,000 characters) is cut and ends in `[truncated]`, and the serialized payload is capped at
-   `4 x maxChars` by replacing the largest strings, then the largest tool arguments and results, with
+   `4 x maxChars` by replacing the strings that save the most serialized space (an escaped control character counts as its escape), then the largest tool arguments and results, with
    `[dropped: over the payload size cap]` until it fits. (f) U+0000 and unpaired surrogates are stripped again
    (Postgres cannot store them, as in ADR-039, and a host redactor can add them). A payload that still does not
    fit is dropped. A throwing or non-payload-returning `redact`, a throwing `include`, a payload that cannot be

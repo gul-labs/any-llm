@@ -921,17 +921,33 @@ export function buildRecord(input: BuildRecordInput): LlmCallRecord {
     })
   }
 
-  // The model's tool-call arguments are redacted like any stored text: secret
-  // patterns in every string, and the value of a key named like a secret.
+  // The model's tool-call ids, names and arguments are redacted like any stored
+  // text: secret patterns in every string, and the value of a key named like a
+  // secret. Ids and names are provider-returned strings, so they are cleaned,
+  // redacted and bounded like the other free text.
+  let toolCallTextTruncated = false
+  const callText = (text: string): string => {
+    const capped = capRecordText(redactSecrets(clean(text)))
+    if (capped.truncated) toolCallTextTruncated = true
+    return capped.text
+  }
   const toolCalls =
     input.toolCalls !== undefined && input.toolCalls.length > 0
       ? input.toolCalls.map((call) => ({
           ...call,
+          toolCallId: callText(call.toolCallId),
+          toolName: callText(call.toolName),
           args: redactJsonValue(
             cleanDeep(boundJson(call.args, 'toolCalls', jsonNotes) as JsonValue, state),
           ) as JsonValue,
         }))
       : undefined
+  if (toolCallTextTruncated) {
+    allWarnings.push({
+      type: 'other',
+      message: `Tool-call ids and names were truncated to ${RECORD_TEXT_CAP_BYTES} bytes in the ledger record.`,
+    })
+  }
 
   // C1: Scoped provider extension redaction.
   // Only secret-bearing provider lanes are redacted; all standard generation knobs

@@ -569,6 +569,41 @@ describe('redaction runs on every string, then the host redactor, then the caps'
     expect(texts.slice(1)).toEqual(lengths.slice(1).map((n, i) => `${i + 1}`.repeat(n)))
   })
 
+  it('candidates are ordered by serialized space saved: escaped strings are replaced ahead of longer plain ones, and a plain short one is never a stopper', async () => {
+    const maxChars = 1000
+    const { sink, client } = setup({ maxChars })
+    // 20 plain 30-character texts, then 20 texts of 20 control characters (each
+    // serializes as a 6-character escape). The payload is over 4000 and only the
+    // escaped texts save enough when replaced; the plain ones save nothing.
+    const plain = Array.from({ length: 20 }, () => ({
+      kind: 'text' as const,
+      text: 'p'.repeat(30),
+    }))
+    const escaped = Array.from({ length: 20 }, () => ({
+      kind: 'text' as const,
+      text: '\u0001'.repeat(20),
+    }))
+    await client.generate(
+      withoutSystem(
+        request({
+          messages: [{ role: 'user', parts: [...plain, ...escaped] }],
+        }),
+      ),
+      { auth: AUTH },
+    )
+    const payload = onlyPayload(sink)
+    expect(JSON.stringify(payload).length).toBeLessThanOrEqual(4 * maxChars)
+    const texts = (payload.request.messages[0]?.parts as Array<{ text: string }>).map(
+      (part) => part.text,
+    )
+    expect(texts.slice(0, 20)).toEqual(plain.map((part) => part.text))
+    const marker = '[dropped: over the payload size cap]'
+    expect(texts.slice(20).some((t) => t === marker)).toBe(true)
+    expect(texts.slice(20).every((t) => t === marker || t === escaped[0]?.text)).toBe(
+      true,
+    )
+  })
+
   it('a payload that cannot get under the cap even with every large string dropped is dropped with a warning', async () => {
     const { sink, logger, client } = setup({ maxChars: 1000 })
     // 100 tools: each entry is a name and a 64-character hash, which no marker shrinks
