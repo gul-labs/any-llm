@@ -73,7 +73,9 @@ are keyed by canonical model id and `defaults` limit a model the table does not 
 optional: `rpm` (requests per minute), `rpd` (requests per day) and `tpm` (input tokens per minute),
 non-negative integers; `0` disables the provider for the scope (see below). An option or limit key the
 builders do not know (`defaultLimits`, a misspelt `rpmm`, an `rpd` on the xAI preset) is `bad_request`,
-never dropped.
+never dropped, and so is a limit that is not a non-negative integer (a fractional one, `NaN` from
+`Number(process.env.X)`, a string): the builders throw when the policy is built, so a typo is a startup
+error, not the first request's.
 
 - **`quotaPolicyForGemini`** is `quotaPolicy` with provider `google` and
   `dayBoundary: { timeZone: 'America/Los_Angeles' }`. Source: Google's rate-limits page,
@@ -246,8 +248,11 @@ core doc comment points back here for the quota-specific tradeoffs and limitatio
   canonical id. A table keyed by an alias would never match, and the model would silently be
   unlimited, so the policy throws `bad_request` on the first call that sees such a key. (The
   `RateLimiter` path receives only the canonical id and cannot make that check.)
-- **Windows use the caller's clock.** Bucket keys and TTLs come from `now()` / the engine clock
-  (rounded up to whole milliseconds for `PEXPIRE`). Hosts whose clocks disagree near a minute or day
+- **Windows use the caller's clock.** Bucket keys and TTLs come from the `now` option, else the engine
+  clock (the middleware's `ctx.clock`; the limiter's `RateLimitHint.nowMs`, which the engine sets from
+  the same clock), and only a direct `acquire` call with no time falls back to the system clock
+  (rounded up to whole milliseconds for `PEXPIRE`). A client built with a `FakeClock` therefore needs
+  `now:` on neither; pair it with `inMemoryQuotaStore({ clock })` so counter expiry follows it too. Hosts whose clocks disagree near a minute or day
   boundary can over-admit for the skew; keep clocks synchronised (NTP) when exactness matters.
 
 ## Decision model
@@ -256,7 +261,10 @@ core doc comment points back here for the quota-specific tradeoffs and limitatio
 - `defer`: quota is temporarily exhausted; `retryAfterMs` is present and the thrown `LlmError` is
   `retryable: true` (unless it exceeds `maxDeferMs` in the middleware, above).
 - `deny`: quota policy permanently disables the model for this scope; today that means
-  `reason: 'provider_disabled'` and `retryable: false`.
+  `reason: 'provider_disabled'` on the decision and the `deny` event. The thrown `LlmError` is
+  `rate_limited`, `retryable: false`, with `error.reason === 'quota_window'` (a local quota rule
+  keeps the call from being sent), the same reason as a deferral longer than `maxDeferMs`. Its
+  message names the scope.
 
 ### The `0` convention (deliberate, not incidental)
 
@@ -281,10 +289,10 @@ negative or fractional limit is `bad_request`.
   5.1), and nothing exercises the scripts on a real Redis or Upstash in CI, nor behaviour under truly
   concurrent connections.
 - `classifyError` in `@gullabs/core` maps every HTTP `429` to `kind: 'rate_limited'` uniformly.
-  The only capacity-versus-quota split anywhere in this repo is regex text matching in
-  `@gullabs/google`'s `flex-fallback.ts` (`CAPACITY_PATTERNS` / `QUOTA_PATTERNS`). That is an
-  unversioned prose contract with Google's API. A false positive there spends money on
-  standard-tier traffic; a false negative only loses availability.
+  Nothing in this repo reads error text to split capacity from quota: `@gullabs/google` retries a
+  Flex call on the Standard tier only for an HTTP 503, and a Flex 429 is an ordinary rate limit
+  (the provider's retry delay is honoured, no Standard dispatch). Google documents no field that
+  tells a capacity 429 from a quota 429, so a host that needs the split has to infer it itself.
 - `RateLimiter.acquire` is keyed as `"${provider}:${model}"` (the descriptor's canonical model id)
   and runs once per **attempt**, before the adapter, so each retry acquires again.
   `providerQuotaRateLimiter` therefore also counts one unit per dispatch. The built-in Gemini flex-to-standard fallback happens later inside the adapter, so

@@ -17,7 +17,7 @@ pnpm check:docs     # typecheck the ts code fences in READMEs and docs against t
 pnpm test           # vitest, no network
 pnpm -r build       # tsup: ESM + CJS + d.ts
 pnpm format:check   # Prettier
-pnpm quality        # build + format:check + lint + typecheck + check:docs + check:packages + test:runtime + test:scripts + test (same gate CI runs)
+pnpm quality        # build + format:check + lint + typecheck + check:docs + check:packages + test:runtime + test:scripts + test:audit-gate + test (same gate CI runs)
 pnpm example        # network-free end-to-end demo
 ```
 
@@ -26,7 +26,7 @@ pnpm example        # network-free end-to-end demo
 - **Tests never hit a real provider.** Use the fakes in `@gullabs/testing`.
 - **Adapters stay thin.** Map request ⇄ raw SDK only. The engine validates config, computes cost, persists.
 - **Cost is frozen at write time** (integer micro-USD + `pricingVersion`). GROSS tokens: `cached ⊆ input`, `thinking ⊆ output`.
-- **Reject, do not map.** No aliases, shims, or compatibility fallbacks. See `Agents.md`.
+- **Reject, do not map.** No silent remaps, shims, or compatibility fallbacks: a model id is exact, or an alias its descriptor declares (ADR-033). See `AGENTS.md`.
 - **No ambient auth.** Do not read `process.env` for credentials inside the library.
 - **Scripts.** See [`scripts/README.md`](./scripts/README.md): the offline checks, and the manual live tools (`recapture-fixtures.mjs` refreshes the xAI fixtures and shows the drift; none runs in CI).
 - **Docs compile.** Every `ts` code fence in a Markdown file is typechecked by `pnpm check:docs`, which finds the files itself (the root `*.md`, `docs/` without `docs/archive/`, and everything under `packages/<name>/`, including the shipped `SKILL.md`); a fence that is deliberately a fragment says ` ```ts no-check `. Changelogs, `DECISIONS.md` and `docs/archive/` are history and are not checked. Put a superseded plan in `docs/archive/`, not under `docs/`.

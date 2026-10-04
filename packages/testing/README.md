@@ -17,31 +17,32 @@ release version, like core), the first time it throws such an error; `FakeGoogle
 
 ## Key exports
 
-| Export                                      | What it is                                                                                                       |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `FakeClock`                                 | Deterministic `Clock` **and** `Scheduler`: `advance(ms)` / `advanceAsync(ms)` fire timers; see below             |
-| `FakeIds`                                   | Sequential `IdGenerator`: returns `call_1`, `attempt_1`, etc.                                                    |
-| `RecordingSink`                             | In-memory `UsageSink`; `dedupeOn: 'attemptId'` mirrors the Drizzle ledger; `payloads` holds stored payloads      |
-| `RecordingTelemetry`                        | `Telemetry` that records start, attempt, success and error events                                                |
-| `RecordingLogger`                           | `Logger` that records every line (`messages('error')`, `find(event)`)                                            |
-| `fakeLlmResult(partial)`                    | A complete `LlmResult` (`message`, `continuation`, `callCost` and the rest), with overrides; unpriced by default |
-| `FakeClient`                                | Scripted `Client` for host code that takes a `Client`: request capture, `expectRequest`, rejects `LlmError` only |
-| `fakeHttpError` / `fakeNetworkError`        | Status and transport failures in the shape `classifyError` reads                                                 |
-| `fakeBilledFailure(usage)`                  | The `LlmError` an adapter throws for a billed HTTP 200 with no usable output                                     |
-| `fakeProviderError('google' \| 'xai', s)`   | A provider error built from the real SDK class and a pinned error body                                           |
-| `makeFakeGemini(script)`                    | Creates a fake `@google/genai`-compatible client from a scripted response                                        |
-| `fakeGeminiResponse(opts)`                  | Builds a `GeminiResponseLike` with usage metadata, thought parts, and JSON output                                |
-| `fakeGeminiBlocked(opts)`                   | Builds a safety-blocked `GeminiResponseLike` (no candidates, `promptFeedback.blockReason` set)                   |
-| `FakeAdapter`                               | Scriptable `ProviderAdapter` at the port level; rejects an entry that is not an `Error` or a result              |
-| `SignalAwareFakeAdapter`                    | Like `FakeAdapter` but observes and honours `AbortSignal` from `AdapterCtx`                                      |
-| `scriptedRateLimiter(opts)`                 | RateLimiter fake with injectable wait for deterministic `queueDelayMs` assertions                                |
-| `inMemoryRateLimiter(opts?)`                | Convenience re-export of `@gullabs/core`'s in-process `RateLimiter` implementation                               |
-| `makeFakeXai` / `fakeXaiResponse`           | Fake xAI Responses client for `@gullabs/xai` adapter tests                                                       |
-| `FakeXaiFileStore`                          | In-memory xAI Files store (upload/TTL/delete/`failClosed`) for host unit tests                                   |
-| `FakeGoogleFileStore`                       | In-memory Gemini Files store with the real store's surface and delete semantics                                  |
-| `FakeGoogleCacheStore`                      | In-memory Gemini context-cache store: process-scoped reuse, expiry skew, refresh                                 |
-| `FakeCliRunner`                             | Scripted runner for `@gullabs/claude-cli` and `@gullabs/codex-cli`: no process is spawned                        |
-| `runToolLoop(client, req, tools, { auth })` | Runs a function-calling loop, following `result.continuation` after every turn (see below)                       |
+| Export                                      | What it is                                                                                                                                |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `FakeClock`                                 | Deterministic `Clock` **and** `Scheduler`: `advance(ms)` / `advanceAsync(ms)` fire timers; see below                                      |
+| `FakeIds`                                   | Sequential `IdGenerator`: returns `call_1`, `attempt_1`, etc.                                                                             |
+| `RecordingSink`                             | In-memory `UsageSink`; `dedupeOn: 'attemptId'` mirrors the Drizzle ledger; `payloads` holds stored payloads                               |
+| `RecordingTelemetry`                        | `Telemetry` that records start, attempt, success and error events                                                                         |
+| `RecordingLogger`                           | `Logger` that records every line (`messages('error')`, `find(event)`)                                                                     |
+| `fakeLlmResult(partial)`                    | A complete `LlmResult` (`message`, `continuation`, `callCost` and the rest), with overrides; unpriced by default                          |
+| `FakeClient`                                | Scripted `Client` for host code that takes a `Client`: request capture, `expectRequest`, rejects `LlmError` only                          |
+| `fakeHttpError` / `fakeNetworkError`        | Status and transport failures in the shape `classifyError` reads                                                                          |
+| `fakeBilledFailure(usage)`                  | The `LlmError` an adapter throws for a billed HTTP 200 with no usable output                                                              |
+| `fakeStreamFailure(opts?)`                  | The `LlmError` for an error event inside an open stream: `mayHaveBilled`, not retried, booked unpriced                                    |
+| `fakeProviderError('google' \| 'xai', s)`   | A provider error built from the real SDK class and a pinned error body                                                                    |
+| `makeFakeGemini(script)`                    | Creates a fake `@google/genai`-compatible client from a scripted response                                                                 |
+| `fakeGeminiResponse(opts)`                  | Builds a `GeminiResponseLike` with usage metadata, thought parts, and JSON output                                                         |
+| `fakeGeminiBlocked(opts)`                   | Builds a safety-blocked `GeminiResponseLike` (no candidates, `promptFeedback.blockReason` set)                                            |
+| `FakeAdapter`                               | Scriptable `ProviderAdapter` at the port level; rejects an entry that is not an `Error` or a result                                       |
+| `SignalAwareFakeAdapter`                    | Like `FakeAdapter` but observes and honours `AbortSignal` from `AdapterCtx`                                                               |
+| `scriptedRateLimiter(opts)`                 | RateLimiter fake with injectable wait for deterministic `queueDelayMs` assertions                                                         |
+| `inMemoryRateLimiter(opts?)`                | Convenience re-export of `@gullabs/core`'s in-process `RateLimiter` implementation                                                        |
+| `makeFakeXai` / `fakeXaiResponse`           | Fake xAI Responses client for `@gullabs/xai` adapter tests                                                                                |
+| `FakeXaiFileStore`                          | In-memory xAI Files store (upload/TTL/delete/`failClosed`) for host unit tests                                                            |
+| `FakeGoogleFileStore`                       | In-memory Gemini Files store with the real store's surface and delete semantics                                                           |
+| `FakeGoogleCacheStore`                      | In-memory Gemini context-cache store: process-scoped reuse, expiry skew, refresh                                                          |
+| `FakeCliRunner`                             | Scripted runner for `@gullabs/claude-cli` and `@gullabs/codex-cli`: no process is spawned; `{ timeout: true }` simulates a runner timeout |
+| `runToolLoop(client, req, tools, { auth })` | Runs a function-calling loop, following `result.continuation` after every turn (see below)                                                |
 
 For a quota store in tests use `inMemoryQuotaStore({ clock })` from `@gullabs/quota`; it takes the same
 `FakeClock`.
@@ -148,6 +149,11 @@ new FakeAdapter('google', [
 - `fakeBilledFailure(usage, { kind?, retryable?, warnings?, provider? })` is the `LlmError` an adapter
   throws when the provider answered HTTP 200 and billed the call but returned nothing usable. The
   engine keeps that attempt's `usage` and cost on its ledger row.
+- `fakeStreamFailure({ kind?, retryable?, message?, provider?, usage? })` is the `LlmError` an adapter throws for
+  an error event inside an open stream. It sets `mayHaveBilled`, so the engine books the attempt as unpriced
+  (never as a known-free `0`) even for `rate_limited` or `bad_request`, and it is not retried by default.
+  Script it with `FakeAdapter('xai', [fakeStreamFailure()])` to test a host's handling of "the call failed after
+  it started". `fakeXaiResponse({ functionCalls })` builds `function_call` output items.
 - `fakeProviderError('google', scenario)` builds the real `ApiError` from `@google/genai` (status plus
   the JSON body as the message). `fakeProviderError('xai', scenario, { headers? })` builds the real
   `openai` SDK status error with `APIError.generate(status, body, undefined, headers)`; `headers`
@@ -187,7 +193,10 @@ expect(sink.duplicates).toEqual([]) // nothing re-delivered under the same attem
 
 `drizzleUsageSink` writes with `onConflictDoNothing` on `attemptId`; `dedupeOn: 'attemptId'` gives the
 recording sink the same idempotence, drops the repeat and keeps it on `duplicates`, so a test can tell
-a retry that reuses an id from one that mints a fresh one. `failOnRecord` still simulates a broken sink.
+a retry that reuses an id from one that mints a fresh one. The ledger and its payload table de-duplicate
+independently, and so does the recording sink: the repeat's record is dropped, but its payload is kept when none
+was held for that `attemptId` yet (the record before it came without one), and the first payload always wins.
+`failOnRecord` still simulates a broken sink.
 
 With `payloads: {}` on the client (ADR-038), `sink.payloads` is a `Map` from `attemptId` to the redacted, capped
 payload the engine handed the sink; an attempt that got none (storage off, `include` said no, `storePayload: false`)

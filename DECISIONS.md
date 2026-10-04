@@ -525,7 +525,7 @@ belong in the host (ADR-037).
 
 ## ADR-013: Grounding via Typed Provider Extensions; Exact Guard for Structured Output + Tools
 
-**Status:** Accepted
+**Status:** Accepted; amended by ADR-035 (search usage facts, grounding cost is estimated)
 
 **Context:**
 Google Search grounding is a Gemini capability that attaches live search results to the model's
@@ -918,7 +918,7 @@ expiry handling, and resolver-failure classification. See the JSDoc on `requireA
 
 ## ADR-021: Observability — Leveled Fail-Open Logging, Per-Attempt Records, and Consumer-Owned Metrics/OTel/Traceparent
 
-**Status:** Accepted
+**Status:** Accepted; Amendment A below (host callbacks may be `async`, the record is total)
 
 **Context:**
 As the engine gained retry middleware and per-attempt record persistence, the observability surface
@@ -1336,7 +1336,7 @@ countTokens` (`packages/google/src/client.ts`) is a REQUIRED addition to the str
 
 ## ADR-025: Input Contracts — Strict Interpolation, Callsite/Request Input Validation, Pre-Dispatch Ledger Rows
 
-**Status:** Accepted
+**Status:** Accepted; its `idempotencyKey` rule is superseded by ADR-031 (ledger rows are per attempt)
 
 **Context:**
 `any-llm` enforces OUTPUT contracts thoroughly (`outputJsonSchema`, structured-output retry,
@@ -1690,7 +1690,7 @@ mutations stay non-retryable); issue
 
 ## ADR-029: Function-calling seam — tools in, parts out, no agent loop
 
-**Status:** Accepted
+**Status:** Accepted; Addendum below (ordered assistant message, continuation rules, thought signatures)
 
 **Context:**
 Both Google and xAI support client-side function calling. Without a generic
@@ -1856,7 +1856,7 @@ args}`), so an edited text or argument is detected, and key order does not matte
 
 ## ADR-030: xAI server-side search controls — `toolChoice`, `maxTurns`, zero-search accounting, strict-schema dialect
 
-**Status:** Accepted (2026-10-02)
+**Status:** Accepted (2026-10-02); Amendment below (`searchBudget`, observed after the call)
 
 **Context:**
 A host running grounded calls on `grok-4.5` saw the model skip the search on
@@ -1977,6 +1977,7 @@ picked the same key would also collide.
 ## ADR-032: xAI transport and timeout
 
 **Status:** Accepted (2026-10-03). Twin of ADR-012, which covers the same problem for Gemini.
+Amended by ADR-040 (the adapter streams) and by Amendment A below.
 
 **Context:**
 A non-streamed xAI reasoning or agentic call can run for many minutes before the first response
@@ -2058,7 +2059,7 @@ ADR-040 sends every xAI call as a stream. Two statements above change:
 
 ## ADR-033: Exact model ids plus declared aliases
 
-**Status:** Accepted (2026-10-03). Supersedes ADR-006.
+**Status:** Accepted (2026-10-03). Supersedes ADR-006.; Amendments A, B and C below
 
 **Context:**
 ADR-006 resolved a model string by exact match, then longest prefix. A request for
@@ -2563,7 +2564,8 @@ An adversarial audit of the grounding release found money and correctness defect
 ## ADR-036: Retry honours provider delays; errors carry typed reasons
 
 **Status:** Accepted (2026-10-03). Part 1 (reasons), the core half of Part 2 (retry, deadline, sink,
-classification) and the adapter items (10-20) are implemented.
+classification) and the adapter items (10-20) are implemented. Amendments below (`spend_ceiling`
+preflight, Google's billed repeats).
 
 ### Part 1 — Error reasons are a closed, typed vocabulary
 
@@ -2597,7 +2599,7 @@ out of credits are all `rate_limited, retryable: false`, and a host reacts to ea
    `sql/upgrades/0001-add-error-reason.sql` (from the 0.7.2 shape, idempotent) and a migration test
    that proves the upgraded table equals a fresh install and keeps existing rows. A
    `recordSchemaVersion` bump alone would migrate nothing, and the record version stays `1`: the field is
-   additive and optional.
+   additive and optional. (ADR-039 later moved the record to version `2` together with its own columns.)
 6. **Wrappers keep the reason.** Adapter overlays that rebuild an `LlmError` (`classifyGoogleError`) copy
    `reason`; an adapter or middleware that throws a reasoned `LlmError` is persisted as thrown.
 
@@ -3219,7 +3221,7 @@ CASCADE` under the expected name, so a host's own `llm_call_payloads` is renamed
 
 ## ADR-039: Ledger v2: cost confidence and lanes are persisted
 
-**Status:** Accepted (2026-10-03). Extends ADR-027 and ADR-035.
+**Status:** Accepted (2026-10-03). Extends ADR-027 and ADR-035.; Amendment A below
 
 **Context:**
 The engine computed `Cost.confidence`, the four-lane `Cost.details` and `Cost.unpricedReason` for every
@@ -3653,7 +3655,7 @@ that the rules of Amendment A were applied to some endings of a started run and 
 
 ## ADR-041: Quota windows, token pacing, the scheduler port and the test package
 
-**Status:** Accepted (2026-10-03). Extends ADR-008 and ADR-036.
+**Status:** Accepted (2026-10-03). Extends ADR-008 and ADR-036.; Amendment A below
 
 **Context:**
 `@gullabs/quota` limited requests per minute and per UTC day only. Google resets its daily request quota at
@@ -3814,11 +3816,36 @@ relied on `rpm: 0` as "unlimited" omits `rpm` instead; a test that threw a `fake
 `FakeAdapter` now sees the real classification; `@gullabs/testing` peers on the provider packages at the
 release version.
 
+### Amendment B (2026-10-03, final audit): limits are checked when the policy is built, the limiter reads the engine clock, and the fakes copy errors whole
+
+1. **`quotaPolicy` validates its limits at construction.** Every `rpm`, `rpd` and `tpm` of `defaults` and of each
+   `models` entry must be a non-negative integer, else `bad_request` naming the entry. `Number(process.env.X)`
+   gone `NaN` is a startup error, not the first request's. The presets build on `quotaPolicy`, so they inherit it.
+   A host's own `ProviderQuotaPolicy` is still checked per call.
+2. **A `deny` is a typed error.** The thrown `LlmError` stays `rate_limited`, `retryable: false`, and now carries
+   `reason: 'quota_window'` (a local quota rule keeps the call from being sent). The decision and the `deny`
+   event keep `provider_disabled`. No `LlmErrorReason` member is added; the member's description now says a
+   limit of `0` is one of its causes.
+3. **`RateLimitHint.nowMs`.** The engine hands every `acquire` its clock reading, and `providerQuotaRateLimiter`
+   names windows by `now`, else `hint.nowMs`, else the system clock (a direct `acquire` with no hint). A client
+   built with a `FakeClock` therefore needs no `now` option on the limiter.
+4. **One list of an error's fields.** `llmErrorOptionsOf(error)` in core returns every `LlmErrorOptions` field of
+   an error-shaped value. The engine's own copy (`cloneLlmError`) and `@gullabs/testing`'s adoption of an error
+   built by another copy of core both use it, so a field added to `LlmErrorOptions` (`mayHaveBilled` was missed
+   once) is carried everywhere. A test builds an error with every option and compares.
+5. **Test fakes follow the real sinks and loops.** `RecordingSink({ dedupeOn: 'attemptId' })` de-duplicates the
+   payload on its own, as the Drizzle payload table does: the first payload for an `attemptId` wins, including
+   one that arrives with a repeat of a record that had none. `runToolLoop` looks tools up by own property (a
+   model call named `toString` is a missing tool) and rejects a `maxTurns` that is not an integer of at least 1.
+   `FakeCliRunner` accepts `{ timeout: true }`. `fakeStreamFailure()` is the error an adapter throws for an
+   error event inside an open stream (`mayHaveBilled`, not retried), and `fakeXaiResponse` can build
+   `function_call` items.
+
 ---
 
 ## ADR-042: Runtimes, the Node floor and the release checks
 
-**Status:** Accepted (2026-10-03).
+**Status:** Accepted (2026-10-03).; Amendment A below
 
 **Context:**
 The audit found four gaps in what the packages promise. CI ran one Node version while `engines` said
@@ -3849,7 +3876,7 @@ supported runtimes were not written down. The README and doc examples were not c
    `sha256Hex` / `Sha256` in core, a dependency-free SHA-256 tested against `node:crypto` at every
    padding boundary and on large inputs. `sha256Hex` is exported next to `canonicalJson`. WebCrypto was
    rejected because it is asynchronous and one-shot, and the signature hash sits in synchronous code.
-   `claude-cli` and `codex-cli` spawn processes and `testing` imports `node:os` and `node:module`, so
+   `claude-cli` and `codex-cli` spawn processes and `testing` imports `node:os`, `node:module` and `node:assert/strict`, so
    those three are Node only.
 4. **The claim is tested, and bounded.** `pnpm test:runtime` loads the built ESM entry of each
    runtime-agnostic package under a module-resolution hook that fails any built-in import, then removes
@@ -3912,7 +3939,7 @@ snapshot, and several smaller gaps. What changed:
 
 ## ADR-043: Model lifecycle: `shutdownDate`
 
-**Status:** Accepted (2026-10-03).
+**Status:** Accepted (2026-10-03).; Amendment A below (a typed advisory, once per client and model)
 
 **Context:**
 Google's deprecations page (https://ai.google.dev/gemini-api/docs/deprecations, "Page last updated"
@@ -4081,3 +4108,51 @@ fractions (`performance.now()`) wrote fractional milliseconds into INTEGER colum
 - An ambient transaction costs two extra statements per write (`SAVEPOINT`, `RELEASE`), and a payload write on it
   four. A pool `db` pays nothing extra for a record without a payload.
 - The ledger-failure log line is shorter and names the cause; it no longer contains the statement.
+
+---
+
+## ADR-046: The CLI children get an allowlisted environment
+
+**Status:** Accepted (2026-10-03). Extends ADR-026 (CLI session auth) and ADR-019 (no ambient auth).
+
+**Context:**
+`@gullabs/claude-cli` and `@gullabs/codex-cli` run a local CLI on its saved login and record the call as unpriced.
+Both runners started the child with the whole host environment. Claude Code's documentation says
+`ANTHROPIC_API_KEY` "is used instead of your Claude Pro, Max, Team, or Enterprise subscription even if you are
+logged in. In non-interactive mode (`-p`), the key is always used when present", and the adapter always runs
+`-p`. A host with that key exported for an Anthropic SDK would have every CLI call billed to it while the ledger
+said "unpriced" and nothing in the result said money was spent. `codex exec` reads `CODEX_API_KEY` ("to use a
+different API key for a single run") and the OpenAI SDK's `OPENAI_API_KEY`; OpenAI does not document which wins
+over the saved login. The cost is invisible to the library's own ledger, which is its reason to exist.
+
+**Decision:**
+
+1. **The child gets an allowlisted copy of `process.env`.** The real runners pass `spawn` an `env` built from:
+   `PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LANGUAGE`, `LC_*`, `TERM`, `TZ`, `TMPDIR`/`TEMP`/`TMP`, `SHELL`,
+   `XDG_*`, the Windows profile variables, the proxy variables (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`,
+   `NO_PROXY`, either case), `SSL_CERT_FILE`, `SSL_CERT_DIR`, and each CLI's own documented settings for its login:
+   `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN` (the long-lived subscription token), the Claude mTLS variables
+   and `NODE_EXTRA_CA_CERTS`; `CODEX_HOME` and `CODEX_CA_CERTIFICATE`. Credential and provider-routing variables
+   (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/
+   `_FOUNDRY`, `CODEX_API_KEY`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, everything else) are not on it. It is an
+   allowlist, not a denylist, so a variable a CLI adds later is not inherited by accident.
+2. **`env` is the explicit opt-in.** `claudeCliAdapter({ env })` and `codexCliAdapter({ env })` take a record of
+   string values, validated at construction (`bad_request` for a non-string, an empty or `=`-bearing name, a NUL),
+   copied and frozen, handed to the runner as `ClaudeCliRunOptions.env` / `CodexCliRunOptions.env`, and merged over
+   the allowlisted copy. A host that wants a key used passes it there, and then the billing is its decision.
+3. **This is a scrub, not a credential read.** The library still never takes a credential from the environment:
+   the one `process.env` read is the runner's filter, the permanence test allows exactly that call, and no value is
+   interpreted. The ledger row stays unpriced; ADR-026's `cliSession` auth is unchanged.
+4. **Related runner fixes.** A call waits for a semaphore slot before it makes its scratch directory and leaves the
+   queue on abort. The adapters classify failure text with word-anchored patterns (an explicit rate-limit signal
+   wins over an incidental "auth"). A `codex` process ended by a signal with no `turn.completed` is a `server`
+   error, never a result built from a streamed message. After a timeout, abort or output-cap kill, the runner
+   sends one more SIGKILL to the process group when the leader closes, so a member that ignored SIGTERM and holds
+   none of the pipes does not outlive the call. The `claude-cli` descriptor limits are what the CLI reports for its
+   own run (Fable 5.1 64 000 and Haiku 4.5 32 000 output tokens).
+
+**Consequences:**
+
+- A host that relied on the CLI inheriting some other variable (a custom `HOME` is kept; a proxy is kept; a
+  corporate `SSL_CERT_FILE` is kept) loses only what is not listed, and adds it with `env`.
+- `ANTHROPIC_API_KEY` in the host environment no longer changes which account a `claude-cli` call uses.

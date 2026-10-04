@@ -1,7 +1,7 @@
 # Implementation Plan: Provider-Plugin Architecture + xAI Grok 4.5 Provider
 
 Provider-surface snapshot for the later Grok 4.6 announcement (2026-08-12):
-[`docs/grok-4-6-vs-4-5.md`](../grok-4-6-vs-4-5.md). That note is research
+[`docs/grok-4-6-vs-4-5.md`](./grok-4-6-vs-4-5.md). That note is research
 only — this plan stays the 4.5 implementation record.
 
 Status: IMPLEMENTED — Phase 1, Phase 2, and Phase 3 have landed on

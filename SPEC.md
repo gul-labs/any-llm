@@ -263,7 +263,7 @@ export interface AdapterCtx {
 export interface AdapterResult {
   rawStructured?: unknown // the adapter's JSON.parse of the structured response; the engine passes it to LlmResult.output (unknown); never validated
   servedServiceTier?: string // service tier actually served by the provider
-  message?: Message // ordered assistant output; omitted → engine builds [text, ...toolCalls]
+  message: Message // ordered assistant output; required, the engine never rebuilds it from text and toolCalls
   text?: string
   reasoningText?: string // thought summary if includeThoughts requested
   usage: Usage
@@ -300,7 +300,7 @@ export interface PricingSource {
   hasModel(model: string): boolean
   listModels(): readonly string[]
 }
-export type AuthMaterial = { apiKey: string }
+export type AuthMaterial = ApiKeyAuth | CliSessionAuth // { apiKey, keyId? } | { cliSession: true } (ADR-026)
 export interface Clock {
   now(): number
 }
@@ -418,7 +418,7 @@ output+thinking = outputTokens                                // thinking alread
 microUsd = round( billableInput   * inputRate(model, inputTokens)     // inputRate honors >200k tier
                 + (cachedInputTokens ?? 0) * cachedRate(model)
                 + outputTokens     * outputRate(model) )
-details = { input, cached, output }   // thinking billed at output rate (folded into output)
+details = { input, cached, output, tools }   // thinking billed at output rate (folded into output); tools = server-tool fees, 0 for plain token pricing
 ```
 
 - Pricing table is a frozen snapshot with a `pricingVersion` string (e.g. `gemini-2026-06-27`).

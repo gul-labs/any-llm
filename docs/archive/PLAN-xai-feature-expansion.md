@@ -123,7 +123,7 @@ Mirrors the google grounding pattern (`providerOptions.google.tools` + `capabili
    - attachment-search invocations × $10.00 / 1,000 calls (**fixes the existing silent under-report**: we already record server-tool counters but never price file attachments). Which counter attributes attachment_search is part of the same live-probe gate.
    - Bump `xaiPricingVersion`.
    - **Confidence semantics + plumbing** (round-2 fix — `PricingSource.price(model, usage, tier)` has no request context and no warnings channel, and the engine must stay provider-ignorant, so the ADAPTER signals): when the xai adapter builds a request with billable server tools in play (`providerOptions.xai.tools` present, or `file-ref` parts attached → auto attachment_search), it sets a documented **synthetic** usage-detail flag `usage.details.server_tools_requested = 1` (the `details` lane is `Record<string,number>` and documented as open; the xai README documents this key as adapter-synthetic, not a provider payload field). If the expected per-tool counters are then absent from the response usage, the adapter additionally pushes an `AdapterResult.warnings` entry naming the missing counters — warnings are the adapter's existing channel; `Cost` gets none. The pricing source needs only `Usage`, unchanged signature: tool lanes priced from the fixture-pinned counters; if `server_tools_requested` is set but the counters are absent, token lanes are priced, `tools: 0`, and `confidence: 'estimated'`. `'exact'` requires counters present or no server tools requested. Contract tests cover all three states.
-8. README pricing table + `docs/grok-4-6-vs-4-5.md` update.
+8. README pricing table + `grok-4-6-vs-4-5.md` update.
 
 ### Tests
 

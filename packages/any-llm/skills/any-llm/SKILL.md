@@ -134,11 +134,15 @@ console.log(count.details) // optional per-category breakdown, e.g. { cached: 12
 console.log(count.raw) // provider's raw token-count response, verbatim
 ```
 
-`TokenCountRequest` is deliberately narrower than a generate request — no `config`, no
-`output`, no `providerOptions`; token counting only needs `provider`, `model`, and
-`messages`. Google rejects `system` and `tools` with `bad_request` (its count cannot
-include them, so the number would be wrong); xAI rejects `tools`. To budget a call that
-has a system prompt or tools, read `usage.inputTokens` from a real `generate()` result.
+`TokenCountRequest` is deliberately narrower than a generate request: no `config`, no
+`output`, no `providerOptions`. Token counting takes `provider`, `model`, `messages`, and
+optionally `system` and `tools`. Google counts `messages`, `system` and `tools` (through the
+REST `countTokens`); it does not count a response schema, thinking config or Search, so for a
+generate call that sends those it is a floor. `accuracy` says how far to trust it: Google is
+`'exact'` for the history it counts, and `'estimated'` for a Gemini 3 history with replayed
+function calls (their thought signatures add roughly 110 prompt tokens each that the count
+cannot include). xAI counts text only (`'lower-bound'`) and rejects `tools` with `bad_request`.
+To budget exactly, read `usage.inputTokens` from a real `generate()` result.
 
 ## Composing multiple providers — xAI Grok example
 

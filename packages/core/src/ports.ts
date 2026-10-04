@@ -509,7 +509,7 @@ export type CliSessionAuth = { cliSession: true }
  * material, or an OAuth/STS bearer token): extend the union with a new
  * member and update exactly these sites:
  * - `requireAuth()` in `packages/core/src/engine.ts`
- * - `buildGoogleClient` in `packages/google/src/adapter.ts`
+ * - `buildGoogleClient` in `packages/google/src/client.ts`
  * - `buildCachesClient` in `packages/google/src/cache-store.ts`
  * - `buildFilesClient` in `packages/google/src/file-store.ts`
  * - `packages/claude-cli/src/adapter.ts`

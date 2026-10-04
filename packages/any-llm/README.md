@@ -93,16 +93,16 @@ This package re-exports the full public API of `@gullabs/core` and `@gullabs/goo
 `geminiPricingSource`, `LlmError`, and every other named export from both packages. See their
 READMEs for details:
 
-| Export                      | What it is                                                  |
-| --------------------------- | ----------------------------------------------------------- |
-| `createClient(config)`      | Wires ports into a `{ generate, runStructured }` client     |
-| `composeProviders(plugins)` | Merges `ProviderPlugin`s into `ClientConfig` fields         |
-| `defineCallSite(opts)`      | Defines a typed, reusable prompt template bound to a model  |
-| `googleProvider(opts?)`     | The Gemini `ProviderPlugin` factory, from `@gullabs/google` |
-| `geminiAdapter(opts?)`      | The Gemini `ProviderAdapter`, from `@gullabs/google`        |
-| `geminiPricingSource()`     | Built-in Gemini pricing snapshot, from `@gullabs/google`    |
-| `LlmError`                  | Typed error class — always thrown on call failure           |
-| `ANY_LLM_VERSION`           | This package's version, sourced from `package.json`         |
+| Export                      | What it is                                                           |
+| --------------------------- | -------------------------------------------------------------------- |
+| `createClient(config)`      | Wires ports into a `{ generate, runStructured, countTokens }` client |
+| `composeProviders(plugins)` | Merges `ProviderPlugin`s into `ClientConfig` fields                  |
+| `defineCallSite(opts)`      | Defines a typed, reusable prompt template bound to a model           |
+| `googleProvider(opts?)`     | The Gemini `ProviderPlugin` factory, from `@gullabs/google`          |
+| `geminiAdapter(opts?)`      | The Gemini `ProviderAdapter`, from `@gullabs/google`                 |
+| `geminiPricingSource()`     | Built-in Gemini pricing snapshot, from `@gullabs/google`             |
+| `LlmError`                  | Typed error class — always thrown on call failure                    |
+| `ANY_LLM_VERSION`           | This package's version, sourced from `package.json`                  |
 
 Use `@gullabs/core` and `@gullabs/google` directly only when you want modular dependency control.
 

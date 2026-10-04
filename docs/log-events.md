@@ -1,0 +1,49 @@
+# Log events
+
+Every event the library writes to the `Logger` you pass to `createClient({ logger })`, in one place. The
+`Logger` port is object-first, `(fields, event)`, and pino-compatible; the event name is the second argument.
+Fields are the ones listed, plus nothing that carries a credential: error text is redacted before it is
+logged, and a payload's text is never logged.
+
+A logger that throws, or returns a promise that rejects, never breaks a call: the failure is logged once,
+at `debug`, as `llm.hook.failed`, and a logger that always fails is not logged about again.
+
+## Call lifecycle (`@gullabs/core`)
+
+| Event                                       | Level   | Fields and meaning                                                                                                                                                                                                                                                                                          |
+| ------------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llm.call.start`                            | `info`  | `callId`, `model`, `callSiteId`, `metadata`. A logical call began.                                                                                                                                                                                                                                          |
+| `llm.call.attempt.start`                    | `debug` | `callId`, `attemptNumber`, `model`. One provider attempt began.                                                                                                                                                                                                                                             |
+| `llm.call.attempt.dispatch`                 | `debug` | `callId`, `attemptNumber`, `queueDelayMs`. The rate limiter released the attempt and the request is about to reach the adapter.                                                                                                                                                                             |
+| `llm.adapter.dispatch`                      | `debug` | Written by `@gullabs/google` and `@gullabs/xai` just before the SDK call: `model`, `configKeys` (the names only, never values), and `serviceTier` for Google.                                                                                                                                               |
+| `llm.call.retry`                            | `debug` | `callId`, `attemptNumber`, `delayMs`, `errorKind`, `retryable`. The retry middleware will sleep `delayMs` and try again.                                                                                                                                                                                    |
+| `llm.call.retry.stopped`                    | `debug` | `callId`, `attemptNumber`, `errorKind`, `reason`, and the numbers behind it. The retry middleware ended the call with the attempt's own error instead of sleeping; `reason` is `attempt window too short`, `provider delay above maxDelayMs` or `delay does not leave a usable window before the deadline`. |
+| `llm.call.success`                          | `info`  | `callId`, `latencyMs`, `metadata`, `attemptNumber`. The call returned a result.                                                                                                                                                                                                                             |
+| `llm.call.error`                            | `error` | `callId`, `errorKind`, `latencyMs`, `metadata`, `attemptNumber`. The call failed.                                                                                                                                                                                                                           |
+| `llm.call.cost.failed`                      | `warn`  | `callId`, `error`. Pricing threw; the call is unaffected and its cost is absent.                                                                                                                                                                                                                            |
+| `llm.count_tokens.start`                    | `info`  | `callId`, `provider`, `model`. A `countTokens` call began.                                                                                                                                                                                                                                                  |
+| `llm.count_tokens.success`                  | `info`  | `callId`, `provider`, `model`, `totalTokens`, `latencyMs`.                                                                                                                                                                                                                                                  |
+| `llm.count_tokens.error`                    | `error` | `callId`, `provider`, `model`, `errorKind`, `latencyMs`.                                                                                                                                                                                                                                                    |
+| `llm.config.payloads.sink_ignores_payloads` | `warn`  | Once, at `createClient`: `payloads` is set but the sink does not declare `acceptsPayloads: true`, so no payload is built.                                                                                                                                                                                   |
+| `llm.hook.failed`                           | `debug` | `callId` (when there is one), `phase`, `error`. A host callback (a telemetry hook, a limiter's `Release`, the logger itself) threw or rejected; the call is unaffected.                                                                                                                                     |
+
+## Sink and payload (`@gullabs/core`, `@gullabs/drizzle`)
+
+| Event                       | Level   | Fields and meaning                                                                                                                                                                                  |
+| --------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llm.call.sink.success`     | `debug` | `callId`. The ledger row was written.                                                                                                                                                               |
+| `llm.call.sink.failed`      | `error` | `callId`, `attemptId`, `attemptNumber`, `provider`, `model`, `error` (redacted). The sink threw; the row is lost.                                                                                   |
+| `llm.call.sink.timeout`     | `error` | `callId`, `attemptId`, `attemptNumber`, `provider`, `model`, `timeoutMs`. `sinkTimeoutMs` passed; the row may be lost. Use `attemptId` to find it.                                                  |
+| `llm.call.sink.interrupted` | `error` | `callId`, `attemptId`, `attemptNumber`, `provider`, `model`, `graceMs`. 100 ms after an abort or the call deadline the sink had not finished; the row may be lost.                                  |
+| `llm.call.payload.dropped`  | `warn`  | `callId`, `attemptId`, `stage`, `errorName`, `error` (a fixed sentence). A payload could not be built (a throwing or async `redact` or `include`, over the size cap, a sink wait that ended first). |
+| `llm.call.payload.failed`   | `error` | `callId`, `attemptId`, `error`. Logged by `@gullabs/drizzle`: the payload insert failed and was rolled back; the ledger row committed.                                                              |
+
+## Quota (`@gullabs/quota`)
+
+| Event                        | Level  | Fields and meaning                                                                                                                                      |
+| ---------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llm.quota.windows_skipped`  | `warn` | `callId`, `provider`, `model`, `scope`, `detail`. Once per middleware instance and scope: there is no store, so `rpm`, `rpd` and `tpm` are not checked. |
+| `llm.quota.reconcile_failed` | `warn` | `callId`, `provider`, `model`, `scope`, `error` (redacted). The token correction after an attempt failed; the result or error of the call is unchanged. |
+
+Advisories about a model (a shutdown date) and about a result are not log events: they arrive as `Warning`
+entries on `LlmResult.warnings` and on the ledger row.

@@ -19,7 +19,7 @@ Every other `@gullabs/*` package declares this one as an exact-version peer depe
 
 | Export                       | What it is                                                                                         |
 | ---------------------------- | -------------------------------------------------------------------------------------------------- |
-| `createClient(config)`       | Wires ports into a `{ generate, runStructured }` client                                            |
+| `createClient(config)`       | Wires ports into a `{ generate, runStructured, countTokens }` client                               |
 | `composeProviders(plugins)`  | Merges one or more `ProviderPlugin`s into `ClientConfig` fields                                    |
 | `createModelRegistry(descs)` | Builds a `ModelRegistry` (`resolve`, `findByModel`, `listDescriptors`) from `ModelDescriptor`s     |
 | `toConfigKeys(schema)`       | Derives `ModelDescriptor.configKeys` from a model's config schema                                  |
@@ -358,22 +358,11 @@ const client = createClient({
 })
 ```
 
-Four levels: `debug`, `info`, `warn`, `error`. Engine events:
-
-| Event                       | Level                                                                                                                                                                                                               |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `llm.call.start`            | `info`                                                                                                                                                                                                              |
-| `llm.call.attempt.start`    | `debug`                                                                                                                                                                                                             |
-| `llm.call.retry`            | `debug` — includes `attemptNumber`, `delayMs`, `errorKind`, `retryable`                                                                                                                                             |
-| `llm.call.success`          | `info`                                                                                                                                                                                                              |
-| `llm.call.error`            | `error`                                                                                                                                                                                                             |
-| `llm.call.cost.failed`      | `warn`                                                                                                                                                                                                              |
-| `llm.call.sink.success`     | `debug`                                                                                                                                                                                                             |
-| `llm.call.sink.failed`      | `error` (redacted)                                                                                                                                                                                                  |
-| `llm.call.sink.timeout`     | `error` — `sinkTimeoutMs` passed; the row may be lost                                                                                                                                                               |
-| `llm.call.sink.interrupted` | `error` — 100 ms after an abort or the call deadline; the row may be lost                                                                                                                                           |
-| `llm.call.payload.dropped`  | `warn` — a payload could not be built (a throwing or async `redact` or `include`, over the size cap, a sink wait that ended first); fields `stage`, `errorName`, `error` (a fixed sentence); the call is unaffected |
-| `llm.call.payload.failed`   | `error` — logged by `@gullabs/drizzle`: the payload insert failed and was rolled back; the ledger row committed                                                                                                     |
+Four levels: `debug`, `info`, `warn`, `error`. Every event, its level and its fields are listed in
+[`docs/log-events.md`](https://github.com/gul-labs/any-llm/blob/main/docs/log-events.md): the call lifecycle
+(`llm.call.start`, `llm.call.attempt.start`, `llm.call.attempt.dispatch`, `llm.call.retry`,
+`llm.call.retry.stopped`, `llm.call.success`, `llm.call.error`, `llm.call.cost.failed`), the sink and payload
+events (`llm.call.sink.*`, `llm.call.payload.*`), `llm.count_tokens.*`, `llm.adapter.dispatch` and the quota events.
 
 A host logger that throws, or returns a promise that rejects, never breaks a call and never becomes an
 unhandled rejection: the failure is logged once, at `debug`, as `llm.hook.failed` (fields `callId`, `phase`,

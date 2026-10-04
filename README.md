@@ -18,13 +18,13 @@
 
 A thin adapter over raw provider SDKs. No agent loop, no framework, no magic. Every call goes through one pipeline: validate config → dispatch → normalize usage → price → persist.
 
-| You get                                                | You do not get                          |
-| ------------------------------------------------------ | --------------------------------------- |
-| Canonical model IDs, rejected when unknown             | Alias maps and silent remaps            |
-| Per-call `auth` you pass in                            | `process.env` / ADC / ambient key reads |
-| Frozen integer µUSD + `pricingVersion` on every record | Repriced history                        |
-| Thinking tokens and optional thought text              | An agent runtime                        |
-| Fail-open sink / telemetry / cost                      | A broken logger failing the LLM call    |
+| You get                                                                   | You do not get                          |
+| ------------------------------------------------------------------------- | --------------------------------------- |
+| Exact model IDs (or aliases a descriptor declares), rejected when unknown | Prefix matching and silent remaps       |
+| Per-call `auth` you pass in                                               | `process.env` / ADC / ambient key reads |
+| Frozen integer µUSD + `pricingVersion` on every record                    | Repriced history                        |
+| Thinking tokens and optional thought text                                 | An agent runtime                        |
+| Fail-open sink / telemetry / cost                                         | A broken logger failing the LLM call    |
 
 ## Install
 
@@ -219,8 +219,8 @@ Published on npm under `@gullabs`, Apache-2.0, Node `>=22.12.0`.
 | Packages                                                                                                     | Runtime                                                                                                                                                                                                                                                                                                                                                                      |
 | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@gullabs/core`, `@gullabs/google`, `@gullabs/xai`, `@gullabs/quota`, `@gullabs/drizzle`, `@gullabs/any-llm` | **Runtime-agnostic code.** No `node:` import, no `Buffer`, no `process`. They use only web-standard globals: `fetch`, `AbortSignal`, `TextEncoder`, `atob`, `Blob` and `FormData` (the file stores), timers, and `globalThis.crypto.randomUUID()` for ids. Hashes (ADR-038 payloads, Gemini signature state) use a dependency-free SHA-256 (`sha256Hex`), not `node:crypto`. |
-| `@gullabs/claude-cli`, `@gullabs/codex-cli`                                                                  | **Node only.** They spawn the local CLI (`node:child_process`).                                                                                                                                                                                                                                                                                                              |
-| `@gullabs/testing`                                                                                           | **Node only** (a dev dependency): it imports `node:os` and `node:module`.                                                                                                                                                                                                                                                                                                    |
+| `@gullabs/claude-cli`, `@gullabs/codex-cli`                                                                  | **Node only.** They spawn the local CLI (`node:child_process`) and keep a scratch directory per call (`node:fs`, `node:os`, `node:path`).                                                                                                                                                                                                                                    |
+| `@gullabs/testing`                                                                                           | **Node only** (a dev dependency): it imports `node:os`, `node:module` and `node:assert/strict`.                                                                                                                                                                                                                                                                              |
 
 What is verified, and what is not:
 
@@ -261,6 +261,8 @@ Ports & adapters: the engine depends on `ProviderAdapter`, `UsageSink`, `Pricing
 | Grounding then structured       | [`docs/grounded-structured.md`](./docs/grounded-structured.md)                   |
 | Validating `result.output`      | [`docs/structured-output-validation.md`](./docs/structured-output-validation.md) |
 | Ledger / `llm_calls`            | [`docs/ledger.md`](./docs/ledger.md)                                             |
+| Log events                      | [`docs/log-events.md`](./docs/log-events.md)                                     |
+| Every document in `docs/`       | [`docs/README.md`](./docs/README.md)                                             |
 | Gemini files, Flex, cache       | [`packages/google/README.md`](./packages/google/README.md)                       |
 | Grok files, reasoning, priority | [`packages/xai/README.md`](./packages/xai/README.md)                             |
 
@@ -284,7 +286,7 @@ PRs welcome. Only [@atifgul99](https://github.com/atifgul99) can push to `main`.
 
 ```bash
 pnpm install
-pnpm quality   # build + lint + typecheck + doc snippets + test (the CI gate)
+pnpm quality   # build + format + lint + typecheck + doc snippets + package checks + runtime smoke + script tests + audit-gate tests + test (the CI gate)
 ```
 
 ## License
