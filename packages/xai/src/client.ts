@@ -567,6 +567,11 @@ export async function buildXaiClient(
           const contentType = response.headers.get('content-type')
           if (contentType !== null && !/text\/event-stream/i.test(contentType)) {
             const bodySnippet = await readBodySnippet(response.body, aborted)
+            // `readBodySnippet` swallows a read that was cut short, so a deadline or an
+            // abort that ended the read would otherwise be reported as the unexpected
+            // body. The stop reason is the answer, and comes first.
+            const why = stopped()
+            if (why instanceof Error) throw why
             throw new XaiStreamError(
               {
                 kind: 'not_event_stream',

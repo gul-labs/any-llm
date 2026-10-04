@@ -9,7 +9,7 @@
  * captured from xAI, and the `response.failed` shape (`error.code`) is the
  * documented OpenAI one.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { LlmError, createClient, retryMiddleware } from '@gullabs/core'
 import type { AdapterCtx, ResolvedRequest } from '@gullabs/core'
 import { RecordingSink, RecordingTelemetry } from '@gullabs/testing'
@@ -570,6 +570,86 @@ describe('a 200 that is not an event stream', () => {
     expect(err).toMatchObject({ kind: 'bad_request', retryable: false })
     const chain = [err.cause, (err.cause as Error | undefined)?.cause]
     expect(JSON.stringify(chain)).toContain('nope')
+  })
+})
+
+describe('an abort or deadline while the body of a non-event-stream 200 is read', () => {
+  /** A 200 `text/html` whose body starts and then never ends. */
+  function stalledHtml(): typeof fetch {
+    return (() =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('<html>Bad gat'))
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'text/html' } },
+        ),
+      )) as unknown as typeof fetch
+  }
+
+  it('the caller abort surfaces as the aborted error, not bad_request', async () => {
+    const controller = new AbortController()
+    const adapter = xaiAdapter({ transport: { fetch: stalledHtml() } })
+    const pending = failure(adapter.run(req47(), { ...CTX, signal: controller.signal }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    controller.abort()
+    const err = await pending
+    expect(err.kind).toBe('aborted')
+    expect(err.retryable).toBe(false)
+  })
+
+  it('the client deadline surfaces as the timeout error, not bad_request', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const adapter = xaiAdapter({ transport: { fetch: stalledHtml() } })
+      const pending = failure(
+        adapter.run(req47({ config: { timeoutMs: 1 } }), { ...CTX }),
+      )
+      // The client's own timer is armed at timeoutMs + 5 s.
+      await vi.advanceTimersByTimeAsync(6_000)
+      const err = await pending
+      expect(err.kind).toBe('timeout')
+      expect(err.message).toContain('client deadline')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('at the client: the deadline is an XaiStreamError of kind deadline, the abort is the abort error', async () => {
+    const client = await buildXaiClient({ apiKey: 'k' }, { fetch: stalledHtml() })
+    const deadline = (await client.responses
+      .create({ model: 'm', input: [], store: false }, { timeout: 30 })
+      .catch((e: unknown) => e)) as XaiStreamError
+    expect(deadline).toBeInstanceOf(XaiStreamError)
+    expect(deadline.failure).toMatchObject({ kind: 'deadline' })
+
+    const controller = new AbortController()
+    const pending = client.responses
+      .create({ model: 'm', input: [], store: false }, { signal: controller.signal })
+      .catch((e: unknown) => e)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    controller.abort()
+    const aborted = await pending
+    expect(aborted).not.toBeInstanceOf(XaiStreamError)
+    expect((aborted as Error).name).toMatch(/abort/i)
+  })
+
+  it('a body that is readable still yields the snippet and the not_event_stream error', async () => {
+    const adapter = xaiAdapter({
+      transport: {
+        fetch: (() =>
+          Promise.resolve(
+            new Response('<html>nope</html>', {
+              status: 200,
+              headers: { 'content-type': 'text/html' },
+            }),
+          )) as unknown as typeof fetch,
+      },
+    })
+    const err = await failure(adapter.run(req47(), CTX))
+    expect(err.kind).toBe('bad_request')
   })
 })
 
