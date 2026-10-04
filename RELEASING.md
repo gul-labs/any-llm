@@ -64,6 +64,8 @@ Each must install, resolve exactly one `@gullabs/core` copy, load under ESM and 
    - Pending `.changeset/*.md` files → `changesets/action` opens a "Version Packages" PR.
    - Versions already bumped and no pending changesets → `changesets/action` runs `pnpm release` and publishes unpublished versions (trusted publishing via OIDC, `NPM_TOKEN` as fallback).
 
+The changelog generator is `.changeset/changelog.mjs`: the default one, except that a dependent package gets no "Updated dependencies [hash]" line. The nine packages are one fixed group with an exact core peer, so every changeset "updates" every package, and a line per changeset that names no change would bury the real entries.
+
 Do not block a normal CI release on local `npm whoami`. Local npm auth is only for the emergency manual path.
 
 ## Day-to-day: adding a changeset
