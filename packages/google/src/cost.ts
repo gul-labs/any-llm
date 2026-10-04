@@ -29,22 +29,99 @@ function tokenDetail(usage: Usage, key: string): number | undefined {
     : undefined
 }
 
+/** The sum of the `<prefix>_<modality>` lanes the response reported, or `undefined` when it listed none. */
+function modalitySplitTotal(
+  usage: Usage,
+  prefix: 'input_' | 'cached_',
+): number | undefined {
+  let total: number | undefined
+  for (const [key, value] of Object.entries(usage.details)) {
+    if (key.startsWith(prefix) && Number.isFinite(value) && value >= 0) {
+      total = (total ?? 0) + value
+    }
+  }
+  return total
+}
+
+/** Why the audio share of a call's prompt cannot be pinned down from the response. */
+export type PromptSplitGap =
+  /** Audio was sent, but the response reports no audio tokens (an absent entry or `{ AUDIO, 0 }`). */
+  | 'audio-unreported'
+  /** Cached tokens exist and nothing in the response says how many are audio. */
+  | 'cached-audio-unknown'
+  /** The reported counts contradict each other (audio above the prompt, cached audio above the cache, ...). */
+  | 'inconsistent'
+
 /**
- * Whether the response reported a non-zero number of audio prompt tokens
- * (`details.input_audio`, from `promptTokensDetails`). Audio always has tokens, so
- * a request that carried audio and a response that reports none (the entry is
- * absent or `{ AUDIO, 0 }`) leaves the audio share unknown. The pricing source's
- * confidence and the adapter's warning both read this one predicate.
+ * The prompt split into four lanes that always sum to `usage.inputTokens`: audio and
+ * other (text, image, video) tokens, each uncached and cached. `gaps` lists every
+ * reason the audio share is not fully known from the response; an empty list means
+ * the lanes are exact.
+ *
+ * Rules, in order:
+ * - An `AUDIO` entry of `promptTokensDetails` (`details.input_audio`) is the audio
+ *   count of the whole prompt, the cached part included; an `AUDIO` entry of
+ *   `cacheTokensDetails` (`details.cached_audio`) is the cached audio. A reported
+ *   cached audio count is priced even when the prompt split is absent: cached audio is
+ *   part of the prompt audio, so it raises the prompt audio to at least that count.
+ * - A request that carried audio (`details.audio_input_requested`) and a response with
+ *   no audio tokens leaves the uncached audio unknown (`audio-unreported`); audio
+ *   always has tokens, so zero is the same missing information as an absent entry.
+ * - Cached tokens with no cached audio count are known audio-free only when the prompt
+ *   split proves the prompt holds no audio (a zero entry, or a listing without audio
+ *   that covers every prompt token); otherwise `cached-audio-unknown`. A cache that
+ *   lists no audio and covers every cached token arrives as `cached_audio: 0`.
+ * - Counts that contradict each other are clamped into the lanes and reported as
+ *   `inconsistent`.
  *
  * @internal
  */
-export function audioTokensReported(usage: Usage): boolean {
-  return (tokenDetail(usage, 'input_audio') ?? 0) > 0
-}
+export function promptLanes(usage: Usage): {
+  audioUncached: number
+  audioCached: number
+  otherUncached: number
+  otherCached: number
+  gaps: readonly PromptSplitGap[]
+} {
+  const total = usage.inputTokens
+  const cachedReported = usage.cachedInputTokens ?? 0
+  const promptAudio = tokenDetail(usage, 'input_audio')
+  const cachedAudio = tokenDetail(usage, 'cached_audio')
+  const gaps: PromptSplitGap[] = []
+  const gap = (reason: PromptSplitGap): void => {
+    if (!gaps.includes(reason)) gaps.push(reason)
+  }
 
-/** Whether any `<prefix>_<modality>` lane was reported (a per-modality split exists). */
-function hasModalitySplit(usage: Usage, prefix: 'input_' | 'cached_'): boolean {
-  return Object.keys(usage.details).some((key) => key.startsWith(prefix))
+  const cached = Math.min(cachedReported, total)
+  if (cachedReported > total) gap('inconsistent')
+
+  const audioCached = Math.min(cachedAudio ?? 0, cached)
+  if ((cachedAudio ?? 0) > cached) gap('inconsistent')
+  if (promptAudio !== undefined && promptAudio < audioCached) gap('inconsistent')
+
+  const audioTotal = Math.min(Math.max(promptAudio ?? 0, audioCached), total)
+  if ((promptAudio ?? 0) > total) gap('inconsistent')
+  const audioUncached = Math.min(audioTotal - audioCached, total - cached)
+  if (audioTotal - audioCached > total - cached) gap('inconsistent')
+
+  if (usage.details['audio_input_requested'] === 1 && !((promptAudio ?? 0) > 0)) {
+    gap('audio-unreported')
+  }
+  const promptSplit = modalitySplitTotal(usage, 'input_')
+  const promptHoldsNoAudio =
+    promptAudio === 0 ||
+    (promptAudio === undefined && promptSplit !== undefined && promptSplit >= total)
+  if (cached > 0 && cachedAudio === undefined && !promptHoldsNoAudio) {
+    gap('cached-audio-unknown')
+  }
+
+  return {
+    audioUncached,
+    audioCached,
+    otherUncached: total - cached - audioUncached,
+    otherCached: cached - audioCached,
+    gaps,
+  }
 }
 
 /**
@@ -56,15 +133,12 @@ function hasModalitySplit(usage: Usage, prefix: 'input_' | 'cached_'): boolean {
  * the prompt (`details.input_audio`, from `promptTokensDetails`) at the audio
  * rates, and of those the cached ones (`details.cached_audio`, from
  * `cacheTokensDetails`) at the cached audio rate; every other token is priced at
- * the text/image/video rates through core. The audio amounts are added to the
- * `input` and `cached` lanes. The cost is `'estimated'` when audio was sent
- * (`details.audio_input_requested`) but the response reports no audio tokens (the
- * entry is absent or zero, {@link audioTokensReported}), when cached tokens exist
- * beside audio with no cached split, or when cached tokens exist and the response
- * reports no per-modality split at all (audio in a cache cannot be ruled out): the
- * audio share is then unknown. A cached split that lists only other modalities and
- * covers every cached token is a known zero (`cached_audio: 0`, set by the
- * adapter), so a text cache beside new audio is exact.
+ * the text/image/video rates through core. The four lanes ({@link promptLanes})
+ * always sum to the prompt. Reported cached audio is priced even when the prompt
+ * split is absent. The cost is `'estimated'` whenever the response leaves the
+ * audio share unknown or contradicts itself ({@link PromptSplitGap}): audio was
+ * sent but none reported, cached tokens whose audio share nothing rules out, or
+ * counts that do not add up.
  *
  * **Missing usage.** `details.usage_missing` (the response had no
  * `usageMetadata`) is unpriced and `'estimated'`: the amount is unknown.
@@ -97,36 +171,30 @@ function priceCall(model: string, usage: Usage, tier: string | undefined): Cost 
   const modelRates = resolveGeminiRates(model, tier)
   const audioRates = modelRates?.audio
 
-  // Audio tokens, clamped so the text remainder is never negative.
-  const audioInput =
-    audioRates === undefined
-      ? 0
-      : Math.min(tokenDetail(usage, 'input_audio') ?? 0, usage.inputTokens)
-  const cachedTotal = usage.cachedInputTokens ?? 0
-  const audioCached =
-    audioInput === 0
-      ? 0
-      : Math.min(tokenDetail(usage, 'cached_audio') ?? 0, audioInput, cachedTotal)
-
   let cost: Cost
-  if (audioRates === undefined || audioInput === 0) {
+  if (audioRates === undefined) {
     cost = computeCost(model, usage, tier, resolveGeminiRates, pricingVersion)
   } else {
+    const lanes = promptLanes(usage)
     const textUsage: Usage = {
       ...usage,
-      inputTokens: usage.inputTokens - audioInput,
-      cachedInputTokens: cachedTotal - audioCached,
+      inputTokens: lanes.otherUncached + lanes.otherCached,
+      cachedInputTokens: lanes.otherCached,
     }
     const text = computeCost(model, textUsage, tier, resolveGeminiRates, pricingVersion)
     const audioUncachedCost = Math.round(
-      ((audioInput - audioCached) * audioRates.inputPerM) / 1_000_000,
+      (lanes.audioUncached * audioRates.inputPerM) / 1_000_000,
     )
-    const audioCachedCost = Math.round((audioCached * audioRates.cachedPerM) / 1_000_000)
+    const audioCachedCost = Math.round(
+      (lanes.audioCached * audioRates.cachedPerM) / 1_000_000,
+    )
     const microUsd = (text.microUsd ?? 0) + audioUncachedCost + audioCachedCost
     cost = {
       ...text,
       microUsd,
       usd: microUsd / 1_000_000,
+      // An audio share the response does not pin down can understate the amount.
+      ...(lanes.gaps.length > 0 ? { confidence: 'estimated' as const } : {}),
       details: {
         ...text.details,
         input: text.details.input + audioUncachedCost,
@@ -136,23 +204,6 @@ function priceCall(model: string, usage: Usage, tier: string | undefined): Cost 
   }
 
   if (cost.microUsd === null) return cost
-
-  // The audio share of the prompt is unknown, so the amount can understate.
-  const audioSentUnreported =
-    audioRates !== undefined &&
-    usage.details['audio_input_requested'] === 1 &&
-    !audioTokensReported(usage)
-  const cachedSplitUnknown =
-    audioInput > 0 && cachedTotal > 0 && tokenDetail(usage, 'cached_audio') === undefined
-  // Cached tokens with neither a prompt nor a cache split: the cache may hold audio
-  // (it is invisible to the request), and the cached text rate would understate it.
-  const cachedModalityUnknown =
-    audioRates !== undefined &&
-    cachedTotal > 0 &&
-    !hasModalitySplit(usage, 'input_') &&
-    !hasModalitySplit(usage, 'cached_')
-  if (audioSentUnreported || cachedSplitUnknown || cachedModalityUnknown)
-    cost = { ...cost, confidence: 'estimated' }
 
   if (usage.details['web_search_requested'] !== 1) return cost
 

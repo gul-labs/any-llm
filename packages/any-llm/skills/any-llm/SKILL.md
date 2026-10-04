@@ -140,7 +140,7 @@ optionally `system` and `tools`. Google counts `messages`, `system` and `tools` 
 REST `countTokens`); it does not count a response schema, thinking config or Search, so for a
 generate call that sends those it is a floor. `accuracy` says how far to trust it: Google is
 `'exact'` for the history it counts, and `'estimated'` for a Gemini 3 history with replayed
-function calls (their thought signatures add roughly 110 prompt tokens each that the count
+function calls (their thought signatures add up to about 110 prompt tokens each, depending on the model, that the count
 cannot include). xAI counts text only (`'lower-bound'`) and rejects `tools` with `bad_request`.
 To budget exactly, read `usage.inputTokens` from a real `generate()` result.
 

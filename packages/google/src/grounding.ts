@@ -220,7 +220,9 @@ export function normalizeGroundingCitations(
     if (supports.has(chunkIndex)) {
       target.cited = true
       const range = supports.get(chunkIndex)
-      if (range !== undefined && target.textRange === undefined) target.textRange = range
+      if (range !== undefined && target.textRange === undefined) {
+        target.textRange = { ...range }
+      }
     } else if (target.cited === undefined) {
       target.cited = false
     }

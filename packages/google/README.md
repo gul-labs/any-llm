@@ -203,9 +203,9 @@ A response with nothing to replay (the model produced only thoughts, for example
 history: an assistant message with no parts is `bad_request`. Retry the call instead.
 
 `countTokens` sends the history without signatures (Gemini accepts that), and `generate()` bills each
-replayed signature (about 110 prompt tokens each). So when the counted history holds function calls
-on a Gemini 3 model, `accuracy` is `'estimated'`, not `'exact'`: the real count is higher by roughly
-one signature per signed call or text part. Without function calls, or on Gemini 2.5, it is
+replayed signature (up to about 110 prompt tokens each, and model-dependent: 0 on some models). So
+when the counted history holds function calls on a Gemini 3 model, `accuracy` is `'estimated'`, not
+`'exact'`: the real count can be higher by up to one signature per signed call or text part. Without function calls, or on Gemini 2.5, it is
 `'exact'`.
 
 Provider output that cannot be hashed never fails a call that was billed: a lone surrogate in a
@@ -413,7 +413,9 @@ are priced as text only when the audio share of the cache is known: a `cacheToke
 audio and covers every cached token records `cached_audio: 0` (a text cache beside new audio stays
 `'exact'`), a listing that covers fewer tokens than were cached leaves it unknown, and cached tokens with
 neither `promptTokensDetails` nor `cacheTokensDetails` cannot rule out audio in the cached content, so they
-carry a warning and the cost is `'estimated'`.
+carry a warning and the cost is `'estimated'`. A reported cached `AUDIO` count is priced at the cached audio
+rate even when `promptTokensDetails` is absent. Counts that contradict each other (cached audio above the
+cache, prompt lanes above the prompt) are clamped, warned about and `'estimated'`.
 There is no batch tier: `'batch'` is an unpriced tier.
 
 `GoogleCacheStore.create` and `getOrCreate` return a handle with `totalTokenCount`, the create response's

@@ -213,6 +213,24 @@ describe('normalizeGroundingCitations — groundingSupports', () => {
     expect(out[0]?.textRange).toEqual({ start: 11, end: 14 })
   })
 
+  it('chunks that one support points at get a range each: mutating one never changes another', () => {
+    const out = normalizeGroundingCitations(
+      {
+        groundingChunks: chunks,
+        groundingSupports: [
+          { segment: { startIndex: 1, endIndex: 4 }, groundingChunkIndices: [0, 1] },
+        ],
+      },
+      [{ text: 'abcdef', offset: 0 }],
+    )
+    const [first, second] = out
+    expect(first?.textRange).toEqual({ start: 1, end: 4 })
+    expect(second?.textRange).toEqual({ start: 1, end: 4 })
+    expect(first?.textRange).not.toBe(second?.textRange)
+    if (first?.textRange !== undefined) first.textRange.end = 99
+    expect(second?.textRange).toEqual({ start: 1, end: 4 })
+  })
+
   it('a zero-length or inverted segment has no range', () => {
     const out = normalizeGroundingCitations(
       {

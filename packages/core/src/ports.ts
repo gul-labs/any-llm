@@ -227,7 +227,7 @@ export interface TokenCount {
    * - `'estimated'` — the provider counted the history, but the real call
    *   sends parts the count cannot include, so the true count is higher by an
    *   amount the count does not report (Gemini 3 thought signatures on replayed
-   *   function calls, roughly 110 prompt tokens each).
+   *   function calls, up to about 110 prompt tokens each, 0 on some models).
    */
   accuracy: 'exact' | 'lower-bound' | 'estimated'
   /**

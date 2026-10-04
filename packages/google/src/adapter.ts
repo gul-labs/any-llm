@@ -69,7 +69,7 @@ import type {
 import { isGeminiCapacityError } from './flex-fallback.js'
 import { classifyGoogleError } from './errors.js'
 import { PLATFORM_SCHEDULER } from './platform-scheduler.js'
-import { audioTokensReported } from './cost.js'
+import { promptLanes } from './cost.js'
 import { utf8ByteLength } from './utf8.js'
 import {
   parseSignatureState,
@@ -1250,12 +1250,18 @@ export function geminiAdapterWithClientFactory(
             part.mimeType.toLowerCase().startsWith('audio/'),
         ),
       )
+      const mapUsageWithAudioMarker = (
+        meta: GeminiUsageMetadataShape | undefined,
+      ): Usage => {
+        const mapped = mapUsage(meta)
+        if (audioRequested) mapped.details['audio_input_requested'] = 1
+        return mapped
+      }
       const usageFor = (
         meta: GeminiUsageMetadataShape | undefined,
         groundingMetadata?: unknown,
       ): Usage => {
-        const mapped = mapUsage(meta)
-        if (audioRequested) mapped.details['audio_input_requested'] = 1
+        const mapped = mapUsageWithAudioMarker(meta)
         const queries = countWebSearchQueries(groundingMetadata)
         if (searchDeclared) {
           mapped.details['web_search_requested'] = 1
@@ -1311,22 +1317,26 @@ export function geminiAdapterWithClientFactory(
       ): Warning[] => {
         if (meta === undefined) return []
         const warnings: Warning[] = []
-        const mapped = mapUsage(meta)
-        if (audioRequested && !audioTokensReported(mapped)) {
+        const { gaps } = promptLanes(mapUsageWithAudioMarker(meta))
+        if (gaps.includes('audio-unreported')) {
           warnings.push({
             type: 'other',
             message:
               'google: the request carries audio but usageMetadata.promptTokensDetails reports no AUDIO tokens, so the audio input rate could not be applied; on a model that prices audio apart from text, cost.confidence is "estimated" and the amount can understate.',
           })
         }
-        const hasSplit = Object.keys(mapped.details).some(
-          (key) => key.startsWith('input_') || key.startsWith('cached_'),
-        )
-        if ((mapped.cachedInputTokens ?? 0) > 0 && !hasSplit) {
+        if (gaps.includes('cached-audio-unknown')) {
           warnings.push({
             type: 'other',
             message:
-              'google: usageMetadata reports cached tokens with no per-modality split (promptTokensDetails and cacheTokensDetails are both absent), so audio in the cached content cannot be ruled out; on a model that prices audio apart from text, cost.confidence is "estimated" and the amount can understate.',
+              'google: usageMetadata reports cached tokens without showing how many are audio (no AUDIO entry in cacheTokensDetails, and no per-modality prompt split that rules audio out), so audio in the cached content cannot be ruled out; on a model that prices audio apart from text, cost.confidence is "estimated" and the amount can understate.',
+          })
+        }
+        if (gaps.includes('inconsistent')) {
+          warnings.push({
+            type: 'other',
+            message:
+              'google: the per-modality token counts in usageMetadata contradict each other (audio above the prompt or the cache, or lanes that exceed the prompt); the counts were clamped, and on a model that prices audio apart from text, cost.confidence is "estimated".',
           })
         }
         return warnings
@@ -2196,8 +2206,8 @@ export function geminiAdapterWithClientFactory(
             ? { cached: response.cachedContentTokenCount }
             : undefined
 
-        // Gemini 3 bills each replayed thought signature (about 110 prompt tokens
-        // each) and countTokens carries none, so a history with function calls
+        // Gemini 3 can bill each replayed thought signature (up to about 110 prompt
+        // tokens each, 0 on some models) and countTokens carries none, so a history with function calls
         // is counted short of what generate() will bill. Live capture
         // 2026-10-03: the endpoint accepts function calls without signatures and
         // returns the same count with or without them.

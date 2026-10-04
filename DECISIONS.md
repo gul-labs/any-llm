@@ -1845,8 +1845,8 @@ args}`), so an edited text or argument is detected, and key order does not matte
   with 400); non-object tool results are wrapped instead of sent bare.
 - `countTokens` sends no signatures: it counts the messages as built without the overlay. The
   endpoint accepts function calls without signatures and returns the same count with or without
-  them (live capture 2026-10-03), but `generate()` bills about 110 prompt tokens per replayed
-  signature, so a history with function calls on a Gemini 3 model is reported as
+  them (live capture 2026-10-03), but `generate()` can bill up to about 110 prompt tokens per replayed
+  signature (model-dependent, 0 on some models), so a history with function calls on a Gemini 3 model is reported as
   `accuracy: 'estimated'` (new `TokenCount.accuracy` value: the count is below what the real call
   bills by an unreported amount). Without function calls, or on Gemini 2.5, it stays `'exact'`.
 - The overlay is not secret prompt text but is opaque provider data; it is never written to the
@@ -3383,6 +3383,16 @@ equals `microUsd`, NULL rows being the unpriced attempts.
   because the cached text rate would understate a cache that holds audio. A response that splits the
   prompt and shows no audio proves the cache holds none and stays exact. No capture with cached tokens
   exists in the evidence; the rule is fail-closed on a split Google documents as optional.
+- A reported `cacheTokensDetails` AUDIO count is priced at the cached audio rate even when
+  `promptTokensDetails` is absent: cached audio is part of the prompt audio, so it raises the prompt audio to
+  at least that count (previously it was ignored and the call priced exact, an understatement). The pricing
+  source splits the prompt into four lanes (uncached and cached, audio and other) that always sum to
+  `promptTokenCount` (`promptLanes`, one function for the price, the confidence and the warnings). The cost
+  is `'estimated'` whenever the response leaves the audio share unknown (audio sent and none reported;
+  cached tokens whose audio share nothing rules out, which now includes a partial cache listing that names
+  no audio and a prompt split that shows audio beside no cached split) or contradicts itself (cached audio
+  above the cache or above the prompt audio, uncached audio plus cache above the prompt); the counts are
+  clamped into the lanes and the adapter warns.
 
 **Postgres-safe text and the drift tolerance.** `buildRecord` removes U+0000 and replaces each unpaired
 surrogate with U+FFFD in every string and object key of the record, once, last (redaction and the byte cap
