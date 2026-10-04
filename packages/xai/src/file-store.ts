@@ -11,7 +11,7 @@
 import type { AuthMaterial, JsonValue, Logger } from '@gullabs/core'
 import { LlmError, classifyError, redactSecrets } from '@gullabs/core'
 
-import { requireApiKey } from './client.js'
+import { XAI_MAX_TIMEOUT_MS, requireApiKey } from './client.js'
 import { classifyXaiError } from './adapter.js'
 
 // ---------------------------------------------------------------------------
@@ -32,6 +32,13 @@ export const XAI_FILE_MAX_BYTES = 48 * 1024 * 1024
 
 /** Default Files API base (includes `/v1`). */
 export const XAI_FILES_DEFAULT_BASE_URL = 'https://api.x.ai/v1'
+
+/**
+ * Default deadline of one Files API call (headers and body), in milliseconds:
+ * 60 s. A store with an `AbortSignal` of its own still honours it; a very large
+ * upload on a slow link needs a larger `timeoutMs` in {@link XaiFileStoreOptions}.
+ */
+export const XAI_FILES_DEFAULT_TIMEOUT_MS = 60_000
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -100,6 +107,12 @@ export interface XaiFileStoreOptions {
   baseUrl?: string
   /** Injectable fetch for tests. Default: global `fetch`. */
   fetch?: typeof fetch
+  /**
+   * Deadline of each call (response headers and body) in milliseconds. A call
+   * that is still open then fails with a retryable `timeout` error. An integer
+   * from 1 to {@link XAI_MAX_TIMEOUT_MS}; default {@link XAI_FILES_DEFAULT_TIMEOUT_MS}.
+   */
+  timeoutMs?: number
   /**
    * Delete failures that are NOT already-gone (404).
    * Default: `logger.error` or `console.error` with a redacted message.
@@ -219,12 +232,15 @@ function toBlob(data: Uint8Array | Blob, mimeType: string | undefined): Blob {
 class XaiFilesHttpError extends Error {
   readonly status: number
   readonly error: unknown
+  /** The response headers: `classifyError` reads `Retry-After` from them. */
+  readonly headers: Headers
 
-  constructor(status: number, message: string, errorBody: unknown) {
+  constructor(status: number, message: string, errorBody: unknown, headers: Headers) {
     super(message)
     this.name = 'XaiFilesHttpError'
     this.status = status
     this.error = errorBody
+    this.headers = headers
   }
 }
 
@@ -252,8 +268,10 @@ async function throwHttpFailure(res: Response): Promise<never> {
   } else if (isPlainRecord(parsed) && typeof parsed['error'] === 'string') {
     message = parsed['error']
   }
+  const requestId = res.headers.get('x-request-id')
+  if (requestId !== null && requestId !== '') message += ` (request id ${requestId})`
 
-  throw new XaiFilesHttpError(status, message, parsed)
+  throw new XaiFilesHttpError(status, message, parsed, res.headers)
 }
 
 function isNotFoundError(err: unknown): boolean {
@@ -344,6 +362,39 @@ function classifyStoreError(raw: unknown): LlmError {
 }
 
 // ---------------------------------------------------------------------------
+// Per-call deadline
+// ---------------------------------------------------------------------------
+
+/** The `LlmError`s a store's own deadline timer created, to tell them from a caller's abort. */
+const DEADLINE_ERRORS = new WeakSet()
+
+/**
+ * The error a call whose `signal` aborted ends in: the store's own timeout when
+ * its deadline fired, else an `aborted` error carrying the caller's reason.
+ */
+function abortedError(signal: AbortSignal, message: string, cause?: unknown): LlmError {
+  const reason: unknown = signal.reason
+  if (reason instanceof LlmError && DEADLINE_ERRORS.has(reason)) return reason
+  return new LlmError(message, {
+    kind: 'aborted',
+    retryable: false,
+    provider: 'xai',
+    ...(cause !== undefined ? { cause } : {}),
+  })
+}
+
+/**
+ * `id` as one URL path segment. `encodeURIComponent` keeps `/`, `?` and `#` in an
+ * id from addressing another path; `.` and `..` survive it and are refused.
+ */
+function pathSegment(id: string): string {
+  if (id === '.' || id === '..') {
+    throw badRequest(`fileId "${id}" is not a valid file id.`)
+  }
+  return encodeURIComponent(id)
+}
+
+// ---------------------------------------------------------------------------
 // XaiFileStore
 // ---------------------------------------------------------------------------
 
@@ -357,6 +408,7 @@ export class XaiFileStore {
   private readonly apiKey: string
   private readonly baseUrl: string
   private readonly fetchImpl: typeof fetch
+  private readonly timeoutMs: number
   private readonly onDeleteError: (fileId: string, err: unknown) => void
   private readonly logger: Logger | undefined
 
@@ -364,6 +416,13 @@ export class XaiFileStore {
     this.apiKey = requireApiKey(opts.auth)
     this.baseUrl = (opts.baseUrl ?? XAI_FILES_DEFAULT_BASE_URL).replace(/\/+$/, '')
     this.fetchImpl = opts.fetch ?? fetch
+    const timeoutMs = opts.timeoutMs ?? XAI_FILES_DEFAULT_TIMEOUT_MS
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > XAI_MAX_TIMEOUT_MS) {
+      throw badRequest(
+        `XaiFileStoreOptions.timeoutMs must be an integer from 1 to ${XAI_MAX_TIMEOUT_MS}.`,
+      )
+    }
+    this.timeoutMs = timeoutMs
     this.logger = opts.logger
     this.onDeleteError =
       opts.onDeleteError ??
@@ -404,6 +463,41 @@ export class XaiFileStore {
       init.signal = opts.signal
     }
     return init
+  }
+
+  /**
+   * Runs one call under the store's deadline: `run` gets a signal that aborts
+   * when the caller's does or when `timeoutMs` passes (headers and body read
+   * both count), and the timer is cleared however the call ends.
+   */
+  private async bounded<T>(
+    caller: AbortSignal | undefined,
+    run: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const controller = new AbortController()
+    const forward = (): void => {
+      controller.abort(caller?.reason)
+    }
+    if (caller?.aborted === true) forward()
+    else caller?.addEventListener('abort', forward, { once: true })
+    const timer = setTimeout(() => {
+      const error = new LlmError(
+        `xAI Files API call timed out after ${this.timeoutMs}ms`,
+        {
+          kind: 'timeout',
+          retryable: true,
+          provider: 'xai',
+        },
+      )
+      DEADLINE_ERRORS.add(error)
+      controller.abort(error)
+    }, this.timeoutMs)
+    try {
+      return await run(controller.signal)
+    } finally {
+      clearTimeout(timer)
+      caller?.removeEventListener('abort', forward)
+    }
   }
 
   /**
@@ -448,85 +542,72 @@ export class XaiFileStore {
     form.append('purpose', purpose)
     form.append('file', toBlob(input.data, input.mimeType), input.filename)
 
-    let res: Response
-    try {
-      res = await this.fetchImpl(
-        this.filesUrl(),
-        this.requestInit('POST', {
-          body: form,
-          ...(signal !== undefined ? { signal } : {}),
-        }),
-      )
-    } catch (e) {
-      if (signal?.aborted === true) {
-        throw new LlmError('xAI file upload aborted', {
-          kind: 'aborted',
-          retryable: false,
-          provider: 'xai',
-        })
-      }
-      throw classifyStoreError(e)
-    }
-
-    if (!res.ok) {
+    return this.bounded(signal, async (bound) => {
+      let res: Response
       try {
-        await throwHttpFailure(res)
+        res = await this.fetchImpl(
+          this.filesUrl(),
+          this.requestInit('POST', { body: form, signal: bound }),
+        )
       } catch (e) {
+        if (bound.aborted) throw abortedError(bound, 'xAI file upload aborted')
         throw classifyStoreError(e)
       }
-    }
 
-    let json: unknown
-    try {
-      json = await res.json()
-    } catch (e) {
-      throw new LlmError('xAI file upload returned non-JSON body', {
-        kind: 'server',
-        retryable: false,
-        provider: 'xai',
-        cause: e,
-      })
-    }
+      if (!res.ok) {
+        try {
+          await throwHttpFailure(res)
+        } catch (e) {
+          throw classifyStoreError(e)
+        }
+      }
 
-    return makeHandle(json as VendorFileObject)
+      let json: unknown
+      try {
+        json = await res.json()
+      } catch (e) {
+        if (bound.aborted) throw abortedError(bound, 'xAI file upload aborted', e)
+        throw new LlmError('xAI file upload returned non-JSON body', {
+          kind: 'server',
+          retryable: false,
+          provider: 'xai',
+          cause: e,
+        })
+      }
+
+      return makeHandle(json as VendorFileObject)
+    })
   }
 
   async get(fileId: string, signal?: AbortSignal): Promise<XaiFileHandle> {
     if (typeof fileId !== 'string' || fileId.trim() === '') {
       throw badRequest('fileId must be a non-empty string.')
     }
+    const url = this.filesUrl(pathSegment(fileId))
 
-    let res: Response
-    try {
-      res = await this.fetchImpl(
-        this.filesUrl(fileId),
-        this.requestInit('GET', signal !== undefined ? { signal } : {}),
-      )
-    } catch (e) {
-      if (signal?.aborted === true) {
-        throw new LlmError('xAI file get aborted', {
-          kind: 'aborted',
-          retryable: false,
-          provider: 'xai',
-        })
-      }
-      throw classifyStoreError(e)
-    }
-
-    if (res.status === 404) {
-      throw notFoundError(fileId, 'get')
-    }
-
-    if (!res.ok) {
+    return this.bounded(signal, async (bound) => {
+      let res: Response
       try {
-        await throwHttpFailure(res)
+        res = await this.fetchImpl(url, this.requestInit('GET', { signal: bound }))
       } catch (e) {
+        if (bound.aborted) throw abortedError(bound, 'xAI file get aborted')
         throw classifyStoreError(e)
       }
-    }
 
-    const json = (await res.json()) as VendorFileObject
-    return makeHandle(json)
+      if (res.status === 404) {
+        throw notFoundError(fileId, 'get')
+      }
+
+      if (!res.ok) {
+        try {
+          await throwHttpFailure(res)
+        } catch (e) {
+          throw classifyStoreError(e)
+        }
+      }
+
+      return makeHandle((await readJsonBody(res, bound, 'get')) as VendorFileObject)
+    })
   }
 
   async list(
@@ -555,41 +636,34 @@ export class XaiFileStore {
     const qs = params.toString()
     const url = qs.length > 0 ? `${this.filesUrl()}?${qs}` : this.filesUrl()
 
-    let res: Response
-    try {
-      res = await this.fetchImpl(
-        url,
-        this.requestInit('GET', signal !== undefined ? { signal } : {}),
-      )
-    } catch (e) {
-      if (signal?.aborted === true) {
-        throw new LlmError('xAI file list aborted', {
-          kind: 'aborted',
-          retryable: false,
-          provider: 'xai',
-        })
-      }
-      throw classifyStoreError(e)
-    }
-
-    if (!res.ok) {
+    return this.bounded(signal, async (bound) => {
+      let res: Response
       try {
-        await throwHttpFailure(res)
+        res = await this.fetchImpl(url, this.requestInit('GET', { signal: bound }))
       } catch (e) {
+        if (bound.aborted) throw abortedError(bound, 'xAI file list aborted')
         throw classifyStoreError(e)
       }
-    }
 
-    const json = (await res.json()) as {
-      data?: VendorFileObject[]
-      pagination_token?: string
-    }
-    const files = Array.isArray(json.data) ? json.data.map((f) => makeHandle(f)) : []
-    const result: XaiFileListResult = { files }
-    if (typeof json.pagination_token === 'string' && json.pagination_token.length > 0) {
-      result.paginationToken = json.pagination_token
-    }
-    return result
+      if (!res.ok) {
+        try {
+          await throwHttpFailure(res)
+        } catch (e) {
+          throw classifyStoreError(e)
+        }
+      }
+
+      const json = (await readJsonBody(res, bound, 'list')) as {
+        data?: VendorFileObject[]
+        pagination_token?: string
+      }
+      const files = Array.isArray(json.data) ? json.data.map((f) => makeHandle(f)) : []
+      const result: XaiFileListResult = { files }
+      if (typeof json.pagination_token === 'string' && json.pagination_token.length > 0) {
+        result.paginationToken = json.pagination_token
+      }
+      return result
+    })
   }
 
   /**
@@ -609,44 +683,41 @@ export class XaiFileStore {
     if (typeof fileId !== 'string' || fileId.trim() === '') {
       throw badRequest('fileId must be a non-empty string.')
     }
+    const url = this.filesUrl(pathSegment(fileId))
 
     const failClosed = opts?.failClosed === true
-    const signal = opts?.signal
 
-    try {
-      const res = await this.fetchImpl(
-        this.filesUrl(fileId),
-        this.requestInit('DELETE', signal !== undefined ? { signal } : {}),
-      )
+    await this.bounded(opts?.signal, async (bound) => {
+      try {
+        const res = await this.fetchImpl(
+          url,
+          this.requestInit('DELETE', { signal: bound }),
+        )
 
-      if (res.status === 404) {
-        return
+        if (res.status === 404) {
+          return
+        }
+
+        if (!res.ok) {
+          await throwHttpFailure(res)
+        }
+      } catch (err) {
+        if (isNotFoundError(err)) {
+          return
+        }
+
+        // Abort during fetch: surface as aborted LlmError through the same path.
+        const classified =
+          bound.aborted && !(err instanceof LlmError)
+            ? abortedError(bound, 'xAI file delete aborted', err)
+            : classifyStoreError(err)
+
+        if (failClosed) {
+          throw classified
+        }
+        this.onDeleteError(fileId, classified)
       }
-
-      if (!res.ok) {
-        await throwHttpFailure(res)
-      }
-    } catch (err) {
-      if (isNotFoundError(err)) {
-        return
-      }
-
-      // Abort during fetch: surface as aborted LlmError through the same path.
-      const classified =
-        signal?.aborted === true && !(err instanceof LlmError)
-          ? new LlmError('xAI file delete aborted', {
-              kind: 'aborted',
-              retryable: false,
-              provider: 'xai',
-              cause: err,
-            })
-          : classifyStoreError(err)
-
-      if (failClosed) {
-        throw classified
-      }
-      this.onDeleteError(fileId, classified)
-    }
+    })
   }
 
   /**
@@ -673,37 +744,58 @@ export class XaiFileStore {
     if (typeof fileId !== 'string' || fileId.trim() === '') {
       throw badRequest('fileId must be a non-empty string.')
     }
+    const url = this.filesUrl(`${pathSegment(fileId)}/content`)
 
-    let res: Response
-    try {
-      res = await this.fetchImpl(
-        this.filesUrl(`${fileId}/content`),
-        this.requestInit('GET', signal !== undefined ? { signal } : {}),
-      )
-    } catch (e) {
-      if (signal?.aborted === true) {
-        throw new LlmError('xAI file content download aborted', {
-          kind: 'aborted',
-          retryable: false,
-          provider: 'xai',
-        })
-      }
-      throw classifyStoreError(e)
-    }
-
-    if (res.status === 404) {
-      throw notFoundError(fileId, 'getContent')
-    }
-
-    if (!res.ok) {
+    return this.bounded(signal, async (bound) => {
+      let res: Response
       try {
-        await throwHttpFailure(res)
+        res = await this.fetchImpl(url, this.requestInit('GET', { signal: bound }))
       } catch (e) {
+        if (bound.aborted) throw abortedError(bound, 'xAI file content download aborted')
         throw classifyStoreError(e)
       }
-    }
 
-    const buf = await res.arrayBuffer()
-    return new Uint8Array(buf)
+      if (res.status === 404) {
+        throw notFoundError(fileId, 'getContent')
+      }
+
+      if (!res.ok) {
+        try {
+          await throwHttpFailure(res)
+        } catch (e) {
+          throw classifyStoreError(e)
+        }
+      }
+
+      try {
+        return new Uint8Array(await res.arrayBuffer())
+      } catch (e) {
+        if (bound.aborted)
+          throw abortedError(bound, 'xAI file content download aborted', e)
+        throw classifyStoreError(e)
+      }
+    })
+  }
+}
+
+/**
+ * The JSON body of a 2xx response. A body that is not JSON (a gateway page behind
+ * a 200) is a typed `server` error, an abort during the read is the abort.
+ */
+async function readJsonBody(
+  res: Response,
+  signal: AbortSignal,
+  operation: string,
+): Promise<unknown> {
+  try {
+    return await res.json()
+  } catch (e) {
+    if (signal.aborted) throw abortedError(signal, `xAI file ${operation} aborted`, e)
+    throw new LlmError(`xAI file ${operation} returned a non-JSON body`, {
+      kind: 'server',
+      retryable: false,
+      provider: 'xai',
+      cause: e,
+    })
   }
 }

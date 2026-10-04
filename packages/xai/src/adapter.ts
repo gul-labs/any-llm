@@ -1182,6 +1182,13 @@ function estimateWireInputTokens(params: XaiResponseCreateParams): number {
 // Adapter options
 // ---------------------------------------------------------------------------
 
+/**
+ * Default deadline of one `countTokens` call (`POST /v1/tokenize-text`), in
+ * milliseconds: 60 s. The call is a small text-only request; the engine's
+ * `countTokens` `timeoutMs` and the call's own signal still apply first.
+ */
+export const XAI_COUNT_TOKENS_TIMEOUT_MS = 60_000
+
 export interface XaiAdapterOptions {
   /**
    * Inject a pre-built client (real or fake).
@@ -1204,6 +1211,12 @@ export interface XaiAdapterOptions {
    * transport).
    */
   transport?: XaiTransport
+  /**
+   * Deadline of one `countTokens` call in milliseconds (an integer from 1 to
+   * {@link XAI_MAX_TIMEOUT_MS}); default {@link XAI_COUNT_TOKENS_TIMEOUT_MS}. A
+   * call still open then fails with a retryable `timeout` error.
+   */
+  countTokensTimeoutMs?: number
   /**
    * @internal Testing-only.
    *
@@ -1313,6 +1326,17 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
   // Validated and copied once: the host mutating its own transport object
   // afterwards cannot reach the SDK or `countTokens`.
   const transport = snapshotXaiTransport(opts?.transport)
+  const countTokensTimeoutMs = opts?.countTokensTimeoutMs ?? XAI_COUNT_TOKENS_TIMEOUT_MS
+  if (
+    !Number.isInteger(countTokensTimeoutMs) ||
+    countTokensTimeoutMs < 1 ||
+    countTokensTimeoutMs > XAI_MAX_TIMEOUT_MS
+  ) {
+    throw new LlmError(
+      `xaiAdapter: countTokensTimeoutMs must be an integer from 1 to ${XAI_MAX_TIMEOUT_MS}.`,
+      { kind: 'bad_request', retryable: false, provider: 'xai' },
+    )
+  }
   return {
     id: 'xai',
 
@@ -2118,6 +2142,22 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
       const apiKey = requireApiKey(ctx.auth)
       const fetchImpl = opts?._fetch ?? transport?.fetch ?? fetch
 
+      // The call's own deadline, beside the caller's signal: a hung connection
+      // must not wait forever.
+      const controller = new AbortController()
+      const forwardAbort = (): void => {
+        controller.abort(ctx.signal?.reason)
+      }
+      if (ctx.signal?.aborted === true) forwardAbort()
+      else ctx.signal?.addEventListener('abort', forwardAbort, { once: true })
+      const timeout = new LlmError(
+        `xAI tokenize-text timed out after ${countTokensTimeoutMs}ms`,
+        { kind: 'timeout', retryable: true, provider: 'xai' },
+      )
+      const timer = setTimeout(() => {
+        controller.abort(timeout)
+      }, countTokensTimeoutMs)
+
       try {
         const res = await fetchImpl('https://api.x.ai/v1/tokenize-text', {
           // The host transport's init (a dispatcher, say) first; the request
@@ -2129,7 +2169,7 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({ model: req.model, text }),
-          ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
+          signal: controller.signal,
         })
 
         if (!res.ok) {
@@ -2139,13 +2179,31 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
           } catch {
             parsed = await res.text().catch(() => '')
           }
-          throw Object.assign(new Error(`xAI tokenize-text HTTP ${res.status}`), {
-            status: res.status,
-            error: parsed,
-          })
+          const requestId = res.headers.get('x-request-id')
+          // `headers` lets `classifyError` read `Retry-After`; the request id is
+          // what a support ticket needs.
+          throw Object.assign(
+            new Error(
+              `xAI tokenize-text HTTP ${res.status}${
+                requestId !== null && requestId !== '' ? ` (request id ${requestId})` : ''
+              }`,
+            ),
+            { status: res.status, error: parsed, headers: res.headers },
+          )
         }
 
-        const raw: unknown = await res.json()
+        let raw: unknown
+        try {
+          raw = await res.json()
+        } catch (cause) {
+          if (controller.signal.aborted) throw cause
+          throw new LlmError('xAI tokenize-text response is not JSON', {
+            kind: 'server',
+            retryable: true,
+            provider: 'xai',
+            cause,
+          })
+        }
         if (!isPlainRecord(raw) || !Array.isArray(raw['token_ids'])) {
           throw new LlmError(
             'xAI tokenize-text response is malformed: missing required field: token_ids',
@@ -2160,6 +2218,9 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
           raw: raw as JsonValue,
         }
       } catch (rawErr) {
+        if (controller.signal.aborted && controller.signal.reason === timeout) {
+          throw timeout
+        }
         if (rawErr instanceof Error && rawErr.name === 'AbortError') {
           throw new LlmError('xAI tokenize-text aborted', {
             kind: 'aborted',
@@ -2169,6 +2230,9 @@ export function xaiAdapter(opts?: XaiAdapterOptions): ProviderAdapter {
           })
         }
         throw classifyXaiError(rawErr)
+      } finally {
+        clearTimeout(timer)
+        ctx.signal?.removeEventListener('abort', forwardAbort)
       }
     },
   }

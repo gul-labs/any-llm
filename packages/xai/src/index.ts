@@ -53,7 +53,7 @@ export {
   XAI_DEFAULT_TIMEOUT_MS,
   XAI_TIMEOUT_BUFFER_MS,
 } from './client.js'
-export { xaiAdapter, classifyXaiError } from './adapter.js'
+export { xaiAdapter, classifyXaiError, XAI_COUNT_TOKENS_TIMEOUT_MS } from './adapter.js'
 export type { XaiAdapterOptions, XaiSdkDeadline } from './adapter.js'
 export {
   XaiFileStore,
@@ -61,6 +61,7 @@ export {
   XAI_FILE_TTL_MAX_SECONDS,
   XAI_FILE_MAX_BYTES,
   XAI_FILES_DEFAULT_BASE_URL,
+  XAI_FILES_DEFAULT_TIMEOUT_MS,
 } from './file-store.js'
 export type {
   XaiFileHandle,

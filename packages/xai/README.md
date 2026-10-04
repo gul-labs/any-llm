@@ -208,7 +208,7 @@ declare const logger: { warn(fields: object, message: string): void }
 
 const store = new XaiFileStore({
   auth: { apiKey: 'YOUR_XAI_API_KEY' },
-  // Optional: onDeleteError, logger, fetch, baseUrl
+  // Optional: onDeleteError, logger, fetch, baseUrl, timeoutMs
 })
 
 const handle = await store.upload({
@@ -331,7 +331,7 @@ config: {
 - **`searchBudget`** (`{ maxWebSearchCalls?, maxXItems? }`, integers ≥ 1, at least one ceiling, needs `tools`; `maxWebSearchCalls` needs `web_search` and `maxXItems` needs `x_search`) is **never sent to xAI**, which has no per-call search ceiling. The config schema enforces the shape the adapter accepts (at least one ceiling, each ceiling's tool present), so a bad budget is `bad_request` at config validation. After the response the adapter compares xAI's counters with it: `web_search_calls` against `maxWebSearchCalls`, and `x_posts_fetched` plus `x_users_fetched` against `maxXItems`. Over budget, the result carries a warning naming each exceeded line and `usage.details.search_budget_exceeded = 1`; the result is still returned and priced, because the call is already billed. A counter xAI did not report cannot be compared and is never counted as over. It is a report, not a ceiling; keep `maxTurns` (above) and prompt the budget. Stopping a call in flight is later work (`BACKLOG.md`).
 - **Observed count.** `result.usage.details.web_search_requested` is `1` when the request enabled `web_search`, and `result.usage.details.web_search_calls` is the number of web searches billed (the same two names Google reports, ADR-035; an explicit "no server tool ran" reports `0`); `x_posts_fetched` and `x_users_fetched` are the X Search billing counters (items, not calls). All three persist to the ledger's token details. When no server tool ran, xAI reports `num_server_side_tools_used: 0` and omits the counters; the adapter reports `web_search_calls: 0` for a request that enabled `web_search` and prices that call exactly with no tool fee.
 - **Cost.** There is no enforceable search cap, and every search result is fed back as input. One uncapped grok-4.7 research call used 362k input tokens, which crosses the 200k long-context threshold, and cost about $1.07.
-  `countTokens` uses `POST /v1/tokenize-text` and returns `accuracy: 'lower-bound'` (text parts only; media / file parts are `bad_request`).
+  `countTokens` uses `POST /v1/tokenize-text` and returns `accuracy: 'lower-bound'` (text parts only; media / file parts are `bad_request`). It is bounded by `countTokensTimeoutMs` (default 60 s, `XAI_COUNT_TOKENS_TIMEOUT_MS`), after which it fails with a retryable `timeout`; a 429's `Retry-After` becomes `retryAfterMs` and `x-request-id` is in the message.
 
 | Model      | Tier                         | Input   | Cached input | Output   |
 | ---------- | ---------------------------- | ------- | ------------ | -------- |
@@ -426,7 +426,10 @@ Notes:
   adapter copies the transport when it is created, so changing your own object afterwards has no effect.
 - `transport` carries every request the adapter makes: `responses.create` **and** `countTokens`
   (`POST /v1/tokenize-text`), so a proxy, mTLS or egress policy in your `fetch` covers both.
-  `XaiFileStore` is separate and takes its own `fetch` option.
+  `XaiFileStore` is separate and takes its own `fetch` option. Every `XaiFileStore` call has a deadline
+  of its own (`timeoutMs`, default 60 s, `XAI_FILES_DEFAULT_TIMEOUT_MS`; raise it for a large upload on a
+  slow link) and fails with a retryable `timeout` past it; its errors keep `Retry-After` (`retryAfterMs`)
+  and `x-request-id`, and a file id is encoded as one path segment (`.` and `..` are `bad_request`).
 - `timeoutMs` is at most 2147478647 (Node timers overflow at 2^31 - 1 ms and the request deadline adds
   5 s); a larger value is `bad_request`, not clamped.
 
