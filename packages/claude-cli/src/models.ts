@@ -114,19 +114,21 @@ const CONFIG_SCHEMAS: Record<ClaudeCliModelId, z.ZodType> = {
 // ---------------------------------------------------------------------------
 
 /**
- * Context window and maximum output per model, read 2026-10-03 from the
- * Anthropic models overview (`https://platform.claude.com/docs/en/about-claude/models/overview`:
- * Fable 5.1 and Opus 5.5 "1M tokens" / "128K tokens", Haiku 4.5 "200K tokens" /
- * "64K tokens") and the Sonnet 5 page
- * (`https://platform.claude.com/docs/en/models/sonnet-5/overview`: "1M tokens"
- * / "128K tokens"). The CLI exposes no output-size knob, so the limits are
- * informational here: the config schemas carry no `maxOutputTokens`.
+ * Context window and maximum output per model, as the CLI itself reports them in
+ * the captured `modelUsage` of every registered id
+ * (`__fixtures__/model-refresh-p-a1.json`, Claude Code 2.1.282). The CLI exposes no
+ * output-size knob, so the limit a call runs under is the CLI's, not the API's:
+ * Fable 5.1 reports 64 000 and Haiku 4.5 reports 32 000, below the API maxima in
+ * the Anthropic models overview (`https://platform.claude.com/docs/en/about-claude/models/overview`,
+ * read 2026-10-03: Fable 5.1 "128K tokens", Haiku 4.5 "64K tokens"). Opus 5.5 and
+ * Sonnet 5 report 128 000, equal to the documented value. The context windows
+ * agree with the documentation.
  */
 const CLAUDE_CLI_LIMITS: Record<ClaudeCliModelId, ModelLimits> = {
-  'claude-fable-5-1': { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+  'claude-fable-5-1': { contextWindow: 1_000_000, maxOutputTokens: 64_000 },
   'claude-opus-5-5': { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
   'claude-sonnet-5': { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
-  'claude-haiku-4-5-20251001': { contextWindow: 200_000, maxOutputTokens: 64_000 },
+  'claude-haiku-4-5-20251001': { contextWindow: 200_000, maxOutputTokens: 32_000 },
 }
 
 export const claudeCliModelDescriptors: ModelDescriptor[] = CLAUDE_CLI_MODEL_IDS.map(

@@ -10,7 +10,8 @@
 [`@gullabs/core`](../core) that routes LLM calls through the `claude`
 (Claude Code) CLI instead of an API key. Because the CLI owns its own
 OAuth/keychain-backed session, calls made through this adapter cost $0 in API
-spend — the CLI reports its own cost for observability, but that number is
+spend (the runner scrubs `ANTHROPIC_API_KEY` and the other credential variables from
+the child's environment so that stays true; see below) — the CLI reports its own cost for observability, but that number is
 never fed into `@gullabs/core`'s cost engine (`Cost.microUsd` naturally
 resolves to `null` because these models are unpriced).
 
@@ -26,11 +27,17 @@ pnpm add -D @gullabs/claude-cli @gullabs/core
 | --------------------------- | -------- | --------------------------------------------------------------- |
 | `claudeCliProvider`         | function | The `ProviderPlugin` for `composeProviders` (adapter + models). |
 | `claudeCliAdapter`          | function | Creates the `ProviderAdapter` (`id: 'claude-cli'`).             |
-| `ClaudeCliAdapterOptions`   | type     | `{ runner?, claudePath?, maxConcurrency? }`.                    |
+| `ClaudeCliAdapterOptions`   | type     | `{ runner?, claudePath?, maxConcurrency?, env? }`.              |
 | `buildClaudeCliRunner`      | function | The real `node:child_process`-backed `ClaudeCliRunner` factory. |
 | `ClaudeCliRunner`           | type     | The process-execution seam; inject a fake in tests.             |
+| `ClaudeCliRunOptions`       | type     | `{ cwd, timeoutMs?, signal?, env? }`, the options of `run`.     |
+| `ClaudeCliRunResult`        | type     | `{ stdout, stderr, exitCode }`.                                 |
+| `ClaudeCliEnvelope`         | type     | The `--output-format json` result envelope the adapter reads.   |
 | `claudeCliModelDescriptors` | value    | `ModelDescriptor[]` for the 4 supported model ids.              |
 | `claudeCliRegistry`         | value    | `ModelRegistry` built from `claudeCliModelDescriptors`.         |
+| `CLAUDE_CLI_MODEL_IDS`      | value    | The four registered model ids.                                  |
+| `CLAUDE_CLI_EFFORTS`        | value    | `['low', 'medium', 'high', 'xhigh', 'max']`.                    |
+| `Claude…ConfigSchema` (x4)  | value    | The strict zod config schema of each model.                     |
 
 ## Quick example
 
@@ -99,6 +106,42 @@ xAI adapters (ADR-034), this adapter does not check the schema against a keyword
 profile: `nullable`, uppercase type names and keywords the CLI may ignore are not
 rejected here, so validate the result yourself.
 
+## Environment: the subscription login, never an API key
+
+Claude Code's own documentation says `ANTHROPIC_API_KEY` is "used instead of your
+Claude Pro, Max, Team, or Enterprise subscription even if you are logged in. In
+non-interactive mode (`-p`), the key is always used when present"
+(<https://code.claude.com/docs/en/env-vars>), and the adapter always runs `-p`. A
+host that has the key exported for an Anthropic SDK would therefore have every call
+billed to it while the ledger books the call as unpriced, and nothing in the result
+would say so. So the real runner does not hand the host environment to the child. It
+builds an allowlisted copy of `process.env`: `PATH`, `HOME`, `USER`, `LOGNAME`,
+`LANG`/`LC_*`, `TERM`, `TZ`, `TMPDIR`/`TEMP`/`TMP`, `SHELL`, `XDG_*`, the Windows
+profile variables, the proxy variables (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`,
+`NO_PROXY`, either case), `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`/`SSL_CERT_DIR`, and
+the CLI's own documented settings for a subscription login: `CLAUDE_CONFIG_DIR`,
+`CLAUDE_CODE_OAUTH_TOKEN` (the long-lived subscription token from
+`claude setup-token`) and the mTLS variables `CLAUDE_CODE_CLIENT_CERT`,
+`CLAUDE_CODE_CLIENT_KEY`, `CLAUDE_CODE_CLIENT_KEY_PASSPHRASE`. `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/
+`_FOUNDRY` and everything else are dropped.
+
+`claudeCliAdapter({ env })` adds variables on top, and they win over the allowlisted
+ones. It is the one way to pass anything else on. Putting an API key there is the
+explicit opt-in: the call is then billed to it. `env` is validated at construction
+(string names without `=`, string values without NUL), else `bad_request`. A custom
+runner receives it as `ClaudeCliRunOptions.env` and decides for itself.
+
+## Queued calls and killed processes
+
+A call waits for a slot before it makes its scratch directory, and leaves the queue
+(rejecting `aborted`) when its signal fires, so calls the engine already gave up on
+cost nothing while they wait. When a timeout, abort or the stdout cap kills the call,
+the whole process group gets SIGTERM, and SIGKILL after five seconds. When the CLI
+itself exits on the SIGTERM the group gets one more SIGKILL at that moment, so a tool
+process that ignored SIGTERM and holds none of the runner's pipes does not outlive
+the call.
+
 ## Concurrency
 
 The adapter caps concurrent `claude` CLI invocations with an internal
@@ -114,3 +157,7 @@ xhigh | max`. Haiku 4.5 has no `reasoning` key — the CLI drops `--effort`.
 No sampling knobs (`temperature`/`topP`/`topK`/`maxOutputTokens`/`stopSequences`)
 are accepted; the strict config schema rejects unknown keys. `claude-fable-5`
 and `claude-opus-4-8` are deleted with no alias.
+
+The descriptors' `limits` are what the CLI reports for its own run (the captured
+`modelUsage.contextWindow` and `maxOutputTokens`), not the API maxima: Fable 5.1
+64 000 and Haiku 4.5 32 000 output tokens, Opus 5.5 and Sonnet 5 128 000.

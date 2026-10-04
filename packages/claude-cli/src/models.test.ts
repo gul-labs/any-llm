@@ -4,6 +4,7 @@
  * @module
  */
 
+import { readFileSync } from 'node:fs'
 import { describe, it, expect } from 'vitest'
 import { assertRegistryInvariants } from '@gullabs/testing'
 import {
@@ -126,18 +127,26 @@ describe('registry', () => {
   })
 })
 
-describe('claude-cli limits and media (docs read 2026-10-03)', () => {
-  it('states each model context window and maximum output, and admits no media', () => {
-    const byModel = Object.fromEntries(
-      claudeCliModelDescriptors.map((d) => [d.model, d.limits]),
-    )
-    expect(byModel).toEqual({
-      'claude-fable-5-1': { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
-      'claude-opus-5-5': { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
-      'claude-sonnet-5': { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
-      'claude-haiku-4-5-20251001': { contextWindow: 200_000, maxOutputTokens: 64_000 },
-    })
+describe('claude-cli limits and media', () => {
+  it('states each limit as the CLI reports it in the captured modelUsage, and admits no media', () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        new URL('./__fixtures__/model-refresh-p-a1.json', import.meta.url),
+        'utf8',
+      ),
+    ) as {
+      responses: Record<
+        string,
+        { modelUsage: Record<string, { contextWindow: number; maxOutputTokens: number }> }
+      >
+    }
     for (const d of claudeCliModelDescriptors) {
+      const reported = fixture.responses[d.model]?.modelUsage[d.model]
+      expect(reported, d.model).toBeDefined()
+      expect(d.limits).toEqual({
+        contextWindow: reported?.contextWindow,
+        maxOutputTokens: reported?.maxOutputTokens,
+      })
       expect(d.capabilities?.inputMimeTypes).toEqual([])
     }
   })

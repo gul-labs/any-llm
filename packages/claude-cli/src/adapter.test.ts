@@ -938,3 +938,175 @@ describe('usage mapping (both cache lanes are input)', () => {
     expect((await map(usage)).usage.raw).toEqual(usage)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Environment handed to the CLI
+// ---------------------------------------------------------------------------
+
+describe('env option', () => {
+  it('passes the host-supplied variables to the runner on every call', async () => {
+    const { runner, calls } = makeFakeRunner(() => envelopeResult(PLAIN_ENVELOPE))
+    const adapter = claudeCliAdapter({
+      runner,
+      env: { CLAUDE_CONFIG_DIR: '/somewhere/else' },
+    })
+    await adapter.run(makeResolvedReq(), CLI_SESSION_CTX)
+    expect(calls[0]?.opts.env).toEqual({ CLAUDE_CONFIG_DIR: '/somewhere/else' })
+  })
+
+  it('sends no env key when the host gave none', async () => {
+    const { runner, calls } = makeFakeRunner(() => envelopeResult(PLAIN_ENVELOPE))
+    await claudeCliAdapter({ runner }).run(makeResolvedReq(), CLI_SESSION_CTX)
+    expect(calls[0]?.opts).not.toHaveProperty('env')
+  })
+
+  it.each([
+    ['a non-string value', { A: 1 }],
+    ['an empty name', { '': 'x' }],
+    ['a name with =', { 'A=B': 'x' }],
+    ['a value with NUL', { A: 'x\0y' }],
+    ['an array', ['A=1']],
+    ['null', null],
+  ])('rejects %s at construction with bad_request', (_label, env) => {
+    const { runner } = makeFakeRunner(() => envelopeResult(PLAIN_ENVELOPE))
+    let thrown: unknown
+    try {
+      claudeCliAdapter({ runner, env: env as never })
+    } catch (e) {
+      thrown = e
+    }
+    expect(thrown).toBeInstanceOf(LlmError)
+    expect((thrown as LlmError).kind).toBe('bad_request')
+  })
+
+  it('copies the object: a later change by the host is not seen', async () => {
+    const { runner, calls } = makeFakeRunner(() => envelopeResult(PLAIN_ENVELOPE))
+    const env: Record<string, string> = { A: '1' }
+    const adapter = claudeCliAdapter({ runner, env })
+    env['A'] = '2'
+    await adapter.run(makeResolvedReq(), CLI_SESSION_CTX)
+    expect(calls[0]?.opts.env).toEqual({ A: '1' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Queued calls
+// ---------------------------------------------------------------------------
+
+describe('calls queued behind the semaphore', () => {
+  const scratchDirs = async (): Promise<string[]> => {
+    const fs = await import('node:fs/promises')
+    return (await fs.readdir(tmpdir())).filter((name) => name.startsWith('claude-cli-'))
+  }
+
+  it('hold no scratch directory while they wait, and leave the queue when aborted', async () => {
+    let releaseFirst: (() => void) | undefined
+    let started = 0
+    const { runner } = makeFakeRunner(async () => {
+      started += 1
+      if (started === 1) {
+        await new Promise<void>((resolve) => {
+          releaseFirst = resolve
+        })
+      }
+      return envelopeResult(PLAIN_ENVELOPE)
+    })
+    const adapter = claudeCliAdapter({ runner, maxConcurrency: 1 })
+    const before = await scratchDirs()
+
+    const first = adapter.run(makeResolvedReq(), CLI_SESSION_CTX)
+    await vi.waitFor(() => expect(started).toBe(1))
+    expect(await scratchDirs()).toHaveLength(before.length + 1)
+
+    const controller = new AbortController()
+    const queued = adapter
+      .run(makeResolvedReq(), { ...CLI_SESSION_CTX, signal: controller.signal })
+      .catch((e: unknown) => e)
+    // Waiting costs no scratch directory.
+    expect(await scratchDirs()).toHaveLength(before.length + 1)
+
+    controller.abort()
+    const outcome = await queued
+    expect(outcome).toBeInstanceOf(LlmError)
+    expect((outcome as LlmError).kind).toBe('aborted')
+    // The aborted call never reached the runner.
+    expect(started).toBe(1)
+
+    releaseFirst?.()
+    await first
+    expect(await scratchDirs()).toHaveLength(before.length)
+
+    // The aborted waiter is gone from the queue: a later call takes the free slot.
+    await adapter.run(makeResolvedReq(), CLI_SESSION_CTX)
+    expect(started).toBe(2)
+  })
+
+  it('an already-aborted call rejects without taking a slot or making a directory', async () => {
+    const { runner, calls } = makeFakeRunner(() => envelopeResult(PLAIN_ENVELOPE))
+    const adapter = claudeCliAdapter({ runner, maxConcurrency: 1 })
+    const before = await scratchDirs()
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      adapter.run(makeResolvedReq(), { ...CLI_SESSION_CTX, signal: controller.signal }),
+    ).rejects.toMatchObject({ kind: 'aborted' })
+    expect(calls).toHaveLength(0)
+    expect(await scratchDirs()).toHaveLength(before.length)
+    await adapter.run(makeResolvedReq(), CLI_SESSION_CTX)
+    expect(calls).toHaveLength(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Failure classification is word-anchored
+// ---------------------------------------------------------------------------
+
+describe('failure classification', () => {
+  const fail = async (stderr: string, subtype = 'error_during_execution') => {
+    const { runner } = makeFakeRunner(() => ({
+      stdout: JSON.stringify({ type: 'result', subtype, is_error: true }),
+      stderr,
+      exitCode: 1,
+    }))
+    return (await claudeCliAdapter({ runner })
+      .run(makeResolvedReq(), CLI_SESSION_CTX)
+      .catch((e: unknown) => e)) as LlmError
+  }
+
+  it.each([
+    'the author of the plugin is unknown',
+    'contact the authority at port 4290',
+    'ECONNRESET at 2026-10-03T04:29:00Z',
+    'listening on localhost:429',
+  ])('"%s" is neither an auth failure nor a rate limit', async (stderr) => {
+    const err = await fail(stderr)
+    expect(err.kind).toBe('server')
+    expect(err.retryable).toBe(false)
+  })
+
+  it.each([
+    ['HTTP 429 Too Many Requests', 'rate_limited'],
+    ['Rate limit reached for this account', 'rate_limited'],
+    ['OAuth token has expired', 'invalid_auth'],
+    ['401 Unauthorized', 'invalid_auth'],
+    ['Please run claude auth login', 'invalid_auth'],
+  ])('"%s" is %s', async (stderr, kind) => {
+    expect((await fail(stderr)).kind).toBe(kind)
+  })
+
+  it('a rate limit that mentions auth is still a rate limit', async () => {
+    expect((await fail('429 rate limit for authenticated users')).kind).toBe(
+      'rate_limited',
+    )
+  })
+
+  it('maps a runner timeout (FakeCliRunner { timeout: true }) to a retryable timeout', async () => {
+    const runner = new FakeCliRunner({ timeout: true })
+    await expect(
+      claudeCliAdapter({ runner }).run(
+        makeResolvedReq({ config: { timeoutMs: 100 } }),
+        CLI_SESSION_CTX,
+      ),
+    ).rejects.toMatchObject({ kind: 'timeout', retryable: true })
+  })
+})

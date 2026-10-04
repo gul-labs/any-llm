@@ -8,13 +8,15 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { writeFile } from 'node:fs/promises'
+import { readdir, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LlmError } from '@gullabs/core'
 import { FakeCliRunner } from '@gullabs/testing'
 import type { ResolvedRequest, AdapterCtx, Message } from '@gullabs/core'
 import { codexCliAdapter } from './adapter.js'
-import type { CodexCliRunner, CodexCliRunResult } from './runner.js'
+import { codexCliRegistry } from './models.js'
+import type { CodexCliRunner, CodexCliRunOptions, CodexCliRunResult } from './runner.js'
 
 // ---------------------------------------------------------------------------
 // Fixtures — captured verbatim from the real CLI (see task spec).
@@ -63,7 +65,7 @@ const TURN_FAILED_JSONL = [
 interface FakeRunnerCall {
   args: string[]
   input: string
-  opts: { cwd: string; timeoutMs?: number; signal?: AbortSignal }
+  opts: CodexCliRunOptions
 }
 
 /** Builds a fake CodexCliRunner (`FakeCliRunner`) that answers from `behavior` and records calls. */
@@ -80,11 +82,13 @@ const FAKE_CTX: AdapterCtx = {
 }
 
 function makeResolvedReq(overrides: Partial<ResolvedRequest> = {}): ResolvedRequest {
+  const model = overrides.model ?? 'gpt-6-sol'
   return {
     provider: 'codex-cli',
-    model: 'gpt-6-sol',
+    model,
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Say exactly: hi' }] }],
     config: {},
+    modelDescriptor: codexCliRegistry.resolve('codex-cli', model)!,
     ...overrides,
   }
 }
@@ -940,23 +944,9 @@ describe('false success on empty/truncated/malformed JSONL', () => {
 
 describe('timeout', () => {
   it('throws kind:"timeout", retryable:true when the runner reports a timeout', async () => {
-    // The runner now owns timeout enforcement end-to-end (it only settles
-    // once the simulated child has "closed") — the adapter no longer races
-    // an independent timer, so the fake must itself honor opts.timeoutMs
-    // and reject with a TimeoutError-named Error, mirroring the real
-    // runner's contract.
-    const { runner } = makeFakeRunner(
-      (call) =>
-        new Promise<CodexCliRunResult>((_resolve, reject) => {
-          setTimeout(() => {
-            const err = new Error(
-              `codex-cli call exceeded ${call.opts.timeoutMs}ms timeout`,
-            )
-            err.name = 'TimeoutError'
-            reject(err)
-          }, call.opts.timeoutMs)
-        }),
-    )
+    // The runner owns timeout enforcement end-to-end and rejects with a
+    // TimeoutError-named Error; the fake's `{ timeout: true }` entry does the same.
+    const runner = new FakeCliRunner({ timeout: true })
     const adapter = codexCliAdapter({ runner })
 
     try {
@@ -1219,5 +1209,199 @@ describe('function-calling seam reject', () => {
       kind: 'bad_request',
       message: expect.stringContaining('tools'),
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Environment handed to the CLI
+// ---------------------------------------------------------------------------
+
+describe('env option', () => {
+  it('passes the host-supplied variables to the runner on every call', async () => {
+    const { runner, calls } = makeFakeRunner(() => ({
+      stdout: PLAIN_JSONL,
+      stderr: '',
+      exitCode: 0,
+    }))
+    const adapter = codexCliAdapter({ runner, env: { CODEX_HOME: '/somewhere/else' } })
+    await adapter.run(makeResolvedReq(), FAKE_CTX)
+    expect(calls[0]?.opts.env).toEqual({ CODEX_HOME: '/somewhere/else' })
+  })
+
+  it('sends no env key when the host gave none', async () => {
+    const { runner, calls } = makeFakeRunner(() => ({
+      stdout: PLAIN_JSONL,
+      stderr: '',
+      exitCode: 0,
+    }))
+    await codexCliAdapter({ runner }).run(makeResolvedReq(), FAKE_CTX)
+    expect(calls[0]?.opts).not.toHaveProperty('env')
+  })
+
+  it.each([
+    ['a non-string value', { A: 1 }],
+    ['an empty name', { '': 'x' }],
+    ['a name with =', { 'A=B': 'x' }],
+    ['a value with NUL', { A: 'x\0y' }],
+    ['an array', ['A=1']],
+    ['null', null],
+  ])('rejects %s at construction with bad_request', (_label, env) => {
+    const { runner } = makeFakeRunner(() => ({ stdout: PLAIN_JSONL }) as never)
+    let thrown: unknown
+    try {
+      codexCliAdapter({ runner, env: env as never })
+    } catch (e) {
+      thrown = e
+    }
+    expect(thrown).toBeInstanceOf(LlmError)
+    expect((thrown as LlmError).kind).toBe('bad_request')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Queued calls
+// ---------------------------------------------------------------------------
+
+describe('calls queued behind the semaphore', () => {
+  const scratchDirs = async (): Promise<string[]> =>
+    (await readdir(tmpdir())).filter((name) => name.startsWith('codex-cli-'))
+
+  it('hold no scratch directory while they wait, and leave the queue when aborted', async () => {
+    let releaseFirst: (() => void) | undefined
+    let started = 0
+    const { runner } = makeFakeRunner(async () => {
+      started += 1
+      if (started === 1) {
+        await new Promise<void>((resolve) => {
+          releaseFirst = resolve
+        })
+      }
+      return { stdout: PLAIN_JSONL, stderr: '', exitCode: 0 }
+    })
+    const adapter = codexCliAdapter({ runner, maxConcurrency: 1 })
+    const before = await scratchDirs()
+
+    const first = adapter.run(makeResolvedReq(), FAKE_CTX)
+    await vi.waitFor(() => expect(started).toBe(1))
+    expect(await scratchDirs()).toHaveLength(before.length + 1)
+
+    const controller = new AbortController()
+    const queued = adapter
+      .run(makeResolvedReq({ signal: controller.signal }), FAKE_CTX)
+      .catch((e: unknown) => e)
+    // Waiting costs no scratch directory.
+    expect(await scratchDirs()).toHaveLength(before.length + 1)
+
+    controller.abort()
+    const outcome = await queued
+    expect(outcome).toBeInstanceOf(LlmError)
+    expect((outcome as LlmError).kind).toBe('aborted')
+    // The aborted call never reached the runner.
+    expect(started).toBe(1)
+
+    releaseFirst?.()
+    await first
+    expect(await scratchDirs()).toHaveLength(before.length)
+
+    // The aborted waiter is gone from the queue: a later call takes the free slot.
+    await adapter.run(makeResolvedReq(), FAKE_CTX)
+    expect(started).toBe(2)
+  })
+
+  it('an already-aborted call rejects without taking a slot or making a directory', async () => {
+    const { runner, calls } = makeFakeRunner(() => ({
+      stdout: PLAIN_JSONL,
+      stderr: '',
+      exitCode: 0,
+    }))
+    const adapter = codexCliAdapter({ runner, maxConcurrency: 1 })
+    const before = await scratchDirs()
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      adapter.run(makeResolvedReq({ signal: controller.signal }), FAKE_CTX),
+    ).rejects.toMatchObject({ kind: 'aborted' })
+    expect(calls).toHaveLength(0)
+    expect(await scratchDirs()).toHaveLength(before.length)
+    await adapter.run(makeResolvedReq(), FAKE_CTX)
+    expect(calls).toHaveLength(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A process ended by a signal
+// ---------------------------------------------------------------------------
+
+describe('a process killed by a signal (exitCode null)', () => {
+  const MESSAGE_ONLY = [
+    '{"type":"thread.started","thread_id":"abc"}',
+    '{"type":"turn.started"}',
+    '{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"partial answer"}}',
+  ].join('\n')
+
+  it('is an error when a message was streamed but the turn never completed', async () => {
+    const { runner } = makeFakeRunner(() => ({
+      stdout: MESSAGE_ONLY,
+      stderr: 'Killed',
+      exitCode: null,
+    }))
+    const err = await codexCliAdapter({ runner })
+      .run(makeResolvedReq(), FAKE_CTX)
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(LlmError)
+    expect((err as LlmError).kind).toBe('server')
+    expect((err as LlmError).retryable).toBe(false)
+    expect((err as LlmError).message).toContain('killed by a signal')
+  })
+
+  it('is still a result when turn.completed arrived before the signal', async () => {
+    const { runner } = makeFakeRunner(() => ({
+      stdout: PLAIN_JSONL,
+      stderr: '',
+      exitCode: null,
+    }))
+    const result = await codexCliAdapter({ runner }).run(makeResolvedReq(), FAKE_CTX)
+    expect(result.text).toBe('hi')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Failure classification is word-anchored
+// ---------------------------------------------------------------------------
+
+describe('text classification of a stream error', () => {
+  const classify = async (message: string) => {
+    const stream = `{"type":"error","message":${JSON.stringify(message)}}`
+    const { runner } = makeFakeRunner(() => ({ stdout: stream, stderr: '', exitCode: 1 }))
+    return (await codexCliAdapter({ runner })
+      .run(makeResolvedReq(), FAKE_CTX)
+      .catch((e: unknown) => e)) as LlmError
+  }
+
+  it.each([
+    'the author of the plugin is unknown',
+    'contact the authority at port 4290',
+    'ECONNRESET at 2026-10-03T04:29:00Z',
+    'listening on localhost:429',
+  ])('"%s" is neither an auth failure nor a rate limit', async (message) => {
+    const err = await classify(message)
+    expect(err.kind).toBe('server')
+    expect(err.retryable).toBe(false)
+  })
+
+  it.each([
+    ['HTTP 429 Too Many Requests', 'rate_limited'],
+    ['Rate limit reached for this account', 'rate_limited'],
+    ['OAuth token has expired', 'invalid_auth'],
+    ['401 Unauthorized', 'invalid_auth'],
+    ['Please run codex login', 'invalid_auth'],
+  ])('"%s" is %s', async (message, kind) => {
+    expect((await classify(message)).kind).toBe(kind)
+  })
+
+  it('a rate limit that mentions auth is still a rate limit', async () => {
+    expect((await classify('429 rate limit for authenticated users')).kind).toBe(
+      'rate_limited',
+    )
   })
 })

@@ -24,16 +24,16 @@ actual use; not required to build or test this package.
 
 ## Key exports
 
-| Export                                          | Description                                                                   |
-| ----------------------------------------------- | ----------------------------------------------------------------------------- |
-| `codexCliProvider(opts?)`                       | The `ProviderPlugin` for `composeProviders` (adapter + models).               |
-| `codexCliAdapter(opts?)`                        | Builds the `ProviderAdapter` (`id: 'codex-cli'`).                             |
-| `CodexCliAdapterOptions`                        | `{ runner?, codexPath?, maxConcurrency? }`.                                   |
-| `createCodexCliRunner(codexPath?)`              | Real `node:child_process`-backed `CodexCliRunner`.                            |
-| `CodexCliRunner` / `CodexCliRunResult`          | The subprocess seam interface, for injecting fakes.                           |
-| `codexCliModelDescriptors` / `codexCliRegistry` | `ModelDescriptor[]` / `ModelRegistry` for the 3 supported models.             |
-| `CODEX_CLI_MODEL_IDS`                           | `'gpt-6-astra' \| 'gpt-6-sol' \| 'gpt-6-luna'`. No `gpt-5*` id is registered. |
-| `CODEX_CLI_REASONING_EFFORTS`                   | `['low', 'medium', 'high', 'xhigh', 'max']`. No `'none'`, no `'ultra'`.       |
+| Export                                                        | Description                                                                    |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `codexCliProvider(opts?)`                                     | The `ProviderPlugin` for `composeProviders` (adapter + models).                |
+| `codexCliAdapter(opts?)`                                      | Builds the `ProviderAdapter` (`id: 'codex-cli'`).                              |
+| `CodexCliAdapterOptions`                                      | `{ runner?, codexPath?, maxConcurrency?, env? }`.                              |
+| `createCodexCliRunner(codexPath?)`                            | Real `node:child_process`-backed `CodexCliRunner`.                             |
+| `CodexCliRunner` / `CodexCliRunOptions` / `CodexCliRunResult` | The subprocess seam interface and its options and result, for injecting fakes. |
+| `codexCliModelDescriptors` / `codexCliRegistry`               | `ModelDescriptor[]` / `ModelRegistry` for the 3 supported models.              |
+| `CODEX_CLI_MODEL_IDS`                                         | `'gpt-6-astra' \| 'gpt-6-sol' \| 'gpt-6-luna'`. No `gpt-5*` id is registered.  |
+| `CODEX_CLI_REASONING_EFFORTS`                                 | `['low', 'medium', 'high', 'xhigh', 'max']`. No `'none'`, no `'ultra'`.        |
 
 ## Quick example
 
@@ -158,6 +158,43 @@ provider's behavior on that date, not a timeless product guarantee.
 
 The adapter runs an in-process semaphore around `runner.run`, defaulting to
 `maxConcurrency: 2`. Override via `codexCliAdapter({ maxConcurrency: N })`.
+
+### Environment: the subscription login, never an API key
+
+A call through this package is meant to run on the saved ChatGPT login and cost no
+API spend. `codex exec` also reads `CODEX_API_KEY` (OpenAI documents it as the way
+"to use a different API key for a single run") and the OpenAI SDK's
+`OPENAI_API_KEY`, and does not document which wins over the saved login. A host
+that has either exported would risk every call being billed to that key while the
+ledger books it as unpriced. So the real runner does not hand the host environment
+to the child. It builds an allowlisted copy of `process.env`: `PATH`, `HOME`,
+`USER`, `LOGNAME`, `LANG`/`LC_*`, `TERM`, `TZ`, `TMPDIR`/`TEMP`/`TMP`, `SHELL`,
+`XDG_*`, the Windows profile variables, the proxy variables (`HTTPS_PROXY`,
+`HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`, either case), `SSL_CERT_FILE`/`SSL_CERT_DIR`,
+and the CLI's own `CODEX_HOME` and `CODEX_CA_CERTIFICATE`. `CODEX_API_KEY`,
+`OPENAI_API_KEY`, `OPENAI_BASE_URL` and everything else are dropped.
+
+`codexCliAdapter({ env })` adds variables on top, and they win over the allowlisted
+ones. It is the one way to pass anything else on, for example a non-default
+`CODEX_HOME`. Putting an API key there is the explicit opt-in: the call is then
+billed to it. `env` is validated at construction (string names without `=`, string
+values without NUL), else `bad_request`. A custom runner receives it as
+`CodexCliRunOptions.env` and decides for itself.
+
+### Queued calls
+
+A call waits for a slot before it makes its scratch directory, and leaves the queue
+(rejecting `aborted`) when its signal fires, so calls the engine already gave up on
+cost nothing while they wait.
+
+### A killed process
+
+When a timeout, abort or the stdout cap kills the call, the whole process group gets
+SIGTERM, and SIGKILL after five seconds. When the CLI itself exits on the SIGTERM
+the group gets one more SIGKILL at that moment, so a tool process that ignored
+SIGTERM and holds none of the runner's pipes does not outlive the call. A process
+that ends on a signal from outside (an OOM kill) without a `turn.completed` event is
+a `server` error, not a result built from a message streamed before the kill.
 
 ### Argv is adapter-owned
 

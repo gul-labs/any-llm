@@ -13,6 +13,8 @@
 import { spawn } from 'node:child_process'
 import { StringDecoder } from 'node:string_decoder'
 
+import { buildChildEnv } from './env.js'
+
 /**
  * Most stdout the runner buffers: 32 MiB. A call that prints more is killed and
  * rejected, so a runaway process cannot exhaust the host's memory. stderr is
@@ -42,6 +44,11 @@ export interface ClaudeCliRunOptions {
   timeoutMs?: number
   /** Kill the subprocess if this signal fires. */
   signal?: AbortSignal
+  /**
+   * Variables added to (and winning over) the allowlisted environment the child
+   * gets. The host's own environment is not passed on whole; see `env.ts`.
+   */
+  env?: Readonly<Record<string, string>>
 }
 
 /**
@@ -69,8 +76,15 @@ export interface ClaudeCliRunner {
  *
  * The child leads its own process group, and a timeout, abort or output-cap
  * kill signals the whole group, so a grandchild holding the pipes cannot keep a
- * call hung. A host that is interrupted (Ctrl-C) does not forward the signal to
- * the CLI, which then runs to its own timeout.
+ * call hung. When the leader closes after such a kill, the group gets one more
+ * SIGKILL, so a member that ignored SIGTERM and does not hold the pipes (a tool
+ * server the CLI started) does not outlive the call. A host that is interrupted
+ * (Ctrl-C) does not forward the signal to the CLI, which then runs to its own
+ * timeout.
+ *
+ * The child's environment is an allowlisted copy of `process.env` plus
+ * `opts.env` (see `env.ts`): `ANTHROPIC_API_KEY` and the provider-routing
+ * variables are not passed on, so the subscription login is what the CLI uses.
  *
  * @param claudePath - Path or bare command name for the `claude` binary.
  *   Defaults to `'claude'`, resolved via `PATH`.
@@ -98,6 +112,7 @@ export function buildClaudeCliRunner(claudePath = 'claude'): ClaudeCliRunner {
           cwd: opts.cwd,
           stdio: ['pipe', 'pipe', 'pipe'],
           detached: process.platform !== 'win32',
+          env: buildChildEnv(process.env, opts.env, process.platform === 'win32'),
         })
 
         // Chunks can split a multibyte UTF-8 character, so each stream keeps
@@ -152,6 +167,19 @@ export function buildClaudeCliRunner(claudePath = 'claude'): ClaudeCliRunner {
             child.stdout.destroy()
             child.stderr.destroy()
           }, 5_000)
+        }
+
+        // One SIGKILL for the group, after the leader has closed. The 5 s timer
+        // above is cancelled by `close`, so without this a group member that
+        // ignores SIGTERM and holds none of our pipes would never be killed.
+        // ESRCH (the group is already empty) is the normal outcome.
+        const sweepGroup = (): void => {
+          if (process.platform === 'win32' || child.pid === undefined) return
+          try {
+            process.kill(-child.pid, 'SIGKILL')
+          } catch {
+            // Nothing left in the group.
+          }
         }
 
         const beginReject = (err: Error): void => {
@@ -217,6 +245,7 @@ export function buildClaudeCliRunner(claudePath = 'claude'): ClaudeCliRunner {
           settled = true
           cleanup()
           if (pendingError !== undefined) {
+            sweepGroup()
             reject(pendingError)
           } else {
             stdout += stdoutDecoder.end()

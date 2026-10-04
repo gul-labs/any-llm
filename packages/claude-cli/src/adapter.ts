@@ -3,7 +3,8 @@
  *
  * Pure request⇄response mapping over the locally-authenticated `claude`
  * (Claude Code) CLI, via {@link ClaudeCliRunner}. Never persists, never
- * computes cost, never retries, never reads `process.env`.
+ * computes cost, never retries, never reads `process.env` (the real runner builds
+ * the child's environment from an allowlist; see `env.ts`).
  *
  * DEV-ONLY: this adapter requires `ctx.auth = { cliSession: true }` — it
  * shells out to a `claude` binary that owns its own local login/session
@@ -30,6 +31,7 @@ import type {
   Message,
   Part,
 } from '@gullabs/core'
+import { parseExtraEnv } from './env.js'
 import { buildClaudeCliRunner } from './runner.js'
 import type { ClaudeCliRunner, ClaudeCliRunResult } from './runner.js'
 
@@ -74,34 +76,56 @@ export interface ClaudeCliEnvelope {
 // Tiny in-file semaphore — adapter-internal concurrency control
 // ---------------------------------------------------------------------------
 
+function abortError(): Error {
+  const err = new Error('claude-cli call aborted')
+  err.name = 'AbortError'
+  return err
+}
+
 class Semaphore {
   private available: number
-  private readonly queue: Array<() => void> = []
+  private readonly waiters: Array<() => void> = []
 
   constructor(max: number) {
     this.available = max
   }
 
-  async acquire(): Promise<() => void> {
+  /**
+   * Take a slot. A caller that has to wait leaves the queue, and rejects with an
+   * `AbortError`, as soon as `signal` fires: a call the engine already gave up
+   * on must not hold a place in line.
+   */
+  acquire(signal?: AbortSignal): Promise<() => void> {
+    if (signal?.aborted === true) return Promise.reject(abortError())
     if (this.available > 0) {
       this.available -= 1
-      return () => {
+      return Promise.resolve(() => {
         this.release()
+      })
+    }
+    return new Promise((resolve, reject) => {
+      const grant = (): void => {
+        signal?.removeEventListener('abort', onAbort)
+        resolve(() => {
+          this.release()
+        })
       }
-    }
-    await new Promise<void>((resolve) => {
-      this.queue.push(resolve)
+      const onAbort = (): void => {
+        const at = this.waiters.indexOf(grant)
+        if (at >= 0) this.waiters.splice(at, 1)
+        reject(abortError())
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+      this.waiters.push(grant)
     })
-    this.available -= 1
-    return () => {
-      this.release()
-    }
   }
 
+  // A freed slot goes straight to the next waiter, so a new caller cannot
+  // overtake it between the release and the waiter's wake-up.
   private release(): void {
-    this.available += 1
-    const next = this.queue.shift()
+    const next = this.waiters.shift()
     if (next !== undefined) next()
+    else this.available += 1
   }
 }
 
@@ -219,12 +243,19 @@ function buildPrompt(messages: Message[]): string {
 // Error classification
 // ---------------------------------------------------------------------------
 
+// Word-anchored: a bare `auth` would match "author" and "authority", and a bare
+// `429` a port or a timestamp. `oauth` is kept as a word of its own because an
+// expired subscription token reports itself that way.
+const AUTH_FAILURE = /\b(?:log ?in|auth|oauth|authentication|unauthori[sz]ed|401)\b/i
+const RATE_LIMITED =
+  /\brate[ -]?limit(?:ed|s|ing)?\b|\btoo many requests\b|(?<![\w.:/-])429(?![\w-]|\.\d)/i
+
 function looksAuthy(text: string): boolean {
-  return /login|auth|unauthorized/i.test(text)
+  return AUTH_FAILURE.test(text)
 }
 
 function looksRateLimited(text: string): boolean {
-  return /rate limit|429/i.test(text)
+  return RATE_LIMITED.test(text)
 }
 
 function assertServedModel(envelope: ClaudeCliEnvelope, requestedModel: string): void {
@@ -270,13 +301,7 @@ function classifyRunFailure(
 
   const combinedText = `${envelope?.subtype ?? ''} ${result.stderr}`
 
-  if (looksAuthy(combinedText)) {
-    return new LlmError(
-      `claude CLI reported an authentication failure: ${result.stderr.slice(-500)}`,
-      { kind: 'invalid_auth', retryable: false, provider: 'claude-cli' },
-    )
-  }
-
+  // An explicit rate-limit signal wins over an incidental mention of auth.
   if (looksRateLimited(combinedText)) {
     return new LlmError(
       `claude CLI reported rate limiting: ${result.stderr.slice(-500)}`,
@@ -285,6 +310,13 @@ function classifyRunFailure(
         retryable: true,
         provider: 'claude-cli',
       },
+    )
+  }
+
+  if (looksAuthy(combinedText)) {
+    return new LlmError(
+      `claude CLI reported an authentication failure: ${result.stderr.slice(-500)}`,
+      { kind: 'invalid_auth', retryable: false, provider: 'claude-cli' },
     )
   }
 
@@ -313,6 +345,16 @@ export interface ClaudeCliAdapterOptions {
   claudePath?: string
   /** Max concurrent CLI invocations. Defaults to `2`. */
   maxConcurrency?: number
+  /**
+   * Variables handed to the `claude` child on top of the allowlisted copy of the
+   * host environment (PATH, HOME, locale, proxy, the CLI's own config and
+   * subscription-token variables). They win over the allowlisted ones. The host's
+   * `ANTHROPIC_API_KEY` and provider-routing variables are never inherited, so the
+   * CLI uses the subscription login; passing one here is the explicit opt-in, and
+   * the call is then billed to it while the ledger still records it as unpriced.
+   * Values must be strings, else `bad_request` at construction.
+   */
+  env?: Readonly<Record<string, string>>
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +373,7 @@ export function claudeCliAdapter(opts?: ClaudeCliAdapterOptions): ProviderAdapte
   const runner: ClaudeCliRunner = opts?.runner ?? buildClaudeCliRunner(opts?.claudePath)
 
   const semaphore = new Semaphore(opts?.maxConcurrency ?? 2)
+  const env = parseExtraEnv(opts?.env)
 
   return {
     id: 'claude-cli',
@@ -449,14 +492,31 @@ export function claudeCliAdapter(opts?: ClaudeCliAdapterOptions): ProviderAdapte
       // scratch dir) while the real OS child process is still alive and
       // possibly still writing into `cwd`. We simply await the runner
       // promise and classify whatever it settles with.
-      const cwd = await mkdtemp(join(tmpdir(), 'claude-cli-'))
-      const release = await semaphore.acquire()
+      let release: () => void
+      try {
+        release = await semaphore.acquire(ctx.signal)
+      } catch (waitErr) {
+        throw new LlmError(
+          waitErr instanceof Error ? waitErr.message : 'claude-cli call aborted',
+          { kind: 'aborted', retryable: false, provider: 'claude-cli' },
+        )
+      }
+      // The scratch directory is made only once a slot is held: a queued call owns
+      // nothing to clean up.
+      let cwd: string
+      try {
+        cwd = await mkdtemp(join(tmpdir(), 'claude-cli-'))
+      } catch (mkdirErr) {
+        release()
+        throw mkdirErr
+      }
       let result: ClaudeCliRunResult
       try {
         result = await runner.run(args, prompt, {
           cwd,
           ...(timeoutMs !== undefined ? { timeoutMs } : {}),
           ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
+          ...(env !== undefined ? { env } : {}),
         })
       } catch (rawErr) {
         release()

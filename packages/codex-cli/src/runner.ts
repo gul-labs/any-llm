@@ -12,6 +12,8 @@
 import { spawn } from 'node:child_process'
 import { StringDecoder } from 'node:string_decoder'
 
+import { buildChildEnv } from './env.js'
+
 // ---------------------------------------------------------------------------
 // CodexCliRunner — structural interface
 // ---------------------------------------------------------------------------
@@ -36,6 +38,27 @@ export interface CodexCliRunResult {
   exitCode: number | null
 }
 
+/** Options accepted by {@link CodexCliRunner.run}. */
+export interface CodexCliRunOptions {
+  /**
+   * Working directory for the subprocess (also the directory passed as `-C` in the
+   * adapter's argv).
+   */
+  cwd: string
+  /**
+   * Wall-clock ceiling; the runner sends `SIGTERM` on expiry and follows up with
+   * `SIGKILL` if the process has not exited shortly after.
+   */
+  timeoutMs?: number
+  /** Caller abort signal; same SIGTERM then SIGKILL semantics as a timeout expiry. */
+  signal?: AbortSignal
+  /**
+   * Variables added to (and winning over) the allowlisted environment the child
+   * gets. The host's own environment is not passed on whole; see `env.ts`.
+   */
+  env?: Readonly<Record<string, string>>
+}
+
 /**
  * Structural seam over a `codex` CLI subprocess invocation.
  *
@@ -52,19 +75,9 @@ export interface CodexCliRunner {
    *   codex-cli adapter passes the rendered prompt here and `-` as the
    *   positional argument, so a large prompt is never an argv entry (Linux
    *   caps one argument at 128 KiB).
-   * @param opts.cwd - Working directory for the subprocess (also the
-   *   directory passed as `-C` in the adapter's argv).
-   * @param opts.timeoutMs - Optional wall-clock ceiling; the runner sends
-   *   `SIGTERM` on expiry and follows up with `SIGKILL` if the process has
-   *   not exited shortly after.
-   * @param opts.signal - Optional caller abort signal; same
-   *   SIGTERM→SIGKILL semantics as a timeout expiry.
+   * @param opts - See {@link CodexCliRunOptions}.
    */
-  run(
-    args: string[],
-    input: string,
-    opts: { cwd: string; timeoutMs?: number; signal?: AbortSignal },
-  ): Promise<CodexCliRunResult>
+  run(args: string[], input: string, opts: CodexCliRunOptions): Promise<CodexCliRunResult>
 }
 
 // ---------------------------------------------------------------------------
@@ -77,16 +90,19 @@ const SIGKILL_GRACE_MS = 5_000
 /**
  * Build the real {@link CodexCliRunner}, backed by `node:child_process.spawn`.
  *
+ * The child's environment is an allowlisted copy of `process.env` plus
+ * `opts.env` (see `env.ts`): `CODEX_API_KEY`, `OPENAI_API_KEY` and the
+ * provider-routing variables are not passed on, so the saved login is what the CLI
+ * uses. When the leader closes after a timeout, abort or output-cap kill, the group
+ * gets one more SIGKILL, so a member that ignored SIGTERM and holds no pipe does
+ * not outlive the call.
+ *
  * @param codexPath - Path (or bare command name resolved via `PATH`) to the
  *   `codex` binary. Defaults to `'codex'`.
  */
 export function createCodexCliRunner(codexPath = 'codex'): CodexCliRunner {
   return {
-    run(
-      args: string[],
-      input: string,
-      opts: { cwd: string; timeoutMs?: number; signal?: AbortSignal },
-    ): Promise<CodexCliRunResult> {
+    run(args, input, opts) {
       return new Promise((resolve, reject) => {
         // Mirror claude-cli's runner: never spawn a subprocess for a call
         // whose signal is already aborted.
@@ -107,6 +123,7 @@ export function createCodexCliRunner(codexPath = 'codex'): CodexCliRunner {
           cwd: opts.cwd,
           stdio: ['pipe', 'pipe', 'pipe'],
           detached: process.platform !== 'win32',
+          env: buildChildEnv(process.env, opts.env, process.platform === 'win32'),
         })
 
         // Chunks can split a multibyte UTF-8 character, so each stream keeps
@@ -143,6 +160,19 @@ export function createCodexCliRunner(codexPath = 'codex'): CodexCliRunner {
             }
           }
           child.kill(signal)
+        }
+
+        // One SIGKILL for the group, after the leader has closed. The grace timer is
+        // cancelled by `close`, so without this a group member that ignores SIGTERM
+        // and holds none of our pipes would never be killed. ESRCH (the group is
+        // already empty) is the normal outcome.
+        const sweepGroup = (): void => {
+          if (process.platform === 'win32' || child.pid === undefined) return
+          try {
+            process.kill(-child.pid, 'SIGKILL')
+          } catch {
+            // Nothing left in the group.
+          }
         }
 
         const terminate = (): void => {
@@ -224,6 +254,7 @@ export function createCodexCliRunner(codexPath = 'codex'): CodexCliRunner {
             opts.signal.removeEventListener('abort', onAbort)
           }
           if (pendingError !== undefined) {
+            sweepGroup()
             reject(pendingError)
           } else {
             stdout += stdoutDecoder.end()

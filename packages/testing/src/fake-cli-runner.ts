@@ -21,6 +21,8 @@ export interface FakeCliRunOptions {
   cwd: string
   timeoutMs?: number
   signal?: AbortSignal
+  /** Extra environment variables the adapter asked the runner to pass on. */
+  env?: Readonly<Record<string, string>>
 }
 
 /** One recorded invocation. */
@@ -34,10 +36,13 @@ export interface FakeCliRunCall {
  * A scripted answer. `stdout` is required; `stderr` defaults to `''` and
  * `exitCode` to `0`. An `Error` rejects the run, as a spawn-time failure does
  * (`ENOENT`); a non-zero exit is a resolved result, never a rejection, as with
- * the real runners.
+ * the real runners. `{ timeout: true }` rejects as a runner does when its
+ * `timeoutMs` expires: an `Error` named `TimeoutError`, which the adapters map to
+ * a retryable `timeout`.
  */
 export type FakeCliRunEntry =
   | { stdout: string; stderr?: string; exitCode?: number | null }
+  | { timeout: true }
   | Error
   | ((call: FakeCliRunCall) => FakeCliRunResult | Promise<FakeCliRunResult>)
 
@@ -72,10 +77,11 @@ export class FakeCliRunner {
         !(entry instanceof Error) &&
         typeof entry !== 'function' &&
         (typeof entry !== 'object' ||
-          typeof (entry as { stdout?: unknown }).stdout !== 'string')
+          (typeof (entry as { stdout?: unknown }).stdout !== 'string' &&
+            (entry as { timeout?: unknown }).timeout !== true))
       ) {
         throw new TypeError(
-          `FakeCliRunner entry ${i} must be { stdout: string, stderr?, exitCode? }, an Error or a function.`,
+          `FakeCliRunner entry ${i} must be { stdout: string, stderr?, exitCode? }, { timeout: true }, an Error or a function.`,
         )
       }
     })
@@ -98,6 +104,11 @@ export class FakeCliRunner {
     if (entry === undefined) throw new Error('FakeCliRunner: no entries configured')
     if (entry instanceof Error) throw entry
     if (typeof entry === 'function') return await entry(call)
+    if ('timeout' in entry) {
+      const err = new Error(`cli call exceeded ${opts.timeoutMs ?? 0}ms timeout`)
+      err.name = 'TimeoutError'
+      throw err
+    }
     return {
       stdout: entry.stdout,
       stderr: entry.stderr ?? '',

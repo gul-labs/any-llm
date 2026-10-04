@@ -43,6 +43,17 @@ describe('FakeCliRunner', () => {
     expect(runner.calls).toHaveLength(1)
   })
 
+  it('a { timeout: true } entry rejects with a TimeoutError, as a runner whose timeout expired does', async () => {
+    const runner = new FakeCliRunner({ timeout: true })
+    const err = await runner
+      .run([], '', { cwd: '/tmp/x', timeoutMs: 250 })
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).name).toBe('TimeoutError')
+    expect((err as Error).message).toContain('250ms')
+    expect(runner.calls).toHaveLength(1)
+  })
+
   it('consumes a list in order, repeating the last, and a function sees the call', async () => {
     const runner = new FakeCliRunner([
       { stdout: 'one' },
