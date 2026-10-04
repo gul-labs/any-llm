@@ -14,7 +14,7 @@ ledger shape unless you have a concrete reason to stop consuming the shared sink
 | ---------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | `callId`               | library | Group all attempts belonging to one logical call.                                                                                             |
 | `attemptId`            | library | Primary key for the attempt row and the foreign-key target for sidecars. Always minted by the library.                                        |
-| `attemptNumber`        | library | Distinguish first attempt vs in-process retries.                                                                                              |
+| `attemptNumber`        | library | Distinguish first attempt vs in-process retries (1-based). A refusal row written before any attempt ran is `0`.                               |
 | `callSiteId`           | caller  | Prompt-family grouping and observability.                                                                                                     |
 | `externalId`           | caller  | Correlation id for host-ledger queries; give every host retry of one operation the same value.                                                |
 | `queueDelayMs`         | library | Time spent waiting in the configured rate limiter before provider dispatch; use alongside `latencyMs` when attributing spend/latency.         |

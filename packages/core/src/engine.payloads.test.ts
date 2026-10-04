@@ -655,20 +655,105 @@ describe('a payload problem never fails a call', () => {
     expect(sink.payloads.size).toBe(0)
   })
 
-  it('the warning carries the stage, the error class and a fixed sentence, never the error text', async () => {
+  it('the warning carries the stage, a fixed category, the thrown type and a fixed sentence, never the error text or name', async () => {
     const { logger, client } = setup({
       redact: () => {
-        throw new TypeError('patient SSN 123-45-6789 in the redactor error')
+        const error = new TypeError('patient SSN 123-45-6789 in the redactor error')
+        error.name = 'Customer 987-65-4321'
+        throw error
+      },
+    })
+    await client.generate(request(), { auth: AUTH })
+    const entry = logger.find('llm.call.payload.dropped')
+    expect(entry?.fields).toEqual({
+      callId: expect.any(String),
+      attemptId: expect.any(String),
+      stage: 'redact',
+      category: 'redactor_threw',
+      thrownType: 'error',
+      error: 'the redact function threw',
+    })
+    expect(JSON.stringify(logger.entries)).not.toContain('123-45-6789')
+    expect(JSON.stringify(logger.entries)).not.toContain('987-65-4321')
+  })
+
+  it('a throwing include logs the fixed include_threw category', async () => {
+    const { logger, client } = setup({
+      include: () => {
+        throw 'plain string with customer text'
       },
     })
     await client.generate(request(), { auth: AUTH })
     const entry = logger.find('llm.call.payload.dropped')
     expect(entry?.fields).toMatchObject({
-      stage: 'redact',
-      errorName: 'TypeError',
-      error: 'the redact function threw',
+      stage: 'include',
+      category: 'include_threw',
+      thrownType: 'non_error',
     })
-    expect(JSON.stringify(logger.entries)).not.toContain('123-45-6789')
+    expect(JSON.stringify(logger.entries)).not.toContain('customer text')
+  })
+
+  describe('a hostile error from the redactor cannot lose the ledger row', () => {
+    function hostileGetters(): Error {
+      const error = new Error('x')
+      for (const key of ['name', 'message', 'stack']) {
+        Object.defineProperty(error, key, {
+          get() {
+            throw error
+          },
+        })
+      }
+      return error
+    }
+    const hostileProxy = (): Error =>
+      new Proxy(new Error('x'), {
+        get() {
+          throw new Error('proxy get trap')
+        },
+        getPrototypeOf() {
+          throw new Error('proxy getPrototypeOf trap')
+        },
+      })
+
+    for (const [label, make] of [
+      ['name, message and stack getters that rethrow', hostileGetters],
+      ['a Proxy that throws on every property read and prototype read', hostileProxy],
+    ] as const) {
+      it(`${label}: the call succeeds and the billed row is written`, async () => {
+        const { sink, logger, client } = setup({
+          redact: () => {
+            throw make()
+          },
+        })
+        const result = await client.generate(request(), { auth: AUTH })
+        expect(result.text).toBe('the answer')
+        expect(sink.records).toHaveLength(1)
+        expect(sink.records[0]?.attemptId).toBe(result.attemptId)
+        expect(sink.payloads.size).toBe(0)
+        const entry = logger.find('llm.call.payload.dropped')
+        expect(entry?.fields).toMatchObject({
+          stage: 'redact',
+          category: 'redactor_threw',
+        })
+        expect(logger.find('llm.call.sink.failed')).toBeUndefined()
+      })
+    }
+
+    it('a throwing logger.warn cannot stop the ledger write either', async () => {
+      const { sink, logger, client } = setup({
+        redact: () => {
+          throw new Error('boom')
+        },
+      })
+      const original = logger.warn.bind(logger)
+      logger.warn = (fields, message) => {
+        if (message === 'llm.call.payload.dropped') throw new Error('logger down')
+        original(fields, message)
+      }
+      const result = await client.generate(request(), { auth: AUTH })
+      expect(result.text).toBe('the answer')
+      expect(sink.records).toHaveLength(1)
+    })
   })
 })
 

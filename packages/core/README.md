@@ -415,13 +415,13 @@ them.
 
 Every call attempt is persisted via `UsageSink.record(r: LlmCallRecord)`. The sink must be
 idempotent on `r.attemptId`. Key traceability fields: `callId` (stable across retries),
-`attemptId`, `attemptNumber` (1-based), `latencyMs`, token counts, `costMicroUsd`, `errorKind`,
+`attemptId`, `attemptNumber` (1-based; a refusal row before any attempt is `0`), `latencyMs`, token counts, `costMicroUsd`, `errorKind`,
 `queueDelayMs`, and `metadata` (host-supplied, stored verbatim). `latencyMs` measures provider
 dispatch only; `queueDelayMs` measures pre-send wait inside `RateLimiter.acquire`.
 
 Record version 2 (`recordSchemaVersion: 2`, ADR-039) persists the cost facts the engine computes:
 `costConfidence` (`'exact'` or `'estimated'`), `costDetails` (`{ input, cached, output, tools }` in
-micro-USD, only when priced) and `costUnpricedReason` (only when `costMicroUsd` is `null`). `reasoningText`
+micro-USD, only when priced) and `costUnpricedReason` (with `costMicroUsd` `null` for an unpriced model, tier or counter, or with `costMicroUsd` absent as `no_usage_reported`, a dispatched attempt that failed without usage and may have been billed). `reasoningText`
 and `errorMessage` are capped at 16 KiB (UTF-8) with a `…[truncated]` marker and a warning; the live result
 and error keep the full text. `Cost.providerReported` carries the total a provider itself reports billing
 (xAI) and the engine warns when it drifts from the priced total.
@@ -500,7 +500,7 @@ tool-call arguments and tool-result values the value of an object key named like
 `api_key`, `authorization`, `credential` or `private_key` (any case, as a substring, so `max_tokens` is replaced
 too) is replaced with `[REDACTED]`. A payload that cannot be built (a throwing `redact`, a payload that cannot
 get under the cap, a wait that ended first) is dropped with an `llm.call.payload.dropped` warning carrying the
-stage, the error class and a fixed sentence, never the error's text, and never fails the call.
+stage, a fixed category (`redactor_threw`, `include_threw`, ...), the type of the thrown value (`error`, `non_error`, `unreadable`) and a fixed sentence, never the error's `name`, `message` or `stack`, and never fails the call.
 
 `payloads` needs a `sink`, and the sink must declare `acceptsPayloads: true` (`drizzleUsageSink` and
 `RecordingSink` do). Without it `createClient` logs one `llm.config.payloads.sink_ignores_payloads` warning and

@@ -1597,7 +1597,10 @@ async function recordToSink(
     const write = (async () => {
       let payload: LlmCallPayload | undefined
       if (buildPayloadFor !== undefined) {
-        const built = buildPayloadFor({ cancelled: () => cancelled })
+        // The job never rejects by contract; if it ever did, the row is still written.
+        const built = Promise.resolve()
+          .then(() => buildPayloadFor({ cancelled: () => cancelled }))
+          .catch(() => undefined)
         const first = await Promise.race([built, abandoned])
         if (first === 'timeout' || first === 'interrupted') {
           cancelled = true
@@ -2194,12 +2197,26 @@ export function createClient(config: ClientConfig): Client {
       ctx: EngineCtx,
     ): ((response: LlmCallPayload['response']) => PayloadJob) | undefined {
       if (payloads === undefined || !capturePayloads || !storePayload) return undefined
+      // Reporting a dropped payload cannot throw: the diagnostics are a fixed category and a
+      // thrown-value type (never a property of the host's error), and the logger call is
+      // guarded as well, so a failed payload job always proceeds to the ledger write.
       const dropped = (error: unknown): void => {
-        const { stage, errorName, reason } = describePayloadError(error)
-        ctx.logger.warn(
-          { callId, attemptId, stage, errorName, error: reason },
-          'llm.call.payload.dropped',
-        )
+        try {
+          const { stage, category, thrownType, reason } = describePayloadError(error)
+          ctx.logger.warn(
+            {
+              callId,
+              attemptId,
+              stage,
+              ...(category !== undefined ? { category } : {}),
+              ...(thrownType !== undefined ? { thrownType } : {}),
+              error: reason,
+            },
+            'llm.call.payload.dropped',
+          )
+        } catch {
+          // Nothing left to report to.
+        }
       }
       let snapshot
       try {
@@ -2223,7 +2240,10 @@ export function createClient(config: ClientConfig): Client {
         dropped(
           planErr instanceof PayloadDropped
             ? planErr
-            : new PayloadDropped('include', 'the include function threw', planErr),
+            : new PayloadDropped('include', 'the include function threw', {
+                category: 'include_threw',
+                value: planErr,
+              }),
         )
         return undefined
       }

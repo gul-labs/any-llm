@@ -947,7 +947,7 @@ The library ships three observability primitives:
    `debug` breadcrumb (`llm.hook.failed`, Amendment A).
 
 3. **Per-attempt `LlmCallRecord`** with `callId` (stable across retries), `attemptId`
-   (minted per attempt; it only absorbs an at-least-once sink re-delivering the same record, ADR-031), `attemptNumber` (1-based ordinal), `latencyMs`, token counts, `costMicroUsd`,
+   (minted per attempt; it only absorbs an at-least-once sink re-delivering the same record, ADR-031), `attemptNumber` (1-based ordinal; `0` on a refusal row written before any attempt ran, ADR-025), `latencyMs`, token counts, `costMicroUsd`,
    `errorKind`, and verbatim `metadata`. Records are written via `UsageSink` (fail-open). Secret
    redaction (`redactSecrets`) is applied before persistence to `errorMessage` and
    `generationConfig.providerOptions` (the Google adapter admits only `httpOptions.timeout`, so no
@@ -3149,8 +3149,11 @@ decision 3 lists every text-bearing place.
    (Postgres cannot store them, as in ADR-039, and a host redactor can add them). A payload that still does not
    fit is dropped. A throwing or non-payload-returning `redact`, a throwing `include`, a payload that cannot be
    capped, a payload not built before the sink wait ends and a request that cannot be copied drop the payload
-   and log `llm.call.payload.dropped` at `warn` with the `stage`, the error class name and a fixed sentence.
-   Raw error text is never logged: a redactor's error can contain the payload. The call is never failed.
+   and log `llm.call.payload.dropped` at `warn` with the `stage`, a fixed `category` (`include_threw`, `redactor_threw`, `snapshot_threw`, `build_threw`), the thrown
+   value's type (`error`, `non_error` or `unreadable`, from an `instanceof` check that cannot throw) and a fixed
+   sentence. Nothing the host supplied is logged or even read: an error's `name`, `message` and `stack` can hold the
+   payload (a redactor controls them), and a getter on them can throw, so reporting a dropped payload cannot throw
+   and a failed payload job always proceeds to the ledger write. The call is never failed.
 5. **Persistence, and what bounds the work.** `UsageSink.record(record, { payload?, logger? })`. The context is
    passed only when there is a payload, and `logger` is the client's, for a sink that recovers from a payload
    problem. The request is snapshotted at dispatch (containers copied, tool arguments and results deep-copied,
@@ -3248,8 +3251,9 @@ dropped both cache lanes and thinking.
 
 1. **Record version 2.** `LlmCallRecord.recordSchemaVersion` is `2`. New optional fields:
    `costConfidence` (`'exact' | 'estimated'`, present whenever a `Cost` was computed), `costDetails`
-   (`{ input, cached, output, tools }`, present only when priced) and `costUnpricedReason` (present only when
-   `costMicroUsd` is `null`). Refusal rows, which have no cost, carry none. `@gullabs/drizzle` adds
+   (`{ input, cached, output, tools }`, present only when priced) and `costUnpricedReason` (present with
+   `costMicroUsd` `null` for an unpriced model, tier or counter, or with `costMicroUsd` absent as `no_usage_reported` for a
+   dispatched attempt that failed without usage; see ledger.md). Refusal rows, which have no cost, carry none. `@gullabs/drizzle` adds
    `cost_confidence` (text), `cost_details` (jsonb) and `cost_unpriced_reason` (text). Rows written before
    version 2 keep NULL: their confidence was never stored and is not backfilled.
 2. **Schema hygiene.** Indexes `llm_calls_created_at_idx (created_at)` and

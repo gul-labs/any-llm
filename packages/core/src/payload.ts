@@ -190,39 +190,75 @@ const MAX_URI_CHARS = 2048
 /** Where a payload was dropped; the engine logs it. */
 type PayloadStage = 'include' | 'snapshot' | 'redact' | 'cap' | 'timeout' | 'build'
 
+/** The fixed diagnostic category of a host function or build step that threw. */
+type PayloadFailureCategory =
+  'include_threw' | 'snapshot_threw' | 'redactor_threw' | 'build_threw'
+
+/** The kind of value that was thrown, from a check that cannot throw. */
+type ThrownType = 'error' | 'non_error' | 'unreadable'
+
 /**
- * A payload that could not be built. `message` is a fixed sentence that never
- * contains the payload or the text of a host function's error, so it is safe to
- * log; `causeName` is the class name of the underlying error.
+ * Classifies a thrown value without reading any property of it. `instanceof` reads only the
+ * prototype chain, and a hostile object (a Proxy whose traps throw) is still `unreadable`
+ * rather than an exception.
+ */
+function thrownType(thrown: unknown): ThrownType {
+  try {
+    return thrown instanceof Error ? 'error' : 'non_error'
+  } catch {
+    return 'unreadable'
+  }
+}
+
+/**
+ * A payload that could not be built. `message` is a fixed sentence and `category` and
+ * `thrownType` are members of closed sets: none of them contains the payload or any text
+ * the host supplied (an error's `name`, `message` or `stack` is host text, can hold the
+ * payload and is never read), so all of them are safe to log.
  */
 export class PayloadDropped extends Error {
   override readonly name = 'PayloadDropped'
   readonly stage: PayloadStage
-  readonly causeName: string | undefined
-  constructor(stage: PayloadStage, message: string, cause?: unknown) {
+  readonly category: PayloadFailureCategory | undefined
+  readonly thrownType: ThrownType | undefined
+  constructor(
+    stage: PayloadStage,
+    message: string,
+    thrown?: { readonly category: PayloadFailureCategory; readonly value: unknown },
+  ) {
     super(message)
     this.stage = stage
-    this.causeName =
-      cause instanceof Error ? cause.name : cause === undefined ? undefined : typeof cause
+    this.category = thrown?.category
+    this.thrownType = thrown === undefined ? undefined : thrownType(thrown.value)
   }
 }
 
-/** The stage, error name and fixed message to log for any error from payload building. */
+/**
+ * The fixed diagnostic fields to log for any error from payload building. Cannot throw and
+ * never reads the supplied error beyond an `instanceof` check.
+ */
 export function describePayloadError(error: unknown): {
   stage: PayloadStage
-  errorName: string
+  category: PayloadFailureCategory | undefined
+  thrownType: ThrownType | undefined
   reason: string
 } {
-  if (error instanceof PayloadDropped) {
-    return {
-      stage: error.stage,
-      errorName: error.causeName ?? error.name,
-      reason: error.message,
+  try {
+    if (error instanceof PayloadDropped) {
+      return {
+        stage: error.stage,
+        category: error.category,
+        thrownType: error.thrownType,
+        reason: error.message,
+      }
     }
+  } catch {
+    // A hostile prototype chain: report it as the generic build failure below.
   }
   return {
     stage: 'build',
-    errorName: error instanceof Error ? error.name : typeof error,
+    category: 'build_threw',
+    thrownType: thrownType(error),
     reason: 'the payload could not be built',
   }
 }
@@ -368,7 +404,10 @@ export function snapshotPayloadSource(source: PayloadSource): PayloadSnapshot {
         : {}),
     }
   } catch (error) {
-    throw new PayloadDropped('snapshot', 'the request could not be copied', error)
+    throw new PayloadDropped('snapshot', 'the request could not be copied', {
+      category: 'snapshot_threw',
+      value: error,
+    })
   }
 }
 
@@ -799,7 +838,10 @@ export async function buildPayload(
     try {
       redacted = config.redact(payload)
     } catch (error) {
-      throw new PayloadDropped('redact', 'the redact function threw', error)
+      throw new PayloadDropped('redact', 'the redact function threw', {
+        category: 'redactor_threw',
+        value: error,
+      })
     }
     if (isThenable(redacted)) {
       void Promise.resolve(redacted).catch(() => {})

@@ -450,7 +450,7 @@ export interface LlmCallRecord {
   recordSchemaVersion: 2 // 2 added the three cost fields (ADR-039)
   callId: string
   attemptId: string // always minted by the engine, one per attempt (ADR-031)
-  attemptNumber: number // 1-based ordinal within the logical call (1 = first attempt, 2 = first retry, …)
+  attemptNumber: number // 1-based ordinal within the logical call (1 = first attempt, 2 = first retry, …); 0 only on a refusal row written before any attempt ran
   callSiteId?: string
   externalId?: string // caller-owned correlation id; give every host retry of one operation the same value
   provider: string
@@ -479,7 +479,7 @@ export interface LlmCallRecord {
   pricingVersion?: string
   costConfidence?: 'exact' | 'estimated' // present whenever a Cost was computed (ADR-039)
   costDetails?: { input: number; cached: number; output: number; tools: number } // only when priced
-  costUnpricedReason?: string // only when costMicroUsd is null
+  costUnpricedReason?: string // costMicroUsd null (an unpriced model, tier or counter), or costMicroUsd absent: `no_usage_reported`, a dispatched attempt that failed without usage
   // forward-compat lanes (jsonb)
   tokenDetails: JsonValue
   rawUsage: JsonValue
