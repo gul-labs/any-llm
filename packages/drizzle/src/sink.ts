@@ -344,31 +344,41 @@ function quoteIdent(name: string): string {
 }
 
 /**
- * Columns of the `llm_calls` table that would make the sink's INSERT fail: NOT
- * NULL, no default (and not identity or generated), and either not a column of
- * this schema at all (the sink writes nothing to it) or a column the schema
- * allows to be NULL (the sink writes NULL on some rows, such as `raw_usage` on an
- * error row).
+ * Columns of the `llm_calls` table that would make the sink's INSERT fail:
+ *
+ * - a column of this schema that the schema allows to be NULL and the table
+ *   makes NOT NULL, whatever its database default: the sink writes it as NULL on
+ *   some rows (`raw_usage` on an error or refusal row), and an explicit NULL
+ *   does not take the default; and
+ * - a column that is not in this schema at all (the sink writes nothing to it)
+ *   and is NOT NULL with no default (and not identity or generated).
+ *
+ * A column the schema marks NOT NULL is always written with a value, so it can
+ * be NOT NULL in the table with any default.
  */
 async function insertBlockers(db: PostgresDb): Promise<string[]> {
   const known = new Map(
     Object.values(getTableColumns(llmCalls)).map((c) => [c.name, c.notNull] as const),
   )
   const result = await db.execute(sql`
-    SELECT a.attname::text AS name
+    SELECT a.attname::text AS name,
+           (a.atthasdef OR a.attidentity <> '' OR a.attgenerated <> '') AS filled
       FROM pg_catalog.pg_attribute a
      WHERE a.attrelid = to_regclass('llm_calls')
        AND a.attnum > 0
        AND NOT a.attisdropped
        AND a.attnotnull
-       AND NOT a.atthasdef
-       AND a.attidentity = ''
-       AND a.attgenerated = ''
      ORDER BY a.attnum`)
   const blockers: string[] = []
   for (const row of resultRows(result)) {
     const name = String(row['name'])
-    if (known.get(name) !== true) blockers.push(name)
+    const schemaNotNull = known.get(name)
+    if (schemaNotNull === undefined) {
+      // Not written by the sink: only a default (or identity) lets an INSERT succeed.
+      if (row['filled'] !== true) blockers.push(name)
+    } else if (!schemaNotNull) {
+      blockers.push(name)
+    }
   }
   return blockers
 }
@@ -380,9 +390,11 @@ async function insertBlockers(db: PostgresDb): Promise<string[]> {
  * 1. it selects every column the Drizzle schema names with `LIMIT 0` (a missing
  *    column or table fails); and
  * 2. it reads the catalog for columns that would make the INSERT fail: a NOT NULL
- *    column without a default that the sink does not write, or that the schema
- *    allows to be NULL (a table created by `@gullabs/drizzle` 0.1.1 to 0.4.0 has
- *    `raw_usage NOT NULL`, which rejects every error row). The error names the
+ *    column without a default that the sink does not write, or a NOT NULL column,
+ *    default or not, that the schema allows to be NULL and the sink writes as NULL
+ *    on some rows (a table created by `@gullabs/drizzle` 0.1.1 to 0.4.0 has
+ *    `raw_usage NOT NULL`, which rejects every error row; a default does not
+ *    help, since the sink writes NULL explicitly). The error names the
  *    column and the one-line fix; there is no upgrade script for such old shapes.
  *
  * Why it exists: the sink writes every column on every row, so a table that
@@ -425,13 +437,13 @@ export async function assertLlmCallsSchema(db: PostgresDb): Promise<void> {
   if (blockers.length > 0) {
     const fixes = blockers
       .map(
-        (name) =>
-          `ALTER TABLE llm_calls ALTER COLUMN ${quoteIdent(name)} DROP NOT NULL (or SET DEFAULT)`,
+        (name) => `ALTER TABLE llm_calls ALTER COLUMN ${quoteIdent(name)} DROP NOT NULL`,
       )
       .join('; ')
     throw new Error(
-      `llm_calls has NOT NULL columns without a default that @gullabs/drizzle does not write, ` +
-        `or writes as NULL: ${blockers.map(quoteIdent).join(', ')}. Every insert (or every ` +
+      `llm_calls has NOT NULL columns that @gullabs/drizzle does not write and that have no ` +
+        `default, or that it writes as NULL on some rows (a default does not apply to an ` +
+        `explicit NULL): ${blockers.map(quoteIdent).join(', ')}. Every insert (or every ` +
         `error row) would fail. Fix: ${fixes}.`,
     )
   }

@@ -219,10 +219,11 @@ Two ways to find out before rows are lost:
 - Call `assertLlmCallsSchema(db)` from `@gullabs/drizzle`. It selects every column the schema names with
   `LIMIT 0`, writes nothing, and rejects with an error that points at `sql/upgrades/`. It also reads the
   catalog for a column that would make the insert fail: a `NOT NULL` column without a default that the sink
-  does not write, or one the schema allows to be NULL. Tables made by `@gullabs/drizzle` 0.1.1 to 0.4.0 have
+  does not write, or a `NOT NULL` column (default or not) that the schema allows to be NULL, because the sink writes NULL
+  explicitly on some rows and an explicit NULL does not take a default. Tables made by `@gullabs/drizzle` 0.1.1 to 0.4.0 have
   `raw_usage NOT NULL`, which rejects every error, timeout and refusal row; no upgrade script covers those
   shapes. The error names the column and the fix, one line each, for example
-  `ALTER TABLE llm_calls ALTER COLUMN "raw_usage" DROP NOT NULL` (or `SET DEFAULT` for a column you added).
+  `ALTER TABLE llm_calls ALTER COLUMN "raw_usage" DROP NOT NULL`.
   It needs no client, so run it from a deploy or CI step, a readiness endpoint, or at boot.
 - The failure log carries the cause. A dropped ledger row logs `llm_calls insert failed for attempt <id>:` and
   the database's own message and SQLSTATE (`42703` for a missing column, `42P01` for a missing table,

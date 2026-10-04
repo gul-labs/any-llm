@@ -984,6 +984,33 @@ describe('a table that was not migrated is detectable, and the engine logs every
     expect((await pg.query('SELECT 1 FROM llm_calls')).rows).toHaveLength(1)
   })
 
+  it("a table with raw_usage NOT NULL DEFAULT '{}'::jsonb is named by assertLlmCallsSchema: an error row writes NULL, which the default does not replace", async () => {
+    const pg = new PGlite()
+    await pg.exec(
+      PUBLISHED_0_7_2_SQL.replace(
+        'raw_usage             JSONB,',
+        "raw_usage             JSONB        NOT NULL DEFAULT '{}'::jsonb,",
+      ),
+    )
+    for (const file of [
+      'upgrades/0001-add-error-reason.sql',
+      UPGRADE_0002,
+      VALIDATE_0003,
+      'upgrades/0004-llm-call-payloads.sql',
+    ]) {
+      expect(await runStatementwise(pg, sqlFile(file)), file).toEqual([])
+    }
+    const db = drizzle({ client: pg })
+    const error = (await assertLlmCallsSchema(db).catch((e: unknown) => e)) as Error
+    expect(error).toBeInstanceOf(Error)
+    expect(error.message).toContain('"raw_usage"')
+    await expect(
+      drizzleUsageSink({ db }).record(makeRecord({ rawUsage: null })),
+    ).rejects.toThrow(/raw_usage/)
+    await pg.exec('ALTER TABLE llm_calls ALTER COLUMN "raw_usage" DROP NOT NULL')
+    await expect(assertLlmCallsSchema(db)).resolves.toBeUndefined()
+  })
+
   it('through the engine, every row (success, attempt failure, refusal) is dropped with an error-level llm.call.sink.failed and the call is unaffected', async () => {
     const pg = new PGlite()
     await pg.exec(PUBLISHED_0_7_2_SQL)

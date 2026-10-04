@@ -546,6 +546,31 @@ for (const driver of DRIVERS) {
         ).rejects.toThrow(/raw_usage/)
       })
 
+      it("names raw_usage NOT NULL DEFAULT '{}'::jsonb: the sink writes it as NULL on an error row, and an explicit NULL does not take the default", async () => {
+        await h.exec(
+          `ALTER TABLE llm_calls ALTER COLUMN raw_usage SET DEFAULT '{}'::jsonb`,
+        )
+        await h.exec(`ALTER TABLE llm_calls ALTER COLUMN raw_usage SET NOT NULL`)
+        const error = await assertLlmCallsSchema(h.db).catch((e: unknown) => e as Error)
+        expect(error).toBeInstanceOf(Error)
+        expect((error as Error).message).toContain('"raw_usage"')
+        expect((error as Error).message).toContain(
+          'ALTER TABLE llm_calls ALTER COLUMN "raw_usage" DROP NOT NULL',
+        )
+        await expect(
+          drizzleUsageSink({ db: h.db }).record(makeRecord({ rawUsage: null })),
+        ).rejects.toThrow(/raw_usage/)
+        // dropping only the default does not help; dropping NOT NULL does
+        await h.exec(`ALTER TABLE llm_calls ALTER COLUMN raw_usage DROP NOT NULL`)
+        await expect(assertLlmCallsSchema(h.db)).resolves.toBeUndefined()
+        await drizzleUsageSink({ db: h.db }).record(makeRecord({ rawUsage: null }))
+      })
+
+      it('a column the sink writes that the schema marks NOT NULL may keep a database default', async () => {
+        await h.exec(`ALTER TABLE llm_calls ALTER COLUMN provider SET DEFAULT 'x'`)
+        await expect(assertLlmCallsSchema(h.db)).resolves.toBeUndefined()
+      })
+
       it('names an extra NOT NULL column without a default, and accepts one with a default', async () => {
         await h.exec(
           `ALTER TABLE llm_calls ADD COLUMN extra_col TEXT NOT NULL DEFAULT 'x'`,

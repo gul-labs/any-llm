@@ -4128,8 +4128,9 @@ fractions (`performance.now()`) wrote fractional milliseconds into INTEGER colum
 5. **Whole milliseconds.** `buildRecord` rounds `latencyMs` and `queueDelayMs`; `Clock` documents that it may
    return fractions. Token counts and micro-USD come from providers and the pricing rounding as integers.
 6. **`assertLlmCallsSchema(db)` reads nullability.** After the `LIMIT 0` select it reads `pg_attribute` for a NOT
-   NULL column without a default (and not identity or generated) that the sink does not write, or that the schema
-   allows to be NULL. A table made by 0.1.1 to 0.4.0 has `raw_usage NOT NULL`, which rejects every error row; the
+   NULL column without a default (and not identity or generated) that the sink does not write, or a NOT NULL column,
+   default or not, that the schema allows to be NULL (the sink writes NULL explicitly, which a default does not
+   replace). A table made by 0.1.1 to 0.4.0 has `raw_usage NOT NULL`, which rejects every error row; the
    check names the column and the one-line fix. There is no upgrade script and no compatibility path for those
    shapes. `assertLlmCallsSchema` and `assertLlmCallPayloadsSchema` take a `PostgresDb`; the `SelectableDb` type is
    deleted.
