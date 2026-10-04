@@ -245,6 +245,28 @@ function noSchemaWithSearchEvidence(model: string): string {
   return `Structured output with googleSearch is not supported for model "${model}": no live capture shows Search running when a response schema is attached to this model (the captures cover Gemini 3.x only), so there is no measured behaviour to opt into and providerOptions.google.allowSchemaWithSearch does not apply. Make two calls instead: grounded research without a schema, then structured synthesis (the two-call recipe in docs/grounded-structured.md).`
 }
 
+/**
+ * The schema + Search rule, shared by Search sent as a tool and Search held by a cache
+ * handle: on a model whose capture showed Search missing under a response schema
+ * (`structuredOutputWithTools: false`) the call needs `allowSchemaWithSearch`; on a model
+ * never measured (absent) there is nothing to opt into.
+ */
+function assertSchemaWithSearchAllowed(
+  model: string,
+  structuredOutputWithTools: boolean | undefined,
+  allowSchemaWithSearch: boolean | undefined,
+  declaredBy: string,
+): void {
+  if (structuredOutputWithTools === undefined) {
+    throw badGoogleProviderOptions(noSchemaWithSearchEvidence(model))
+  }
+  if (allowSchemaWithSearch !== true) {
+    throw badGoogleProviderOptions(
+      `Structured output with googleSearch is not enabled for model "${model}" (Search is declared by ${declaredBy}): the provider accepts the request but Search does not reliably run when a response schema is attached. Make two calls instead: grounded research without a schema, then structured synthesis (the two-call recipe in docs/grounded-structured.md). To send both in one call anyway, set providerOptions.google.allowSchemaWithSearch: true; the call then fails unless the response proves Search ran (requireGrounding), and that failure is not retryable because the same call keeps missing.`,
+    )
+  }
+}
+
 function mapGoogleProviderOptions({
   googleOpts,
   model,
@@ -415,20 +437,40 @@ function mapGoogleProviderOptions({
     }
 
     if (structuredOutputRequested && structuredOutputWithTools !== true) {
-      if (structuredOutputWithTools === undefined) {
-        throw badGoogleProviderOptions(noSchemaWithSearchEvidence(model))
-      }
-      if (allowSchemaWithSearch !== true) {
-        throw badGoogleProviderOptions(
-          `Structured output with googleSearch is not enabled for model "${model}": the provider accepts the request but Search does not reliably run when a response schema is attached. Make two calls instead: grounded research without a schema, then structured synthesis (the two-call recipe in docs/grounded-structured.md). To send both in one call anyway, set providerOptions.google.allowSchemaWithSearch: true; the call then fails unless the response proves Search ran (requireGrounding), and that failure is not retryable because the same call keeps missing.`,
-        )
-      }
+      assertSchemaWithSearchAllowed(
+        model,
+        structuredOutputWithTools,
+        allowSchemaWithSearch,
+        'providerOptions.google.tools',
+      )
     }
 
     mapped.tools = tools
   }
 
-  const searchSent = mapped.tools?.some((tool) => 'googleSearch' in tool) === true
+  // Search held by a cache handle (`{ cacheName, toolKinds: ['googleSearch'] }`) is Search
+  // like any other: the same schema rule applies. A bare cache name says nothing about what
+  // the cache holds, so it is not judged here; the response is (a schema call that did not
+  // opt in and whose response reports search queries returns a warning, see the adapter).
+  const searchInCache = mapped.cachedToolKinds?.includes('googleSearch') === true
+  if (searchInCache) {
+    if (descriptorGrounding !== true) {
+      throw badGoogleProviderOptions(
+        `providerOptions.google.cachedContent.toolKinds lists googleSearch, which is not supported for model "${model}": the model does not support grounding.`,
+      )
+    }
+    if (structuredOutputRequested && structuredOutputWithTools !== true) {
+      assertSchemaWithSearchAllowed(
+        model,
+        structuredOutputWithTools,
+        allowSchemaWithSearch,
+        'the cache handle (cachedContent.toolKinds)',
+      )
+    }
+  }
+
+  const searchSent =
+    searchInCache || mapped.tools?.some((tool) => 'googleSearch' in tool) === true
   if (allowSchemaWithSearch === true) {
     if (descriptorGrounding !== true) {
       throw badGoogleProviderOptions(
@@ -437,7 +479,7 @@ function mapGoogleProviderOptions({
     }
     if (!searchSent || !structuredOutputRequested) {
       throw badGoogleProviderOptions(
-        `providerOptions.google.allowSchemaWithSearch requires both providerOptions.google.tools: [{ googleSearch: {} }] and output.jsonSchema for model "${model}".`,
+        `providerOptions.google.allowSchemaWithSearch requires both Search (providerOptions.google.tools: [{ googleSearch: {} }], or a cachedContent handle whose toolKinds lists googleSearch) and output.jsonSchema for model "${model}".`,
       )
     }
     if (structuredOutputWithTools === undefined) {
@@ -447,7 +489,7 @@ function mapGoogleProviderOptions({
 
   if (requireGrounding === true && !searchSent) {
     throw badGoogleProviderOptions(
-      `providerOptions.google.requireGrounding requires providerOptions.google.tools: [{ googleSearch: {} }] for model "${model}".`,
+      `providerOptions.google.requireGrounding requires Search: providerOptions.google.tools: [{ googleSearch: {} }], or a cachedContent handle whose toolKinds lists googleSearch, for model "${model}".`,
     )
   }
   const effectiveRequireGrounding = requireGrounding ?? allowSchemaWithSearch === true
@@ -1240,6 +1282,13 @@ export function geminiAdapterWithClientFactory(
         googleSearchSent ||
         googleProviderConfig.cachedToolKinds?.includes('googleSearch') === true
       const requireGrounding = googleProviderConfig.requireGrounding === true
+      // A schema call on a model where Search misses under a response schema, with no
+      // Search declared (a bare cache name may hold the tool): not blocked up front, so the
+      // response is the evidence. See `groundingWarnings`.
+      const schemaSearchUndeclared =
+        structuredOutputRequested &&
+        !searchDeclared &&
+        descriptor.capabilities?.structuredOutputWithTools !== true
       // Audio in the prompt is billed at its own rate on some models, from the
       // per-modality counts the response reports; `audio_input_requested` lets the
       // pricing source tell a response that omits them from a request without audio.
@@ -1281,7 +1330,17 @@ export function geminiAdapterWithClientFactory(
         if (!searchDeclared) {
           if (groundingMetadata === undefined) return []
           const queries = countWebSearchQueries(groundingMetadata)
+          const undeclaredSearchWarnings: Warning[] =
+            schemaSearchUndeclared && queries !== undefined && queries > 0
+              ? [
+                  {
+                    type: 'other',
+                    message: `google: this call attached a response schema and the response reports search queries, so Search ran from the cache named in cachedContent. Schema plus Search is not admitted by default for model "${model}" (Search does not reliably run when a schema is attached) and no googleSearch was declared, so nothing checked that it would run or opted in; the result is returned, the Search fee is priced from the observed queries (cost.confidence is "estimated"), and this pattern is unreliable. Declare Search with cachedContent: { cacheName, toolKinds: ['googleSearch'] } together with allowSchemaWithSearch: true (the call then fails unless the response proves Search ran), or use the two-call recipe in docs/grounded-structured.md.`,
+                  },
+                ]
+              : []
           return [
+            ...undeclaredSearchWarnings,
             {
               type: 'other',
               message:

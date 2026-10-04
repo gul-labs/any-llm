@@ -818,6 +818,101 @@ describe('GoogleFileStore', () => {
     expect(clock.pendingTimers).toBe(0)
   })
 
+  describe('a stalled get() during polling', () => {
+    const processing = {
+      name: 'files/abc123',
+      uri: 'https://example.com/files/abc123',
+      mimeType: 'image/png',
+      state: 'PROCESSING',
+    }
+    /** A get() that never settles by itself; `rejectLate` settles it after the race is lost. */
+    function stalledGet() {
+      let rejectLate: (e: unknown) => void = () => {}
+      const get = vi.fn().mockImplementation(
+        () =>
+          new Promise((_, reject) => {
+            rejectLate = reject
+          }),
+      )
+      return { get, rejectLate: (e: unknown) => rejectLate(e) }
+    }
+
+    it('an abort releases upload() while get() is still pending, and a late rejection is not unhandled', async () => {
+      const unhandled: unknown[] = []
+      const onUnhandled = (reason: unknown) => unhandled.push(reason)
+      process.on('unhandledRejection', onUnhandled)
+      try {
+        const stalled = stalledGet()
+        const client = makeClient({
+          upload: vi.fn().mockResolvedValue(processing),
+          get: stalled.get,
+        })
+        const controller = new AbortController()
+        const store = new GoogleFileStore({
+          auth: fakeAuth,
+          client,
+          sleep: fastSleep,
+          poll: { intervalMs: 0, timeoutMs: 300_000 },
+        })
+        const settled = store
+          .upload(new Uint8Array([1]), 'image/png', { signal: controller.signal })
+          .catch((e: unknown) => e)
+        await vi.waitFor(() => expect(stalled.get).toHaveBeenCalledTimes(1))
+        controller.abort()
+        const err = await settled
+        expect(err).toBeInstanceOf(LlmError)
+        expect(err).toMatchObject({ kind: 'aborted', retryable: false })
+        stalled.rejectLate(new Error('socket closed after the abort'))
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        expect(unhandled).toEqual([])
+      } finally {
+        process.off('unhandledRejection', onUnhandled)
+      }
+    })
+
+    it('the polling deadline releases upload() while get() is still pending, as a non-retryable server error', async () => {
+      const unhandled: unknown[] = []
+      const onUnhandled = (reason: unknown) => unhandled.push(reason)
+      process.on('unhandledRejection', onUnhandled)
+      try {
+        const clock = new FakeClock()
+        const stalled = stalledGet()
+        const client = makeClient({
+          upload: vi.fn().mockResolvedValue(processing),
+          get: stalled.get,
+        })
+        const store = new GoogleFileStore({
+          auth: fakeAuth,
+          client,
+          scheduler: clock,
+          now: () => clock.now(),
+          poll: { intervalMs: 1_000, timeoutMs: 10_000 },
+        })
+        const settled = store
+          .upload(new Uint8Array([1]), 'image/png')
+          .catch((e: unknown) => e)
+        await clock.advanceAsync(1_000)
+        expect(stalled.get).toHaveBeenCalledTimes(1)
+        // 9 000 ms of the deadline remain; get() is still pending.
+        await clock.advanceAsync(9_000)
+        const err = await settled
+        expect(err).toBeInstanceOf(LlmError)
+        expect(err).toMatchObject({
+          kind: 'server',
+          retryable: false,
+          provider: 'google',
+        })
+        expect((err as LlmError).message).toContain('Timed out waiting')
+        expect(clock.pendingTimers).toBe(0)
+        stalled.rejectLate(new Error('late'))
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        expect(unhandled).toEqual([])
+      } finally {
+        process.off('unhandledRejection', onUnhandled)
+      }
+    })
+  })
+
   // NEW: opts.displayName is forwarded into the upload config
   it('forwards opts.displayName into the upload call config', async () => {
     const client = makeClient()

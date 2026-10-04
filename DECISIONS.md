@@ -4042,6 +4042,18 @@ had, and a failed attempt's ledger row lost the tier it asked for.
    `web_search_calls` is the observed query count, the fee is priced from it and the cost is `estimated` with a
    warning. A cost is never `exact` when grounding metadata exists and the request did not declare search; when
    the metadata names no query the tools lane is empty and the cost is still `estimated`.
+   **Schema plus Search through a cache.** Search declared by a handle (`toolKinds` lists `googleSearch`) is
+   judged by the same rule as an inline `googleSearch` (ADR-035): on a descriptor with
+   `structuredOutputWithTools: false` a call with `output.jsonSchema` is `bad_request` without
+   `allowSchemaWithSearch`, and with it `requireGrounding` is on, so a response without proof that Search ran
+   is `grounding_missing` (not retryable). A descriptor without the flag has nothing to opt into and rejects
+   the pair. `allowSchemaWithSearch` and `requireGrounding` accept a search handle in place of `tools` (a cache
+   and `tools` cannot be sent together). A bare cache name is not blocked: its contents are unknown and a cache
+   of documents with a schema is a legitimate common call. The response is the evidence instead: a schema call
+   on such a model that declared no Search whose response reports search queries is returned (priced from the
+   observed queries, never `exact`) with a warning that says Search ran unchecked under a schema, which is
+   unreliable, and names the two ways to make it checked (a handle with `toolKinds` plus the opt-in, or the
+   two-call recipe).
 2. **A function call is complete only on a normal stop.** With a finish other than `STOP` (or none) the call is
    dropped from `toolCalls` and from the assistant message and a warning names it; `finishReason` is `length`,
    `content_filter` or `other`. A filter stop with no text and no complete call is the `content_filter`

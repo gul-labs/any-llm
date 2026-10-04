@@ -32,6 +32,13 @@ tool in the request: a handle that lists `googleSearch` in `toolKinds` counts as
 a bare cache name any `groundingMetadata` in the response is taken as evidence that Search ran
 (ADR-044).
 
+A handle that lists `googleSearch` is held to the same schema rule as an inline `googleSearch`: with
+`output.jsonSchema` on a Gemini 3.x model it needs `allowSchemaWithSearch: true` (which turns on
+`requireGrounding`), and Gemini 2.5 and Gemma reject the pair. A bare cache name is not blocked, because
+what the cache holds is unknown and a cache of documents with a schema is an ordinary call. If such a call's
+response reports search queries, it is returned, priced from the queries as `estimated`, with a warning that
+Search ran unchecked under a schema; declare the tool with a handle plus the opt-in, or use the two calls.
+
 ## Measured: schema plus Search on Gemini 3.x (live, 2026-10-03)
 
 Four distinct current-events prompts per cell, `responseJsonSchema`, `thinkingLevel: LOW`, Developer

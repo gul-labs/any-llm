@@ -29,7 +29,7 @@ pnpm add @gullabs/google @gullabs/core @google/genai
 
 ## File store delete modes
 
-`GoogleFileStore.upload` takes an `AbortSignal` (an abort releases the caller at once; bytes already sent may still be stored by Google), keeps Google's own `File.error` when a file ends `FAILED` (a transient status code, `DEADLINE_EXCEEDED`, `INTERNAL` or `UNAVAILABLE`, is a retryable `server` error; any other is `bad_request`), and its polling timeout is `kind: 'server'`, **not retryable** (the upload succeeded; a retry would upload again and orphan the file). Store errors (`GoogleFileStore`, `GoogleCacheStore`) are classified exactly like `generate()` errors, with `provider: 'google'`.
+`GoogleFileStore.upload` takes an `AbortSignal` (an abort releases the caller at once, also while a poll request is pending, and the polling deadline ends a stalled poll request too; bytes already sent may still be stored by Google), keeps Google's own `File.error` when a file ends `FAILED` (a transient status code, `DEADLINE_EXCEEDED`, `INTERNAL` or `UNAVAILABLE`, is a retryable `server` error; any other is `bad_request`), and its polling timeout is `kind: 'server'`, **not retryable** (the upload succeeded; a retry would upload again and orphan the file). Store errors (`GoogleFileStore`, `GoogleCacheStore`) are classified exactly like `generate()` errors, with `provider: 'google'`.
 
 `GoogleFileStore` takes a `scheduler` (the timer source of the poll wait; pass the client's `FakeClock` in tests, with `now: () => clock.now()` for the poll timeout), and the Gemini flex/standard client-side ceiling runs on the engine's `scheduler` too, so a `FakeClock` fires both. `sleep` still replaces the poll wait wholesale.
 
@@ -371,6 +371,9 @@ To send both in one call anyway, set `providerOptions.google.allowSchemaWithSear
 That also turns on `requireGrounding` (override with `requireGrounding: false`), because a
 schema'd call can skip Search without saying so. The opt-in exists only for the Gemini 3.x models,
 the only ones with a capture: on Gemini 2.5 and Gemma the pair is rejected with or without it.
+The rule covers Search held by a cache too: `cachedContent: { cacheName, toolKinds: ['googleSearch'] }`
+with a schema needs the same opt-in. A bare cache name is not blocked (its contents are unknown); if the
+response of such a schema call reports search queries it is returned with a warning, priced as `estimated`.
 
 ### Search facts, grounding price and `requireGrounding`
 

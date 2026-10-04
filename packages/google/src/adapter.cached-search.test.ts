@@ -275,3 +275,160 @@ describe('through the client: the model schema admits the handle shape', () => {
     expect(options).toBeDefined()
   })
 })
+
+describe('a schema call and Search held by a cache', () => {
+  const SCHEMA = {
+    type: 'object',
+    properties: { answer: { type: 'string' } },
+    required: ['answer'],
+    additionalProperties: false,
+  }
+  const HANDLE = { cacheName: CACHE, toolKinds: ['googleSearch'] }
+  const withOptions = (
+    google: Record<string, unknown>,
+    overrides: Partial<ResolvedRequest> = {},
+  ): ResolvedRequest => ({
+    ...request(undefined),
+    config: { providerOptions: { google } as never },
+    outputJsonSchema: SCHEMA,
+    ...overrides,
+  })
+  const structured = (groundingMetadata?: unknown) =>
+    makeFakeGemini(
+      fakeGeminiResponse({
+        structuredJson: '{"answer":"x"}',
+        promptTokenCount: 1000,
+        candidatesTokenCount: 100,
+        ...(groundingMetadata !== undefined ? { groundingMetadata } : {}),
+      }),
+    )
+  const runStructured = (
+    fake: ReturnType<typeof structured>,
+    req: ResolvedRequest,
+  ): Promise<unknown> =>
+    geminiAdapter({ client: fake })
+      .run(req, FAKE_CTX)
+      .catch((e: unknown) => e)
+
+  it('a handle that holds googleSearch needs allowSchemaWithSearch, exactly like an inline googleSearch', async () => {
+    const fake = structured()
+    const err = (await runStructured(
+      fake,
+      withOptions({ cachedContent: HANDLE }),
+    )) as LlmError
+    expect(err).toBeInstanceOf(LlmError)
+    expect(err.kind).toBe('bad_request')
+    expect(err.message).toContain('allowSchemaWithSearch')
+    expect(err.message).toContain('cache handle')
+    expect(fake.calls).toHaveLength(0)
+  })
+
+  it('with allowSchemaWithSearch the cached Search call dispatches and fails closed without grounding', async () => {
+    const fake = structured()
+    const err = (await runStructured(
+      fake,
+      withOptions({ cachedContent: HANDLE, allowSchemaWithSearch: true }),
+    )) as LlmError
+    expect(err).toBeInstanceOf(LlmError)
+    expect(err.reason).toBe('grounding_missing')
+    expect(err.retryable).toBe(false)
+    expect(fake.calls).toHaveLength(1)
+    const config = (fake.calls[0] as { config: Record<string, unknown> }).config
+    expect(config['cachedContent']).toBe(CACHE)
+    expect(config['tools']).toBeUndefined()
+  })
+
+  it('with allowSchemaWithSearch and a response that proves Search ran, the structured answer is returned', async () => {
+    const fake = structured(grounding(['q']))
+    const result = (await runStructured(
+      fake,
+      withOptions({ cachedContent: HANDLE, allowSchemaWithSearch: true }),
+    )) as { rawStructured: unknown; usage: { details: Record<string, number> } }
+    expect(result.rawStructured).toEqual({ answer: 'x' })
+    expect(result.usage.details['web_search_calls']).toBe(1)
+  })
+
+  it('a handle that holds googleSearch on a model never measured with a schema has nothing to opt into', async () => {
+    const fake = structured()
+    const model = 'gemini-2.5-flash'
+    const err = (await runStructured(
+      fake,
+      withOptions(
+        { cachedContent: HANDLE, allowSchemaWithSearch: true },
+        {
+          model,
+          modelDescriptor: defaultGeminiRegistry.resolve('google', model)!,
+        },
+      ),
+    )) as LlmError
+    expect(err.kind).toBe('bad_request')
+    expect(err.message).toContain('no live capture')
+    expect(fake.calls).toHaveLength(0)
+  })
+
+  it('a handle without a search tool with a schema is not blocked', async () => {
+    const fake = structured()
+    const result = (await runStructured(
+      fake,
+      withOptions({ cachedContent: { cacheName: CACHE, toolKinds: ['codeExecution'] } }),
+    )) as { rawStructured: unknown }
+    expect(result.rawStructured).toEqual({ answer: 'x' })
+  })
+
+  it('allowSchemaWithSearch and requireGrounding are valid with a search handle, and invalid with a bare name', async () => {
+    const okFake = structured(grounding(['q']))
+    await expect(
+      runStructured(
+        okFake,
+        withOptions(
+          { cachedContent: HANDLE, requireGrounding: true },
+          {
+            outputJsonSchema: undefined as never,
+          },
+        ),
+      ),
+    ).resolves.toBeDefined()
+    for (const google of [
+      { cachedContent: CACHE, allowSchemaWithSearch: true },
+      { cachedContent: CACHE, requireGrounding: true },
+    ]) {
+      const err = (await runStructured(structured(), withOptions(google))) as LlmError
+      expect(err.kind).toBe('bad_request')
+      expect(err.message).toContain(
+        'cachedContent handle whose toolKinds lists googleSearch',
+      )
+    }
+  })
+
+  it('a bare cache name with a schema is allowed: unknown tools do not block a cache of documents', async () => {
+    const fake = structured()
+    const result = (await runStructured(fake, withOptions({ cachedContent: CACHE }))) as {
+      rawStructured: unknown
+      warnings: Array<{ message: string }>
+    }
+    expect(result.rawStructured).toEqual({ answer: 'x' })
+    expect(result.warnings).toEqual([])
+  })
+
+  it('a bare cache name with a schema whose response reports search queries is returned with a loud warning and estimated pricing', async () => {
+    const fake = structured(grounding(['one', 'two']))
+    const result = (await runStructured(fake, withOptions({ cachedContent: CACHE }))) as {
+      rawStructured: unknown
+      warnings: Array<{ message: string }>
+      usage: Parameters<ReturnType<typeof geminiPricingSource>['price']>[1]
+    }
+    expect(result.rawStructured).toEqual({ answer: 'x' })
+    const text = result.warnings.map((w) => w.message).join('\n')
+    expect(text).toContain('attached a response schema')
+    expect(text).toContain('allowSchemaWithSearch')
+    expect(text).toContain('toolKinds')
+    const cost = geminiPricingSource().price(MODEL, result.usage, undefined)
+    expect(cost.details.tools).toBe(28_000)
+    expect(cost.confidence).toBe('estimated')
+  })
+
+  it('a bare cache name without a schema and with search queries gets only the undeclared-search note', async () => {
+    const { warnings } = await run(request(CACHE), grounding(['q']))
+    expect(warnings).not.toContain('attached a response schema')
+  })
+})

@@ -10,7 +10,7 @@
 import type { AuthMaterial, Logger, Scheduler } from '@gullabs/core'
 import { LlmError, assertMediaTypeAdmitted, redactSecrets } from '@gullabs/core'
 
-import { newGoogleGenAI } from './client.js'
+import { MAX_TIMER_MS, newGoogleGenAI } from './client.js'
 import { classifyGoogleError, isGoogleNotFoundError } from './errors.js'
 import { GEMINI_INPUT_MIME_TYPES } from './model-limits.js'
 import { PLATFORM_SCHEDULER } from './platform-scheduler.js'
@@ -114,6 +114,19 @@ const sleepOn =
       scheduler.setTimeout(resolve, ms)
     })
 
+/**
+ * `server`, not `timeout`: ADR-036 makes every `timeout` retryable, and this must not be.
+ * The upload already succeeded, so a retry would upload the bytes again and orphan the
+ * first file (upload is not idempotent, ADR-024). Poll the existing file by name instead.
+ */
+function pollTimeoutError(name: string): LlmError {
+  return new LlmError(`Timed out waiting for uploaded file "${name}" to become ACTIVE`, {
+    kind: 'server',
+    retryable: false,
+    provider: 'google',
+  })
+}
+
 async function buildFilesClient(auth: AuthMaterial): Promise<GeminiFilesClientLike> {
   const ai = await newGoogleGenAI(auth)
 
@@ -187,6 +200,7 @@ export class GoogleFileStore {
   private readonly intervalMs: number
   private readonly timeoutMs: number
   private readonly sleep: (ms: number) => Promise<void>
+  private readonly scheduler: Scheduler
   private readonly now: () => number
   /** Memoised client promise — built at most once per store instance. */
   private clientPromise: Promise<GeminiFilesClientLike> | undefined
@@ -212,7 +226,8 @@ export class GoogleFileStore {
       })
     this.intervalMs = opts.poll?.intervalMs ?? DEFAULT_INTERVAL_MS
     this.timeoutMs = opts.poll?.timeoutMs ?? DEFAULT_TIMEOUT_MS
-    this.sleep = opts.sleep ?? sleepOn(opts.scheduler ?? PLATFORM_SCHEDULER)
+    this.scheduler = opts.scheduler ?? PLATFORM_SCHEDULER
+    this.sleep = opts.sleep ?? sleepOn(this.scheduler)
     this.now = opts.now ?? (() => Date.now())
   }
 
@@ -369,14 +384,7 @@ export class GoogleFileStore {
   ): Promise<GoogleFileHandle> {
     for (;;) {
       if (this.now() >= deadline) {
-        // `server`, not `timeout`: ADR-036 makes every `timeout` retryable, and
-        // this must not be. The upload already succeeded, so a retry would
-        // upload the bytes again and orphan the first file (upload is not
-        // idempotent, ADR-024). Poll the existing file by name instead.
-        throw new LlmError(
-          `Timed out waiting for uploaded file "${name}" to become ACTIVE`,
-          { kind: 'server', retryable: false, provider: 'google' },
-        )
+        throw pollTimeoutError(name)
       }
 
       // Sleep — race against the abort promise so we wake up immediately
@@ -386,11 +394,40 @@ export class GoogleFileStore {
         ? Promise.race([sleepCall, abortRacePromise])
         : sleepCall)
 
+      // The poll request is raced against the abort and the rest of the polling
+      // deadline: a `get()` that stalls ends at whichever comes first instead of
+      // holding `upload()` open. The losing request is observed, so a late
+      // rejection is not unhandled.
+      const pollCall = (async (): Promise<FileResp> => {
+        try {
+          return await client.get({ name })
+        } catch (e) {
+          throw classifyGoogleError(e)
+        }
+      })()
+      pollCall.catch(() => {})
+      const remainingMs = deadline - this.now()
+      let deadlineTimer: ReturnType<Scheduler['setTimeout']> | undefined
+      const deadlineRace = new Promise<never>((_, reject) => {
+        // Too far out for a timer: the abort is then the only early exit.
+        if (remainingMs > MAX_TIMER_MS) return
+        deadlineTimer = this.scheduler.setTimeout(
+          () => {
+            reject(pollTimeoutError(name))
+          },
+          Math.max(remainingMs, 0),
+        )
+      })
+      deadlineRace.catch(() => {})
       let pollResp: FileResp
       try {
-        pollResp = await client.get({ name })
-      } catch (e) {
-        throw classifyGoogleError(e)
+        pollResp = await Promise.race(
+          abortRacePromise !== undefined
+            ? [pollCall, deadlineRace, abortRacePromise]
+            : [pollCall, deadlineRace],
+        )
+      } finally {
+        if (deadlineTimer !== undefined) this.scheduler.clearTimeout(deadlineTimer)
       }
 
       // Also guard here: the signal may have fired during client.get()

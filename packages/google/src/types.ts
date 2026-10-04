@@ -60,7 +60,12 @@ export type GoogleProviderOptions = {
    * Admit `googleSearch` together with `output.jsonSchema` on a model that does
    * not admit the pair by default. Opting in turns on {@link requireGrounding}
    * unless it is set to `false`, because Search can be skipped silently when a
-   * response schema is attached. Requires both `googleSearch` and a schema.
+   * response schema is attached. Requires both Search and a schema; Search is
+   * `googleSearch` in `tools` or a `cachedContent` handle whose `toolKinds` lists
+   * it. A schema call on such a model with a handle that lists `googleSearch`
+   * needs this flag, like an inline `googleSearch`; a bare cache name is not
+   * blocked, and a response of a schema call that reports search queries without
+   * a declared Search carries a warning.
    */
   allowSchemaWithSearch?: boolean
   /**
@@ -72,7 +77,8 @@ export type GoogleProviderOptions = {
    * is attached and not retryable when one is (the same request keeps missing).
    * A `MAX_TOKENS` or other abnormal finish with no proof is not judged: it
    * returns, with its own finish reason (`length`), and a filtered candidate
-   * throws its `content_filter` error. Requires `googleSearch`. Defaults to
+   * throws its `content_filter` error. Requires Search (`googleSearch` in `tools`
+   * or a `cachedContent` handle whose `toolKinds` lists it). Defaults to
    * `true` when {@link allowSchemaWithSearch} is `true`, else `false`.
    */
   requireGrounding?: boolean
