@@ -1020,7 +1020,13 @@ export function upstashQuotaStore(opts: UpstashQuotaStoreOptions): QuotaStore {
       ]
       const rawResults = await invoke([command], input.signal)
       const reply = arrayPipelineResult(rawResults[0], windows.length + 1)
-      return windowResults(windows, reply[0] === 1, reply.slice(1))
+      // The script answers exactly 1 (consumed) or 0 (denied). Any other status
+      // is not a decision: it is a store failure, never an admission.
+      const status = reply[0]
+      if (status !== 0 && status !== 1) {
+        throw new Error(`Unexpected Upstash pipeline result: ${JSON.stringify(reply)}`)
+      }
+      return windowResults(windows, status === 1 ? 'consumed' : 'denied', reply.slice(1))
     },
 
     async adjustTokens(input: QuotaStoreAdjustInput): Promise<void> {
@@ -1393,7 +1399,7 @@ function arrayPipelineResult(value: unknown, length: number): readonly number[] 
   if (
     Array.isArray(unwrapped) &&
     unwrapped.length === length &&
-    unwrapped.every((n) => typeof n === 'number' && Number.isFinite(n))
+    unwrapped.every((n) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0)
   ) {
     return unwrapped as number[]
   }

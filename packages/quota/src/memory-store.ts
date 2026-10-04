@@ -85,7 +85,9 @@ export function inMemoryQuotaStore(opts: InMemoryQuotaStoreOptions = {}): QuotaS
           counters.set(w.key, { count, expiresAt: now + w.ttlMs })
         }
       }
-      return Promise.resolve(windowResults(windows, consumed, counts))
+      return Promise.resolve(
+        windowResults(windows, consumed ? 'consumed' : 'denied', counts),
+      )
     },
 
     adjustTokens(input: QuotaStoreAdjustInput): Promise<void> {

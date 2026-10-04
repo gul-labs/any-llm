@@ -74,6 +74,105 @@ const turns = async (): Promise<void> => {
   for (let i = 0; i < 20; i++) await Promise.resolve()
 }
 
+describe('a malformed Upstash EVAL reply is a store failure under both onStoreError modes', () => {
+  const policy = quotaPolicy({ provider: 'google', models: { m: { rpm: 1 } } })
+  // One configured window (rpm 1), so a valid reply has exactly two elements.
+  const MALFORMED: Array<[string, unknown]> = [
+    ['an unknown status 2 with a low count', { result: [2, 0] }],
+    ['status 3', { result: [3, 1] }],
+    ['a negative status', { result: [-1, 0] }],
+    ['a float status', { result: [0.5, 0] }],
+    ['a string status', { result: ['1', 1] }],
+    ['a boolean status', { result: [true, 1] }],
+    ['a float counter', { result: [1, 1.5] }],
+    ['a negative counter', { result: [1, -1] }],
+    ['a string counter', { result: [1, '1'] }],
+    ['a null counter', { result: [1, null] }],
+    ['NaN as a counter', { result: [1, Number.NaN] }],
+    ['Infinity as a counter', { result: [1, Number.POSITIVE_INFINITY] }],
+    ['too short', { result: [1] }],
+    ['too long', { result: [1, 1, 0] }],
+    ['empty', { result: [] }],
+    ['null', { result: null }],
+    ['a nested array', { result: [[1], [1]] }],
+    ['an object', { result: { status: 1 } }],
+    ['no result key', { nothing: [1, 1] }],
+    ['a bare number', { result: 1 }],
+    ['a consumed reply whose counter is above the limit', { result: [1, 2] }],
+    ['a consumed reply whose counter is below the cost', { result: [1, 0] }],
+    ['a denied reply that no counter explains', { result: [0, 0] }],
+  ]
+
+  const storeFor = (reply: unknown): QuotaStore =>
+    upstashQuotaStore({ invoke: () => Promise.resolve([reply]) })
+
+  it.each(MALFORMED)(
+    'fail-closed denies %s, with backend_error and quota_store_unavailable',
+    async (_name, reply) => {
+      const events: QuotaEvent[] = []
+      await expect(
+        enforceProviderQuota({
+          provider: 'google',
+          model: 'm',
+          policy,
+          store: storeFor(reply),
+          onStoreError: 'fail-closed',
+          nowMs: T0,
+          onEvent: (e) => events.push(e),
+        }),
+      ).rejects.toMatchObject({ kind: 'server', reason: 'quota_store_unavailable' })
+      expect(events.map((e) => e.type)).toEqual(['backend_error'])
+    },
+  )
+
+  it.each(MALFORMED)(
+    'fail-open allows %s, with the backend_error event',
+    async (_name, reply) => {
+      const events: QuotaEvent[] = []
+      await expect(
+        enforceProviderQuota({
+          provider: 'google',
+          model: 'm',
+          policy,
+          store: storeFor(reply),
+          onStoreError: 'fail-open',
+          nowMs: T0,
+          onEvent: (e) => events.push(e),
+        }),
+      ).resolves.not.toThrow()
+      expect(events.map((e) => e.type)).toEqual(['backend_error'])
+    },
+  )
+
+  it('the reproduced bypass: { result: [2, 0] } with rpm 1 no longer admits', async () => {
+    const store = storeFor({ result: [2, 0] })
+    await expect(
+      store.checkAndConsume({
+        scope: 'google:m',
+        nowMs: T0,
+        rpm: 1,
+      }),
+    ).rejects.toThrow(/Unexpected Upstash pipeline result/)
+  })
+
+  it('valid replies still decide: consumed 1/1 is allowed, denied 1/1 is refused', async () => {
+    const allowed = await storeFor({ result: [1, 1] }).checkAndConsume({
+      scope: 'google:m',
+      nowMs: T0,
+      rpm: 1,
+      timeZone: 'UTC',
+    } as never)
+    expect(allowed.rpm).toMatchObject({ allowed: true, used: 1 })
+    const denied = await storeFor({ result: [0, 1] }).checkAndConsume({
+      scope: 'google:m',
+      nowMs: T0,
+      rpm: 1,
+      timeZone: 'UTC',
+    } as never)
+    expect(denied.rpm).toMatchObject({ allowed: false, used: 1 })
+  })
+})
+
 describe('a fail-closed store outage is a quota-store failure, not a provider failure', () => {
   const policy = quotaPolicy({ provider: 'google', models: { m: { rpm: 5 } } })
 

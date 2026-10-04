@@ -151,7 +151,7 @@ it afterwards:
 `onStoreError: 'fail-closed' | 'fail-open'` when they have a store, and there is no default (a missing
 or unknown value is `bad_request`, thrown when the middleware or limiter is built). `'fail-closed'`
 fails the call with one error whatever went wrong with the store (a timeout, an HTTP failure, a
-transport failure, a malformed reply, even a store that throws a `rate_limited` of its own):
+transport failure, a malformed reply (for the Upstash store: a status that is not exactly `0` or `1`, a counter that is not a non-negative integer, or counters that contradict the status), even a store that throws a `rate_limited` of its own):
 `LlmError { kind: 'server', retryable: false, reason: 'quota_store_unavailable' }`, the store's error as
 `cause`. It is not a provider timeout and is not retried (a retry would repeat the failure against a
 struggling store), so there is one store call per dispatch and the ledger row is a refusal row that

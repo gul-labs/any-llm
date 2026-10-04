@@ -220,16 +220,45 @@ export function isOverLimit(used: number, limit: number, cost: number): boolean 
   return used >= limit || (used > 0 && used + cost > limit)
 }
 
+/** What a check did: added to every counter, or refused and left them as they were. */
+export type CheckOutcome = 'consumed' | 'denied'
+
 /**
- * Turns the counters a check read into the result the store returns. `consumed`
+ * Turns the counters a check read into the result the store returns. `outcome`
  * says whether the check added to the counters; `counts` are the values after
  * the increment when it did, the untouched values when it did not.
+ *
+ * The reply is checked against the rule that produced it, and a reply that
+ * could not have come from that rule throws (a store failure for the caller)
+ * instead of becoming a decision: `counts` must be one non-negative integer
+ * per window; a `consumed` check must have started every window under its
+ * limit (the count before the increment is `count - cost`); a `denied` check
+ * must have found at least one window over its limit. A denial that no counter
+ * explains is never turned into `allowed: true`.
  */
 export function windowResults(
   windows: readonly QuotaWindow[],
-  consumed: boolean,
+  outcome: CheckOutcome,
   counts: readonly number[],
 ): QuotaStoreCheckResult {
+  if (
+    counts.length !== windows.length ||
+    !counts.every((n) => Number.isSafeInteger(n) && n >= 0)
+  ) {
+    throw new Error('Inconsistent quota counters: one non-negative integer per window')
+  }
+  if (outcome === 'consumed') {
+    const startedUnder = windows.every((w, i) => {
+      const before = (counts[i] ?? 0) - w.cost
+      return before >= 0 && !isOverLimit(before, w.limit, w.cost)
+    })
+    if (!startedUnder) {
+      throw new Error('Inconsistent quota counters: a consumed check began over a limit')
+    }
+  } else if (!windows.some((w, i) => isOverLimit(counts[i] ?? 0, w.limit, w.cost))) {
+    throw new Error('Inconsistent quota counters: a denied check found no window over')
+  }
+  const consumed = outcome === 'consumed'
   const decision: QuotaStoreCheckResult = {}
   for (const [i, window] of windows.entries()) {
     const count = counts[i] ?? 0
