@@ -241,6 +241,26 @@ try {
   }
 
   {
+    // Apache-2.0 4(d): every tarball carries the license and the NOTICE text.
+    for (const { name } of workspace.map((w) => ({ name: w.manifest.name }))) {
+      const listing = (await must('tar', ['-tzf', tgz[name]])).split('\n')
+      for (const file of ['package/LICENSE', 'package/NOTICE']) {
+        record(
+          listing.includes(file),
+          `${name}: the tarball ships ${file.replace('package/', '')}`,
+        )
+      }
+      for (const file of ['LICENSE', 'NOTICE']) {
+        const packed = await must('tar', ['-xOzf', tgz[name], `package/${file}`])
+        record(
+          packed === readFileSync(join(root, file), 'utf8'),
+          `${name}: the packed ${file} equals the repository's`,
+        )
+      }
+    }
+  }
+
+  {
     // The drizzle tarball must ship the SQL it documents.
     const listing = await must('tar', ['-tzf', tgz['@gullabs/drizzle']])
     for (const file of [
@@ -249,8 +269,6 @@ try {
       'package/sql/upgrades/0002-ledger-v2.sql',
       'package/sql/upgrades/0003-validate-checks.sql',
       'package/sql/upgrades/0004-llm-call-payloads.sql',
-      'package/LICENSE',
-      'package/NOTICE',
     ]) {
       record(
         listing.split('\n').includes(file),

@@ -69,6 +69,23 @@ describe('published package metadata', () => {
   )
 })
 
+describe('published package license files', () => {
+  // Apache-2.0 4(d): the NOTICE text travels with every redistribution. `files` lists
+  // NOTICE (npm adds LICENSE on its own), and each package directory holds a copy that
+  // must equal the repository's, so a tarball never ships a stale one.
+  it.each(publishedManifests())(
+    '$dir ships LICENSE and NOTICE equal to the root',
+    ({ dir, pkg }) => {
+      expect(pkg.files).toContain('NOTICE')
+      for (const file of ['LICENSE', 'NOTICE']) {
+        expect(readFileSync(join(packagesRoot, dir, file), 'utf8')).toBe(
+          readFileSync(join(workspaceRoot, file), 'utf8'),
+        )
+      }
+    },
+  )
+})
+
 describe('published package runtime contract', () => {
   /** The one Node floor: every `engines.node`, the README, the SPEC and the CI matrix. */
   const floor = '22.12.0'

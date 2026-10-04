@@ -27,7 +27,8 @@
   },
   "files": [
     "dist",
-    "skills"
+    "skills",
+    "NOTICE"
   ],
   "scripts": {
     "build": "tsup"
