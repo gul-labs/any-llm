@@ -375,7 +375,7 @@ response headers arrive (checked in the SDK source and pinned by a test). The ad
 applies the same deadline to the rest of the stream with its own timer, so `timeoutMs + 5000` (or one
 hour) still bounds the **whole call**, not the time to first byte. It is not an idle timer: a stream that
 keeps sending is cut at the deadline too. The engine's own `timeoutMs` deadline sits 5 s ahead of it, so
-you see the engine's clean timeout. A caller `signal` aborts a stream in flight.
+you see the engine's clean, retryable timeout with no `reason` (see Timeout errors do not retry). A caller `signal` aborts a stream in flight.
 
 **Bounding a half-open connection.** A NAT drop with no reset leaves a stream silent, and the deadline would
 hold it for up to an hour. `transport.idleTimeoutMs` (an integer from 1; off by default) ends a stream that
@@ -484,10 +484,19 @@ billing when a stream is aborted could not be tested, so the adapter does not ab
 
 ### Timeout errors do not retry
 
-A header-timer, body-timer or request-deadline timeout (a transport-level timeout; it can fire before or
-after response headers, or while the stream is open) is `kind: 'timeout'`, `retryable: false`, `reason: 'transport_timeout'`.
-Retrying reaches the same limit and repeats the spend, so the retry middleware does not retry it;
-resubmit from the host if you want to. A connect timeout, an OS `ETIMEDOUT` and a TLS handshake
+Three kinds of timeout end an xAI call, and only the transport ones are marked non-retryable:
+
+- **The engine's deadline** (`timeoutMs`). With a `timeoutMs` set it always fires first, because the
+  adapter's own deadline is `timeoutMs + 5000`. It is `kind: 'timeout'`, `retryable: true`, with no
+  `reason`; `retryMiddleware` still makes no further attempt, because the call's budget is spent.
+- **A transport timeout:** `transport.idleTimeoutMs`, an undici header-timer or body-timer, and the
+  adapter's own deadline when `timeoutMs` is unset (one hour). It can fire before or after response headers,
+  or while the stream is open. It is `kind: 'timeout'`, `retryable: false`,
+  `reason: 'transport_timeout'`. Retrying reaches the same limit and repeats the spend, so the retry
+  middleware does not retry it.
+- **The SDK's own timer** (see below) is classified as the transport timeout.
+
+Resubmit from the host if you want to. A connect timeout, an OS `ETIMEDOUT` and a TLS handshake
 timeout (nothing reached xAI) stay retryable. The `openai` SDK wraps all of those as the same
 `APIConnectionTimeoutError`, so the adapter recognises its own SDK deadline by the failure's shape (no
 cause, or only the SDK's own `AbortError`) and by the call having run for the `timeout` it set; the
