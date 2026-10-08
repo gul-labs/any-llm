@@ -40,7 +40,7 @@
     "openai": "^7"
   },
   "devDependencies": {
-    "@google/genai": "^2.24.0",
+    "@google/genai": "^2.27.0",
     "@gullabs/core": "workspace:*",
     "@gullabs/google": "workspace:*",
     "@gullabs/xai": "workspace:*",
