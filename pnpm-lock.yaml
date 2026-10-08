@@ -75,8 +75,8 @@ importers:
   packages/any-llm:
     dependencies:
       '@google/genai':
-        specifier: ^2.24.0
-        version: 2.25.0(supports-color@7.2.0)
+        specifier: ^2.27.0
+        version: 2.27.0(supports-color@7.2.0)
       '@gullabs/google':
         specifier: workspace:*
         version: link:../google
@@ -145,8 +145,8 @@ importers:
         version: 4.6.5
     devDependencies:
       '@google/genai':
-        specifier: ^2.24.0
-        version: 2.25.0(supports-color@7.2.0)
+        specifier: ^2.27.0
+        version: 2.27.0(supports-color@7.2.0)
       '@gullabs/core':
         specifier: workspace:*
         version: link:../core
@@ -163,8 +163,8 @@ importers:
   packages/testing:
     devDependencies:
       '@google/genai':
-        specifier: ^2.24.0
-        version: 2.25.0(supports-color@7.2.0)
+        specifier: ^2.27.0
+        version: 2.27.0(supports-color@7.2.0)
       '@gullabs/core':
         specifier: workspace:*
         version: link:../core
@@ -509,8 +509,8 @@ packages:
     resolution: {integrity: sha512-IkO+/KEUvwbVpiURZg+P7zF74z5Jxe0UgJxVni+RtoHQ6IZieXaO02kmadomap/q+l6bc/jdPGGqTjhuZnuz1Q==}
     engines: {node: ^20.19.0 || ^22.13.0 || >=24}
 
-  '@google/genai@2.25.0':
-    resolution: {integrity: sha512-g1hyidWxahzIg+hh+lLqPeBJl+Fu6051we2QKhFXdWgE4yGYf8PWOS8S3mMAdpe3eLx3KCWmhQR7GWyd3LYT1A==}
+  '@google/genai@2.27.0':
+    resolution: {integrity: sha512-W6F9Y9d4h7cVQNa85IPCOVVP9PiUzve/ZQPBvQnBmnBJcLvxstEw+R2X/RyCH0SOe0HVDQzeKDpDUf6ZRtbmdQ==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
       '@modelcontextprotocol/sdk': ^1.25.2
@@ -868,9 +868,6 @@ packages:
 
   '@types/json-schema@7.0.15':
     resolution: {integrity: sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==}
-
-  '@types/node@26.6.2':
-    resolution: {integrity: sha512-X1P21scMv4zGKLYqjdGjaKa7COa0RKVYYZZN/NfvLQ1JegxFhdhpZG/Lyn8AXx6CDUavKAd11v6BvfpkDByK8g==}
 
   '@types/node@26.6.3':
     resolution: {integrity: sha512-dsqMQQoeTLqu9wynDD00q573mNzso3IdQOAfHRJqLCcmCFPoGo9A1bDpUcv/9tnKpErQWv9uKeGfl37EIS02Yg==}
@@ -2461,7 +2458,7 @@ snapshots:
       '@eslint/core': 1.2.1
       levn: 0.4.1
 
-  '@google/genai@2.25.0(supports-color@7.2.0)':
+  '@google/genai@2.27.0(supports-color@7.2.0)':
     dependencies:
       google-auth-library: 10.9.1(supports-color@7.2.0)
       p-retry: 4.6.2
@@ -2693,10 +2690,6 @@ snapshots:
   '@types/estree@1.0.9': {}
 
   '@types/json-schema@7.0.15': {}
-
-  '@types/node@26.6.2':
-    dependencies:
-      undici-types: 8.9.0
 
   '@types/node@26.6.3':
     dependencies:
@@ -3531,7 +3524,7 @@ snapshots:
       '@protobufjs/path': 1.1.2
       '@protobufjs/pool': 1.1.0
       '@protobufjs/utf8': 1.1.2
-      '@types/node': 26.6.2
+      '@types/node': 26.6.3
       long: 5.3.2
 
   publint@0.3.25:
