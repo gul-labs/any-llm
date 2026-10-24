@@ -4,9 +4,9 @@ packages:
 autoInstallPeers: false
 strictPeerDependencies: false
 
-overrides:
-  # GHSA-g7r4-m6w7-qqqr — tsup still resolves a vulnerable esbuild.
-  esbuild: '>=0.28.1'
+# Provider tests use shared fakes, whose SDK types depend on the providers.
+# These dev-only cycles do not appear in the published entry-point graph.
+ignoreWorkspaceCycles: true
 
 allowBuilds:
   '@google/genai': true

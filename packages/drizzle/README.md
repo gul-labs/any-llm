@@ -8,7 +8,7 @@ Reference Postgres schema and `UsageSink` implementation for any-llm using Drizz
 pnpm add @gullabs/drizzle @gullabs/core @gullabs/google drizzle-orm
 ```
 
-**Peer dependency:** `drizzle-orm >=0.36 <1`
+**Peer dependency:** `drizzle-orm >=0.45.4 <1`
 
 ## Key exports
 
@@ -135,9 +135,11 @@ either ships with SQL. The table stores `cost_confidence`, `cost_details` and `c
 
 ### Tested `drizzle-orm` versions and drivers
 
-The peer range is `>=0.36 <1`. The test suite runs the version in the package's dev dependencies (0.45.x); the
-0.36 floor is not in CI: it was run by hand for this release (the whole suite on PGlite, node-postgres and postgres-js, and `tsc`) and passed. The `check()` helper in the table's extra-config array and `getTableConfig` are the
-surface the schema relies on. Report a break on an older version as a bug.
+The peer range is `>=0.45.4 <1`. The test suite runs 0.45.4, the version in the package's
+dev dependencies. Versions before 0.45.2 have an SQL-identifier escaping vulnerability
+([GHSA-gpj5-g38j-94v9](https://github.com/drizzle-team/drizzle-orm/security/advisories/GHSA-gpj5-g38j-94v9))
+and are excluded. The `check()` helper in the table's extra-config array and `getTableConfig`
+are the surface the schema relies on.
 
 Drivers: the sink, `purgeLlmCallPayloads`, `deleteLlmCallPayloads` and both schema checks are tested on
 node-postgres, postgres-js and PGlite (`src/drivers.integration.test.ts`; the first two against a real server

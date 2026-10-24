@@ -19,7 +19,7 @@ import { assertPortableJsonSchema } from './json-schema.js'
 import type { JsonValue } from './types.js'
 import { pinRequested, ZOD_SCHEMA_CASES } from './zod-schema-cases.js'
 
-const FIXTURE_URL = new URL('./__fixtures__/zod-4.6.5-json-schemas.json', import.meta.url)
+const FIXTURE_URL = new URL('./__fixtures__/zod-4.6.7-json-schemas.json', import.meta.url)
 
 interface PinnedCase {
   name: string
@@ -36,7 +36,7 @@ interface Pinned {
 
 function generate(): Pinned {
   return {
-    zodVersion: '4.6.5',
+    zodVersion: '4.6.7',
     source:
       'z.toJSONSchema() of the schemas in packages/core/src/zod-schema-cases.ts, generated with the installed Zod (default options unless a case sets them). Verdicts are the expected outcome of each provider profile and of the portable subset on that output.',
     cases: ZOD_SCHEMA_CASES.map((c) => ({
@@ -74,7 +74,7 @@ describe('re-pinning', () => {
 
 describe('pinned Zod JSON Schema fixture', () => {
   it('was generated with the installed Zod version', () => {
-    // `zod` is a published runtime dependency (`^4.6.5`), so the range stays open
+    // `zod` is a published runtime dependency (`^4.6.7`), so the range stays open
     // for hosts. The lockfile holds the pinned version; this is the tripwire when
     // anything moves it.
     const installed = (

@@ -50,6 +50,7 @@ function makeLockfile(keys) {
  *   hang      never responds
  */
 function startService(mode, findings = {}) {
+  const requests = []
   const server = createServer((req, res) => {
     if (mode === 'error') {
       res.writeHead(503)
@@ -62,15 +63,20 @@ function startService(mode, findings = {}) {
       return
     }
     if (mode === 'healthy') {
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ lodash: [CANARY_ADVISORY], ...findings }))
+      let body = ''
+      req.on('data', (chunk) => (body += chunk))
+      req.on('end', () => {
+        requests.push(JSON.parse(body))
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ lodash: [CANARY_ADVISORY], ...findings }))
+      })
       return
     }
     // mode === 'hang' — reproduces the 2026-09-04 socket timeouts.
   })
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () =>
-      resolve({ server, url: `http://127.0.0.1:${server.address().port}/` }),
+      resolve({ server, url: `http://127.0.0.1:${server.address().port}/`, requests }),
     )
   })
 }
@@ -111,9 +117,9 @@ function check(name, condition, detail) {
 }
 
 async function withService(mode, findings, fn) {
-  const { server, url } = await startService(mode, findings)
+  const { server, url, requests } = await startService(mode, findings)
   try {
-    return await fn(url)
+    return await fn(url, requests)
   } finally {
     server.close()
     server.closeAllConnections?.()
@@ -126,6 +132,55 @@ const vulnerableLock = makeLockfile(['@babel/parser@7.29.7', 'minimist@1.2.5'])
 const canaryLock = makeLockfile(['lodash@4.17.20'])
 
 console.log('audit gate self-test')
+
+// Toolchain and workspace documents can repeat a package with different versions.
+// Neither document nor version may disappear from the advisory-service request.
+const multiDocumentLock = makeLockfile(['pnpm@12.15.0', 'minimist@1.2.5'])
+writeFileSync(
+  multiDocumentLock,
+  `---
+lockfileVersion: '9.0'
+packages:
+  'pnpm@12.15.0': {}
+  'minimist@1.2.5': {}
+---
+lockfileVersion: '9.0'
+packages:
+  '@scope/runtime@2.0.0(peer@1.0.0)': {}
+  'minimist@1.2.8': {}
+`,
+)
+await withService('healthy', {}, async (url, requests) => {
+  const result = await runGate({ url, lockfile: multiDocumentLock })
+  const payload = requests[0]
+  check(
+    'multi-document lockfile audits both toolchain and workspace versions',
+    result.code === 0 &&
+      /CLEAN/.test(result.out) &&
+      payload?.pnpm?.includes('12.15.0') &&
+      payload?.['@scope/runtime']?.includes('2.0.0') &&
+      payload?.minimist?.includes('1.2.5') &&
+      payload?.minimist?.includes('1.2.8'),
+    `exit=${result.code} payload=${JSON.stringify(payload)} out=${result.out.trim()}`,
+  )
+})
+
+const malformedDocumentLock = makeLockfile(['pnpm@12.15.0'])
+writeFileSync(
+  malformedDocumentLock,
+  "packages:\n  'pnpm@12.15.0': {}\n---\npackages: [unterminated\n",
+)
+await withService('healthy', {}, async (url, requests) => {
+  const result = await runGate({ url, lockfile: malformedDocumentLock })
+  check(
+    'malformed later YAML document fails before querying the advisory service',
+    result.code === 1 &&
+      /could not read lockfile/.test(result.out) &&
+      !/CLEAN/.test(result.out) &&
+      requests.length === 0,
+    `exit=${result.code} out=${result.out.trim()}`,
+  )
+})
 
 // The branches an outage makes untestable against the real service.
 await withService('healthy', {}, async (url) => {

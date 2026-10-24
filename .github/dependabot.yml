@@ -5,9 +5,8 @@ updates:
     schedule:
       interval: 'weekly'
     open-pull-requests-limit: 10
-    # typescript-eslint declares `typescript: >=4.8.4 <6.1.0`, and TypeScript 7
-    # breaks the tsup dts build via rollup-plugin-dts. Hold TypeScript on 6.x
-    # until typescript-eslint and rollup-plugin-dts both support 7.
+    # typescript-eslint 8.72 still declares `typescript: >=4.8.4 <6.1.0`.
+    # Hold TypeScript on 6.x until the lint toolchain supports 7.
     ignore:
       - dependency-name: 'typescript'
         update-types:

@@ -116,13 +116,18 @@ function undetermined(reason) {
  * suffix and is not part of the version.
  */
 function readInstalledPackages(path) {
-  let lock
+  let locks
   try {
-    lock = yaml.parse(readFileSync(path, 'utf8'))
+    // pnpm 12 stores toolchain and workspace resolutions in separate YAML
+    // documents. Audit every document, including the package manager itself.
+    locks = yaml.parseAllDocuments(readFileSync(path, 'utf8')).map((doc) => {
+      if (doc.errors.length > 0) throw doc.errors[0]
+      return doc.toJSON()
+    })
   } catch (error) {
     fail(`could not read lockfile ${path}: ${error?.message ?? error}`)
   }
-  const keys = Object.keys(lock?.packages ?? {})
+  const keys = locks.flatMap((lock) => Object.keys(lock?.packages ?? {}))
   if (keys.length === 0)
     fail(`lockfile ${path} lists no packages; refusing to report clean`)
 

@@ -20,8 +20,8 @@
  * - Definitions (types, defaults, index and CHECK expressions as Postgres
  *   reports them) are compared, never just names: `schema.ts` against
  *   `install.sql`, and the upgraded table against a fresh install.
- * - The declared `drizzle-orm` peer floor (0.36) is not in CI: only the dev
- *   dependency version is installed (the floor was run by hand for the release).
+ * - The declared `drizzle-orm` peer floor (0.45.4) is the installed dev
+ *   dependency version exercised by this suite.
  * - `status` and `error_kind` carry CHECK constraints; `error_reason` carries
  *   none, so a reason added to the core union later needs no SQL.
  *

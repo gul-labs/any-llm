@@ -196,9 +196,9 @@ cannot emit `NOT VALID` CHECKs, `CREATE INDEX CONCURRENTLY` or a `lock_timeout`,
 from `schema.ts` scans and locks the table and fails on legacy rows. Do not generate migrations for these
 tables; apply the shipped files.
 
-**Tested `drizzle-orm` versions.** The peer range is `>=0.36 <1`; the test suite runs the version in the
-package's dev dependencies (0.45.x). The 0.36 floor is not in CI; it was run by hand for this release (the whole suite on PGlite, node-postgres and
-postgres-js, and `tsc`) and passed.
+**Tested `drizzle-orm` versions.** The peer range is `>=0.45.4 <1`; the test suite runs 0.45.4,
+the version in the package's dev dependencies. The supported range excludes versions affected by
+[GHSA-gpj5-g38j-94v9](https://github.com/drizzle-team/drizzle-orm/security/advisories/GHSA-gpj5-g38j-94v9).
 
 **Drivers.** The sink, the retention helpers and `assertLlmCallsSchema` are tested on node-postgres,
 postgres-js and PGlite (the first two against a real server, see `drivers.integration.test.ts`). `neon-http`

@@ -4,7 +4,7 @@ This monorepo uses [Changesets](https://github.com/changesets/changesets) for ve
 
 ## Provenance
 
-Provenance comes from [npm trusted publishing](https://docs.npmjs.com/trusted-publishers). The Release job requests `id-token: write`; on every publish pnpm 11 exchanges the Actions OIDC token for a short-lived publish credential and attaches a provenance attestation from it. Each package needs a trusted publisher configured on npmjs.com (package → Settings → Trusted Publisher → GitHub Actions, organization `gul-labs`, repository `any-llm`, workflow `release.yml`). A package without one still publishes through the `NPM_TOKEN` fallback, but **without** provenance.
+Provenance comes from [npm trusted publishing](https://docs.npmjs.com/trusted-publishers). The Release job requests `id-token: write`; on every publish pnpm exchanges the Actions OIDC token for a short-lived publish credential and attaches a provenance attestation from it. Each package needs a trusted publisher configured on npmjs.com (package → Settings → Trusted Publisher → GitHub Actions, organization `gul-labs`, repository `any-llm`, workflow `release.yml`). A package without one still publishes through the `NPM_TOKEN` fallback, but **without** provenance.
 
 There is no `NPM_CONFIG_PROVENANCE` setting. pnpm 11 publishes natively and reads `provenance` only from the `--provenance` CLI flag, not from the environment or `.npmrc`, and `changeset publish` does not pass that flag. This is why `@gullabs/*` 0.14.0 (the first pnpm 11 release) shipped without attestations while 0.13.x has them.
 

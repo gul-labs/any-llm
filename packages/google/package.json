@@ -33,14 +33,14 @@
     "build": "tsup"
   },
   "dependencies": {
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "peerDependencies": {
     "@google/genai": "^2",
     "@gullabs/core": "workspace:*"
   },
   "devDependencies": {
-    "@google/genai": "^2.24.0",
+    "@google/genai": "^2.31.0",
     "@gullabs/core": "workspace:*",
     "@gullabs/testing": "workspace:*"
   },
