@@ -1,6 +1,6 @@
 /**
  * Zod schemas whose `z.toJSONSchema()` output is pinned in
- * `__fixtures__/zod-4.6.5-json-schemas.json` (ADR-034).
+ * `__fixtures__/zod-4.6.7-json-schemas.json` (ADR-034).
  *
  * Each case carries the verdict every provider profile and the portable subset
  * must give the pinned output. A Zod upgrade that changes the emitted JSON

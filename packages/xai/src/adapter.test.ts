@@ -691,40 +691,43 @@ describe('vision / media mapping', () => {
     ).rejects.toMatchObject({ kind: 'bad_request' })
   })
 
-  it('sizes an inline image by its base64 characters, not by its line breaks', async () => {
-    // Built by repetition (a few ms), never by encoding and regex-wrapping tens of
-    // megabytes: that took seconds of CPU under parallel load and made the test flaky.
-    // 76 base64 characters = 57 decoded bytes per CRLF-wrapped line.
-    const line = `${'QUFB'.repeat(19)}\r\n`
-    const wrapped = (decodedBytes: number): string =>
-      line.repeat(Math.ceil(decodedBytes / 57))
-    const png = (decodedBytes: number) => ({
-      kind: 'inline-media' as const,
-      mimeType: 'image/png',
-      data: wrapped(decodedBytes),
-    })
-    const run = (decodedBytes: number) => {
+  it.each([
+    // Wrapped 19.5 MiB exceeds the limit by plain text length, but fits decoded.
+    { label: 'within the ceiling', decodedBytes: 19.5 * 1024 * 1024, accepted: true },
+    {
+      label: 'over the ceiling',
+      decodedBytes: 20 * 1024 * 1024 + 57 * 4,
+      accepted: false,
+    },
+  ])(
+    'sizes a wrapped inline image $label by its base64 characters',
+    async ({ decodedBytes, accepted }) => {
+      // 76 base64 characters = 57 decoded bytes per CRLF-wrapped line.
+      // Each boundary is a separate case: coverage instruments the character scan
+      // over ~27 MB, so combining both scans can exceed the default test budget.
+      const line = `${'QUFB'.repeat(19)}\r\n`
+      const data = line.repeat(Math.ceil(decodedBytes / 57))
       const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))
-      return {
-        client,
-        done: xaiAdapter({ client }).run(
-          makeResolvedReq({
-            messages: [{ role: 'user', parts: [png(decodedBytes)] }],
-          }),
-          FAKE_CTX,
-        ),
+      const done = xaiAdapter({ client }).run(
+        makeResolvedReq({
+          messages: [
+            {
+              role: 'user',
+              parts: [{ kind: 'inline-media', mimeType: 'image/png', data }],
+            },
+          ],
+        }),
+        FAKE_CTX,
+      )
+      if (accepted) {
+        await done
+        expect(client.calls).toHaveLength(1)
+      } else {
+        // Wrapping does not hide an image that really is over the ceiling.
+        await expect(done).rejects.toMatchObject({ kind: 'bad_request' })
       }
-    }
-    // 19.5 MiB decoded is about 27.3 MB of text once wrapped every 76 characters,
-    // over the ceiling by plain length alone: only the line-break-free count admits it.
-    const within = run(19.5 * 1024 * 1024)
-    await within.done
-    expect(within.client.calls).toHaveLength(1)
-    // Wrapping does not hide an image that really is over the ceiling.
-    await expect(run(20 * 1024 * 1024 + 57 * 4).done).rejects.toMatchObject({
-      kind: 'bad_request',
-    })
-  })
+    },
+  )
 
   it('maps a FileUriPart with an https:// URL and image mimeType', async () => {
     const client = makeFakeXai(fakeXaiResponse({ text: 'ok' }))

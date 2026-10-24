@@ -1,17 +1,5 @@
 {
   "compilerOptions": {
-    // tsup 8.5.1's vendored rollup-plugin-dts unconditionally injects
-    // `baseUrl: compilerOptions.baseUrl || "."` into the compiler options
-    // it hands to TypeScript for `.d.ts` bundling (see
-    // node_modules/.pnpm/tsup@8.5.1.../dist/rollup.js:6837), even though no
-    // tsconfig in this repo sets `baseUrl` anymore. That forces TS 6.0.3 to
-    // emit error TS5101 ("Option 'baseUrl' is deprecated and will stop
-    // functioning in TypeScript 7.0 ... Specify compilerOption
-    // '\"ignoreDeprecations\": \"6.0\"' to silence this error") during every
-    // package's `tsup` dts build. We don't control tsup's internals, so we
-    // opt into the officially documented 6.0 deprecation-transition escape
-    // hatch here rather than patch a third-party dependency.
-    "ignoreDeprecations": "6.0",
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",

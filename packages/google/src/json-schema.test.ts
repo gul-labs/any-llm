@@ -33,7 +33,7 @@ const p3 = JSON.parse(
 const zodPinned = JSON.parse(
   readFileSync(
     fileURLToPath(
-      new URL('../../core/src/__fixtures__/zod-4.6.5-json-schemas.json', import.meta.url),
+      new URL('../../core/src/__fixtures__/zod-4.6.7-json-schemas.json', import.meta.url),
     ),
     'utf8',
   ),

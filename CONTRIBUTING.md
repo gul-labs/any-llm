@@ -6,7 +6,7 @@ Only [@atifgul99](https://github.com/atifgul99) can push or merge to `main`. Eve
 
 ## Dev setup
 
-Node `>=24` for development (`.nvmrc` pins 24.20.0; pnpm 11 and the lint toolchain need it). Published packages support Node `>=22.12.0`, and CI runs the tests on 22.12.0 and 24. Package manager is **pnpm 11.24.0** (see `packageManager` in the root `package.json`). pnpm settings — overrides, peer-dependency behavior, and build approvals — live in `pnpm-workspace.yaml`.
+Use the pinned Node 24.20.0 for development (the build toolchain requires `^24.11.0 || >=26`). Published packages support Node `>=22.12.0`, and CI runs the tests on 22.12.0 and 24. Package manager is **pnpm 12.15.0** (see `packageManager` in the root `package.json`). pnpm settings — overrides, peer-dependency behavior, and build approvals — live in `pnpm-workspace.yaml`. Its `ignoreWorkspaceCycles` setting declares the intentional dev-only cycles between provider tests and shared fakes; published entry points do not import the testing package.
 
 ```bash
 pnpm install

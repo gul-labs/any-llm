@@ -1,5 +1,5 @@
 {
-  "zodVersion": "4.6.5",
+  "zodVersion": "4.6.7",
   "source": "z.toJSONSchema() of the schemas in packages/core/src/zod-schema-cases.ts, generated with the installed Zod (default options unless a case sets them). Verdicts are the expected outcome of each provider profile and of the portable subset on that output.",
   "cases": [
     {
