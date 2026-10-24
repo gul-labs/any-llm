@@ -34,7 +34,7 @@ import { PGlite } from '@electric-sql/pglite'
 import { getTableColumns } from 'drizzle-orm'
 import { PgDialect, getTableConfig } from 'drizzle-orm/pg-core'
 import { drizzle } from 'drizzle-orm/pglite'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { assertLlmCallsSchema, drizzleUsageSink } from './sink.js'
 import { llmCallPayloads, llmCalls } from './schema.js'
 import { assertLlmCallPayloadsSchema } from './payloads.js'
@@ -708,6 +708,9 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
   })
 
   describe('with legacy rows that violate the new vocabularies (core 0.2.0 wrote parse_error)', () => {
+    let pg: PGlite
+    let freshConstraints: ConstraintInfo[]
+
     const LEGACY_SQL = /* sql */ `
       INSERT INTO llm_calls (
         record_schema_version, call_id, attempt_id, provider, model, status,
@@ -717,16 +720,30 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
         (1, 'legacy_2', 'legacy_attempt_2', 'google', 'm', 'api_error', '{}', '{}', 1, '{"keep":1}', 'parse_error');
     `
 
-    async function legacyTable(): Promise<PGlite> {
-      const pg = new PGlite()
+    // WASM database startup is fixture setup, not part of the migration's test
+    // budget. Keep each test isolated and close every fixture after use.
+    beforeAll(async () => {
+      const fresh = new PGlite()
+      try {
+        await fresh.exec(sqlFile('install.sql'))
+        freshConstraints = await checkConstraints(fresh)
+      } finally {
+        await fresh.close()
+      }
+    })
+
+    beforeEach(async () => {
+      pg = new PGlite()
       await pg.exec(AFTER_0001_SQL)
       await pg.exec(OLD_ROW_SQL)
       await pg.exec(LEGACY_SQL)
-      return pg
-    }
+    })
+
+    afterEach(async () => {
+      await pg?.close()
+    })
 
     it('the upgrade itself succeeds, statement by statement and twice, and finishes the whole file', async () => {
-      const pg = await legacyTable()
       expect(await runStatementwise(pg, sqlFile(UPGRADE_0002))).toEqual([])
       const table = await describeTable(pg)
       const indexes = await indexDefs(pg)
@@ -755,7 +772,6 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
     })
 
     it('new rows are enforced at once even though the legacy rows are not validated', async () => {
-      const pg = await legacyTable()
       await runStatementwise(pg, sqlFile(UPGRADE_0002))
       const sink = drizzleUsageSink({ db: drizzle({ client: pg }) })
       await expect(
@@ -777,7 +793,6 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
     })
 
     it('while the CHECKs are NOT VALID any UPDATE of a legacy row fails with the documented text, a DELETE and the cleanup UPDATE do not', async () => {
-      const pg = await legacyTable()
       await runStatementwise(pg, sqlFile(UPGRADE_0002))
       // The tenant-deletion recipe of docs/ledger.md, aimed at a legacy row.
       await expect(
@@ -808,7 +823,6 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
     })
 
     it('validation fails, changing nothing, until the legacy rows are fixed with the documented query', async () => {
-      const pg = await legacyTable()
       await runStatementwise(pg, sqlFile(UPGRADE_0002))
 
       const errors = await runStatementwise(pg, sqlFile(VALIDATE_0003))
@@ -860,9 +874,7 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
       expect(await runStatementwise(pg, sqlFile(VALIDATE_0003))).toEqual([])
 
       // The result equals a fresh install's definitions.
-      const fresh = new PGlite()
-      await fresh.exec(sqlFile('install.sql'))
-      expect(await checkConstraints(pg)).toEqual(await checkConstraints(fresh))
+      expect(await checkConstraints(pg)).toEqual(freshConstraints)
     })
   })
 
