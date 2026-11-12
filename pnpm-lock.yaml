@@ -230,8 +230,8 @@ importers:
   packages/any-llm:
     dependencies:
       '@google/genai':
-        specifier: ^2.31.0
-        version: 2.31.0(supports-color@7.2.0)
+        specifier: ^3.0.0
+        version: 3.0.0(supports-color@7.2.0)
       '@gullabs/google':
         specifier: workspace:*
         version: link:../google
@@ -300,8 +300,8 @@ importers:
         version: 4.6.7
     devDependencies:
       '@google/genai':
-        specifier: ^2.31.0
-        version: 2.31.0(supports-color@7.2.0)
+        specifier: ^3.0.0
+        version: 3.0.0(supports-color@7.2.0)
       '@gullabs/core':
         specifier: workspace:*
         version: link:../core
@@ -318,8 +318,8 @@ importers:
   packages/testing:
     devDependencies:
       '@google/genai':
-        specifier: ^2.31.0
-        version: 2.31.0(supports-color@7.2.0)
+        specifier: ^3.0.0
+        version: 3.0.0(supports-color@7.2.0)
       '@gullabs/core':
         specifier: workspace:*
         version: link:../core
@@ -664,9 +664,9 @@ packages:
     resolution: {integrity: sha512-IkO+/KEUvwbVpiURZg+P7zF74z5Jxe0UgJxVni+RtoHQ6IZieXaO02kmadomap/q+l6bc/jdPGGqTjhuZnuz1Q==}
     engines: {node: ^20.19.0 || ^22.13.0 || >=24}
 
-  '@google/genai@2.31.0':
-    resolution: {integrity: sha512-u1fw0qEiuWwNcjZixJFRfQF0awQnHb/rBBQUeiYGF+nmTXQCvcgpR2UMhKU9KNdnZdYhahY5jwS6nJ2V2tGtDA==}
-    engines: {node: '>=20.0.0'}
+  '@google/genai@3.0.0':
+    resolution: {integrity: sha512-0o2uBXPWBNUu0jWg2Id5iBtCnsd7lnxKPQfnijKvNublG/zj40CToERvz/eyfNjzzXt2kwuvxpouLUrRCZ2WUQ==}
+    engines: {node: '>=22.0.0'}
     peerDependencies:
       '@modelcontextprotocol/sdk': ^1.25.2
     peerDependenciesMeta:
@@ -2604,7 +2604,7 @@ snapshots:
       '@eslint/core': 1.2.1
       levn: 0.4.1
 
-  '@google/genai@2.31.0(supports-color@7.2.0)':
+  '@google/genai@3.0.0(supports-color@7.2.0)':
     dependencies:
       google-auth-library: 10.9.1(supports-color@7.2.0)
       p-retry: 4.6.2
