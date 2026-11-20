@@ -31,8 +31,8 @@ actual use; not required to build or test this package.
 | `CodexCliAdapterOptions`                                      | `{ runner?, codexPath?, maxConcurrency?, env? }`.                              |
 | `createCodexCliRunner(codexPath?)`                            | Real `node:child_process`-backed `CodexCliRunner`.                             |
 | `CodexCliRunner` / `CodexCliRunOptions` / `CodexCliRunResult` | The subprocess seam interface and its options and result, for injecting fakes. |
-| `codexCliModelDescriptors` / `codexCliRegistry`               | `ModelDescriptor[]` / `ModelRegistry` for the 3 supported models.              |
-| `CODEX_CLI_MODEL_IDS`                                         | `'gpt-6-astra' \| 'gpt-6-sol' \| 'gpt-6-luna'`. No `gpt-5*` id is registered.  |
+| `codexCliModelDescriptors` / `codexCliRegistry`               | `ModelDescriptor[]` / `ModelRegistry` for the 4 supported models.              |
+| `CODEX_CLI_MODEL_IDS`                                         | `'gpt-6.2-sol' \| 'gpt-6.2-astra' \| 'gpt-6.1-terra' \| 'gpt-6-luna'`.         |
 | `CODEX_CLI_REASONING_EFFORTS`                                 | `['low', 'medium', 'high', 'xhigh', 'max']`. No `'none'`, no `'ultra'`.        |
 
 ## Quick example
@@ -46,12 +46,35 @@ const client = createClient({ ...composeProviders([codexCliProvider()]) })
 const result = await client.generate(
   {
     provider: 'codex-cli',
-    model: 'gpt-6-sol',
+    model: 'gpt-6.2-sol',
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
   },
   { auth: { cliSession: true } },
 )
 ```
+
+## Supported models
+
+`gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra`, `gpt-6-luna`, each with
+`{ reasoning: { effort }, timeoutMs }` and effort `low | medium | high | xhigh | max`.
+`ultra` is not admitted (it is a delegation switch, and `gpt-6-luna` does not offer it
+at all), nor is `none`. `gpt-6-sol`, `gpt-6-astra` and every `gpt-5*` id are deleted with
+no alias, and `gpt-6.1-sol` is not registered.
+
+The descriptors' `limits.contextWindow` is the window Codex CLI runs the model with by
+default, from the model catalog bundled with Codex CLI 0.171.0: 500,000 for
+`gpt-6.2-sol` and `gpt-6.1-terra`, 272,000 for `gpt-6.2-astra` and `gpt-6-luna`. The
+same catalog lists an effective context window of 95% of each nominal value (475,000
+and 258,400 tokens); `limits.contextWindow` keeps the nominal figure. It is not the
+API's 1,050,000, because a call through this package runs under the CLI's
+window. `maxOutputTokens` is 128,000 from the OpenAI model pages
+(`https://developers.openai.com/api/docs/models/<id>`, read 2026-11-20). Documented,
+not live-verified.
+
+Codex CLI 0.171.0 or later is needed for the 6.2 ids (its release notes add GPT-6.2 Sol
+and Astra to the catalogs). 0.164.0 fixed double-counted reasoning tokens in token
+usage, so use that version or later for accurate usage (Codex releases,
+`https://github.com/openai/codex/releases`, read 2026-11-20).
 
 ## Notes
 
