@@ -84,7 +84,7 @@ Concrete implementations live outside the engine, in separate packages or in hos
   Provider plugins (composed via composeProviders)
     ├── @gullabs/google (googleProvider → geminiAdapter → @google/genai SDK)
     ├── @gullabs/xai    (xaiProvider → xaiAdapter → openai SDK @ api.x.ai, streamed internally)
-    ├── @gullabs/openai (openaiProvider → openaiAdapter → openai SDK responses.stream() @ api.openai.com)
+    ├── @gullabs/openai (openaiProvider → openaiAdapter → fetch + openai SDK stream decoder @ api.openai.com)
     └── @gullabs/claude-cli / @gullabs/codex-cli (dev-only local CLI sessions)
 ```
 
@@ -719,11 +719,13 @@ no bytes at all. A stream that fails before any output event is a retryable `ser
 unpriced attempt); one that fails after output began is never retried and carries a usage
 estimate priced `'estimated'` (ADR-040 Amendments A and B). Search budgets stay observed after the call.
 
-### OpenAI: Streaming Through the SDK Helper
+### OpenAI: An Isolated Streaming Transport
 
-`@gullabs/openai`'s `run()` streams through the `openai` SDK's own `responses.stream()` helper (ADR-047)
-and keeps only the terminal event's response object: a stream that ends without `response.completed`,
-`response.incomplete` or `response.failed` is a `server` error, never the helper's accumulated snapshot.
+`@gullabs/openai`'s `run()` sends the request itself with `fetch` and decodes the stream with the `openai`
+SDK's environment-free `openai/streaming` decoder and `openai/error` classes (ADR-047). No SDK client is
+constructed, so no ambient `OPENAI_*` setting is read. It keeps the terminal event's response object,
+filling keys that object lacks from the items the stream completed: a stream that ends without
+`response.completed`, `response.incomplete` or `response.failed` is a `server` error.
 The request deadline (`timeoutMs + 5 000 ms`, or one hour) is a client timer over the whole stream, and the
 failure rules are the xAI ones (ADR-040): retryable with no usage before any output event, not retried and
 `mayHaveBilled` with a usage estimate after it. Cost follows the `service_tier` the response echoes; a
