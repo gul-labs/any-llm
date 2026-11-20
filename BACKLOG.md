@@ -254,6 +254,66 @@ Read on 2026-11-20 from xAI's public documentation (<https://docs.x.ai/developer
   etc."), so `text/*` is admitted as a family. Probe `text/csv`, `application/json` and
   `text/x-python` against the Files API to see which Google actually takes.
 
+## `@gullabs/openai` first slice (2026-11-20, ADR-047)
+
+The package was built from OpenAI's documentation and the `openai` 7.60.0 typings only; no OpenAI call
+was made. Each item names the live probe that closes it. A probe spends money and needs the owner's
+authorization.
+
+Deferred capabilities (rejected by the schema or the adapter today):
+
+- **Document and file-id inputs.** `file-ref` parts and non-image media are `bad_request`. Probe: a PDF as
+  `input_file` (`file_data` and a `user_data` upload) on each model, recording usage and the accepted types.
+- **`countTokens`.** `POST /v1/responses/input_tokens` exists in the SDK; whether it is billed or rate-limited
+  is undocumented. Probe: count the same request twice and compare with a real call's `input_tokens`.
+- **A public fake in `@gullabs/testing`.** Hosts inject an `OpenAiClientLike` today. Build one once a live
+  capture of a streamed response exists to replay.
+- **Built-in tools** (web search, file search, code interpreter, hosted shell, computer use, MCP, tool
+  search) and their tool fees. Probe: one call per tool, recording output items and `tool_usage`.
+- **A file store** (Files API upload, get, delete), after document input.
+- **`prompt_cache_options`** (explicit mode, `ttl: '12h'`, breakpoints, prewarm) and `prompt_cache_key`.
+  Probe: a 12-hour write and a read, reconciling `cache_write_tokens_details` with the billed amount.
+- **`reasoning.mode: 'pro'`.** Probe: one call per model, recording usage and whether the tier echo changes.
+- **`text.verbosity`.** Support and default on GPT-6.x are undocumented. Probe: each value on each model.
+- **Background windows** (`background_options.completion_window` `2h` / `8h`, 30% and 40% off). Needs a
+  non-streamed, polled path.
+- **`ultrafast`** (GPT-6.2: promotional 3× through 2027-02-28, then 6×). Needs date-aware rates and a probe of
+  the echoed tier.
+- **Batch.** No path in this library.
+- **`high`, `xhigh` and `max` effort on GPT-6.2.** The pages name only `low` and `medium`. Probe: each value on
+  `gpt-6.2-astra` and `gpt-6.2-sol`, then widen the schemas and descriptors to what is accepted.
+- **Reasoning summaries** (`reasoning.summary`, `includeThoughts`). Probe: `summary: 'auto'` on each model
+  (the reasoning guide says organization verification may be required).
+- **A transport option** (`fetch`, `fetchOptions`) for proxies and egress policy, as xAI has.
+- **Structured output together with function tools.** Rejected (`structuredOutputWithTools: false`). Probe:
+  a strict schema plus a function tool on each model, checking the call and the final answer.
+
+Unverified facts that limit the schema or the cost:
+
+- **GPT-6.2 default effort.** No page states it. Probe: a call without `reasoning`, reading the echoed effort.
+- **Sampling on Terra and Luna.** The pages are silent on `temperature` and `top_p`, so they are rejected.
+  Probe: one call with each.
+- **`reasoning.context` default on GPT-6.x.** Not sent; the replay sends every output item. The stub test
+  proves the request payload only. Probe: a two-turn function call with `all_turns` and without, comparing
+  `input_tokens` and the answer.
+- **The echoed tier on a `fast` request.** For GPT-5.6 and earlier the response says `priority`; GPT-6.x is
+  undocumented. Both price at the Fast table; a missing echo is unpriced. Probe: a `fast` call per model.
+- **Cached tokens and the 272,000 band.** Whether cached reads count toward the threshold is undocumented
+  (the band follows gross input; a call the reads decide is `estimated`). Probe: a warm call just above the
+  threshold whose uncached input is below it, reconciled with billing.
+- **Ordinary input = input − reads − writes.** Inferred from the caching guide's sentence; every call with
+  writes is `estimated`. Probe: a call with writes, reconciled with the usage dashboard.
+- **Per-model `parallel_tool_calls` support.** Not sent. Probe: two independent tool calls with and without it.
+- **The JSON error body.** The shape `error.{message,type,param,code}` is referenced, not shown; the billing
+  codes are matched on `error.code` and `error.type`. Capture a 401, a 429 and a 400 body.
+- **Dated snapshot ids.** The model pages list only bare ids, so no alias is declared. Re-read on each refresh.
+- **Animated GIF.** Only non-animated GIF is documented; the adapter does not decode images to check.
+
+Not modelled: regional-processing (data residency) and FedRAMP surcharges (+10% each); the
+`/v1/prompts` reusable prompt objects (shut down 2026-11-30).
+
+---
+
 ## Optional later (not ticketed)
 
 - Tool-invocation fee Cost lane for xAI server tools (`attachment_search`, etc.) once

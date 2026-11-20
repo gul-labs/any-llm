@@ -21,7 +21,7 @@ check(blocked, 'control: importing node:crypto must fail under the hook')
 
 // Every runtime-agnostic entry point loads without a built-in.
 const entries = {}
-for (const name of ['core', 'google', 'xai', 'quota', 'drizzle', 'any-llm']) {
+for (const name of ['core', 'google', 'xai', 'openai', 'quota', 'drizzle', 'any-llm']) {
   try {
     entries[name] = await import(dist(name))
   } catch (error) {
@@ -296,6 +296,86 @@ if (core !== undefined) {
       rejected = error?.kind === 'bad_request'
     }
     check(rejected, 'xai: an inline image over 20 MiB is rejected as bad_request')
+  })
+
+  const { openaiAdapter, openaiModelDescriptors, openaiPricingSource } =
+    entries.openai ?? {}
+  await attempt('openai: a fake-backed generate()', async () => {
+    check(openaiAdapter !== undefined, '@gullabs/openai exports openaiAdapter')
+    const requests = []
+    const adapter = openaiAdapter({
+      client: {
+        responses: {
+          async create(params) {
+            requests.push(params)
+            return {
+              id: 'resp_smoke',
+              model: 'gpt-6-luna',
+              status: 'completed',
+              incomplete_details: null,
+              output: [
+                {
+                  type: 'message',
+                  id: 'msg_smoke',
+                  role: 'assistant',
+                  status: 'completed',
+                  content: [{ type: 'output_text', text: 'a pixel', annotations: [] }],
+                },
+              ],
+              usage: {
+                input_tokens: 12,
+                input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+                output_tokens: 3,
+                output_tokens_details: { reasoning_tokens: 0 },
+                total_tokens: 15,
+              },
+              service_tier: 'default',
+            }
+          },
+        },
+      },
+    })
+    const client = core.createClient({
+      adapters: [adapter],
+      modelRegistry: core.createModelRegistry(openaiModelDescriptors),
+      pricingSources: { openai: openaiPricingSource() },
+    })
+    const result = await client.generate(
+      {
+        provider: 'openai',
+        model: 'gpt-6-luna',
+        system: 'be brief',
+        messages: [userMessage],
+      },
+      { auth: { apiKey: 'test' } },
+    )
+    check(result.text === 'a pixel', 'openai: the adapter returned the text')
+    check(requests.length === 1, 'openai: the fake client saw one request')
+    check(
+      requests[0]?.store === false && requests[0]?.input[0]?.role === 'developer',
+      'openai: store:false and the system as a leading developer message',
+    )
+    check(result.cost?.microUsd === 3, 'openai: priced at the echoed default tier')
+    // The image media type is checked before dispatch.
+    let rejected = false
+    try {
+      await client.generate(
+        {
+          provider: 'openai',
+          model: 'gpt-6-luna',
+          messages: [
+            {
+              role: 'user',
+              parts: [{ kind: 'inline-media', mimeType: 'image/jpg', data: 'AAAA' }],
+            },
+          ],
+        },
+        { auth: { apiKey: 'test' } },
+      )
+    } catch (error) {
+      rejected = error?.kind === 'bad_request'
+    }
+    check(rejected, 'openai: an undocumented image media type is rejected as bad_request')
   })
 }
 

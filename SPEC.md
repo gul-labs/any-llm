@@ -10,7 +10,8 @@
 1. Call **provider-hosted models** through self-contained provider packages composed via
    `composeProviders` (ADR-023): `@gullabs/google` over `@google/genai` (Gemini with Flex where
    supported; Gemma without Gemini-only Flex assumptions), `@gullabs/xai` over the `openai`
-   SDK's Responses API (grok-4.5, grok-4.6, grok-4.7), plus the dev-only CLI providers (`@gullabs/claude-cli`,
+   SDK's Responses API (grok-4.5, grok-4.6, grok-4.7), `@gullabs/openai` over the same SDK
+   (gpt-6.2-astra, gpt-6.2-sol, gpt-6.1-terra, gpt-6-luna), plus the dev-only CLI providers (`@gullabs/claude-cli`,
    `@gullabs/codex-cli`). The core engine ships zero provider knowledge.
 2. **Record token usage** (input / output / cached / **thinking**).
 3. Capture **thinking** — thinking _token usage_ always; the provider-returned _thought-summary
@@ -62,6 +63,7 @@ packages/
   core/       @gullabs/core       # types, ports, engine, callsite, computeCost, errors, record  (no provider deps)
   google/     @gullabs/google     # googleProvider: geminiAdapter over @google/genai + model configs + pricing  (peerDep @google/genai)
   xai/        @gullabs/xai        # xaiProvider: grok-4.5 / grok-4.6 / grok-4.7 over the openai SDK's Responses API  (peerDep openai)
+  openai/     @gullabs/openai     # openaiProvider: gpt-6.2-astra / gpt-6.2-sol / gpt-6.1-terra / gpt-6-luna over the openai SDK  (peerDep openai ^7.60.0)
   claude-cli/ @gullabs/claude-cli # dev-only: claude-fable-5-2, claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5
   codex-cli/  @gullabs/codex-cli  # dev-only: gpt-6.2-sol, gpt-6.2-astra, gpt-6.1-terra, gpt-6-luna
   any-llm/    @gullabs/any-llm    # batteries-included facade: re-exports core + google
@@ -76,7 +78,7 @@ strict per-model Zod config schemas + pricing source + typed provider options, w
 
 Tooling: TypeScript (strict, `exactOptionalPropertyTypes`), **vitest**, **tsup** (ESM+CJS+d.ts),
 Node ≥22.12 (every package's `engines`; CI runs 22.12.0 and 24). Provider SDKs are **peerDependencies** (a host that only uses Gemini never pulls others). The provider-neutral and
-provider packages (`core`, `google`, `xai`, `quota`, `drizzle`, `any-llm`) import no Node built-in, `Buffer` or `process` (README, "Runtimes"); the CLI providers and `@gullabs/testing` are Node only.
+provider packages (`core`, `google`, `xai`, `openai`, `quota`, `drizzle`, `any-llm`) import no Node built-in, `Buffer` or `process` (README, "Runtimes"); the CLI providers and `@gullabs/testing` are Node only.
 
 > Naming note (decide before publish): "any-llm" collides with mozilla-ai/any-llm on npm; the
 > `@gullabs/*` scope is a working placeholder. Not a blocker for local build.
@@ -173,8 +175,12 @@ export interface Usage {
 //   usage_missing         1 on a Google 200 that carried no usageMetadata: the usage is unknown, the cost
 //                         is unpriced (ADR-044), else absent
 //   search_budget_exceeded  1 when an xAI `searchBudget` ceiling was exceeded (reported after the call), else absent
-//   usage_estimated       1 on the usage an xAI adapter ESTIMATED for a stream that failed after output began
-//                         (an estimate, priced 'estimated'; ADR-040 Amendments A and B), else absent
+//   usage_estimated       1 on the usage an xAI or OpenAI adapter ESTIMATED for a stream that failed after
+//                         output began (an estimate, priced 'estimated'; ADR-040 Amendments A and B), else absent
+//   service_tier_missing  1 when an OpenAI response echoed no `service_tier`: the served tier is unknown and the
+//                         cost is unpriced, never the requested tier's (ADR-047), else absent
+//   usage_incomplete      1 when OpenAI usage lacks `cached_tokens` or `cache_write_tokens` (unpriced), else absent
+//   cache_write, cache_write_30m, cache_write_12h  OpenAI cache-write tokens and their TTL split, as reported
 // `normalizeUsage` also warns, and the engine reports the cost as 'estimated', when totalTokens
 // is larger than inputTokens + outputTokens (the provider counted tokens the fields omit).
 
@@ -650,6 +656,51 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
 - Search tools plus `output.jsonSchema` is admitted on all three models
   (`structuredOutputWithTools`). A response reporting `num_server_side_tools_used: 0` and no
   `server_side_tool_usage_details` prices exactly with no tool fee. See ADR-030.
+
+---
+
+## OpenAI adapter (`@gullabs/openai`)
+
+Documented, not live-verified (ADR-047; every page read 2026-11-20). Full details in `packages/openai/README.md`.
+
+- `openaiAdapter(): ProviderAdapter` over the `openai` SDK's Responses API (peerDep `openai@^7.60.0`),
+  per-call API key only. Ships `gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6.1-terra`, `gpt-6-luna` (context
+  1,050,000, `maxOutputTokens` up to 128,000). One strict schema per model: `maxOutputTokens`,
+  `reasoning.effort` (6.2: `low | medium`; Terra and Luna: `none | low | medium | high | xhigh | max`),
+  `serviceTier` (6.2: `fast`; Terra and Luna: `flex | fast`), `timeoutMs`. No sampling keys, no
+  `providerOptions`, no `countTokens`.
+- **SDK construction.** Built per call with `apiKey`, `baseURL: 'https://api.openai.com/v1'`,
+  `organization: null`, `project: null`, `adminAPIKey: null`, `webhookSecret: null`, `logLevel: 'off'`,
+  `maxRetries: 0`, and the SDK's `OPENAI_CUSTOM_HEADERS` default headers dropped, so no `OPENAI_*`
+  environment variable changes the destination or the headers.
+- **Request.** `store: false`; `system` is a leading `developer` input message; text and image input
+  (PNG, JPEG, WebP, GIF as base64 or a fully qualified `http(s)` URL, `detail: 'auto'`, at most 1,500
+  images and 512 MB inline per request); any other part kind is `bad_request`. `reasoning.context` and
+  `parallel_tool_calls` are never sent. Structured output is `text.format` with `strict: true`; tools are
+  strict function tools; the two cannot be combined (`structuredOutputWithTools: false`). Both schemas pass
+  core's `assertJsonSchemaProfile(OPENAI_JSON_SCHEMA_PROFILE)` and the strict-mode structure (object root,
+  no root `anyOf`, every object closed and fully required, 5,000 properties, 10 levels, 1,000 enum values,
+  120,000 characters).
+- **Continuation `'state'` (ADR-029).** State is `{ openai: { model, input } }`: the request input plus every
+  output item in order. It is accepted only with new messages, only for the same provider and model, only
+  with items this release produces (message, reasoning, function call and output), and a tool result must
+  answer an unanswered call in it.
+- **Streaming (ADR-036, ADR-040 rules).** `run()` streams through the SDK's `responses.stream()`; a terminal
+  event is required (an early clean end is `server`, never the snapshot). One deadline (`timeoutMs + 5 000`,
+  or one hour) covers the whole stream (`timeout`, `transport_timeout`, not retryable); caller aborts are
+  re-thrown. Before any output event a transient failure is retryable with no usage; after it nothing is
+  retried, the error is `mayHaveBilled` and carries a usage estimate. `response.failed` and `error` events
+  classify through the `error.code` table and keep the terminal usage and echoed tier.
+- **Errors.** 401/403 `invalid_auth`, 400/404/422 `bad_request`, 429 retryable `rate_limited` with
+  `Retry-After`, 5xx retryable `server`; a 429 billing, spend or usage-limit code is not retryable,
+  `reason: 'credits_exhausted'`.
+- **Cost (`openai-2026-11-20`).** Priced from the echoed `service_tier` (`default` standard, `flex` 50%,
+  `fast` / `priority` 2×); a missing echo sets `usage.details.service_tier_missing = 1` and is unpriced, an
+  unknown echo is an unpriced tier. Long context above 272,000 gross input tokens (2× input and cache, 1.5×
+  output). Cache writes 1.25× (30 minutes) or 2.5× (12 hours) of input inside the `input` lane
+  (`usage.details.cache_write`, `cache_write_30m`, `cache_write_12h`); a call with writes, or whose band the
+  cached reads decide, is `estimated`; usage that does not reconcile or lacks its cache lanes
+  (`usage.details.usage_incomplete`) is unpriced.
 
 ---
 
