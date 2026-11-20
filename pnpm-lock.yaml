@@ -318,6 +318,22 @@ importers:
         specifier: workspace:*
         version: link:../testing
 
+  packages/openai:
+    dependencies:
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@gullabs/core':
+        specifier: workspace:*
+        version: link:../core
+      '@gullabs/testing':
+        specifier: workspace:*
+        version: link:../testing
+      openai:
+        specifier: ^7.60.0
+        version: 7.60.0(google-auth-library@10.9.1(supports-color@7.2.0))(ws@8.22.0)(zod@4.6.7)
+
   packages/quota:
     devDependencies:
       '@gullabs/core':

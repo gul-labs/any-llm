@@ -1,0 +1,67 @@
+{
+  "name": "@gullabs/openai",
+  "version": "0.17.0",
+  "description": "OpenAI provider adapter for any-llm — Responses API, reasoning effort, strict structured output, function calling, vision.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gul-labs/any-llm.git",
+    "directory": "packages/openai"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsup"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  },
+  "peerDependencies": {
+    "@gullabs/core": "workspace:*",
+    "openai": "^7.60.0"
+  },
+  "devDependencies": {
+    "@gullabs/core": "workspace:*",
+    "@gullabs/testing": "workspace:*",
+    "openai": "^7.60.0"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "sideEffects": false,
+  "keywords": [
+    "llm",
+    "openai",
+    "gpt",
+    "ai",
+    "tokens",
+    "cost",
+    "usage",
+    "observability",
+    "typescript"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/gul-labs/any-llm/tree/main/packages/openai#readme",
+  "bugs": "https://github.com/gul-labs/any-llm/issues"
+}

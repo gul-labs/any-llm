@@ -38,6 +38,7 @@ const runtimeAgnosticSources = [
   'core',
   'google',
   'xai',
+  'openai',
   'quota',
   'drizzle',
   'any-llm',
