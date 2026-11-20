@@ -52,8 +52,10 @@ export interface GoogleRequestRules {
   /** A request whose last non-empty turn is a model turn is rejected. */
   readonly rejectsFinalModelTurn?: true
   /**
-   * The final turn, when it is a user turn, must hold text that is not all
-   * whitespace, unless every part of it is a function response (tool result).
+   * The final turn, when it is a user turn, must hold non-empty text, unless
+   * every part of it is a function response (tool result). Non-empty means a text
+   * part of length greater than zero; whitespace is not examined, because the
+   * documentation does not speak to it.
    */
   readonly requiresFinalUserText?: true
   /** Google Search is not admitted together with the flex tier. */

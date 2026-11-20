@@ -453,38 +453,45 @@ describe('final-turn rules, before dispatch', () => {
       expect(sent).toHaveLength(2)
     })
 
-    it('a tool result, an image and whitespace-only text: bad_request', async () => {
+    it('a tool result, an empty-string text part and an image: bad_request (the text is not non-empty)', async () => {
       const err = (await finalTurn([
         RESULT,
+        { kind: 'text', text: '' },
         IMAGE,
-        { kind: 'text', text: '  \n' },
       ])) as LlmError
-      expect(err).toMatchObject({ kind: 'bad_request' })
+      expect(err).toMatchObject({
+        kind: 'bad_request',
+        retryable: false,
+        provider: 'google',
+      })
       expect(err.issues?.[0]?.path).toBe('messages[2]')
       expect(sent).toHaveLength(1)
     })
 
-    // The documented rule is "the final user turn contains non-empty text"; the
-    // only exemption is the captured shape, a turn of function responses alone.
-    // A turn that adds a text part is no longer that shape, and whitespace is
-    // not text, so it is rejected.
-    it('a tool result and whitespace-only text: bad_request (not the captured all-tool-result shape)', async () => {
-      const err = (await finalTurn([RESULT, { kind: 'text', text: ' ' }])) as LlmError
-      expect(err).toMatchObject({ kind: 'bad_request' })
-      expect(sent).toHaveLength(1)
+    // "Non-empty" is a statement about length: a text part of length > 0
+    // satisfies the documented rule. Whitespace is not examined, because the
+    // documentation does not speak to it.
+    it('a tool result, an image and whitespace-only text: dispatched (the text is non-empty)', async () => {
+      expect(
+        await finalTurn([RESULT, IMAGE, { kind: 'text', text: '  \n' }]),
+      ).toBeUndefined()
+      expect(sent).toHaveLength(2)
     })
 
-    it('a user turn of whitespace-only text alone: bad_request', async () => {
-      const err = await rejectionOf(
-        geminiAdapter().run(
-          request('gemini-3.8-flash', {
-            messages: [{ role: 'user', parts: [{ kind: 'text', text: '\t ' }] }],
-          }),
-          CTX,
-        ),
+    it('a tool result and whitespace-only text: dispatched (the text is non-empty)', async () => {
+      expect(await finalTurn([RESULT, { kind: 'text', text: ' ' }])).toBeUndefined()
+      expect(sent).toHaveLength(2)
+    })
+
+    it('a user turn of whitespace-only text alone: dispatched (the text is non-empty)', async () => {
+      responses.push(ok())
+      await geminiAdapter().run(
+        request('gemini-3.8-flash', {
+          messages: [{ role: 'user', parts: [{ kind: 'text', text: '\t ' }] }],
+        }),
+        CTX,
       )
-      expect(err.kind).toBe('bad_request')
-      expect(sent).toHaveLength(0)
+      expect(sent).toHaveLength(1)
     })
   })
 
