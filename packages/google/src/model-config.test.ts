@@ -33,7 +33,7 @@ function collectObjectSchemas(value: unknown, acc: Record<string, unknown>[] = [
 
 describe('model-config helpers', () => {
   it('preserves Zod metadata in derived JSON Schema', () => {
-    const schema = findDescriptor('gemini-2.5-pro').configJsonSchema as Record<
+    const schema = findDescriptor('gemini-2.5-flash-lite').configJsonSchema as Record<
       string,
       unknown
     >
@@ -43,8 +43,8 @@ describe('model-config helpers', () => {
       'temperature'
     ] as Record<string, unknown>
 
-    expect(schema['title']).toBe('Gemini25ProConfig')
-    expect(schema['description']).toMatch(/gemini-2.5-pro/i)
+    expect(schema['title']).toBe('Gemini25FlashLiteConfig')
+    expect(schema['description']).toMatch(/gemini-2.5-flash-lite/i)
     expect(temperature['title']).toBe('Temperature')
     expect(temperature['description']).toMatch(/sampling temperature/i)
     expect(temperature['examples']).toEqual([0.7])
@@ -72,7 +72,7 @@ describe('model-config helpers', () => {
 
 describe('strict built-in config schemas', () => {
   it('reject unknown keys at the top level', () => {
-    const result = findDescriptor('gemini-2.5-flash').configSchema.safeParse({
+    const result = findDescriptor('gemini-2.5-flash-lite').configSchema.safeParse({
       unexpected: true,
     })
 
@@ -80,7 +80,7 @@ describe('strict built-in config schemas', () => {
   })
 
   it('reject unknown nested providerOptions keys', () => {
-    const result = findDescriptor('gemini-2.5-flash').configSchema.safeParse({
+    const result = findDescriptor('gemini-2.5-flash-lite').configSchema.safeParse({
       providerOptions: {
         google: {
           unsupported: true,
@@ -93,20 +93,20 @@ describe('strict built-in config schemas', () => {
 
   it('accepts providerOptions.google.flexFallback only in the flex branch', () => {
     expect(
-      findDescriptor('gemini-2.5-flash').configSchema.safeParse({
+      findDescriptor('gemini-2.5-flash-lite').configSchema.safeParse({
         flexFallback: false,
       }).success,
     ).toBe(false)
 
     expect(
-      findDescriptor('gemini-2.5-flash').configSchema.safeParse({
+      findDescriptor('gemini-2.5-flash-lite').configSchema.safeParse({
         serviceTier: 'standard',
         providerOptions: { google: { flexFallback: false } },
       }).success,
     ).toBe(false)
 
     expect(
-      findDescriptor('gemini-2.5-flash').configSchema.safeParse({
+      findDescriptor('gemini-2.5-flash-lite').configSchema.safeParse({
         serviceTier: 'flex',
         providerOptions: { google: { flexFallback: false } },
       }).success,
@@ -122,12 +122,6 @@ describe('strict built-in config schemas', () => {
   })
 
   it('admits thinking-off only for models whose evidence allows it', () => {
-    expect(
-      findDescriptor('gemini-2.5-pro').configSchema.safeParse({
-        reasoning: { effort: 'none' },
-      }).success,
-    ).toBe(false)
-
     expect(
       findDescriptor('gemini-3.1-flash-lite').configSchema.safeParse({
         reasoning: { effort: 'none' },
@@ -146,11 +140,6 @@ describe('strict built-in config schemas', () => {
       }).success,
     ).toBe(false)
     expect(
-      findDescriptor('gemini-3.7-flash').configSchema.safeParse({
-        reasoning: { effort: 'none' },
-      }).success,
-    ).toBe(false)
-    expect(
       findDescriptor('gemini-3.6-flash').configSchema.safeParse({
         reasoning: { effort: 'none' },
       }).success,
@@ -163,12 +152,6 @@ describe('strict built-in config schemas', () => {
   })
 
   it('enforces model-specific budget rules', () => {
-    expect(
-      findDescriptor('gemini-2.5-pro').configSchema.safeParse({
-        reasoning: { budgetTokens: 0 },
-      }).success,
-    ).toBe(false)
-
     expect(
       findDescriptor('gemini-2.5-flash-lite').configSchema.safeParse({
         reasoning: { budgetTokens: 0 },

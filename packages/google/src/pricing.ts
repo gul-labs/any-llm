@@ -19,7 +19,7 @@
  * **Thinking tokens.** Already inside `outputTokens` (GROSS convention) and
  * billed at the output rate — no separate thinking lane.
  *
- * **Audio input.** Gemini 2.5 Flash, 2.5 Flash-Lite and 3.1 Flash-Lite charge
+ * **Audio input.** Gemini 2.5 Flash-Lite and 3.1 Flash-Lite charge
  * more for audio input than for text, image and video tokens ({@link GeminiRates.audio}).
  * The adapter records the prompt's per-modality token counts
  * (`usageMetadata.promptTokensDetails` and `cacheTokensDetails`) as
@@ -29,20 +29,23 @@
  * an audio rate have no `gt200k` band, so the long-context band never needs the
  * audio split.
  *
- * Re-verified against https://ai.google.dev/gemini-api/docs/pricing on
- * 2026-09-25. Standard token rates for already-registered models were
- * unchanged from the 2026-08-12 snapshot; flex cached rates were not. The audio
- * input and cached-audio rates (standard and flex) were read from the same page
- * on 2026-10-03; the page showed "Last Updated 2026-10-01 UTC".
+ * **Snapshot `gemini-2026-11-20`.** Every rate was re-read on 2026-11-20 at
+ * https://aistudio.google.com/docs/pricing.md (the old ai.google.dev URL now
+ * redirects there; the page shows no last-updated stamp). The standard and flex
+ * rates of the models already priced are unchanged from `gemini-2026-10-03`.
+ * New: the four Gemini 4 models (standard and flex, flex half of standard on
+ * every lane; implicit caching only, so no storage lane) and their grounding
+ * rate. The rates of the three models removed that day went with them (ADR-048). Gemini 4
+ * Carbon and Argon carry the rates that apply from 2026-12-01 ($4.00 input,
+ * $0.20 cached, $20.00 output); through 2026-11-30 Google bills half of that, so
+ * their costs are `estimated` ({@link GEMINI_ESTIMATED_RATE_REASONS}). The
+ * snapshot holds one rate per lane and no date logic: when a published rate
+ * changes, the snapshot is re-read and its version bumped (BACKLOG). Earlier
+ * reads: 2026-09-25 (standard and flex token rates), 2026-10-03 (audio lanes and
+ * grounding, page then "Last Updated 2026-10-01 UTC").
  *
  * **Grounding with Google Search** is a tool lane, not a token rate; see
- * {@link GEMINI_GROUNDING_PRICING}. It was added from the same pricing page
- * on 2026-10-03. {@link pricingVersion} is `gemini-2026-10-03` because the
- * snapshot gained the grounding lane and the audio lane that day (a grounded or
- * audio call prices differently under it). The 2026-10-03 read of the page also
- * matched the standard text and cached rates of the models it listed (and the
- * flex text and cached rates of the three audio models); only the models the page
- * summary did not list keep their 2026-09-25 verification.
+ * {@link GEMINI_GROUNDING_PRICING}.
  *
  * @module
  */
@@ -56,7 +59,7 @@ import type { ModelRates } from '@gullabs/core'
  * core concept — it lives here (not `@gullabs/core`) alongside the rates it
  * dates.
  */
-export const pricingVersion = 'gemini-2026-10-03' as const
+export const pricingVersion = 'gemini-2026-11-20' as const
 
 /** Tiers this snapshot prices. Anything else is unpriced. */
 export const GEMINI_PRICED_TIERS = ['standard', 'flex'] as const
@@ -105,44 +108,11 @@ function tiers(standard: GeminiRates, flex: GeminiRates): GeminiTierRates {
  *
  * Keys are exact priced model identifiers. Unlisted variants are unpriced.
  *
- * Source: https://ai.google.dev/gemini-api/docs/pricing (re-verified 2026-09-25;
- * the audio input and cached-audio rates read 2026-10-03, page last updated
- * 2026-10-01).
+ * Source: https://aistudio.google.com/docs/pricing.md, read 2026-11-20 (earlier
+ * reads of the same page at https://ai.google.dev/gemini-api/docs/pricing on
+ * 2026-09-25 and 2026-10-03).
  */
 export const GEMINI_PRICING: Readonly<Record<string, GeminiTierRates>> = Object.freeze({
-  // Gemini 2.5 Pro. Flex cached equals standard on both context bands. No separate audio price.
-  'gemini-2.5-pro': tiers(
-    {
-      inputPerM: 1_250_000,
-      cachedPerM: 125_000,
-      outputPerM: 10_000_000,
-      gt200k: { inputPerM: 2_500_000, cachedPerM: 250_000, outputPerM: 15_000_000 },
-    },
-    {
-      inputPerM: 625_000,
-      cachedPerM: 125_000,
-      outputPerM: 5_000_000,
-      gt200k: { inputPerM: 1_250_000, cachedPerM: 250_000, outputPerM: 7_500_000 },
-    },
-  ),
-
-  // Gemini 2.5 Flash. Flex cached stays $0.03. Audio: $1.00 / cached $0.10 standard,
-  // $0.50 / cached $0.10 flex.
-  'gemini-2.5-flash': tiers(
-    {
-      inputPerM: 300_000,
-      cachedPerM: 30_000,
-      outputPerM: 2_500_000,
-      audio: { inputPerM: 1_000_000, cachedPerM: 100_000 },
-    },
-    {
-      inputPerM: 150_000,
-      cachedPerM: 30_000,
-      outputPerM: 1_250_000,
-      audio: { inputPerM: 500_000, cachedPerM: 100_000 },
-    },
-  ),
-
   // Gemini 2.5 Flash-Lite. Flex cached stays $0.01. Audio: $0.30 / cached $0.03
   // standard, $0.15 / cached $0.03 flex.
   'gemini-2.5-flash-lite': tiers(
@@ -177,13 +147,10 @@ export const GEMINI_PRICING: Readonly<Record<string, GeminiTierRates>> = Object.
     },
   ),
 
-  // Gemini 3.8 / 3.7 / 3.6 Flash intro rates (2026-09-25), one rate for all
-  // modalities. Flex cached is half of the intro cached rate. Re-snapshot on 2027-01-01.
+  // Gemini 3.8 / 3.6 Flash intro rates (2026-09-25, unchanged 2026-11-20), one
+  // rate for all modalities. Flex cached is half of the intro cached rate. Google
+  // doubles them on 2027-01-01: re-snapshot then (BACKLOG).
   'gemini-3.8-flash': tiers(
-    { inputPerM: 750_000, cachedPerM: 75_000, outputPerM: 3_750_000 },
-    { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
-  ),
-  'gemini-3.7-flash': tiers(
     { inputPerM: 750_000, cachedPerM: 75_000, outputPerM: 3_750_000 },
     { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
   ),
@@ -214,7 +181,56 @@ export const GEMINI_PRICING: Readonly<Record<string, GeminiTierRates>> = Object.
       gt200k: { inputPerM: 2_000_000, cachedPerM: 400_000, outputPerM: 9_000_000 },
     },
   ),
+
+  // Gemini 4 (documented, not live-verified): one rate for all modalities and the
+  // whole 1M window, output includes thinking, flex is half of standard on every
+  // lane, cached input is 5% of input (implicit caching only).
+  // Carbon and Argon: the rates from 2026-12-01; the cost is estimated until then
+  // (see GEMINI_ESTIMATED_RATE_REASONS).
+  'gemini-4-carbon': tiers(
+    { inputPerM: 4_000_000, cachedPerM: 200_000, outputPerM: 20_000_000 },
+    { inputPerM: 2_000_000, cachedPerM: 100_000, outputPerM: 10_000_000 },
+  ),
+  'gemini-4-argon': tiers(
+    { inputPerM: 4_000_000, cachedPerM: 200_000, outputPerM: 20_000_000 },
+    { inputPerM: 2_000_000, cachedPerM: 100_000, outputPerM: 10_000_000 },
+  ),
+  'gemini-4-neon': tiers(
+    { inputPerM: 3_000_000, cachedPerM: 150_000, outputPerM: 15_000_000 },
+    { inputPerM: 1_500_000, cachedPerM: 75_000, outputPerM: 7_500_000 },
+  ),
+  'gemini-4-hydrogen': tiers(
+    { inputPerM: 1_500_000, cachedPerM: 75_000, outputPerM: 7_500_000 },
+    { inputPerM: 750_000, cachedPerM: 37_500, outputPerM: 3_750_000 },
+  ),
 })
+
+/**
+ * Models whose priced cost is `estimated` in this snapshot although the rates are
+ * the published ones, with the reason. The adapter carries the reason as a
+ * warning on every attempt that reports usage, so it reaches the ledger row
+ * (`Cost.unpricedReason` is only for an unpriced call).
+ *
+ * Gemini 4 Carbon and Argon: the pricing page lists "$2.00 through November 30,
+ * 2026. $4.00 starting December 1, 2026." for input (and the same halving on the
+ * cached, output and flex lanes). The snapshot carries the December rates and no
+ * date logic, so until 2026-11-30 the amount is twice the bill: never an
+ * under-charge, never `exact`.
+ */
+export const GEMINI_ESTIMATED_RATE_REASONS: Readonly<Record<string, string>> =
+  Object.freeze({
+    'gemini-4-carbon':
+      'gemini-4-carbon is priced at the rates Google bills from 2026-12-01 ($4.00 input, $0.20 cached, $20.00 output per 1M tokens, flex half); through 2026-11-30 Google bills half of that, so the cost is estimated and overstates such a call.',
+    'gemini-4-argon':
+      'gemini-4-argon is priced at the rates Google bills from 2026-12-01 ($4.00 input, $0.20 cached, $20.00 output per 1M tokens, flex half); through 2026-11-30 Google bills half of that, so the cost is estimated and overstates such a call.',
+  })
+
+/** The estimate reason for an exact priced model id, or `undefined`. */
+export function geminiEstimatedRateReason(model: string): string | undefined {
+  return Object.hasOwn(GEMINI_ESTIMATED_RATE_REASONS, model)
+    ? GEMINI_ESTIMATED_RATE_REASONS[model]
+    : undefined
+}
 
 /**
  * How a model bills grounding with Google Search, in µUSD per unit.
@@ -226,10 +242,18 @@ export const GEMINI_PRICING: Readonly<Record<string, GeminiTierRates>> = Object.
  * - `'prompt'`: Gemini 2.5 bills each prompt that was grounded, once however
  *   many queries it ran. A grounded prompt is one whose response reports at
  *   least one query.
+ * - `instructionTokensBilled`: Gemini 4 also bills "internal tool system
+ *   instructions and function declarations when using grounding" as tokens
+ *   (pricing page, read 2026-11-20). Nothing documents whether `usageMetadata`
+ *   counts them in `promptTokenCount`, so the reported counts are priced as
+ *   given, a grounded Gemini 4 call is `estimated` even when it ran no query, and
+ *   the adapter warns.
  *
  * Transcribed from https://ai.google.dev/gemini-api/docs/pricing, grounding
  * with Google Search, read 2026-10-03 (Gemini 3: $14 per 1,000 queries;
- * Gemini 2.5: $35 per 1,000 grounded prompts). The page also publishes a free
+ * Gemini 2.5: $35 per 1,000 grounded prompts), and for Gemini 4 from
+ * https://aistudio.google.com/docs/pricing.md, read 2026-11-20 ("Gemini 3 and
+ * newer": $14 per 1,000 search queries; documented, not live-verified). The page also publishes a free
  * allowance (as read 2026-10: 5,000 requests per month shared
  * across Gemini 3.x, 1,500 requests per day on Gemini 2.5). It is shared across
  * a project's calls, so no single call can know whether it was free: every
@@ -242,11 +266,18 @@ export const GEMINI_PRICING: Readonly<Record<string, GeminiTierRates>> = Object.
 export interface GeminiGroundingRate {
   readonly unit: 'query' | 'prompt'
   readonly microUsdPerUnit: number
+  /** Grounding's internal instructions are billed as tokens (Gemini 4). */
+  readonly instructionTokensBilled?: true
 }
 
 const PER_QUERY: GeminiGroundingRate = Object.freeze({
   unit: 'query',
   microUsdPerUnit: 14_000,
+})
+const PER_QUERY_WITH_INSTRUCTION_TOKENS: GeminiGroundingRate = Object.freeze({
+  unit: 'query',
+  microUsdPerUnit: 14_000,
+  instructionTokensBilled: true,
 })
 const PER_GROUNDED_PROMPT: GeminiGroundingRate = Object.freeze({
   unit: 'prompt',
@@ -255,15 +286,16 @@ const PER_GROUNDED_PROMPT: GeminiGroundingRate = Object.freeze({
 
 export const GEMINI_GROUNDING_PRICING: Readonly<Record<string, GeminiGroundingRate>> =
   Object.freeze({
-    'gemini-2.5-pro': PER_GROUNDED_PROMPT,
-    'gemini-2.5-flash': PER_GROUNDED_PROMPT,
     'gemini-2.5-flash-lite': PER_GROUNDED_PROMPT,
     'gemini-3.1-flash-lite': PER_QUERY,
     'gemini-3.8-flash': PER_QUERY,
-    'gemini-3.7-flash': PER_QUERY,
     'gemini-3.6-flash': PER_QUERY,
     'gemini-3.5-flash-lite': PER_QUERY,
     'gemini-3.1-pro-preview': PER_QUERY,
+    'gemini-4-carbon': PER_QUERY_WITH_INSTRUCTION_TOKENS,
+    'gemini-4-argon': PER_QUERY_WITH_INSTRUCTION_TOKENS,
+    'gemini-4-neon': PER_QUERY_WITH_INSTRUCTION_TOKENS,
+    'gemini-4-hydrogen': PER_QUERY_WITH_INSTRUCTION_TOKENS,
   })
 
 /** The grounding rate for an exact priced model id, or `undefined`. */

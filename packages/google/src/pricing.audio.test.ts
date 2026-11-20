@@ -1,9 +1,12 @@
 /**
  * Gemini input priced by `promptTokensDetails[].modality`.
  *
- * Audio input is billed at its own rate on Gemini 2.5 Flash, 2.5 Flash-Lite and
- * 3.1 Flash-Lite (https://ai.google.dev/gemini-api/docs/pricing, read 2026-10-03,
- * page last updated 2026-10-01). Every other model has one input rate.
+ * Audio input is billed at its own rate on Gemini 2.5 Flash-Lite and 3.1
+ * Flash-Lite (https://ai.google.dev/gemini-api/docs/pricing, read 2026-10-03,
+ * page last updated 2026-10-01; re-read 2026-11-20 at
+ * https://aistudio.google.com/docs/pricing). Every other model has one input
+ * rate. The worked examples use 2.5 Flash-Lite standard rates: text $0.10/M
+ * (cached $0.01), audio $0.30/M (cached $0.03), output $0.40/M.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -35,9 +38,9 @@ function usage(over: Partial<Usage> & { details?: Record<string, number> }): Usa
 }
 
 describe('audio input rates', () => {
-  it('2.5 Flash standard: audio tokens at $1.00/M, the rest at $0.30/M', () => {
+  it('2.5 Flash-Lite standard: audio tokens at $0.30/M, the rest at $0.10/M', () => {
     const cost = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({
         inputTokens: 10_000,
         outputTokens: 500,
@@ -45,18 +48,18 @@ describe('audio input rates', () => {
       }),
     )
     expect(cost.details).toEqual({
-      input: 6_000 * 0.3 + 4_000 * 1.0, // 1,800 + 4,000
+      input: 6_000 * 0.1 + 4_000 * 0.3, // 600 + 1,200
       cached: 0,
-      output: 1_250,
+      output: 200,
       tools: 0,
     })
-    expect(cost.microUsd).toBe(5_800 + 1_250)
+    expect(cost.microUsd).toBe(1_800 + 200)
     expect(cost.confidence).toBe('exact')
   })
 
   it('cached audio is billed at the cached audio rate, cached text at the cached text rate', () => {
     const cost = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({
         inputTokens: 10_000,
         cachedInputTokens: 5_000,
@@ -68,11 +71,11 @@ describe('audio input rates', () => {
         },
       }),
     )
-    // uncached text 3,000 * 0.30 + uncached audio 2,000 * 1.00
-    // cached text 3,000 * 0.03 + cached audio 2,000 * 0.10
+    // uncached text 3,000 * 0.10 + uncached audio 2,000 * 0.30
+    // cached text 3,000 * 0.01 + cached audio 2,000 * 0.03
     expect(cost.details).toEqual({
-      input: 900 + 2_000,
-      cached: 90 + 200,
+      input: 300 + 600,
+      cached: 30 + 60,
       output: 0,
       tools: 0,
     })
@@ -80,8 +83,6 @@ describe('audio input rates', () => {
   })
 
   it.each([
-    ['gemini-2.5-flash', 'standard', 1_000_000, 100_000],
-    ['gemini-2.5-flash', 'flex', 500_000, 100_000],
     ['gemini-2.5-flash-lite', 'standard', 300_000, 30_000],
     ['gemini-2.5-flash-lite', 'flex', 150_000, 30_000],
     ['gemini-3.1-flash-lite', 'standard', 500_000, 50_000],
@@ -107,9 +108,7 @@ describe('audio input rates', () => {
     for (const model of [
       'gemini-3.5-flash-lite',
       'gemini-3.8-flash',
-      'gemini-3.7-flash',
       'gemini-3.6-flash',
-      'gemini-2.5-pro',
       'gemini-3.1-pro-preview',
     ]) {
       const plain = pricing.price(model, usage({ inputTokens: 10_000 }))
@@ -134,15 +133,15 @@ describe('audio input rates', () => {
 
   it('clamps audio tokens to the prompt and cached audio to cached tokens', () => {
     const cost = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({
         inputTokens: 1_000,
         cachedInputTokens: 100,
         details: { input_audio: 5_000, cached_audio: 900 },
       }),
     )
-    // 1,000 audio tokens; 100 of them cached.
-    expect(cost.details).toEqual({ input: 900, cached: 10, output: 0, tools: 0 })
+    // 1,000 audio tokens; 100 of them cached: 900 * 0.30 and 100 * 0.03.
+    expect(cost.details).toEqual({ input: 270, cached: 3, output: 0, tools: 0 })
   })
 
   it('the lanes sum to microUsd', () => {
@@ -164,16 +163,16 @@ describe('audio input rates', () => {
 describe('the audio share can be unknown, which makes the call estimated', () => {
   it('audio was sent but the response reports no audio tokens', () => {
     const cost = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({ inputTokens: 10_000, details: { audio_input_requested: 1 } }),
     )
     expect(cost.confidence).toBe('estimated')
-    expect(cost.microUsd).toBe(3_000) // priced at the text rate: an understatement
+    expect(cost.microUsd).toBe(1_000) // priced at the text rate: an understatement
   })
 
   it('audio was sent and reported: exact', () => {
     const cost = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({
         inputTokens: 10_000,
         details: { audio_input_requested: 1, input_audio: 10_000 },
@@ -193,7 +192,7 @@ describe('the audio share can be unknown, which makes the call estimated', () =>
 
   it('cached tokens beside audio with no cached split', () => {
     const cost = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({
         inputTokens: 10_000,
         cachedInputTokens: 5_000,
@@ -207,7 +206,7 @@ describe('the audio share can be unknown, which makes the call estimated', () =>
 describe('audio cost confidence: one predicate for the estimate and the warning', () => {
   it('audio sent and the response reports zero audio tokens is estimated, like an absent split', () => {
     const cost = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({
         inputTokens: 10_000,
         details: { audio_input_requested: 1, input_audio: 0, input_text: 10_000 },
@@ -219,7 +218,7 @@ describe('audio cost confidence: one predicate for the estimate and the warning'
   it('a text cache beside audio in the new part of the prompt is known and exact', () => {
     // 10,000 input of which 3,000 audio (new); 5,000 cached, all text.
     const cost = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({
         inputTokens: 10_000,
         cachedInputTokens: 5_000,
@@ -232,14 +231,14 @@ describe('audio cost confidence: one predicate for the estimate and the warning'
         },
       }),
     )
-    // audio 3,000 * 1.00 + uncached text 2,000 * 0.30 + cached text 5,000 * 0.03
-    expect(cost.microUsd).toBe(3_000 + 600 + 150)
+    // audio 3,000 * 0.30 + uncached text 2,000 * 0.10 + cached text 5,000 * 0.01
+    expect(cost.microUsd).toBe(900 + 200 + 50)
     expect(cost.confidence).toBe('exact')
   })
 
   it('cached tokens with no modality split at all cannot rule out audio in the cache: estimated', () => {
     const cost = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({ inputTokens: 10_000, cachedInputTokens: 5_000 }),
     )
     expect(cost.confidence).toBe('estimated')
@@ -247,7 +246,7 @@ describe('audio cost confidence: one predicate for the estimate and the warning'
 
   it('cached tokens beside a prompt split that shows no audio is exact (the cache is part of the prompt)', () => {
     const cost = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({
         inputTokens: 10_000,
         cachedInputTokens: 5_000,
@@ -268,78 +267,78 @@ describe('audio cost confidence: one predicate for the estimate and the warning'
 })
 
 describe('cached audio without a prompt split, and the shapes around it', () => {
-  // 2.5 Flash standard: text $0.30/M (cached $0.03), audio $1.00/M (cached $0.10).
-  it('5,000 uncached text + 5,000 cached audio, no promptTokensDetails: 2,000 µUSD', () => {
+  // 2.5 Flash-Lite standard: text $0.10/M (cached $0.01), audio $0.30/M (cached $0.03).
+  it('5,000 uncached text + 5,000 cached audio, no promptTokensDetails: 650 µUSD', () => {
     const cost = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({
         inputTokens: 10_000,
         cachedInputTokens: 5_000,
         details: { cached_audio: 5_000 },
       }),
     )
-    // uncached text 5,000 * 0.30 = 1,500; cached audio 5,000 * 0.10 = 500
-    expect(cost.details).toEqual({ input: 1_500, cached: 500, output: 0, tools: 0 })
-    expect(cost.microUsd).toBe(2_000)
+    // uncached text 5,000 * 0.10 = 500; cached audio 5,000 * 0.03 = 150
+    expect(cost.details).toEqual({ input: 500, cached: 150, output: 0, tools: 0 })
+    expect(cost.microUsd).toBe(650)
     // The request carried no audio, so the uncached part is known audio-free.
     expect(cost.confidence).toBe('exact')
   })
 
   it('the same response to a request that carried audio leaves the uncached audio unknown: estimated', () => {
     const cost = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({
         inputTokens: 10_000,
         cachedInputTokens: 5_000,
         details: { cached_audio: 5_000, audio_input_requested: 1 },
       }),
     )
-    expect(cost.microUsd).toBe(2_000)
+    expect(cost.microUsd).toBe(650)
     expect(cost.confidence).toBe('estimated')
   })
 
   it('cached audio raises a smaller or absent prompt audio count to at least the cached audio', () => {
     const cost = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({
         inputTokens: 10_000,
         cachedInputTokens: 5_000,
         details: { input_audio: 2_000, cached_audio: 5_000 },
       }),
     )
-    expect(cost.microUsd).toBe(1_500 + 500)
+    expect(cost.microUsd).toBe(500 + 150)
     expect(cost.confidence).toBe('estimated') // the counts contradict each other
   })
 
   it('cached audio larger than the cache or the prompt is clamped and estimated', () => {
     const aboveCache = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({
         inputTokens: 10_000,
         cachedInputTokens: 2_000,
         details: { cached_audio: 9_000 },
       }),
     )
-    // 2,000 cached audio * 0.10 + 8,000 uncached text * 0.30
-    expect(aboveCache.microUsd).toBe(200 + 2_400)
+    // 2,000 cached audio * 0.03 + 8,000 uncached text * 0.10
+    expect(aboveCache.microUsd).toBe(60 + 800)
     expect(aboveCache.confidence).toBe('estimated')
 
     const aboveTotal = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({
         inputTokens: 1_000,
         cachedInputTokens: 5_000,
         details: { cached_audio: 7_000 },
       }),
     )
-    // cached is clamped to the prompt: 1,000 cached audio * 0.10
-    expect(aboveTotal.microUsd).toBe(100)
+    // cached is clamped to the prompt: 1,000 cached audio * 0.03
+    expect(aboveTotal.microUsd).toBe(30)
     expect(aboveTotal.confidence).toBe('estimated')
   })
 
   it('uncached audio plus cached tokens that exceed the prompt is estimated, never negative', () => {
     const cost = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({
         inputTokens: 10_000,
         cachedInputTokens: 5_000,
@@ -354,7 +353,7 @@ describe('cached audio without a prompt split, and the shapes around it', () => 
 
   it('cached text beside an audio prompt split but no cached split is unknown: estimated', () => {
     const cost = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({
         inputTokens: 10_000,
         cachedInputTokens: 5_000,
@@ -368,7 +367,7 @@ describe('cached audio without a prompt split, and the shapes around it', () => 
 
   it('a cache listing that covers fewer cached tokens than reported and names no audio is unknown', () => {
     const cost = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({
         inputTokens: 10_000,
         cachedInputTokens: 5_000,
@@ -380,7 +379,7 @@ describe('cached audio without a prompt split, and the shapes around it', () => 
 
   it('thinking tokens are output tokens and never touch the prompt lanes', () => {
     const cost = pricing.price(
-      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
       usage({
         inputTokens: 10_000,
         cachedInputTokens: 5_000,
@@ -390,9 +389,9 @@ describe('cached audio without a prompt split, and the shapes around it', () => 
       }),
     )
     expect(cost.details).toEqual({
-      input: 1_500,
-      cached: 500,
-      output: 5_000, // 2,000 * 2.50
+      input: 500,
+      cached: 150,
+      output: 800, // 2,000 * 0.40
       tools: 0,
     })
     expect(cost.confidence).toBe('exact')
@@ -422,12 +421,12 @@ describe('promptLanes: random splits', () => {
   ]
   const textMessage: Message[] = [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }]
 
-  // 2.5 Flash standard rates, µUSD per million tokens.
-  const TEXT = 300_000
-  const CACHED_TEXT = 30_000
-  const AUDIO = 1_000_000
-  const CACHED_AUDIO = 100_000
-  const OUT = 2_500_000
+  // 2.5 Flash-Lite standard rates, µUSD per million tokens.
+  const TEXT = 100_000
+  const CACHED_TEXT = 10_000
+  const AUDIO = 300_000
+  const CACHED_AUDIO = 30_000
+  const OUT = 400_000
   const lane = (tokens: number, rate: number) => Math.round((tokens * rate) / 1_000_000)
 
   it('the lanes sum to the prompt; the price matches the truth when the response says enough, else estimated', async () => {
@@ -481,7 +480,7 @@ describe('promptLanes: random splits', () => {
       const { cost, usage: u } = await client.generate(
         {
           provider: 'google',
-          model: 'gemini-2.5-flash',
+          model: 'gemini-2.5-flash-lite',
           messages: requestHasAudio ? audioMessage : textMessage,
         },
         { auth: AUTH },
@@ -564,7 +563,11 @@ describe('promptLanes: random splits', () => {
 describe('the dead batch tier is gone', () => {
   it('batch is not a priced tier', () => {
     expect(GEMINI_PRICED_TIERS).toEqual(['standard', 'flex'])
-    const cost = pricing.price('gemini-2.5-pro', usage({ inputTokens: 1_000 }), 'batch')
+    const cost = pricing.price(
+      'gemini-2.5-flash-lite',
+      usage({ inputTokens: 1_000 }),
+      'batch',
+    )
     expect(cost.microUsd).toBeNull()
     expect(cost.unpricedReason).toMatch(/Unpriced service tier "batch"/)
     for (const tiers of Object.values(GEMINI_PRICING)) {
@@ -589,7 +592,7 @@ describe('adapter: promptTokensDetails reach usage.details and the cost', () => 
   function run(
     messages: Message[],
     usageMetadata: Record<string, unknown> | undefined,
-    model = 'gemini-2.5-flash',
+    model = 'gemini-2.5-flash-lite',
   ) {
     const response = fakeGeminiResponse({
       text: 'ok',
@@ -628,9 +631,9 @@ describe('adapter: promptTokensDetails reach usage.details and the cost', () => 
     })
     expect(result.cost?.confidence).toBe('exact')
     expect(result.cost?.details).toEqual({
-      input: 1_800 + 4_000,
+      input: 600 + 1_200,
       cached: 0,
-      output: 1_250,
+      output: 200,
       tools: 0,
     })
     expect(result.warnings).toEqual([])
@@ -656,7 +659,7 @@ describe('adapter: promptTokensDetails reach usage.details and the cost', () => 
     })
     expect(result.usage.details).toMatchObject({ cached_text: 5_000, cached_audio: 0 })
     expect(result.cost?.confidence).toBe('exact')
-    expect(result.cost?.microUsd).toBe(3_000 + 600 + 150 + 1_250)
+    expect(result.cost?.microUsd).toBe(900 + 200 + 50 + 200)
     expect(result.warnings).toEqual([])
   })
 
@@ -702,11 +705,11 @@ describe('adapter: promptTokensDetails reach usage.details and the cost', () => 
       cachedContentTokenCount: 5_000,
       cacheTokensDetails: [{ modality: 'AUDIO', tokenCount: 5_000 }],
     })
-    // 5,000 uncached text * 0.30 + 5,000 cached audio * 0.10 + 500 output * 2.50
+    // 5,000 uncached text * 0.10 + 5,000 cached audio * 0.03 + 500 output * 0.40
     expect(result.cost?.details).toEqual({
-      input: 1_500,
-      cached: 500,
-      output: 1_250,
+      input: 500,
+      cached: 150,
+      output: 200,
       tools: 0,
     })
     expect(result.cost?.confidence).toBe('exact')
@@ -718,7 +721,7 @@ describe('adapter: promptTokensDetails reach usage.details and the cost', () => 
       cachedContentTokenCount: 5_000,
       cacheTokensDetails: [{ modality: 'AUDIO', tokenCount: 5_000 }],
     })
-    expect(result.cost?.microUsd).toBe(1_500 + 500 + 1_250)
+    expect(result.cost?.microUsd).toBe(500 + 150 + 200)
     expect(result.cost?.confidence).toBe('estimated')
     expect(result.warnings.map((w) => w.message)).toEqual([
       expect.stringContaining('reports no AUDIO tokens'),

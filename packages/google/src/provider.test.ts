@@ -25,7 +25,7 @@ describe('googleProvider', () => {
     }
 
     const ids = plugin.modelDescriptors.map((d) => d.model)
-    expect(ids).toContain('gemini-2.5-pro')
+    expect(ids).toContain('gemini-3.8-flash')
     expect(ids).toContain('gemma-4-31b-it')
   })
 
@@ -33,8 +33,11 @@ describe('googleProvider', () => {
     const plugin = googleProvider()
 
     expect(plugin.pricingSource).toBeDefined()
-    expect(plugin.pricingSource?.hasModel('gemini-2.5-pro')).toBe(true)
-    expect(plugin.pricingSource?.hasModel('gemini-2.5-flash')).toBe(true)
+    for (const descriptor of plugin.modelDescriptors) {
+      if (descriptor.pricingFamily === undefined) continue
+      expect(plugin.pricingSource?.hasModel(descriptor.pricingFamily)).toBe(true)
+    }
+    expect(plugin.pricingSource?.hasModel('gemini-3.8-flash')).toBe(true)
   })
 
   it('constructs a working client via composeProviders', () => {

@@ -39,7 +39,7 @@ vi.mock('@google/genai', () => {
 })
 
 describe('buildGoogleClient', () => {
-  it('constructs GoogleGenAI with the auth key and the pinned Developer API base URL, nothing else', async () => {
+  it('constructs GoogleGenAI with the auth key, the Developer API backend, v1beta and the pinned base URL, nothing else', async () => {
     constructorCalls.length = 0
 
     await buildGoogleClient({ apiKey: 'test-key' })
@@ -47,6 +47,8 @@ describe('buildGoogleClient', () => {
     expect(constructorCalls).toHaveLength(1)
     expect(constructorCalls[0]).toEqual({
       apiKey: 'test-key',
+      vertexai: false,
+      apiVersion: 'v1beta',
       httpOptions: { baseUrl: 'https://generativelanguage.googleapis.com/' },
     })
   })

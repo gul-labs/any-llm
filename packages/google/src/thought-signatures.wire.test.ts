@@ -74,7 +74,14 @@ const capture = JSON.parse(
     'utf8',
   ),
 ) as { models: Record<string, CapturedModel> }
-const CAPTURED_MODELS = Object.keys(capture.models)
+/**
+ * The capture's models that are still registered. The capture keeps its row for
+ * `gemini-3.7-flash` (removed from the registry 2026-11-20) as evidence; only the
+ * registered models are replayed through the client.
+ */
+const CAPTURED_MODELS = Object.keys(capture.models).filter((model) =>
+  geminiModelDescriptors.some((descriptor) => descriptor.model === model),
+)
 
 interface IdTurn {
   status: number
@@ -261,6 +268,17 @@ function partsFromCapture(captured: CapturedPart[]): Array<Record<string, unknow
     )
   })
 }
+
+describe('the thought-signature capture', () => {
+  it('covers every registered Gemini 3.x model', () => {
+    expect([...CAPTURED_MODELS].sort()).toEqual(
+      geminiModelDescriptors
+        .map((descriptor) => descriptor.model)
+        .filter((model) => model.startsWith('gemini-3.'))
+        .sort(),
+    )
+  })
+})
 
 describe.each(CAPTURED_MODELS)('captured behaviour on %s', (model) => {
   const captured = capture.models[model] as CapturedModel
@@ -962,7 +980,12 @@ describe('model-bound state', () => {
   it('Gemini 2.5 needs no signatures: tool-call history replays as before, no state is returned', async () => {
     respond([call('get_weather', { city: 'Paris' }, sig(16))])
     const first = await client.generate(
-      { provider: 'google', model: 'gemini-2.5-flash', messages: [USER], tools: TOOLS },
+      {
+        provider: 'google',
+        model: 'gemini-2.5-flash-lite',
+        messages: [USER],
+        tools: TOOLS,
+      },
       { auth: AUTH },
     )
     expect(first.continuation).toBe('history')
@@ -972,7 +995,7 @@ describe('model-bound state', () => {
     await client.generate(
       {
         provider: 'google',
-        model: 'gemini-2.5-flash',
+        model: 'gemini-2.5-flash-lite',
         messages: [USER, first.message, toolResults(first)],
         tools: TOOLS,
       },
@@ -986,7 +1009,7 @@ describe('model-bound state', () => {
       client.generate(
         {
           provider: 'google',
-          model: 'gemini-2.5-flash',
+          model: 'gemini-2.5-flash-lite',
           messages: [USER],
           transientProviderState: { google: { signatures: [] } },
         },

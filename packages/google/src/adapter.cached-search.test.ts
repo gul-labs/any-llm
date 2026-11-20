@@ -350,7 +350,7 @@ describe('a schema call and Search held by a cache', () => {
 
   it('a handle that holds googleSearch on a model never measured with a schema has nothing to opt into', async () => {
     const fake = structured()
-    const model = 'gemini-2.5-flash'
+    const model = 'gemini-2.5-flash-lite'
     const err = (await runStructured(
       fake,
       withOptions(

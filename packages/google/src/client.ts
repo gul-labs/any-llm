@@ -336,6 +336,21 @@ export interface GeminiGenerateConfig {
       allowedFunctionNames?: string[]
     }
   }
+  /**
+   * Real field: `GenerateContentConfig.automaticContinuation`, read by the SDK
+   * and never sent. `@google/genai` defaults it to `true`: on a `CONTINUATION`
+   * finish the SDK sends the request again with the continuation token and sums
+   * the usage, several billed requests inside one attempt. The adapter always
+   * sends `false` (one dispatch per attempt, ADR-031).
+   */
+  automaticContinuation?: false
+  /**
+   * Real field: `GenerateContentConfig.store`, serialized as the top-level
+   * request field `store` ("Configures the logging behavior for a given request.
+   * If set, it takes precedence over the project-level logging config"). The
+   * adapter always sends `false`.
+   */
+  store?: false
 }
 
 /**
@@ -414,7 +429,30 @@ export interface GeminiClientLike {
 const GEMINI_API_ROOT = 'https://generativelanguage.googleapis.com'
 
 /**
- * A real `GoogleGenAI` client for `auth`, pinned to {@link GEMINI_API_ROOT}.
+ * The Developer API version every call uses. `@google/genai` 3.0.0 moved the
+ * Developer API default from `v1beta` to `v1`, where explicit context caching
+ * (`caches`) does not exist, and began reading `GOOGLE_GENAI_API_VERSION` from
+ * the environment when no version is passed. The REST `countTokens` below uses
+ * the same version.
+ */
+const GEMINI_API_VERSION = 'v1beta'
+
+/**
+ * A real `GoogleGenAI` client for `auth`, fully pinned so that no ambient
+ * setting can move a call (ADR-019). Read against the `@google/genai`
+ * 3.6.1 constructor (`dist/node/index.mjs`, `GoogleGenAI` and `resolveCloudFlag`):
+ *
+ * - `vertexai: false`: with neither `vertexai` nor `enterprise` passed the SDK
+ *   picks its backend from `GOOGLE_GENAI_USE_ENTERPRISE` / `GOOGLE_GENAI_USE_VERTEXAI`;
+ *   an explicit flag is used as given and neither variable is read.
+ * - `apiVersion`: an explicit value wins over `GOOGLE_GENAI_API_VERSION` and over
+ *   the SDK default (`v1` since 3.0.0).
+ * - `httpOptions.baseUrl`: an explicit value wins over `GOOGLE_GEMINI_BASE_URL`
+ *   (and `GOOGLE_VERTEX_BASE_URL`, read only for Vertex).
+ * - `apiKey`: always the call's key, so `GOOGLE_API_KEY` / `GEMINI_API_KEY` are
+ *   never used. `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION` are read by the
+ *   constructor but used only by the Vertex backend.
+ *
  * Shared by the generation client and both stores.
  *
  * @internal
@@ -423,6 +461,8 @@ export async function newGoogleGenAI(auth: AuthMaterial): Promise<GoogleGenAI> {
   const { GoogleGenAI: Sdk } = await import('@google/genai')
   return new Sdk({
     apiKey: requireApiKey(auth),
+    vertexai: false,
+    apiVersion: GEMINI_API_VERSION,
     httpOptions: { baseUrl: `${GEMINI_API_ROOT}/` },
   })
 }
@@ -474,10 +514,11 @@ export async function buildGoogleClient(auth: AuthMaterial): Promise<GeminiClien
 // ---------------------------------------------------------------------------
 
 /**
- * Base of the Gemini Developer API (`v1beta`), the version the SDK's Developer
- * API client uses. Only the REST `countTokens` below builds a URL itself.
+ * Base of the Gemini Developer API at {@link GEMINI_API_VERSION}, the version
+ * the SDK client is pinned to. Only the REST `countTokens` below builds a URL
+ * itself.
  */
-const GEMINI_API_BASE = `${GEMINI_API_ROOT}/v1beta`
+const GEMINI_API_BASE = `${GEMINI_API_ROOT}/${GEMINI_API_VERSION}`
 
 /** Longest non-structured error body kept in an error message (characters). */
 const MAX_ERROR_BODY_CHARS = 500

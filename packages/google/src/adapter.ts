@@ -67,6 +67,9 @@ import type {
   GeminiCountTokensParams,
 } from './client.js'
 import { isGeminiCapacityError } from './flex-fallback.js'
+import { googleRequestRules } from './request-rules.js'
+import { geminiEstimatedRateReason, resolveGeminiGroundingRate } from './pricing.js'
+import type { GoogleRequestRules } from './request-rules.js'
 import { classifyGoogleError } from './errors.js'
 import { PLATFORM_SCHEDULER } from './platform-scheduler.js'
 import { promptLanes } from './cost.js'
@@ -526,6 +529,59 @@ function assertSamplingAllowed(
   }
 }
 
+/**
+ * The final-turn rules of {@link GoogleRequestRules}, before dispatch: a last
+ * non-empty turn that is a model turn (Google answers 400 on 3.6 Flash, 3.5
+ * Flash-Lite and every later model), and, where the model documents it (3.8
+ * Flash), a final user turn without non-empty text. A final turn of function
+ * responses is not held to the text rule.
+ */
+function assertFinalTurnAdmitted(
+  messages: readonly Message[],
+  rules: GoogleRequestRules,
+  model: string,
+): void {
+  if (rules.rejectsFinalModelTurn !== true && rules.requiresFinalUserText !== true) return
+  let index = messages.length - 1
+  let last: Message | undefined
+  for (; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message !== undefined && message.parts.length > 0) {
+      last = message
+      break
+    }
+  }
+  if (last === undefined) return
+  const path = `messages[${index}]`
+  if (rules.rejectsFinalModelTurn === true && last.role === 'assistant') {
+    throw new LlmError(
+      `${path} is an assistant turn, and the last non-empty turn of a request to model "${model}" must not be a model turn: Google rejects a prefilled model turn with 400 on this model. End the request with a user turn.`,
+      {
+        kind: 'bad_request',
+        retryable: false,
+        provider: 'google',
+        issues: [{ path, message: 'the last non-empty turn is a model turn' }],
+      },
+    )
+  }
+  if (
+    rules.requiresFinalUserText === true &&
+    last.role === 'user' &&
+    !last.parts.some((part) => part.kind === 'tool-result') &&
+    !last.parts.some((part) => part.kind === 'text' && part.text.length > 0)
+  ) {
+    throw new LlmError(
+      `${path} is the final user turn of a request to model "${model}" and holds no non-empty text; Google documents that this model's final user turn must contain non-empty text. Add a text part.`,
+      {
+        kind: 'bad_request',
+        retryable: false,
+        provider: 'google',
+        issues: [{ path, message: 'the final user turn has no non-empty text' }],
+      },
+    )
+  }
+}
+
 // ---------------------------------------------------------------------------
 // FinishReason mapping (Gemini SDK enum → our FinishReason)
 // ---------------------------------------------------------------------------
@@ -677,25 +733,59 @@ function describeSafetyRatings(ratings: unknown): string {
   return `${parts.join(', ')}${more}`
 }
 
+/**
+ * Every `FinishReason` member of `@google/genai` 3.6.1, mapped explicitly
+ * (descriptions from the SDK's enum documentation):
+ *
+ * - `CONTINUATION` ("reached the per-request token limit, but generation is not
+ *   yet complete") is `length`: the adapter sends one request per attempt and
+ *   never replays the continuation token, so the answer is cut like `MAX_TOKENS`.
+ * - The members the SDK documents as a safety or policy block are
+ *   `content_filter`: the safety, recitation, blocklist, prohibited-content and
+ *   SPII stops, the image variants, `ESCALATION` ("filtered by an escalation
+ *   rule"), `PUP_LIMITED_DISABLED` (an account limited or disabled for
+ *   Prohibited Use Policy violations) and `MODEL_ARMOR` ("blocked by Model
+ *   Armor"; documented as not used by the Gemini API).
+ * - The rest (`OTHER`, `LANGUAGE`, malformed or unexpected tool calls,
+ *   `TOO_MANY_TOOL_CALLS`, `MISSING_THOUGHT_SIGNATURE`, `MALFORMED_RESPONSE`,
+ *   `IMAGE_OTHER`, `NO_IMAGE`, `FINISH_REASON_UNSPECIFIED`) is `other`; the raw
+ *   value stays in `providerMetadata.google.candidate.finishReason`.
+ *
+ * A value outside this table (a newer API than the SDK) is `other` as well.
+ *
+ * @internal Exported for the test that holds it equal to the SDK enum.
+ */
+export const GEMINI_FINISH_REASONS: Readonly<Record<string, FinishReason>> =
+  Object.freeze({
+    STOP: 'stop',
+    MAX_TOKENS: 'length',
+    CONTINUATION: 'length',
+    SAFETY: 'content_filter',
+    RECITATION: 'content_filter',
+    BLOCKLIST: 'content_filter',
+    PROHIBITED_CONTENT: 'content_filter',
+    SPII: 'content_filter',
+    IMAGE_SAFETY: 'content_filter',
+    IMAGE_PROHIBITED_CONTENT: 'content_filter',
+    IMAGE_RECITATION: 'content_filter',
+    ESCALATION: 'content_filter',
+    PUP_LIMITED_DISABLED: 'content_filter',
+    MODEL_ARMOR: 'content_filter',
+    FINISH_REASON_UNSPECIFIED: 'other',
+    OTHER: 'other',
+    LANGUAGE: 'other',
+    MALFORMED_FUNCTION_CALL: 'other',
+    UNEXPECTED_TOOL_CALL: 'other',
+    TOO_MANY_TOOL_CALLS: 'other',
+    MISSING_THOUGHT_SIGNATURE: 'other',
+    MALFORMED_RESPONSE: 'other',
+    IMAGE_OTHER: 'other',
+    NO_IMAGE: 'other',
+  })
+
 function mapFinishReason(raw: string | undefined): FinishReason | undefined {
   if (raw === undefined) return undefined
-  switch (raw) {
-    case 'STOP':
-      return 'stop'
-    case 'MAX_TOKENS':
-      return 'length'
-    case 'SAFETY':
-    case 'RECITATION':
-    case 'BLOCKLIST':
-    case 'PROHIBITED_CONTENT':
-    case 'SPII':
-    case 'IMAGE_SAFETY':
-    case 'IMAGE_PROHIBITED_CONTENT':
-    case 'IMAGE_RECITATION':
-      return 'content_filter'
-    default:
-      return 'other'
-  }
+  return Object.hasOwn(GEMINI_FINISH_REASONS, raw) ? GEMINI_FINISH_REASONS[raw] : 'other'
 }
 
 // ---------------------------------------------------------------------------
@@ -1003,6 +1093,8 @@ export function geminiAdapterWithClientFactory(
       const descriptor = req.modelDescriptor
       assertModelMatchesDescriptor(req, descriptor, 'google')
       assertInputMimeTypesAdmitted(req.messages, descriptor, 'google')
+      const rules = googleRequestRules(descriptor.model)
+      assertFinalTurnAdmitted(req.messages, rules, model)
       const signsHistory = descriptor.capabilities?.providerState === true
       if (req.transientProviderState !== undefined && !signsHistory) {
         throw new LlmError(`Model "${model}" does not admit transientProviderState.`, {
@@ -1089,6 +1181,15 @@ export function geminiAdapterWithClientFactory(
       // 3. Reasoning → thinkingConfig
       // ------------------------------------------------------------------
       const reasoning = genConfig.reasoning
+      if (
+        reasoning === undefined &&
+        rules.defaultThinkingLevel !== undefined &&
+        descriptor.capabilities?.reasoningApi === 'level'
+      ) {
+        // Google calls thinkingLevel required for Gemini 4 and documents a
+        // default per model: sending that default is valid under both readings.
+        config.thinkingConfig = { thinkingLevel: rules.defaultThinkingLevel }
+      }
       if (reasoning !== undefined) {
         const reasoningApi = descriptor.capabilities?.reasoningApi
 
@@ -1158,8 +1259,9 @@ export function geminiAdapterWithClientFactory(
             )
           }
 
-          // Real SDK ThinkingLevel enum: "LOW" | "MEDIUM" | "HIGH" | "MINIMAL".
-          // `none` maps to MINIMAL only when the descriptor admits it.
+          // Real SDK ThinkingLevel enum (3.6.1): "MINIMAL" | "LOW" | "MEDIUM" |
+          // "HIGH" | "XHIGH". `none` maps to MINIMAL and `xhigh` to XHIGH only
+          // when the descriptor admits them.
           const admitted = descriptor.capabilities?.admittedReasoningEfforts
           const admitsNone = admitted?.includes('none') === true
           let thinkingLevel: string | undefined
@@ -1184,10 +1286,14 @@ export function geminiAdapterWithClientFactory(
                 thinkingLevel = 'HIGH'
                 break
               case 'xhigh':
-                throw new LlmError(
-                  `reasoning.effort "${reasoning.effort}" is not supported for model "${model}".`,
-                  { kind: 'bad_request', retryable: false },
-                )
+                if (admitted?.includes('xhigh') !== true) {
+                  throw new LlmError(
+                    `reasoning.effort "${reasoning.effort}" is not supported for model "${model}".`,
+                    { kind: 'bad_request', retryable: false },
+                  )
+                }
+                thinkingLevel = 'XHIGH'
+                break
               default:
                 assertNever(reasoning.effort)
             }
@@ -1207,8 +1313,11 @@ export function geminiAdapterWithClientFactory(
             })
           }
 
+          // No effort (only includeThoughts): the model's documented default
+          // level, where the request rules name one (Gemini 4).
+          const level = thinkingLevel ?? rules.defaultThinkingLevel
           config.thinkingConfig = {
-            ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
+            ...(level !== undefined ? { thinkingLevel: level } : {}),
             ...(reasoning.includeThoughts === true ? { includeThoughts: true } : {}),
           }
         } else {
@@ -1261,7 +1370,7 @@ export function geminiAdapterWithClientFactory(
         model,
         structuredOutputRequested,
         descriptorGrounding: descriptor.capabilities?.grounding,
-        descriptorCaching: descriptor.capabilities?.caching !== undefined,
+        descriptorCaching: descriptor.capabilities?.caching?.explicit === true,
         structuredOutputWithTools: descriptor.capabilities?.structuredOutputWithTools,
       })
       // Search facts, normalised across providers (ADR-035): `web_search_requested`
@@ -1281,6 +1390,24 @@ export function geminiAdapterWithClientFactory(
       const searchDeclared =
         googleSearchSent ||
         googleProviderConfig.cachedToolKinds?.includes('googleSearch') === true
+      if (
+        rules.rejectsSearchWithFlex === true &&
+        config.serviceTier === 'flex' &&
+        searchDeclared
+      ) {
+        throw new LlmError(
+          `providerOptions.google.tools (googleSearch) cannot be combined with serviceTier "flex" for model "${model}": nothing documents Search on this model's flex tier (its flex price tab has no grounding row). Send the grounded call at the standard tier.`,
+          {
+            kind: 'bad_request',
+            retryable: false,
+            provider: 'google',
+            issues: [
+              { path: 'providerOptions.google.tools', message: 'Search with flex' },
+              { path: 'serviceTier', message: 'Search with flex' },
+            ],
+          },
+        )
+      }
       const requireGrounding = googleProviderConfig.requireGrounding === true
       // A schema call on a model where Search misses under a response schema, with no
       // Search declared (a bare cache name may hold the tool): not blocked up front, so the
@@ -1400,6 +1527,30 @@ export function geminiAdapterWithClientFactory(
         }
         return warnings
       }
+      /**
+       * Warnings about how the call is priced, on every attempt that reports
+       * usage: the snapshot rate is not today's bill (Gemini 4 Carbon and Argon
+       * until 2026-11-30), and Search on a model that bills grounding's internal
+       * instructions as tokens in a share nothing isolates (Gemini 4).
+       */
+      const pricingWarnings = (groundingMetadata: unknown): Warning[] => {
+        const priced = descriptor.pricingFamily ?? descriptor.model
+        const out: Warning[] = []
+        const reason = geminiEstimatedRateReason(priced)
+        if (reason !== undefined) {
+          out.push({ type: 'other', message: `google: ${reason}` })
+        }
+        if (
+          (searchDeclared || groundingMetadata !== undefined) &&
+          resolveGeminiGroundingRate(priced)?.instructionTokensBilled === true
+        ) {
+          out.push({
+            type: 'other',
+            message: `google: "${model}" bills grounding's internal tool instructions and function declarations as tokens, and usageMetadata does not show which share of the reported counts they are, so the counts are priced as reported and cost.confidence is "estimated" even when no search query ran.`,
+          })
+        }
+        return out
+      }
       /** `usage` (and the grounding note) a failed-but-billed attempt carries. */
       const billedFailure = (
         meta: GeminiUsageMetadataShape | undefined,
@@ -1409,6 +1560,7 @@ export function geminiAdapterWithClientFactory(
         const failureWarnings = [
           ...groundingWarnings(groundingMetadata),
           ...modalityWarnings(meta),
+          ...pricingWarnings(groundingMetadata),
         ]
         return {
           usage: usageFor(meta, groundingMetadata),
@@ -1521,8 +1673,10 @@ export function geminiAdapterWithClientFactory(
       //
       // @google/genai issue #1277: on SDK versions before 2.0.0,
       // httpOptions.timeout is a no-op for generateContent. Upstream landed a
-      // related Undici dispatcher fix in 2.0.0 (commit 850f680), so this
-      // ceiling is now a second guard, not the only one. On explicit flex calls
+      // related Undici dispatcher fix in 2.0.0 (commit 850f680), and 3.6.1
+      // arms `httpOptions.timeout` on every fetch (`createAttemptSignal` in
+      // `ApiClient.apiCall`), so this ceiling is now a second guard, not the
+      // only one. On explicit flex calls
       // without timeoutMs, the engine arms NO AbortSignal; relying solely on
       // httpOptions.timeout risks a silent hang. We arm our own
       // AbortController here and combine it with any incoming signal so WE
@@ -1557,22 +1711,28 @@ export function geminiAdapterWithClientFactory(
         }
       }
 
+      // The default deadline when the host sets no `timeoutMs`: flex 25 minutes;
+      // standard 5 minutes, or the model's own default (Gemini 4: 20 minutes,
+      // also with no tier); none otherwise.
+      const standardDeadlineMs =
+        rules.standardDefaultTimeoutMs ?? STANDARD_DEFAULT_TIMEOUT_MS
+      const defaultDeadlineFor = (tier: string | undefined): number | undefined =>
+        tier === 'flex'
+          ? FLEX_DEFAULT_TIMEOUT_MS
+          : tier === 'standard'
+            ? standardDeadlineMs
+            : rules.standardDefaultTimeoutMs
+
       const applyTierTimeout = (tier: string | undefined): void => {
         clearTierTimeout()
         delete config.abortSignal
 
         const defaultTimeoutMs =
-          genConfig.timeoutMs === undefined
-            ? tier === 'flex'
-              ? FLEX_DEFAULT_TIMEOUT_MS
-              : tier === 'standard'
-                ? STANDARD_DEFAULT_TIMEOUT_MS
-                : undefined
-            : undefined
+          genConfig.timeoutMs === undefined ? defaultDeadlineFor(tier) : undefined
 
         if (defaultTimeoutMs !== undefined) {
           const tierController = new AbortController()
-          const tierLabel = tier === 'standard' ? 'Standard' : 'Flex'
+          const tierLabel = tier === 'flex' ? 'Flex' : 'Standard'
           const timeoutReason = new DOMException(
             `${tierLabel} timeout: call exceeded ${defaultTimeoutMs}ms client-side ceiling` +
               ' (@google/genai #1277 belt-and-suspenders)',
@@ -1604,7 +1764,9 @@ export function geminiAdapterWithClientFactory(
       //       ceiling at timeoutMs) always fires before the SDK transport timer.
       //    3. serviceTier 'flex', no timeoutMs → FLEX_DEFAULT_TIMEOUT_MS (no
       //       buffer; there is no engine AbortSignal deadline in this case).
-      //    4. serviceTier 'standard', no timeoutMs → STANDARD_DEFAULT_TIMEOUT_MS.
+      //    4. serviceTier 'standard', no timeoutMs → STANDARD_DEFAULT_TIMEOUT_MS,
+      //       or the model's own default (Gemini 4: GEMINI_4_DEFAULT_TIMEOUT_MS,
+      //       which also applies with no tier).
       //
       //    Only assign config.httpOptions when the merged object is non-empty
       //    (exactOptionalPropertyTypes-safe).
@@ -1617,11 +1779,7 @@ export function geminiAdapterWithClientFactory(
       const computedTimeoutMs: number | undefined =
         genConfig.timeoutMs !== undefined
           ? genConfig.timeoutMs + TRANSPORT_TIMEOUT_BUFFER_MS
-          : config.serviceTier === 'flex'
-            ? FLEX_DEFAULT_TIMEOUT_MS
-            : config.serviceTier === 'standard'
-              ? STANDARD_DEFAULT_TIMEOUT_MS
-              : undefined
+          : defaultDeadlineFor(config.serviceTier)
 
       const mergedHttpOptions: { timeout?: number } = {
         ...(computedTimeoutMs !== undefined ? { timeout: computedTimeoutMs } : {}),
@@ -1639,12 +1797,20 @@ export function geminiAdapterWithClientFactory(
       // ------------------------------------------------------------------
       let response: GeminiResponseShape
       let servedServiceTier = config.serviceTier
+      // Every generation dispatch, the standard one after a flex capacity error
+      // included, sends `automaticContinuation: false` (the SDK would otherwise
+      // re-send on `CONTINUATION` and sum the usage: several billed requests in
+      // one attempt, ADR-031) and `store: false` (Google stores paid-tier
+      // requests by default for new projects; storage is opt-in in this
+      // library, ADR-038).
       const dispatch = async (): Promise<GeminiResponseShape> => {
         const dispatchConfig: GeminiGenerateConfig = {
           ...config,
           ...(config.httpOptions !== undefined
             ? { httpOptions: { ...config.httpOptions } }
             : {}),
+          automaticContinuation: false,
+          store: false,
         }
         const params = {
           model,
@@ -1707,14 +1873,14 @@ export function geminiAdapterWithClientFactory(
               typed.httpStatus ?? 'no status'
             }) and was sent again at the standard tier, billed at standard rates.${
               genConfig.timeoutMs === undefined
-                ? ` Without timeoutMs the standard attempt runs under the ${STANDARD_DEFAULT_TIMEOUT_MS} ms client-side ceiling, not the flex ${FLEX_DEFAULT_TIMEOUT_MS} ms one.`
+                ? ` Without timeoutMs the standard attempt runs under the ${standardDeadlineMs} ms client-side ceiling, not the flex ${FLEX_DEFAULT_TIMEOUT_MS} ms one.`
                 : ''
             }`,
           })
           const fallbackTimeout =
             genConfig.timeoutMs !== undefined
               ? genConfig.timeoutMs + TRANSPORT_TIMEOUT_BUFFER_MS
-              : STANDARD_DEFAULT_TIMEOUT_MS
+              : standardDeadlineMs
           config.httpOptions = {
             timeout: fallbackTimeout,
             ...callerHttpOptions,
@@ -1975,7 +2141,9 @@ export function geminiAdapterWithClientFactory(
           message: `google: dropped ${droppedCalls.length} function call(s) (${named}) because the candidate ended with finishReason ${candidate.finishReason ?? 'unspecified'}, not STOP: ${
             candidate.finishReason === 'MAX_TOKENS'
               ? 'the call was cut by the output cap and is incomplete'
-              : 'a call beside an abnormal stop is not a call to run'
+              : candidate.finishReason === 'CONTINUATION'
+                ? 'the response reached the per-request output limit before generation finished, so the call is incomplete'
+                : 'a call beside an abnormal stop is not a call to run'
           }. The result carries no tool call; finishReason is "${mapFinishReason(candidate.finishReason) ?? 'other'}".`,
         })
       }
@@ -2067,8 +2235,21 @@ export function geminiAdapterWithClientFactory(
         })
       }
       const finishReason = mapFinishReason(candidate.finishReason)
+      // One dispatch per attempt: a `CONTINUATION` finish is returned as it is,
+      // a cut answer (`length`) with this response's usage alone. The
+      // continuation token is neither replayed nor kept (resuming would be a
+      // second billed request inside the attempt, ADR-031).
+      if (candidate.finishReason === 'CONTINUATION') {
+        warnings.push({
+          type: 'other',
+          message: `google: the response ended with finishReason CONTINUATION: it reached the per-request output limit of "${model}" before generation finished, so the answer is incomplete. The adapter sends one request per attempt and does not resume with the continuation token, so finishReason is "length" and the usage is this response's alone. Resumable long decode is not supported; shorten the task or split it across calls.`,
+        })
+      }
       warnings.push(...groundingWarnings(groundingMetadata))
       warnings.push(...modalityWarnings(response.usageMetadata))
+      if (response.usageMetadata !== undefined) {
+        warnings.push(...pricingWarnings(groundingMetadata))
+      }
 
       // Where each answer-text part sits in `text`, so a grounding segment
       // (UTF-8 byte offsets into one part) becomes a range of `text`. Gemini's

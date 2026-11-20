@@ -23,7 +23,7 @@ const FAKE_CTX: AdapterCtx = {
 function makeCountReq(overrides: Partial<TokenCountRequest> = {}): TokenCountRequest {
   return {
     provider: 'google',
-    model: 'gemini-2.5-pro',
+    model: 'gemini-2.5-flash-lite',
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
     ...overrides,
   }
@@ -159,10 +159,13 @@ describe('geminiAdapter.countTokens — message-mapping parity with run()', () =
     await runAdapter.run(
       {
         provider: 'google',
-        model: 'gemini-2.5-pro',
+        model: 'gemini-2.5-flash-lite',
         messages,
         config: {},
-        modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-pro')!,
+        modelDescriptor: defaultGeminiRegistry.resolve(
+          'google',
+          'gemini-2.5-flash-lite',
+        )!,
       },
       FAKE_CTX,
     )
@@ -223,7 +226,7 @@ describe('geminiAdapter.countTokens — accuracy when function calls are in the 
     ['a Gemini 3 model without function calls', 'gemini-3.1-pro-preview', textOnly],
     [
       'Gemini 2.5, which has no signatures, with function calls',
-      'gemini-2.5-pro',
+      'gemini-2.5-flash-lite',
       withCall,
     ],
   ])('stays exact for %s', async (_label, model, messages) => {

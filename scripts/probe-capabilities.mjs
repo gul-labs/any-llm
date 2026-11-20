@@ -5,7 +5,7 @@
  * compares results against declared descriptor fields, flagging mismatches.
  *
  * IMPORTANT: This script costs real API tokens. Use a FREE-TIER key.
- * Paid-only models (e.g. gemini-2.5-pro) are skipped by default unless
+ * Paid-only models (e.g. gemini-4-neon) are skipped by default unless
  * PROBE_INCLUDE_PAID=1 is set.
  *
  * HOW TO RUN (from repo root):
@@ -25,7 +25,13 @@ import { geminiModelDescriptors, gemmaModelDescriptors } from '@gullabs/google'
 // ---------------------------------------------------------------------------
 // Cost guard: models with NO free-tier quota
 // ---------------------------------------------------------------------------
-const FREE_TIER_UNAVAILABLE = new Set(['gemini-2.5-pro'])
+// Google's pricing page and model pages (read 2026-11-20) list no free tier for
+// these; gemini-4-hydrogen has one.
+const FREE_TIER_UNAVAILABLE = new Set([
+  'gemini-4-carbon',
+  'gemini-4-argon',
+  'gemini-4-neon',
+])
 
 // ---------------------------------------------------------------------------
 // Config
@@ -46,7 +52,14 @@ if (!apiKey) {
 }
 
 const includePaid = process.env['PROBE_INCLUDE_PAID'] === '1'
-const ai = new GoogleGenAI({ apiKey })
+// Pinned like the adapter's client (@google/genai 3.x defaults to v1 and reads
+// GOOGLE_GENAI_API_VERSION / GOOGLE_GENAI_USE_VERTEXAI / GOOGLE_GEMINI_BASE_URL).
+const ai = new GoogleGenAI({
+  apiKey,
+  vertexai: false,
+  apiVersion: 'v1beta',
+  httpOptions: { baseUrl: 'https://generativelanguage.googleapis.com/' },
+})
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -77,7 +90,8 @@ async function withRetry(fn, label) {
 async function call(modelId, config, contents) {
   return ai.models.generateContent({
     model: modelId,
-    config,
+    // One request per call and nothing stored, as the adapter sends.
+    config: { ...config, automaticContinuation: false, store: false },
     contents: contents ?? [{ role: 'user', parts: [{ text: TINY_PROMPT }] }],
   })
 }
@@ -127,7 +141,7 @@ async function probeReasoningBudget(modelId) {
 }
 
 async function probeReasoningLevel(modelId) {
-  const levels = ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH']
+  const levels = ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH', 'XHIGH']
   const results = {}
   for (const level of levels) {
     await sleep(PACE_MS)

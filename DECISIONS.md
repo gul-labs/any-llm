@@ -4393,3 +4393,132 @@ ordinary-input subtraction, `parallel_tool_calls`, the error body shape, snapsho
   `estimated`, and a response that echoes no tier is unpriced, until probes settle the open items.
 - The first publish of `@gullabs/openai` has no trusted publisher yet (one can only be configured for an existing
   package), so it uses the `NPM_TOKEN` fallback and carries no provenance attestation (RELEASING.md).
+
+---
+
+## ADR-048: Google refresh: SDK 3, one dispatch per attempt, `store: false`, Gemini 4, removals
+
+**Status:** Accepted (2026-11-20). Amends ADR-012 (default deadlines), ADR-018 (SDK version), ADR-019 (the
+pinned client), ADR-031 (one billed request per attempt), ADR-034 (a Gemini 4 profile), ADR-035 (Gemini 4
+grounding) and ADR-044 (finish reasons). Nothing in this ADR was verified by a live call: every new fact is
+documentation-derived (Google's pages under `https://aistudio.google.com/docs`, read 2026-11-20; the old
+`ai.google.dev/gemini-api/docs` URLs redirect there) or read from the installed `@google/genai` 3.6.1
+typings and source.
+
+**Context:**
+`@google/genai` 3.0.0 changed the Developer API default version from `v1beta` to `v1`, where explicit
+context caching does not exist, and began reading `GOOGLE_GENAI_API_VERSION` from the environment. The SDK
+also defaults `automaticContinuation` to `true` (present since 2.31.0): on a `CONTINUATION` finish it sends
+the request again with the continuation token and adds up every usage count, so one adapter attempt could
+be several billed requests and one ledger row. Google's changelog of 2026-10-26 says new paid-tier projects
+now store `generateContent` requests by default. Google released four Gemini 4 models (GA), deprecated
+`gemini-3.7-flash` (2026-10-08; requests are routed to `gemini-3.8-flash`, and it is gone from the pricing
+page), and announced that from 2026-12-01 requests to `gemini-2.5-pro` and `gemini-2.5-flash` are routed to
+`gemini-3.8-flash` and `gemini-3.5-flash-lite` and billed at their rates.
+
+**Decision:**
+
+1. **SDK 3, pinned.** `@google/genai` is a `^3.6.1` peer of `@gullabs/google` and `@gullabs/testing` (and a
+   `^3.6.1` dependency of `@gullabs/any-llm`): 3.6.1 is the version the wire tests run on. The client is
+   built with the call's `apiKey`, `vertexai: false`, `apiVersion: 'v1beta'` and the Developer API base URL.
+   In 3.6.1 an explicit option wins over its environment variable (`GOOGLE_GENAI_USE_VERTEXAI` /
+   `GOOGLE_GENAI_USE_ENTERPRISE` are read only when neither flag is passed; `GOOGLE_GENAI_API_VERSION` only
+   when no version is passed; `GOOGLE_GEMINI_BASE_URL` only when no base URL is passed), and the key
+   variables are never used because the key is always passed. A wire test (real SDK, stubbed `fetch`) sets
+   every one of those variables to a hostile value and checks that generate, both token-count paths, cache
+   create / update / delete and file upload reach `https://generativelanguage.googleapis.com/.../v1beta/...`
+   with the caller's key. ADR-018 is unchanged: bug #1277 was already fixed before 3.x (3.6.1 arms
+   `httpOptions.timeout` per fetch in `ApiClient.apiCall`), and #1468 concerns Vertex, which is not used.
+2. **One dispatch per attempt.** Every `generateContent`, the standard dispatch after a flex capacity error
+   included, is sent with `automaticContinuation: false` (an SDK option, never serialized). A `CONTINUATION`
+   finish is `finishReason: 'length'` with that response's usage and a warning; a function call beside it is
+   dropped and named, as beside `MAX_TOKENS`; the continuation token is neither replayed nor kept. Resumable
+   long decode is a BACKLOG item: resuming is a second billed request and needs its own ledger design.
+3. **`store: false`.** Every `generateContent` carries the request-level field `store: false` ("Configures the
+   logging behavior for a given request. If set, it takes precedence over the project-level logging config",
+   generateContent API reference). This record claims only that the field is sent; it makes no statement about
+   Google's retention beyond that field. That the field is accepted and honoured on every model is the first
+   thing to confirm live (BACKLOG).
+4. **Finish reasons, explicitly.** Every `FinishReason` member of the 3.6.1 SDK is in the adapter's table, and a
+   test holds the table equal to the enum: the safety and policy blocks (`SAFETY`, `RECITATION`, `BLOCKLIST`,
+   `PROHIBITED_CONTENT`, `SPII`, the three `IMAGE_*` blocks, `ESCALATION`, `PUP_LIMITED_DISABLED`,
+   `MODEL_ARMOR`) are `content_filter`; `MAX_TOKENS` and `CONTINUATION` are `length`; `STOP` is `stop`; the
+   rest (`OTHER`, `LANGUAGE`, malformed or unexpected tool calls, `TOO_MANY_TOOL_CALLS`,
+   `MISSING_THOUGHT_SIGNATURE`, `MALFORMED_RESPONSE`, `IMAGE_OTHER`, `NO_IMAGE`, unspecified) and any value the
+   SDK does not know are `other`.
+5. **Gemini 4.** `gemini-4-carbon`, `gemini-4-argon`, `gemini-4-neon` and `gemini-4-hydrogen` are registered
+   (after the 3.x ids, before Gemma), documented and not live-verified:
+   - Level reasoning only: `low | medium | high`, plus `xhigh` (`ThinkingLevel.XHIGH`) on Neon and Hydrogen;
+     `none`, `max` and `budgetTokens` are `bad_request` before dispatch (Google rejects `minimal`; it maps a
+     `thinkingBudget` to a level with a warning, which is mapping, so it is not admitted). The thinking guide
+     calls `thinkingLevel` "required for Gemini 4" while the model pages give a default (medium on Carbon and
+     Argon, high on Neon and Hydrogen), so a call without an effort, or with `includeThoughts` alone, sends that
+     default explicitly: valid under either reading.
+   - No sampling keys (ADR-017; Google ignores them). No explicit caching ("returns an error"): the schemas have
+     no `cachedContent`, the descriptors say `caching: { explicit: false, minTokens: 4096 }` (the documented
+     implicit minimum), the adapter admits `cachedContent` only where `caching.explicit` is true, and
+     `GoogleCacheStore.create` rejects a model whose registered descriptor has no explicit caching before its
+     token preflight.
+   - Structured output with a documentation-backed JSON Schema profile: what the structured-output guide lists
+     (types with a `"null"` member, `properties`, `required`, `additionalProperties`, `enum`, `format` with
+     `date-time` / `date` / `time`, `minimum` / `maximum`, `items`, `prefixItems`, `minItems` / `maxItems`,
+     and the `anyOf` and recursive `$ref` / `$defs` its examples use). `pattern`, `minLength`, `maxLength`,
+     `items: false` and `email` are rejected: the P3 probe never ran on Gemini 4, and the guide says "The model
+     ignores unsupported properties". The portable subset is therefore not guaranteed on Gemini 4.
+   - Schema plus Search is off: `structuredOutputWithTools` is absent and the schemas have no
+     `allowSchemaWithSearch` (Google documents the pair as a preview; nothing measured it). Search with the
+     flex tier is rejected before dispatch (the flex schema branch has no `tools`, and the adapter checks the
+     pair for a direct call): no page shows it and the Gemini 4 flex price tab has no grounding row.
+   - `maxOutputTokens` at most 32,768 on Carbon and Argon (the documented per-request cap on a non-streaming
+     call, which is what the adapter sends) and 65,536 on Neon and Hydrogen; context 1,048,576 (input and
+     output together).
+   - With no `timeoutMs`, an untiered or standard call, the standard dispatch after a flex capacity error
+     included, gets a 20-minute client-side ceiling and SDK timeout (`GEMINI_4_DEFAULT_TIMEOUT_MS`; Google:
+     "Set HTTP client timeouts to at least 20 minutes per call"); flex keeps 25 minutes.
+   - Function calling with signed replay (function-response `id` and `name`, thought signatures) as on 3.x,
+     wire-tested against the SDK only.
+6. **Final-turn rules.** Google: "Starting with Gemini 3.6 Flash and Gemini 3.5 Flash-Lite, the following API
+   changes apply to these models and all future Gemini model releases ... If the last non-empty turn in the
+   request is a `model` turn, the API returns a `400` error." That request is `bad_request` before dispatch on
+   `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.8-flash` and the four Gemini 4 models. The 3.8 Flash
+   migration notes also say "ensure the final user turn contains non-empty text": on 3.8 Flash a final user
+   turn without non-empty text is `bad_request` unless it is a turn of tool results (the 2026-10-03 capture
+   shows 3.8 Flash accepting a function-response turn last). The text rule is not applied to Gemini 4, whose
+   pages do not state it. The rules live in `@gullabs/google` (`request-rules.ts`), keyed by the canonical
+   model id; core gains nothing (ADR-023).
+7. **Removals, with no alias.** `gemini-3.7-flash`, `gemini-2.5-pro` and `gemini-2.5-flash` are deleted
+   (descriptor, schema and export, limits, rates, grounding entries). A routed id is removed rather than kept
+   with a warning: once Google serves it with another model, the request gets the other model's behaviour and
+   bill (3.8 Flash semantics and rates for a "2.5 Pro" call) while the per-model schema, limits and price
+   describe the old one, and ADR-043's advisory cannot stop the dispatch. Suggested replacements:
+   `gemini-3.8-flash` for 3.7 Flash, `gemini-3.8-flash` or a Gemini 4 model for 2.5 Pro, `gemini-3.5-flash-lite`
+   for 2.5 Flash. `gemini-2.5-flash-lite` (not deprecated) stays and is the only budget-API model. Captures taken
+   on a removed model are kept as evidence; their tests check the capture as recorded and the registry only for
+   models still registered.
+8. **Pricing snapshot `gemini-2026-11-20`.** The rates already priced were re-read and are unchanged. Gemini 4
+   per 1M tokens, flex half on every lane: Neon $3.00 input / $0.15 cached / $15.00 output; Hydrogen $1.50 /
+   $0.075 / $7.50; Carbon and Argon $4.00 / $0.20 / $20.00. Google bills Carbon and Argon at half those rates
+   through 2026-11-30 ("$2.00 through November 30, 2026. $4.00 starting December 1, 2026."). The snapshot has
+   no date logic (plan decision of 2026-09-25: no date-windowed pricing): it carries the December rates and the
+   pricing source marks every priced Carbon and Argon cost `confidence: 'estimated'` before the grounding rules,
+   amount and lanes unchanged. The reason travels as an adapter `{ type: 'other' }` warning on every successful
+   and billed-failure attempt, so it reaches the ledger row (`Cost.unpricedReason` is only for an unpriced
+   call). The estimate overstates, never under-charges. A dated BACKLOG item (2026-12-01) removes exactly that
+   override and bumps the snapshot.
+9. **Gemini 4 grounding.** Search is $14 per 1,000 queries ("Gemini 3 and newer"), on the `tools` lane like
+   Gemini 3. Gemini 4 also bills "internal tool system instructions and function declarations when using
+   grounding" as tokens, and nothing documents whether `promptTokenCount` includes them: the reported counts
+   are priced as given, a grounded Gemini 4 call is `estimated` even when it ran no query, and the adapter
+   warns that the billed share cannot be isolated.
+
+**Consequences:**
+
+- Breaking: the SDK peer is `^3.6.1`; three model ids no longer resolve or price; every Google request carries
+  `store: false`; a `CONTINUATION` finish is a cut answer, not a silently resumed one; a request ending with an
+  assistant turn is rejected on the models above; the Gemini 4 contract is new. The changeset says what a host
+  changes.
+- A host that wants Google to keep its requests has no switch in this library; storage stays opt-in on the
+  host side (ADR-038 governs only this library's own payload table).
+- Everything Gemini 4 rests on documentation until probed; the BACKLOG lists each probe that would widen a
+  schema (schema + Search, Search + flex, the JSON Schema profile, the grounding token share, the
+  general-reference fields `stopSequences` and `safetySettings`) and the live confirmation of `store: false`.

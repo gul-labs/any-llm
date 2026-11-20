@@ -4,8 +4,8 @@
  * profile; this test is the one place that sees all of them and keeps every
  * field of the portable profile equal to the combination of the others.
  *
- * Not claimed here, and not true: that the subset is enforced by Gemma 4 (a
- * stricter profile, checked below) or by the CLI providers (`claude-cli` and
+ * Not claimed here, and not true: that the subset is enforced by Gemma 4 or
+ * Gemini 4 (stricter profiles, checked below) or by the CLI providers (`claude-cli` and
  * `codex-cli` do not run these checks).
  */
 import { describe, expect, it } from 'vitest'
@@ -45,8 +45,14 @@ function accepts(run: () => void): boolean {
 
 describe('portable JSON Schema subset', () => {
   it('covers every Gemini 3.x model the Google package registers', () => {
-    expect(GEMINI_3.length).toBeGreaterThanOrEqual(6)
-    expect(GEMMA.length).toBeGreaterThanOrEqual(2)
+    expect([...GEMINI_3].sort()).toEqual([
+      'gemini-3.1-flash-lite',
+      'gemini-3.1-pro-preview',
+      'gemini-3.5-flash-lite',
+      'gemini-3.6-flash',
+      'gemini-3.8-flash',
+    ])
+    expect([...GEMMA].sort()).toEqual(['gemma-4-26b-a4b-it', 'gemma-4-31b-it'])
   })
 
   describe.each(GEMINI_3)('against %s and xAI', (model) => {
@@ -113,6 +119,26 @@ describe('portable JSON Schema subset', () => {
       }
       expect(accepts(() => assertPortableJsonSchema(schema))).toBe(true)
       expect(accepts(() => assertJsonSchemaProfile(schema, 'x', gemma))).toBe(false)
+    }
+  })
+
+  it('Gemini 4 is stricter than the portable subset: its documented profile has no pattern, minLength or maxLength and no email format', () => {
+    const gemini4 = geminiModelDescriptors
+      .map((d) => d.model)
+      .filter((model) => model.startsWith('gemini-4-'))
+    expect(gemini4.length).toBe(4)
+    for (const model of gemini4) {
+      const profile = googleJsonSchemaProfile(model)
+      expect(
+        PORTABLE_JSON_SCHEMA_KEYWORDS.filter((k) => !profile.keywords.includes(k)).sort(),
+      ).toEqual(['maxLength', 'minLength', 'pattern'])
+      // A schema inside the portable subset can still be rejected on Gemini 4.
+      const schema: JsonValue = {
+        type: 'object',
+        properties: { e: { type: 'string', format: 'email' } },
+      }
+      expect(accepts(() => assertPortableJsonSchema(schema))).toBe(true)
+      expect(accepts(() => assertJsonSchemaProfile(schema, 'x', profile))).toBe(false)
     }
   })
 

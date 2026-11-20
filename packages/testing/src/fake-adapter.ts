@@ -115,7 +115,7 @@ export function classifyEntry(entry: unknown, where: string): QueueEntry {
  * ```ts
  * const adapter = new FakeAdapter('google', successResult)
  * const client = createClient({ adapters: [adapter] })
- * await client.generate({ provider: 'google', model: 'gemini-2.5-pro', messages })
+ * await client.generate({ provider: 'google', model: 'gemini-3.8-flash', messages })
  *
  * const adapter2 = new FakeAdapter('google', [
  *   successResult,

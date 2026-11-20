@@ -124,7 +124,7 @@ export interface GenConfig {
   providerOptions?: ProviderOptionsMap // open interface; each provider package augments it via declaration merging and enforces its own strict per-model allowlist (not a raw SDK passthrough)
 }
 export interface ReasoningIntent {
-  effort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' // gemini-2.5 → thinkingBudget; gemini-3 → thinkingLevel; xAI 4.6 admits xhigh
+  effort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' // gemini-2.5 → thinkingBudget; gemini-3/4 → thinkingLevel (Gemini 4 Neon/Hydrogen and xAI 4.6 admit xhigh)
   budgetTokens?: number
   includeThoughts?: boolean
 }
@@ -431,8 +431,8 @@ details = { input, cached, output, tools }   // thinking billed at output rate (
 - Long-context tier: Gemini Pro charges a premium above 200k input tokens — `inputRate` selects by
   total `inputTokens`. (Flash-lite is flat; encode per-model.)
 - Unknown model → `cost = { microUsd: null, … }`; tokens + raw still recorded for later backfill.
-- Input is priced **per modality where the provider prices modalities apart**. Gemini 2.5 Flash, 2.5
-  Flash-Lite and 3.1 Flash-Lite bill audio input above text, image and video (and cached audio apart from
+- Input is priced **per modality where the provider prices modalities apart**. Gemini 2.5 Flash-Lite
+  and 3.1 Flash-Lite bill audio input above text, image and video (and cached audio apart from
   cached text); the adapter records `promptTokensDetails` / `cacheTokensDetails` as
   `details.input_<modality>` / `cached_<modality>` and the pricing source bills the audio tokens at the audio
   rates and the rest at the text rate. Every other model has one input rate for all modalities. An audio
@@ -443,6 +443,11 @@ details = { input, cached, output, tools }   // thinking billed at output rate (
   no audio and covers every cached token proves cached audio is zero and the call stays exact. Source: Google's pricing page, read
   2026-10-03 (ADR-039).
 - Priced tiers are `standard` and `flex`; there is no Batch API path, so no batch rates are carried.
+- Snapshot `gemini-2026-11-20` (ADR-048): Gemini 4 Carbon and Argon are priced at the rates billed from
+  2026-12-01 and their cost is `estimated` until that date's re-snapshot (the reason is an adapter warning
+  on every attempt that reports usage); there is no date logic. A grounded Gemini 4 call is `estimated`
+  even with zero queries (grounding's internal instructions are billed as tokens in a share the usage does
+  not isolate).
 - `Cost.providerReported?: { microUsd }` is the total a provider itself reports billing (xAI
   `cost_in_usd_ticks`, 1 tick = 1e-10 USD, rounded like a lane). `microUsd` stays the snapshot price; the
   engine warns when the two totals differ by more than 1 µUSD per lane that can carry rounding (a non-zero amount or tokens for it; ADR-039 Amendment A).
@@ -524,22 +529,38 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
 
 ## Google adapter (`@gullabs/google`)
 
-- `geminiAdapter(): ProviderAdapter` over `@google/genai` (peerDep), API-key auth only (`{ apiKey }`
-  passed per call; no Vertex support in v1 — see DESIGN.md).
+- `geminiAdapter(): ProviderAdapter` over `@google/genai` (peerDep `^3.6.1`), API-key auth only (`{ apiKey }`
+  passed per call; no Vertex support in v1 — see DESIGN.md). The SDK client is built with `vertexai: false`,
+  `apiVersion: 'v1beta'` and the pinned Developer API base URL, so no environment variable moves a call
+  (ADR-048).
+- One request per attempt, nothing stored at Google: every `generateContent`, the standard dispatch after a
+  flex capacity error included, sends `store: false` and `automaticContinuation: false`. A `CONTINUATION`
+  finish is `length` with that response's usage and a warning; calls beside it are dropped; the
+  continuation token is never replayed. Every SDK `FinishReason` member is mapped explicitly (policy blocks
+  → `content_filter`, `MAX_TOKENS`/`CONTINUATION` → `length`, the rest → `other`).
+- Final turn, before dispatch: a last non-empty assistant turn is `bad_request` on 3.5 Flash-Lite, 3.6 Flash,
+  3.8 Flash and Gemini 4; on 3.8 Flash so is a final user turn without non-empty text (a turn of tool
+  results is exempt).
 - Maps: `serviceTier:'flex'` → Gemini Flex only when the model descriptor supports it; `reasoning`
-  → `thinkingConfig` (budget for 2.5, level for 3.x); throws `LlmError('bad_request')` when the mapping cannot be applied;
+  → `thinkingConfig` (budget for 2.5, level for 3.x and 4; Gemini 4 sends its documented default level when
+  no effort is set, and `xhigh` → `XHIGH` on Neon and Hydrogen); throws `LlmError('bad_request')` when the mapping cannot be applied;
   `output.jsonSchema` → `responseJsonSchema` (`responseMimeType:'application/json'`) only when native
   structured output is enabled, and a tool's `inputJsonSchema` → `parametersJsonSchema`, both
   verbatim and in the host's key order, never the OpenAPI `responseSchema` / `parameters`
   (ADR-034). A keyword Google does not enforce (`const`, `oneOf`, `allOf`, `exclusiveMinimum`,
-  `multipleOf`, `uniqueItems`, …), a malformed schema, and (on Gemma models) `format`, `minLength`
-  and `maxLength` are `bad_request` with the path before dispatch; `providerOptions.google.*` is a strict per-model allowlist mapped
+  `multipleOf`, `uniqueItems`, …), a malformed schema, (on Gemma models) `format`, `minLength`
+  and `maxLength`, and (on Gemini 4, whose profile is documentation-only) `pattern`, `minLength`,
+  `maxLength`, `items: false` and any `format` but `date-time`, `date`, `time` are `bad_request` with the
+  path before dispatch; `providerOptions.google.*` is a strict per-model allowlist mapped
   field-by-field onto the SDK call, not forwarded verbatim.
-- Routes Gemini 2.5 (`gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`),
-  Gemini 3.x (`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
-  `gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`), and two API-verified Gemma 4
-  models (`gemma-4-31b-it`, `gemma-4-26b-a4b-it`). `gemini-3-flash-preview` and
-  `gemini-3.5-flash` do not resolve. Both Gemma 4 descriptors support multimodal parts, native structured
+- Routes Gemini 2.5 (`gemini-2.5-flash-lite`), Gemini 3.x (`gemini-3.1-pro-preview`,
+  `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.8-flash`), Gemini 4
+  (`gemini-4-carbon`, `gemini-4-argon`, `gemini-4-neon`, `gemini-4-hydrogen`; documented, not
+  live-verified), and two API-verified Gemma 4 models (`gemma-4-31b-it`, `gemma-4-26b-a4b-it`).
+  `gemini-3-flash-preview`, `gemini-3.5-flash` and the ids removed on 2026-11-20 (ADR-048) do not resolve.
+  Gemini 4 has no explicit caching (`cachedContent` and `GoogleCacheStore.create` are rejected), no schema
+  with Search, no Search with flex, output caps of 32,768 (Carbon, Argon) and 65,536 (Neon, Hydrogen), and
+  a 20-minute default deadline on untiered and standard calls without `timeoutMs` (flex keeps 25). Both Gemma 4 descriptors support multimodal parts, native structured
   output, grounding, and thinking (thinkingLevel). They do not support Gemini Flex or pricing.
 - Usage: read `usageMetadata` → `promptTokenCount`→inputTokens, `candidatesTokenCount`→outputTokens,
   `cachedContentTokenCount`→cachedInputTokens, `thoughtsTokenCount`→thinkingTokens; copy whole object
@@ -554,7 +575,7 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
 - Grounding (ADR-013, ADR-035, ADR-044): `providerOptions.google.tools: [{ googleSearch: {} }]` (or a
   `cachedContent` handle whose `toolKinds` lists `googleSearch`) sets `details.web_search_requested`; so does
   grounding metadata the request did not declare (evidence: the fee is priced from the observed queries,
-  `estimated`); `details.web_search_calls` is the number of `webSearchQueries` occurrences. The pricing source adds the fee to `Cost.details.tools` (Gemini 3: per query; Gemini 2.5:
+  `estimated`); `details.web_search_calls` is the number of `webSearchQueries` occurrences. The pricing source adds the fee to `Cost.details.tools` (Gemini 3 and 4: per query; Gemini 2.5:
   per grounded prompt) and a call that ran Search is `estimated`. `requireGrounding: true` throws a
   `server` error with reason `grounding_missing` (usage attached) unless metadata with at least one
   non-empty query is present; it is `retryable: true` only without an output schema, and is judged only on

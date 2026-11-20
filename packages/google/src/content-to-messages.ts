@@ -420,7 +420,7 @@ function convertSystemInstruction(systemInstruction: Content | string): string {
  *   systemInstruction: 'You are a concise visual describer.',
  * })
  *
- * const result = await client.generate({ provider: 'google', model: 'gemini-2.5-pro', system, messages }, { auth })
+ * const result = await client.generate({ provider: 'google', model: 'gemini-3.8-flash', system, messages }, { auth })
  * ```
  */
 export function geminiContentToMessages(

@@ -49,10 +49,33 @@ const media = (mimeType: string): Message[] => [
 const text: Message[] = [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }]
 
 describe('google descriptor limits (docs read 2026-10-03)', () => {
-  it('every Gemini model states 1,048,576 context and 65,536 output', () => {
-    for (const d of geminiModelDescriptors) {
+  it('every Gemini 2.5 and 3.x model states 1,048,576 context and 65,536 output', () => {
+    for (const d of geminiModelDescriptors.filter(
+      (d) => !d.model.startsWith('gemini-4-'),
+    )) {
       expect(d.limits).toEqual({ contextWindow: 1_048_576, maxOutputTokens: 65_536 })
     }
+  })
+
+  it('Gemini 4 (docs read 2026-11-20): 1,048,576 unified window; non-streaming output cap 32,768 on Carbon and Argon, 65,536 on Neon and Hydrogen', () => {
+    const limits = (model: string) =>
+      geminiModelDescriptors.find((d) => d.model === model)?.limits
+    expect(limits('gemini-4-carbon')).toEqual({
+      contextWindow: 1_048_576,
+      maxOutputTokens: 32_768,
+    })
+    expect(limits('gemini-4-argon')).toEqual({
+      contextWindow: 1_048_576,
+      maxOutputTokens: 32_768,
+    })
+    expect(limits('gemini-4-neon')).toEqual({
+      contextWindow: 1_048_576,
+      maxOutputTokens: 65_536,
+    })
+    expect(limits('gemini-4-hydrogen')).toEqual({
+      contextWindow: 1_048_576,
+      maxOutputTokens: 65_536,
+    })
   })
 
   it('Gemma 4 states a 256K window and a null output limit (none is documented)', () => {
@@ -323,7 +346,7 @@ describe('thinking budget at or above maxOutputTokens', () => {
   }
 
   it('warns, without rejecting, when the effort default budget is not below the cap', async () => {
-    const warnings = await warningsFor('gemini-2.5-flash', {
+    const warnings = await warningsFor('gemini-2.5-flash-lite', {
       maxOutputTokens: 4096,
       reasoning: { effort: 'high' },
     })
@@ -334,13 +357,13 @@ describe('thinking budget at or above maxOutputTokens', () => {
 
   it('warns on an explicit budget equal to the cap, not on one below it', async () => {
     expect(
-      await warningsFor('gemini-2.5-pro', {
+      await warningsFor('gemini-2.5-flash-lite', {
         maxOutputTokens: 2000,
         reasoning: { budgetTokens: 2000 },
       }),
     ).toHaveLength(1)
     expect(
-      await warningsFor('gemini-2.5-pro', {
+      await warningsFor('gemini-2.5-flash-lite', {
         maxOutputTokens: 2000,
         reasoning: { budgetTokens: 1999 },
       }),
@@ -349,13 +372,13 @@ describe('thinking budget at or above maxOutputTokens', () => {
 
   it('is silent with thinking off, with no cap set, and on level models', async () => {
     expect(
-      await warningsFor('gemini-2.5-flash', {
+      await warningsFor('gemini-2.5-flash-lite', {
         maxOutputTokens: 100,
         reasoning: { effort: 'none' },
       }),
     ).toHaveLength(0)
     expect(
-      await warningsFor('gemini-2.5-flash', { reasoning: { effort: 'high' } }),
+      await warningsFor('gemini-2.5-flash-lite', { reasoning: { effort: 'high' } }),
     ).toHaveLength(0)
   })
 

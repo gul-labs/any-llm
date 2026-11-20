@@ -86,7 +86,7 @@ async function handleRoute(req: Request, db: DbLike) {
   return client.generate(
     {
       provider: 'google',
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
       messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Summarize this' }] }],
       callSiteId: 'http-summary',
       externalId: req.headers.get('x-request-id') ?? undefined,
@@ -139,7 +139,7 @@ export async function runReportActivity(
   return client.generate(
     {
       provider: 'google',
-      model: 'gemini-2.5-pro',
+      model: 'gemini-4-neon',
       messages: [{ role: 'user', parts: [{ kind: 'text', text: input.prompt }] }],
       callSiteId: 'worker-report',
       externalId: input.reportId,

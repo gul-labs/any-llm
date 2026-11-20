@@ -56,7 +56,7 @@ const client = createClient({
 const callSite = defineCallSite({
   id: 'summarise',
   provider: 'google',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-3.8-flash',
   jsonSchema: {
     type: 'object',
     properties: { summary: { type: 'string' } },
@@ -230,8 +230,8 @@ Use `descriptor.configJsonSchema` for form generation and
 `output.jsonSchema` as a substitute; that surface is only for output shaping.
 
 Model ids resolve **exactly** (ADR-033): a request names a descriptor's canonical `model` or one
-of its declared `aliases`, never a longer or shorter string. `gemini-2.5-flash-image` is not
-priced or validated as `gemini-2.5-flash`; it is `bad_request` with the closest registered ids
+of its declared `aliases`, never a longer or shorter string. `gemini-3.8-flash-image` is not
+priced or validated as `gemini-3.8-flash`; it is `bad_request` with the closest registered ids
 listed. An alias is for a real provider version suffix: the request string is sent to the provider
 unchanged, the call is priced under the canonical descriptor, and the ledger row records the string
 the host sent. Adapters check their descriptor with `assertModelMatchesDescriptor`.
@@ -266,10 +266,10 @@ with (a copy taken at construction; descriptors added to your array later are no
 
 Model-specific reminders:
 
-- `reasoning.budgetTokens` belongs to Gemini 2.5 budget-api models.
-- Gemini 3 and Gemma built-ins should use `reasoning.effort`.
-- `gemini-3.1-pro-preview`, `gemini-3.7-flash`, and `gemini-3.8-flash` do not admit `effort: 'none'`.
-- Registered Google ids: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemma-4-31b-it`, `gemma-4-26b-a4b-it`. Deleted, with no alias: `gemini-3-flash-preview`, `gemini-3.5-flash`.
+- `reasoning.budgetTokens` belongs to the Gemini 2.5 budget-api model (`gemini-2.5-flash-lite`).
+- Gemini 3, Gemini 4 and Gemma built-ins should use `reasoning.effort`.
+- `gemini-3.1-pro-preview`, `gemini-3.8-flash` and the Gemini 4 models do not admit `effort: 'none'`; `xhigh` is admitted on `gemini-4-neon` and `gemini-4-hydrogen` only.
+- Registered Google ids: `gemini-2.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.8-flash`, `gemini-4-carbon`, `gemini-4-argon`, `gemini-4-neon`, `gemini-4-hydrogen`, `gemma-4-31b-it`, `gemma-4-26b-a4b-it`. Deleted, with no alias: `gemini-3-flash-preview`, `gemini-3.5-flash`, and the ids removed on 2026-11-20 (ADR-048).
 - Omit `serviceTier` for provider-standard requests; set `flex` explicitly.
 - `priority` remains rejected by the library until the contract is fully
   modeled and tested.

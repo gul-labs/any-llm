@@ -194,7 +194,7 @@ describe('isGoogleNotFoundError', () => {
           const store = new GoogleCacheStore({ auth, client, onDeleteError })
           await store.delete({
             cacheName: 'cachedContents/gone',
-            model: 'gemini-2.5-flash',
+            model: 'gemini-2.5-flash-lite',
             expiresAt: new Date(NOW),
           })
           expect(onDeleteError).toHaveBeenCalledTimes(1)
@@ -272,7 +272,7 @@ describe('GoogleCacheStore.delete of a cache Google no longer has', () => {
   })
   const handle = {
     cacheName: 'cachedContents/gone',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-2.5-flash-lite',
     expiresAt: new Date(NOW),
   }
 
@@ -312,7 +312,7 @@ describe('GoogleCacheStore handle edges', () => {
     const client: GeminiCachesClientLike = {
       create: vi.fn().mockResolvedValue({
         name: 'cachedContents/abc',
-        model: 'gemini-2.5-flash',
+        model: 'gemini-2.5-flash-lite',
         expireTime: new Date(NOW + 3_600_000).toISOString(),
         ...create,
       }),
@@ -328,19 +328,22 @@ describe('GoogleCacheStore handle edges', () => {
   it('records the kinds of the tools it was created with', async () => {
     const store = new GoogleCacheStore({ auth, client: makeClient(), now: () => NOW })
     const withSearch = await store.create({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-2.5-flash-lite',
       ttlSeconds: 3600,
       tools: [{ googleSearch: {} }, { functionDeclarations: [{ name: 'f' }] }],
     })
     expect(withSearch.toolKinds).toEqual(['googleSearch', 'functionDeclarations'])
-    const without = await store.create({ model: 'gemini-2.5-flash', ttlSeconds: 3600 })
+    const without = await store.create({
+      model: 'gemini-2.5-flash-lite',
+      ttlSeconds: 3600,
+    })
     expect(without.toolKinds).toEqual([])
   })
 
   it('getOrCreate and a TTL refresh keep the kinds', async () => {
     const store = new GoogleCacheStore({ auth, client: makeClient(), now: () => NOW })
     const handle = await store.getOrCreate(
-      { model: 'gemini-2.5-flash', stableKey: 'k' },
+      { model: 'gemini-2.5-flash-lite', stableKey: 'k' },
       () => Promise.resolve({ ttlSeconds: 3600, tools: [{ googleSearch: {} }] }),
     )
     expect(handle.toolKinds).toEqual(['googleSearch'])
@@ -357,7 +360,7 @@ describe('GoogleCacheStore handle edges', () => {
       const client = makeClient()
       const store = new GoogleCacheStore({ auth, client, now: () => NOW })
       await expect(
-        store.create({ model: 'gemini-2.5-flash', ttlSeconds }),
+        store.create({ model: 'gemini-2.5-flash-lite', ttlSeconds }),
       ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
       expect(client.create).not.toHaveBeenCalled()
     },
@@ -367,7 +370,7 @@ describe('GoogleCacheStore handle edges', () => {
     const client = makeClient({ expireTime: 'not a date' })
     const store = new GoogleCacheStore({ auth, client, now: () => NOW })
     const factory = () => Promise.resolve({ ttlSeconds: 3600 })
-    const key = { model: 'gemini-2.5-flash', stableKey: 'k' }
+    const key = { model: 'gemini-2.5-flash-lite', stableKey: 'k' }
     const first = await store.getOrCreate(key, factory)
     expect(Number.isNaN(first.expiresAt.getTime())).toBe(false)
     expect(first.expiresAt.getTime()).toBe(NOW + 3_600_000)
@@ -387,7 +390,7 @@ describe('GoogleCacheStore handle edges', () => {
       .mockRejectedValueOnce({ status: 500 })
     const store = new GoogleCacheStore({ auth, client, now: () => now })
     const factory = () => Promise.resolve({ ttlSeconds: 3600 })
-    const key = { model: 'gemini-2.5-flash', stableKey: 'k' }
+    const key = { model: 'gemini-2.5-flash-lite', stableKey: 'k' }
     await store.getOrCreate(key, factory)
     const entries = (store as unknown as { entries: Map<string, unknown> }).entries
     expect(entries.size).toBe(1)

@@ -86,7 +86,7 @@ const client = createClient({
 const codeReview = defineCallSite({
   id: 'code-review',
   provider: 'google',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-2.5-flash-lite',
   jsonSchema: ReviewJsonSchema,
   system: 'You are a senior code reviewer. Be concise and fair.',
   userTemplate: 'Review this code change:\n\n```diff\n{{diff}}\n```',

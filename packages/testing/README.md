@@ -295,7 +295,7 @@ files.size // 1
 await files.delete(handle) // a missing file is success; `failClosed` / `deleteMissingAsError` for failures
 
 const caches = new FakeGoogleCacheStore({ now: () => clock.now(), tokenCount: 4_096 })
-const key = { model: 'gemini-2.5-pro', stableKey: 'system-prompt-v3' }
+const key = { model: 'gemini-3.8-flash', stableKey: 'system-prompt-v3' }
 const a = await caches.getOrCreate(key, async () => ({ ttlSeconds: 600 }))
 const b = await caches.getOrCreate(key, async () => ({ ttlSeconds: 600 }))
 // b === a, caches.created === 1; after the expiry skew (30 s before expiry) a new cache is created
@@ -413,7 +413,7 @@ const client = createClient({
 const callSite = defineCallSite({
   id: 'test',
   provider: 'google',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-3.8-flash',
   jsonSchema: {
     type: 'object',
     properties: { ok: { type: 'boolean' } },
@@ -502,7 +502,7 @@ import { makeLlmClient } from '../src/llm/make-llm-client.js'
 const checkOk = defineCallSite({
   id: 'check-ok',
   provider: 'google',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-3.8-flash',
   jsonSchema: {
     type: 'object',
     properties: { ok: { type: 'boolean' } },
@@ -555,7 +555,7 @@ import { FakeAdapter, RecordingSink } from '@gullabs/testing'
 const fakeAdapter = new FakeAdapter('google', {
   message: { role: 'assistant', parts: [{ kind: 'text', text: 'hi' }] },
   text: 'hi',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-3.8-flash',
   usage: { inputTokens: 1, outputTokens: 1, details: {}, raw: null },
   warnings: [],
 })

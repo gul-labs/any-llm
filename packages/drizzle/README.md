@@ -42,7 +42,7 @@ const client = createClient({
 const myCallSite = defineCallSite({
   id: 'summarise',
   provider: 'google',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-3.8-flash',
   jsonSchema: {
     type: 'object',
     properties: { summary: { type: 'string' } },

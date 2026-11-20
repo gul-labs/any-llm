@@ -45,7 +45,13 @@ const zodPinned = JSON.parse(
   }>
 }
 
-const GEMINI = geminiModelDescriptors.map((d) => d.model)
+/** The Gemini models on the P3-backed profile; Gemini 4 has a documented profile, tested below. */
+const GEMINI = geminiModelDescriptors
+  .map((d) => d.model)
+  .filter((m) => !m.startsWith('gemini-4-'))
+const GEMINI_4 = geminiModelDescriptors
+  .map((d) => d.model)
+  .filter((m) => m.startsWith('gemini-4-'))
 const GEMMA = gemmaModelDescriptors.map((d) => d.model)
 const PROBED_GEMINI = GEMINI.filter((m) => p3.cases['anyOf']?.models[m] !== undefined)
 
@@ -318,5 +324,94 @@ describe('Google JSON Schema profile, against live probe P3 (2026-10-03)', () =>
         }
       }
     })
+  })
+})
+
+describe('Gemini 4 JSON Schema profile: the structured-output guide only (read 2026-11-20)', () => {
+  const caseSchema = (id: string): JsonValue => (p3.cases[id] as P3Case).schema
+
+  it('applies to every registered Gemini 4 model, never probed by P3', () => {
+    expect([...GEMINI_4].sort()).toEqual([
+      'gemini-4-argon',
+      'gemini-4-carbon',
+      'gemini-4-hydrogen',
+      'gemini-4-neon',
+    ])
+    for (const model of GEMINI_4) {
+      expect(p3.cases['anyOf']?.models[model]).toBeUndefined()
+    }
+  })
+
+  /** P3 schemas that use only what the guide documents. */
+  const DOCUMENTED = [
+    'baseline_key_order',
+    'schema_annotation',
+    'ref_defs',
+    'ref_recursive',
+    'anyOf',
+    'additionalProperties_false',
+    'additionalProperties_schema',
+    'minimum_maximum',
+    'enum',
+    'minItems_maxItems',
+    'prefixItems',
+    'type_array_null',
+    'required_optional',
+  ]
+  /** P3 schemas with a keyword or value the guide does not document. */
+  const UNDOCUMENTED = [
+    'pattern',
+    'minLength_maxLength',
+    'prefixItems_items_false',
+    'format',
+  ]
+
+  it.each(DOCUMENTED)('accepts %s', (id) => {
+    for (const model of GEMINI_4) run(caseSchema(id), model)
+  })
+
+  it.each(UNDOCUMENTED)('rejects %s before dispatch', (id) => {
+    for (const model of GEMINI_4) {
+      expect(rejection(caseSchema(id), model)).toMatchObject({
+        kind: 'bad_request',
+        provider: 'google',
+      })
+    }
+  })
+
+  it('accepts the format values the guide names (date-time, date, time) and no other', () => {
+    for (const model of GEMINI_4) {
+      for (const format of ['date-time', 'date', 'time']) {
+        run({ type: 'string', format }, model)
+      }
+      expect(rejection({ type: 'string', format: 'email' }, model).message).toContain(
+        'email',
+      )
+    }
+  })
+
+  it('rejects everything P3 saw ignored, as on every other model', () => {
+    for (const id of [
+      'const',
+      'oneOf_discriminated',
+      'oneOf_overlapping_probe',
+      'exclusiveMinimum_multipleOf',
+      'uniqueItems',
+      'allOf',
+    ]) {
+      for (const model of GEMINI_4) {
+        expect(rejection(caseSchema(id), model).kind).toBe('bad_request')
+      }
+    }
+  })
+
+  it('is stricter than the portable subset: pattern, minLength, maxLength and the email format are not documented', () => {
+    const profile = googleJsonSchemaProfile('gemini-4-neon')
+    expect(
+      PORTABLE_JSON_SCHEMA_KEYWORDS.filter((k) => !profile.keywords.includes(k)).sort(),
+    ).toEqual(['maxLength', 'minLength', 'pattern'])
+    expect(
+      PORTABLE_JSON_SCHEMA_FORMATS.filter((f) => !profile.formats.includes(f)),
+    ).toEqual(['email'])
   })
 })

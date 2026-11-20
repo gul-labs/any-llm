@@ -337,7 +337,7 @@ try {
   const callSite = `export const site = defineCallSite({
   id: 'packed-install',
   provider: 'google',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-3.8-flash',
   jsonSchema: { type: 'object', properties: { word: { type: 'string' } }, required: ['word'] },
   userTemplate: 'Say {{word}}',
 })

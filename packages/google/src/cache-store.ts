@@ -15,6 +15,7 @@ import type { Content, Tool, ToolConfig } from '@google/genai'
 
 import { newGoogleGenAI } from './client.js'
 import { classifyGoogleError, isGoogleNotFoundError } from './errors.js'
+import { defaultGeminiRegistry } from './models.js'
 import { LlmError, redactSecrets } from '@gullabs/core'
 
 // ---------------------------------------------------------------------------
@@ -176,6 +177,29 @@ function expiryOf(expireTime: string | undefined, fallbackMs: number): Date {
   return new Date(fallbackMs)
 }
 
+/**
+ * A registered model whose descriptor says it has no explicit caching (Gemini 4:
+ * "Explicit caching (`cachedContents` / `caches.create`) is not supported ... and
+ * returns an error", https://aistudio.google.com/docs/whats-new-gemini-4-carbon.md,
+ * read 2026-11-20) is rejected before the token preflight and before any request.
+ * An id the registry does not know is left to Google.
+ */
+function assertExplicitCachingAdmitted(model: string): void {
+  const id = model.startsWith('models/') ? model.slice('models/'.length) : model
+  const caching = defaultGeminiRegistry.resolve('google', id)?.capabilities?.caching
+  if (caching?.explicit === false) {
+    throw new LlmError(
+      `GoogleCacheStore.create: model "${model}" does not support explicit caching (Google rejects cachedContents for it); it caches implicitly from ${caching.minTokens} prompt tokens, which needs no cache.`,
+      {
+        kind: 'bad_request',
+        retryable: false,
+        provider: 'google',
+        issues: [{ path: 'model', message: 'no explicit caching' }],
+      },
+    )
+  }
+}
+
 async function buildCachesClient(auth: AuthMaterial): Promise<GeminiCachesClientLike> {
   const ai = await newGoogleGenAI(auth)
 
@@ -313,6 +337,7 @@ export class GoogleCacheStore {
     toolConfig?: ToolConfig
     displayName?: string
   }): Promise<GoogleCacheHandle> {
+    assertExplicitCachingAdmitted(input.model)
     if (!Number.isInteger(input.ttlSeconds) || input.ttlSeconds <= 0) {
       throw new LlmError(
         `GoogleCacheStore.create: ttlSeconds must be a positive integer, got ${String(input.ttlSeconds)}.`,
