@@ -20,14 +20,27 @@
  *   `minItems`, `maxItems`.
  * - Unsupported: `allOf`, `not`, `dependentRequired`, `dependentSchemas`, `if`,
  *   `then`, `else`. Rejected (they are outside the keyword list).
- * - Not named by the guide, so rejected: `const`, `oneOf`, `prefixItems`,
- *   `minLength`, `maxLength`, `minProperties`, `maxProperties`, `uniqueItems`,
+ * - `const` is admitted: the guide counts it toward the size limit ("total
+ *   string length of all property names, definition names, enum values, and
+ *   const values cannot exceed 120,000 characters"), so its string values are
+ *   counted there.
+ * - Not named by the guide, so rejected: `oneOf`, `prefixItems`, `minLength`,
+ *   `maxLength`, `minProperties`, `maxProperties`, `uniqueItems`,
  *   `patternProperties`, a constraining `propertyNames`.
- * - Strict-mode structure: the root is an object and not `anyOf`; every object
- *   lists all of its properties in `required` and sets
- *   `additionalProperties: false`; at most 5,000 object properties and 10 levels
- *   of nesting; at most 120,000 characters across property names, definition
- *   names and enum values; at most 1,000 enum values.
+ * - Strict-mode structure: "the root level object of a schema must be an
+ *   object, and not use `anyOf`", read as `type: "object"` exactly; "all fields
+ *   or function parameters must be specified as `required`", read as `required`
+ *   naming exactly the property names, each once (a name with no property is
+ *   rejected too); "`additionalProperties: false` must always be set in
+ *   objects". The guide does not say whether a nested object must declare
+ *   `type`; every example on the page does, and an untyped schema is not a
+ *   documented shape, so any schema using an object keyword (`properties`,
+ *   `required`, `additionalProperties`) must declare `type: "object"` (or
+ *   `["object", "null"]` below the root).
+ * - Limits: "up to 5000 object properties total, with up to 10 levels of
+ *   nesting"; 120,000 characters as quoted above; "up to 1000 enum values across
+ *   all enum properties"; "the total string length of all enum values cannot
+ *   exceed 15,000 characters when there are more than 250 enum values".
  * - `items: false` is undocumented and rejected; `pattern` is held to core's
  *   regex subset because the guide does not name the regex dialect.
  *
@@ -45,6 +58,7 @@ export const OPENAI_JSON_SCHEMA_PROFILE: JsonSchemaProfile = {
     'required',
     'additionalProperties',
     'enum',
+    'const',
     'anyOf',
     '$ref',
     '$defs',
@@ -82,6 +96,9 @@ export const OPENAI_STRICT_SCHEMA_LIMITS = Object.freeze({
   maxNestingDepth: 10,
   maxSchemaStringChars: 120_000,
   maxEnumValues: 1_000,
+  /** Applies when the schema has more than {@link maxEnumValuesBeforeCharCap} enum values. */
+  maxEnumStringChars: 15_000,
+  maxEnumValuesBeforeCharCap: 250,
 })
 
 type JsonObject = { [key: string]: JsonValue }
@@ -104,17 +121,19 @@ function namePath(path: string, name: string): string {
     : `${path}[${JSON.stringify(name)}]`
 }
 
-function isObjectSchema(node: JsonObject): boolean {
+const OBJECT_KEYWORDS = ['properties', 'required', 'additionalProperties'] as const
+
+/** The node declares `type: "object"` (or a type list that includes it). */
+function declaresObject(node: JsonObject): boolean {
   const type = node['type']
-  if (type === 'object') return true
-  if (Array.isArray(type)) return type.includes('object')
-  return type === undefined && isObject(node['properties'])
+  return type === 'object' || (Array.isArray(type) && type.includes('object'))
 }
 
 interface Tally {
   properties: number
   chars: number
   enumValues: number
+  enumChars: number
 }
 
 /**
@@ -135,10 +154,21 @@ function walkStrict(node: JsonValue, path: string, depth: number, tally: Tally):
   if (Array.isArray(enumValues)) {
     tally.enumValues += enumValues.length
     for (const value of enumValues) {
-      if (typeof value === 'string') tally.chars += value.length
+      if (typeof value === 'string') {
+        tally.chars += value.length
+        tally.enumChars += value.length
+      }
     }
   }
-  if (isObjectSchema(node)) {
+  const constValue = node['const']
+  if (typeof constValue === 'string') tally.chars += constValue.length
+  const objectKeyword = OBJECT_KEYWORDS.find((key) => node[key] !== undefined)
+  if (objectKeyword !== undefined && !declaresObject(node)) {
+    throw bad(
+      `${path}: a schema with ${objectKeyword} must declare type: "object" in an OpenAI strict schema.`,
+    )
+  }
+  if (declaresObject(node)) {
     if (node['additionalProperties'] !== false) {
       throw bad(
         `${path}: every object in an OpenAI strict schema must set additionalProperties: false.`,
@@ -153,6 +183,17 @@ function walkStrict(node: JsonValue, path: string, depth: number, tally: Tally):
         `${path}.required: an OpenAI strict schema lists every property as required; missing [${missing
           .map((name) => JSON.stringify(name))
           .join(', ')}]. Model an optional field as a union with null.`,
+      )
+    }
+    const extra = required.filter(
+      (name, i) =>
+        typeof name !== 'string' || !names.includes(name) || required.indexOf(name) !== i,
+    )
+    if (extra.length > 0) {
+      throw bad(
+        `${path}.required: an OpenAI strict schema's required list must name exactly its properties, each once; [${extra
+          .map((name) => JSON.stringify(name))
+          .join(', ')}] is not a property or is repeated.`,
       )
     }
     tally.properties += names.length
@@ -192,13 +233,13 @@ function walkStrict(node: JsonValue, path: string, depth: number, tally: Tally):
  */
 export function assertOpenAiStrictSchema(schema: JsonValue, path: string): void {
   assertJsonSchemaProfile(schema, path, OPENAI_JSON_SCHEMA_PROFILE)
-  if (!isObject(schema) || !isObjectSchema(schema) || Array.isArray(schema['type'])) {
+  if (!isObject(schema) || schema['type'] !== 'object') {
     throw bad(`${path}: the root of an OpenAI strict schema must be { type: "object" }.`)
   }
   if (schema['anyOf'] !== undefined) {
     throw bad(`${path}.anyOf: the root of an OpenAI strict schema cannot be anyOf.`)
   }
-  const tally: Tally = { properties: 0, chars: 0, enumValues: 0 }
+  const tally: Tally = { properties: 0, chars: 0, enumValues: 0, enumChars: 0 }
   walkStrict(schema, path, 1, tally)
   const limits = OPENAI_STRICT_SCHEMA_LIMITS
   if (tally.properties > limits.maxObjectProperties) {
@@ -208,7 +249,15 @@ export function assertOpenAiStrictSchema(schema: JsonValue, path: string): void 
   }
   if (tally.chars > limits.maxSchemaStringChars) {
     throw bad(
-      `${path}: ${tally.chars} characters across property names, definition names and enum values; OpenAI strict schemas allow at most ${limits.maxSchemaStringChars}.`,
+      `${path}: ${tally.chars} characters across property names, definition names, enum values and const values; OpenAI strict schemas allow at most ${limits.maxSchemaStringChars}.`,
+    )
+  }
+  if (
+    tally.enumValues > limits.maxEnumValuesBeforeCharCap &&
+    tally.enumChars > limits.maxEnumStringChars
+  ) {
+    throw bad(
+      `${path}: ${tally.enumValues} enum values totalling ${tally.enumChars} characters; with more than ${limits.maxEnumValuesBeforeCharCap} enum values OpenAI strict schemas allow at most ${limits.maxEnumStringChars} characters of them.`,
     )
   }
   if (tally.enumValues > limits.maxEnumValues) {
