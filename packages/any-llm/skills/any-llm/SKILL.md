@@ -630,7 +630,7 @@ Exact model reminders:
 - `gemini-3.1-pro-preview`, `gemini-3.8-flash` and the Gemini 4 models do **not** admit `effort: 'none'`
 - Explicit-cache floors: 1024 on the registered Gemini 3.x ids, live-verified on 2026-09-26 by a 103-token rejection and exact 1024-token create; 2048 remains configured on Gemini 2.5 Flash-Lite. Gemini 4 has no explicit caching (`cachedContent` and `GoogleCacheStore.create` are rejected for it).
 - Gemini 4 (documented, not live-verified): no schema with Search, no Search with `flex`, `maxOutputTokens` at most 32,768 on Carbon and Argon and 65,536 on Neon and Hydrogen, a 20-minute default deadline without `timeoutMs` (flex 25). Carbon and Argon costs are `estimated` until the 2026-12-01 re-snapshot.
-- Every Google generation request is sent with `store: false` and as one request per attempt (a `CONTINUATION` finish is `length`, never resumed). A request ending with an assistant turn is `bad_request` on 3.5 Flash-Lite, 3.6 and 3.8 Flash and Gemini 4.
+- Every Google generation request is sent with `store: false` (Google's request-level logging override) and is never continued automatically (a `CONTINUATION` finish is `length`); a flex call with `flexFallback` may still send a second, standard request. A request ending with an assistant turn is `bad_request` on 3.5 Flash-Lite, 3.6 and 3.8 Flash and Gemini 4.
 - Gemma 4 is binary: only `effort: 'none'` or `effort: 'high'`
 - Omit `serviceTier` for provider-standard; set `flex` explicitly
 - `priority` remains rejected by the library even though Google documents it

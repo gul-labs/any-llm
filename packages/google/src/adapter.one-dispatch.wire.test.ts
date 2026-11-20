@@ -1,6 +1,6 @@
 /**
- * One dispatch per attempt, nothing stored at Google, every finish reason
- * mapped explicitly.
+ * No automatic continuation, the request-level logging override set, every
+ * finish reason mapped explicitly.
  *
  * - Every generation request carries `store: false` and is sent with
  *   `automaticContinuation: false` (an SDK-side option, never serialized), for

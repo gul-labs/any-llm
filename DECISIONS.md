@@ -4493,7 +4493,7 @@ ordinary-input subtraction, `parallel_tool_calls`, the error body shape, snapsho
 
 ---
 
-## ADR-048: Google refresh: SDK 3, one dispatch per attempt, `store: false`, Gemini 4, removals
+## ADR-048: Google refresh: SDK 3, no automatic continuation, `store: false`, Gemini 4, removals
 
 **Status:** Accepted (2026-11-20). Amends ADR-012 (default deadlines), ADR-018 (SDK version), ADR-019 (the
 pinned client), ADR-031 (one billed request per attempt), ADR-034 (a Gemini 4 profile), ADR-035 (Gemini 4
@@ -4526,8 +4526,10 @@ page), and announced that from 2026-12-01 requests to `gemini-2.5-pro` and `gemi
    create / update / delete and file upload reach `https://generativelanguage.googleapis.com/.../v1beta/...`
    with the caller's key. ADR-018 is unchanged: bug #1277 was already fixed before 3.x (3.6.1 arms
    `httpOptions.timeout` per fetch in `ApiClient.apiCall`), and #1468 concerns Vertex, which is not used.
-2. **One dispatch per attempt.** Every `generateContent`, the standard dispatch after a flex capacity error
-   included, is sent with `automaticContinuation: false` (an SDK option, never serialized). A `CONTINUATION`
+2. **No automatic continuation.** Every `generateContent`, the standard dispatch after a flex capacity error
+   included, is sent with `automaticContinuation: false` (an SDK option, never serialized), so the SDK never
+   sends a request the adapter did not send. An attempt is one request, or two when a flex call with
+   `flexFallback` falls back to the standard tier after a flex capacity error (ADR-012). A `CONTINUATION`
    finish is `finishReason: 'length'` with that response's usage and a warning; a function call beside it is
    dropped and named, as beside `MAX_TOKENS`; the continuation token is neither replayed nor kept. Resumable
    long decode is a BACKLOG item: resuming is a second billed request and needs its own ledger design.

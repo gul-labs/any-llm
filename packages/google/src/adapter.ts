@@ -741,8 +741,9 @@ function describeSafetyRatings(ratings: unknown): string {
  * (descriptions from the SDK's enum documentation):
  *
  * - `CONTINUATION` ("reached the per-request token limit, but generation is not
- *   yet complete") is `length`: the adapter sends one request per attempt and
- *   never replays the continuation token, so the answer is cut like `MAX_TOKENS`.
+ *   yet complete") is `length`: the adapter turns the SDK's automatic
+ *   continuation off and never replays the continuation token, so the answer is
+ *   cut like `MAX_TOKENS`.
  * - The members the SDK documents as a safety or policy block are
  *   `content_filter`: the safety, recitation, blocklist, prohibited-content and
  *   SPII stops, the image variants, `ESCALATION` ("filtered by an escalation
@@ -2238,14 +2239,14 @@ export function geminiAdapterWithClientFactory(
         })
       }
       const finishReason = mapFinishReason(candidate.finishReason)
-      // One dispatch per attempt: a `CONTINUATION` finish is returned as it is,
+      // No automatic continuation: a `CONTINUATION` finish is returned as it is,
       // a cut answer (`length`) with this response's usage alone. The
       // continuation token is neither replayed nor kept (resuming would be a
       // second billed request inside the attempt, ADR-031).
       if (candidate.finishReason === 'CONTINUATION') {
         warnings.push({
           type: 'other',
-          message: `google: the response ended with finishReason CONTINUATION: it reached the per-request output limit of "${model}" before generation finished, so the answer is incomplete. The adapter sends one request per attempt and does not resume with the continuation token, so finishReason is "length" and the usage is this response's alone. Resumable long decode is not supported; shorten the task or split it across calls.`,
+          message: `google: the response ended with finishReason CONTINUATION: it reached the per-request output limit of "${model}" before generation finished, so the answer is incomplete. The adapter does not resume with the continuation token (automatic continuation is off), so finishReason is "length" and the usage is this response's alone. Resumable long decode is not supported; shorten the task or split it across calls.`,
         })
       }
       warnings.push(...groundingWarnings(groundingMetadata))

@@ -4,7 +4,7 @@
 '@gullabs/any-llm': minor
 ---
 
-Google refresh: `@google/genai` 3, one request per attempt, `store: false`, Gemini 4, three ids removed (ADR-048). Breaking.
+Google refresh: `@google/genai` 3, no automatic continuation, `store: false`, Gemini 4, three ids removed (ADR-048). Breaking.
 
 **What a host must change**
 

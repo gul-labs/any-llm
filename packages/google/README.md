@@ -296,7 +296,7 @@ Google unchanged.
 - omitted `serviceTier` → provider-default request behavior
 - `reasoning.includeThoughts` → `thinkingConfig.includeThoughts`; thought parts become `reasoningText`
 - `reasoning.effort` → `thinkingBudget` (Gemini 2.5) or `thinkingLevel` (Gemini 3, Gemini 4, Gemma 4); Gemini 4 without an effort → its documented default level
-- every generation request → `store: false` (top-level request field) and `automaticContinuation: false` (SDK option): one request per attempt, nothing logged at Google by this library's request (ADR-048)
+- every generation request → `store: false` (top-level request field) and `automaticContinuation: false` (SDK option): the request-level logging override is set and the SDK never re-sends a request on its own; a flex call with `flexFallback` can still send a second, standard request (ADR-048)
 - `reasoning.budgetTokens` → admitted only on Gemini 2.5 budget-api models; strict descriptors reject it on level-api models (see "Thinking budgets and the output cap")
 - `output.jsonSchema` → `responseMimeType: 'application/json'` + verbatim `responseJsonSchema` when native structured output is enabled, and `tools[].inputJsonSchema` → `parametersJsonSchema` (both standard JSON Schema, in your key order; see "JSON Schema" below); the engine returns parsed output and `outputParsed` without validating shape
 - `providerOptions.google.*` → typed provider-extension lane for admitted keys such as `cachedContent`, `safetySettings`, and exact tool declarations
@@ -543,7 +543,7 @@ bounds as `providerMetadata.google.candidate` (50 list entries, 2048 characters 
 a warning when something is cut); the citations are built from the full response. `GEMINI_PRICING`
 is deep-frozen.
 
-## SDK 3, one request per attempt, no storage at Google
+## SDK 3, no automatic continuation, the request-level logging override
 
 The peer is `@google/genai ^3.6.1`. The SDK client is built with the call's API key, `vertexai: false`,
 `apiVersion: 'v1beta'` and the Developer API base URL, so no ambient setting moves a call:
@@ -561,8 +561,12 @@ and a warning; a function call beside it is dropped like one beside `MAX_TOKENS`
 replayed or kept. Every `FinishReason` member of the SDK is mapped explicitly: the safety and policy
 blocks (`SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, the `IMAGE_*` blocks,
 `ESCALATION`, `PUP_LIMITED_DISABLED`, `MODEL_ARMOR`) are `content_filter`, `MAX_TOKENS` and
-`CONTINUATION` are `length`, `STOP` is `stop`, and the rest is `other`. That `store: false` is honoured
-is documented, not live-verified.
+`CONTINUATION` are `length`, `STOP` is `stop`, and the rest is `other`.
+
+So an attempt sends one request, or two when a flex call with `flexFallback` falls back to the standard
+tier after a capacity error; neither is ever continued. `store: false` is a logging override for that
+request, nothing more: this library makes no statement about what Google retains, and that the field is
+accepted and honoured on every model is documented, not live-verified.
 
 A request whose last non-empty turn is an assistant turn is `bad_request` before dispatch on
 `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.8-flash` and the Gemini 4 models (Google answers

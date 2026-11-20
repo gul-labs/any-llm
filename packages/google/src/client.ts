@@ -341,7 +341,7 @@ export interface GeminiGenerateConfig {
    * and never sent. `@google/genai` defaults it to `true`: on a `CONTINUATION`
    * finish the SDK sends the request again with the continuation token and sums
    * the usage, several billed requests inside one attempt. The adapter always
-   * sends `false` (one dispatch per attempt, ADR-031).
+   * sends `false` (no automatic continuation, ADR-048).
    */
   automaticContinuation?: false
   /**
