@@ -4304,12 +4304,18 @@ the probe that would close it.
    variable could replace `Authorization` or add an organization header, and a malformed value throws inside the
    constructor and fails a valid call. No constructor option turns the read off (only a `provider` or an X.509
    `credential` skips it, and the client uses neither; `defaultHeaders` is merged after the parsed value, not
-   instead of it). So the client constructs the SDK client while `globalThis.process` is a view of the real
-   `process` whose `env` hides that one variable, and restores the original property in `finally`. This is
-   safe because the constructor is synchronous (no other code in the realm runs in between), the view lives on
-   this realm's `globalThis` only (the OS environment, child processes and worker threads never see it), and
-   nothing is read or copied: the view declines one key. A test with a malformed value shows the raw SDK throws
-   and the client's call succeeds. A test with conflicting `OPENAI_API_KEY`, `OPENAI_BASE_URL`,
+   instead of it). The client keeps two lines of defence. It constructs the SDK client while
+   `globalThis.process` is a view of the real `process` whose `env` hides that one variable, and restores the
+   original property in `finally` (also when the constructor throws); this is safe because the constructor is
+   synchronous (no other code in the realm runs in between), the view lives on this realm's `globalThis` only
+   (the OS environment, child processes and worker threads never see it), and nothing is read or copied: the view
+   declines one key. And a subclass of the SDK client deletes the default headers its constructor collected (the
+   protected `_options.defaultHeaders`; this client sets none of its own), on every path. Where the view cannot
+   be installed (no configurable `globalThis.process`, or no `env` object) the only thing lost is robustness to a
+   malformed value: the SDK parses it, a malformed one throws in the constructor, a well-formed one is still
+   never sent. Tests: a malformed value with the view (the raw SDK throws, the client's call succeeds), a
+   well-formed value with the view disabled (no ambient header is sent), and the descriptor restored after a
+   throwing constructor. The view is removed once the SDK offers an option that turns the read off (BACKLOG). A test with conflicting `OPENAI_API_KEY`, `OPENAI_BASE_URL`,
    `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`, `OPENAI_ADMIN_KEY`, `OPENAI_WEBHOOK_SECRET`, `OPENAI_LOG` and
    `OPENAI_CUSTOM_HEADERS` proves the destination and headers are the caller's only and that nothing is logged.
    The admin key and webhook secret are pinned although 7.60.0 does not send them on a bearer-authenticated
@@ -4353,16 +4359,21 @@ the probe that would close it.
    State is `{ openai: { model, input } }`: the request input plus every provider output item in order,
    encrypted reasoning included, minus function calls that did not complete. It is accepted only with new
    messages, only bound to the same provider and model string, never beside assistant history, and only when
-   every item and every nested part matches an exact allowlist of keys and value types: the request items this
-   adapter builds (user and developer messages of `input_text` / `input_image` parts, assistant history text,
-   `function_call_output`) and the provider output items it reads, with the keys the 7.60.0 typings define
-   (`ResponseOutputMessage`, `ResponseOutputText` / `ResponseOutputRefusal`, `ResponseReasoningItem` with its
-   `summary_text` / `reasoning_text` parts, `ResponseFunctionToolCall`). An unknown key anywhere (a `file_id` on
-   an image, a `prompt_cache_breakpoint`, any extra field) is `bad_request` naming the path. Values only a deferred
-   feature produces are refused even where the typings name the key: `annotations` must be empty and `logprobs`
-   absent or empty, a function call's `caller` only `{ type: 'direct' }`, and `async` and `namespace` are not
-   admitted. So state cannot bring a deferred feature back. A response whose own output item would fail this
-   check is returned with a warning saying the next request with that state is rejected. A `system` sent
+   its items pass a check that splits by who built them. Items this adapter builds (user and developer messages
+   of `input_text` / `input_image` parts, assistant history text, `function_call_output`) are exact: an unknown
+   key anywhere in them (a `file_id` on an image, a `prompt_cache_breakpoint`, any extra field) is `bad_request`
+   naming the path, because the adapter never writes one. Provider-produced items (`message` with
+   `output_text` / `refusal` parts, `reasoning` with `summary_text` / `reasoning_text` parts, `function_call`) are
+   replayed as returned: they are type-gated, the keys the 7.60.0 typings define are type-checked, and any other
+   key is tolerated and replayed unchanged. The reason is the evidence: the allowlist would be the typings, not a
+   capture of what the API returns, and nothing here is live-verified (keys such as `phase` are recent additions),
+   so rejecting an unknown key would fail every second turn the first time the API adds one, while ADR-029 and
+   OpenAI's stateless guidance call for replaying the provider's own items unmodified. What stays refused on
+   provider items are the values that carry a deferred feature, even where the typings name the key: non-empty
+   `annotations` and `logprobs`, a function call's `caller` other than `{ type: 'direct' }`, and `async` or
+   `namespace` on a function call. A response whose own output item fails that check is returned with a warning
+   that the next request with the state is rejected. State a host has altered is outside the contract: the check
+   covers the host-built shapes exactly and the deferred features on provider items, not every edit. A `system` sent
    beside state must equal the developer message the state starts with (it is never sent twice). Tool results
    pair by `call_id` with an unanswered call in the state. Actionable calls come only from a `completed` response.
    What the tests prove is the request payload of the second turn (a stubbed two-turn exchange); how OpenAI's

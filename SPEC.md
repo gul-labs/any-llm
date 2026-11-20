@@ -694,8 +694,9 @@ Documented, not live-verified (ADR-047; every page read 2026-11-20). Full detail
 - **SDK construction.** Built per call with `apiKey`, `baseURL: 'https://api.openai.com/v1'`,
   `organization: null`, `project: null`, `adminAPIKey: null`, `webhookSecret: null`, `logLevel: 'off'`,
   `maxRetries: 0`, constructed while `OPENAI_CUSTOM_HEADERS` is unreadable (a synchronous, restored view of
-  `globalThis.process`; no option turns the SDK's read off), so no `OPENAI_*` environment variable changes the
-  destination or the headers and a malformed one cannot fail a call.
+  `globalThis.process`; no option turns the SDK's read off) and with the SDK's collected default headers dropped
+  after construction, so no `OPENAI_*` environment variable changes the destination or the headers on any path;
+  where the view cannot be installed, a malformed value can still fail construction.
 - **Request.** `store: false`; `system` is a leading `developer` input message; text and image input
   (PNG, JPEG, WebP, GIF as base64 or a fully qualified `http(s)` URL, `detail: 'auto'`, at most 1,500
   images and 512 MB inline per request; the URL is checked on the string sent and the data as padded standard
@@ -708,9 +709,10 @@ Documented, not live-verified (ADR-047; every page read 2026-11-20). Full detail
   values, 15,000 characters of enum values above 250 of them).
 - **Continuation `'state'` (ADR-029).** State is `{ openai: { model, input } }`: the request input plus every
   output item in order. It is accepted only with new messages, only for the same provider and model, only
-  when every item and nested part matches an exact key and value allowlist (the adapter's own request items;
-  `message`, `reasoning` and `function_call` output items with the keys the SDK 7.60.0 typings define, minus
-  values only deferred features produce), and a tool result must answer an unanswered call in it.
+  when its items pass the split check (the adapter's own request items exact, unknown keys rejected;
+  provider `message`, `reasoning` and `function_call` items type-gated and replayed as returned, unknown keys
+  tolerated, values only deferred features produce rejected), and a tool result must answer an unanswered call
+  in it.
 - **Streaming (ADR-036, ADR-040 rules).** `run()` streams through the SDK's `responses.stream()`; a terminal
   event is required (an early clean end is `server`, never the snapshot). One deadline (`timeoutMs + 5 000`,
   or one hour) covers the whole stream (`timeout`, `transport_timeout`, not retryable); caller aborts are
