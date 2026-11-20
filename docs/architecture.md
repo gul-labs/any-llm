@@ -733,8 +733,8 @@ breaking change to the engine.
 
 **Additional providers.** Shipped today: `@gullabs/google` (Gemini and Gemma), `@gullabs/xai`
 (grok-4.5 / grok-4.6 / grok-4.7), and the dev-only CLI providers
-(`claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`;
-`gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`). The provider-plugin shape (ADR-023) means an
+(`claude-fable-5-2`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`;
+`gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra`, `gpt-6-luna`). The provider-plugin shape (ADR-023) means an
 Anthropic or OpenAI API provider is a new self-contained package composed via
 `composeProviders` — zero core edits. Multi-adapter setups work today: the default router
 matches `req.provider` against adapter ids directly, one adapter configured or ten.

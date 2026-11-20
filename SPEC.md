@@ -62,8 +62,8 @@ packages/
   core/       @gullabs/core       # types, ports, engine, callsite, computeCost, errors, record  (no provider deps)
   google/     @gullabs/google     # googleProvider: geminiAdapter over @google/genai + model configs + pricing  (peerDep @google/genai)
   xai/        @gullabs/xai        # xaiProvider: grok-4.5 / grok-4.6 / grok-4.7 over the openai SDK's Responses API  (peerDep openai)
-  claude-cli/ @gullabs/claude-cli # dev-only: claude-fable-5-1, claude-opus-5-5, claude-sonnet-5, claude-haiku-4-5-20251001
-  codex-cli/  @gullabs/codex-cli  # dev-only: gpt-6-astra, gpt-6-sol, gpt-6-luna
+  claude-cli/ @gullabs/claude-cli # dev-only: claude-fable-5-2, claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5
+  codex-cli/  @gullabs/codex-cli  # dev-only: gpt-6.2-sol, gpt-6.2-astra, gpt-6.1-terra, gpt-6-luna
   any-llm/    @gullabs/any-llm    # batteries-included facade: re-exports core + google
   drizzle/    @gullabs/drizzle    # reference llm_calls schema + drizzleUsageSink  (peerDep drizzle-orm)
   quota/      @gullabs/quota      # provider quota: rpm / rpd (day boundary) / tpm, presets, in-memory + Upstash stores

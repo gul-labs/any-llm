@@ -4211,3 +4211,32 @@ over the saved login. The cost is invisible to the library's own ledger, which i
 - A host that relied on the CLI inheriting some other variable (a custom `HOME` is kept; a proxy is kept; a
   corporate `SSL_CERT_FILE` is kept) loses only what is not listed, and adds it with `env`.
 - `ANTHROPIC_API_KEY` in the host environment no longer changes which account a `claude-cli` call uses.
+
+### Amendment A (2026-11-20): CLI model registries, limits and the structured-output field
+
+The CLI registries follow the models the CLIs run now, and two statements in point 4 above are replaced.
+Everything here is documented, not live-verified: no CLI was run for it.
+
+1. **Registries.** `claude-cli` registers `claude-fable-5-2`, `claude-opus-5-5`, `claude-sonnet-5-5` and
+   `claude-haiku-5-5`; `codex-cli` registers `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra` and `gpt-6-luna`.
+   The superseded ids (`claude-fable-5-1`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`, `gpt-6-sol`,
+   `gpt-6-astra`) are deleted with no alias, and `gpt-6.1-sol` is not added. All four Claude models admit
+   `low` through `max` (Anthropic effort documentation), so the Haiku no-effort schema is gone. `ultracode`
+   and `ultra` stay excluded: both are CLI workflow or delegation switches, not model levels.
+2. **Limits (replaces the last sentence of point 4).** `claude-cli` states the documented API figures,
+   1,000,000 context and 128,000 output for all four (Anthropic models overview); the value the CLI reports in
+   `modelUsage` for these ids has not been captured (no capture exists for the new ids), so the four limits are
+   not CLI-reported values, which point 4 above had made them for the old ids. `codex-cli` states, per model, the context window Codex
+   CLI runs by default (500,000 for `gpt-6.2-sol` and `gpt-6.1-terra`, 272,000 for `gpt-6.2-astra` and
+   `gpt-6-luna`, from the model catalog bundled with Codex CLI 0.171.0), not the API's 1,050,000, because a call
+   through this provider runs under the CLI's window; output is the API's 128,000.
+3. **Structured output.** `claude-cli` reads the `structured_output` field the Claude Code headless
+   documentation names for `--json-schema` runs, and never parses `result` for it. A run whose envelope has no
+   such field produces no structured output (the engine reports it as unparsed) and carries a warning.
+4. **A second protection against silent model switches.** The adapter sets `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`
+   on every `claude` child, beside the unchanged `--settings {"switchModelsOnFlag":false}` argument and the
+   unchanged served-model check on `modelUsage`. The variable is adapter-owned, not an allowlisted host variable:
+   a value in the host environment is not inherited and is replaced, and naming it in the adapter's `env` option is
+   `bad_request`. Claude Code documents it since 2.1.312 (its changelog: automatic model switches after a flagged
+   message also cover unrecognised model names, and the variable turns them off); an older CLI ignores it.
+   Documented, not live-verified.

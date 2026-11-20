@@ -194,7 +194,7 @@ Gemini 2.5 uses `reasoning.budgetTokens`. Gemini 3 / Gemma built-ins use `reason
 
 Registered Google ids: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemma-4-31b-it`, `gemma-4-26b-a4b-it`. Deleted, with no alias: `gemini-3-flash-preview` and `gemini-3.5-flash` (migrate to `gemini-3.6-flash`).
 
-Dev-only CLI ids: `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`; `claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`. Deleted, with no alias: every `gpt-5*` id, `claude-fable-5`, and `claude-opus-4-8`.
+Dev-only CLI ids: `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra`, `gpt-6-luna`; `claude-fable-5-2`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`. Deleted, with no alias: every `gpt-5*` id, `gpt-6-sol`, `gpt-6-astra`, `claude-fable-5`, `claude-fable-5-1`, `claude-sonnet-5`, `claude-haiku-4-5-20251001` and `claude-opus-4-8`.
 
 ## Packages
 

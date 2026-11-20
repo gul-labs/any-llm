@@ -378,20 +378,22 @@ and throw `invalid_auth` (with a message pointing at the CLI login command) othe
 Model descriptors and config schemas for both packages live in `packages/claude-cli/src` and
 `packages/codex-cli/src`, not `packages/core/src/model-config/`. This is a deliberate deviation
 from the Gemini precedent: dev-only models must never appear on the production core surface, so a
-host importing only `@gullabs/core` + `@gullabs/google` never sees `claude-fable-5-1` or
-`gpt-6-sol` in its registry. Each package still satisfies the same onboarding invariants
+host importing only `@gullabs/core` + `@gullabs/google` never sees `claude-fable-5-2` or
+`gpt-6.2-sol` in its registry. Each package still satisfies the same onboarding invariants
 (strict zod config schema, `configJsonSchema`, `validateConfig`) as core's own descriptors.
 
 Config schemas are `z.strictObject`, per the reject-don't-map rule: no `temperature`, `topP`,
 `topK`, or `stopSequences` fields exist at all, because CLIs don't accept sampling params — an
 unknown key is rejected outright, never silently dropped or clamped.
 
-- **claude-cli** models: `claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5`,
-  `claude-haiku-4-5-20251001`. Fable 5.1, Opus 5.5, and Sonnet 5 admit
-  `reasoning.effort`: `low | medium | high | xhigh | max`. Haiku 4.5 has no
-  reasoning key.
-- **codex-cli** models: `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`.
-  `reasoning.effort`: `low | medium | high | xhigh | max`. No `gpt-5*` id is registered.
+- **claude-cli** models: `claude-fable-5-2`, `claude-opus-5-5`, `claude-sonnet-5-5`,
+  `claude-haiku-5-5`. All four admit `reasoning.effort`:
+  `low | medium | high | xhigh | max` (`ultracode` is a Claude Code workflow switch and is not
+  admitted). Limits are the documented API figures, 1M context and 128K output.
+- **codex-cli** models: `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra`, `gpt-6-luna`.
+  `reasoning.effort`: `low | medium | high | xhigh | max` (`ultra` is a delegation switch and is not
+  admitted). The context window is the one Codex CLI runs each model with by default, not the
+  API's. No `gpt-5*` id is registered.
 
 Registered Google ids: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`,
 `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
