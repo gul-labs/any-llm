@@ -34,7 +34,15 @@ import { PGlite } from '@electric-sql/pglite'
 import { getTableColumns } from 'drizzle-orm'
 import { PgDialect, getTableConfig } from 'drizzle-orm/pg-core'
 import { drizzle } from 'drizzle-orm/pglite'
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+} from 'vitest'
 import { assertLlmCallsSchema, drizzleUsageSink } from './sink.js'
 import { llmCallPayloads, llmCalls } from './schema.js'
 import { assertLlmCallPayloadsSchema } from './payloads.js'
@@ -42,6 +50,19 @@ import { LlmError, createClient, createModelRegistry } from '@gullabs/core'
 import type { AdapterResult, LlmCallRecord, Logger } from '@gullabs/core'
 import { FakeAdapter, FakeClock, FakeIds } from '@gullabs/testing'
 import { makePermissiveTestDescriptor } from '../../core/src/test-model-descriptor.js'
+
+/**
+ * A fresh in-memory database for the current test, closed when the test finishes,
+ * whether it passed or failed. Cleanup is registered before any setup SQL runs.
+ * PGlite keeps its WASM heap resident until `close()`: an instance that is only
+ * dropped holds about 200 MiB even after garbage collection, and this file opens
+ * dozens of them.
+ */
+function openPglite(): PGlite {
+  const pg = new PGlite()
+  onTestFinished(() => pg.close())
+  return pg
+}
 
 function sqlFile(relative: string): string {
   return readFileSync(
@@ -237,9 +258,26 @@ function makeRecord(overrides: Partial<LlmCallRecord> = {}): LlmCallRecord {
   }
 }
 
+// Per-test timeout, in ms, passed to every top-level suite below as `describe`'s
+// third argument (vitest's default is 5 s; the value reaches nested suites and
+// `it.each` cases, and hooks keep their own budget). Each test starts one or two
+// in-memory PGlite databases, and that WASM startup dominates its time; the SQL under
+// test runs in tens of milliseconds. Measured on GitHub-hosted ubuntu-latest runners
+// with the full suite running in parallel (CI run 44660721183, 2026-11-19, every
+// database already closed after its test):
+//
+// - PGlite startup: 1.1-1.9 s per database on Node 24, 1.9-3.1 s on Node 22.12 and
+//   in `verify`; `install.sql` 6-32 ms.
+// - Reported test duration: up to 3.1 s on Node 24 and 5.6-6.4 s on Node 22.12 and in
+//   `verify` for the two-database tests, over the 5 s default. Single-database tests
+//   reached 3.8 s.
+//
+// 20 s is about 3x the slowest measurement and still fails a real hang quickly.
+// Prettier keeps a test call's layout only when this argument is a number literal,
+// so each suite repeats `20_000` instead of naming a constant.
 describe('install.sql (fresh install)', () => {
   it('creates exactly the columns, nullability and indexes that schema.ts declares', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(sqlFile('install.sql'))
 
     const columns = await describeTable(pg)
@@ -269,7 +307,7 @@ describe('install.sql (fresh install)', () => {
   })
 
   it('declares in schema.ts the same index and CHECK definitions install.sql creates', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(sqlFile('install.sql'))
     const config = getTableConfig(llmCalls)
 
@@ -296,7 +334,7 @@ describe('install.sql (fresh install)', () => {
     // CHECKs: render each declared expression, create it on a scratch table with
     // the same two columns and compare `pg_get_constraintdef` with install.sql's.
     const dialect = new PgDialect()
-    const scratch = new PGlite()
+    const scratch = openPglite()
     await scratch.exec(`CREATE TABLE llm_calls (status TEXT NOT NULL, error_kind TEXT)`)
     for (const check of config.checks) {
       const rendered = dialect.sqlToQuery(check.value)
@@ -319,7 +357,7 @@ describe('install.sql (fresh install)', () => {
   })
 
   it('has the SQL type and default schema.ts declares for every column', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(sqlFile('install.sql'))
     const byName = new Map((await describeTable(pg)).map((c) => [c.column_name, c]))
 
@@ -336,7 +374,7 @@ describe('install.sql (fresh install)', () => {
   })
 
   it('checks status and error_kind but not error_reason, so a new reason needs no SQL', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(sqlFile('install.sql'))
 
     expect(await checkConstraints(pg)).toEqual([
@@ -359,7 +397,7 @@ describe('install.sql (fresh install)', () => {
   })
 
   it('rejects a status or error_kind outside the core vocabularies', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(sqlFile('install.sql'))
     const sink = drizzleUsageSink({ db: drizzle({ client: pg }) })
     await expect(
@@ -377,7 +415,7 @@ describe('install.sql (fresh install)', () => {
   })
 
   it('persists the cost v2 columns the sink writes', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(sqlFile('install.sql'))
     const db = drizzle({ client: pg })
     const sink = drizzleUsageSink({ db })
@@ -412,11 +450,11 @@ describe('install.sql (fresh install)', () => {
       costUnpricedReason: 'Unknown model "x"; no pricing entry found.',
     })
   })
-})
+}, 20_000)
 
 describe('cost_unpriced_reason separates possibly billed from known free (engine to PGlite)', () => {
   it('a dispatched failure with no usage carries no_usage_reported; a known-free one has neither cost nor reason', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(sqlFile('install.sql'))
     const db = drizzle({ client: pg })
     const client = createClient({
@@ -477,11 +515,11 @@ describe('cost_unpriced_reason separates possibly billed from known free (engine
     )
     expect(possiblyBilled.rows).toHaveLength(1)
   })
-})
+}, 20_000)
 
 describe('upgrades/0001-add-error-reason.sql (from the 0.7.2 shape)', () => {
   it('the 0.7.2 fixture has no error_reason column before the upgrade', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(PUBLISHED_0_7_2_SQL)
     expect((await describeTable(pg)).map((c) => c.column_name)).not.toContain(
       'error_reason',
@@ -489,7 +527,7 @@ describe('upgrades/0001-add-error-reason.sql (from the 0.7.2 shape)', () => {
   })
 
   it('adds error_reason as a nullable text column and keeps existing rows', async () => {
-    const upgraded = new PGlite()
+    const upgraded = openPglite()
     await upgraded.exec(PUBLISHED_0_7_2_SQL)
     await upgraded.exec(OLD_ROW_SQL)
     await upgraded.exec(sqlFile('upgrades/0001-add-error-reason.sql'))
@@ -506,7 +544,7 @@ describe('upgrades/0001-add-error-reason.sql (from the 0.7.2 shape)', () => {
   })
 
   it('is idempotent: a second run changes neither the table, the indexes nor the rows', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(PUBLISHED_0_7_2_SQL)
     await pg.exec(OLD_ROW_SQL)
     await pg.exec(sqlFile('upgrades/0001-add-error-reason.sql'))
@@ -522,7 +560,7 @@ describe('upgrades/0001-add-error-reason.sql (from the 0.7.2 shape)', () => {
   })
 
   it('the sink writes and reads error_reason on the fully upgraded table', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(PUBLISHED_0_7_2_SQL)
     await pg.exec(OLD_ROW_SQL)
     await pg.exec(sqlFile('upgrades/0001-add-error-reason.sql'))
@@ -538,13 +576,13 @@ describe('upgrades/0001-add-error-reason.sql (from the 0.7.2 shape)', () => {
   })
 
   it('without the upgrade sink.record itself rejects on the old shape (the engine, not the sink, swallows it)', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(PUBLISHED_0_7_2_SQL)
     const db = drizzle({ client: pg })
     const sink = drizzleUsageSink({ db })
     await expect(sink.record(makeRecord())).rejects.toThrow()
   })
-})
+}, 20_000)
 
 /** The previously published shape: 0.7.2 plus upgrade 0001. */
 const AFTER_0001_SQL = `${PUBLISHED_0_7_2_SQL}\n${sqlFile('upgrades/0001-add-error-reason.sql')}`
@@ -560,7 +598,7 @@ function withoutNotValid(def: string): string {
 
 describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
   it('the previous shape has none of the v2 columns, indexes or checks', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(AFTER_0001_SQL)
     const names = (await describeTable(pg)).map((c) => c.column_name)
     expect(names).toContain('error_reason')
@@ -572,12 +610,12 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
   })
 
   it('yields the same column, index and CHECK definitions as a fresh install, and keeps existing rows', async () => {
-    const upgraded = new PGlite()
+    const upgraded = openPglite()
     await upgraded.exec(AFTER_0001_SQL)
     await upgraded.exec(OLD_ROW_SQL)
     await upgraded.exec(sqlFile(UPGRADE_0002))
 
-    const fresh = new PGlite()
+    const fresh = openPglite()
     await fresh.exec(sqlFile('install.sql'))
 
     // Columns: type, precision, nullability and default, not just names.
@@ -620,7 +658,7 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
   })
 
   it('widens cost_micro_usd to BIGINT keeping old values, so one attempt above 2^31 micro-USD is stored, and adds the two partial indexes', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(AFTER_0001_SQL)
     await pg.exec(OLD_ROW_SQL)
     await pg.exec(`UPDATE llm_calls SET cost_micro_usd = 2147483647`)
@@ -659,7 +697,7 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
   })
 
   it('runs each statement on its own twice with the same result (idempotent per statement, not as one transaction)', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(AFTER_0001_SQL)
     await pg.exec(OLD_ROW_SQL)
 
@@ -679,7 +717,7 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
   })
 
   it('does not drop or re-add an existing CHECK on a re-run (the constraint keeps its oid)', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(AFTER_0001_SQL)
     await runStatementwise(pg, sqlFile(UPGRADE_0002))
     const oids = async () =>
@@ -699,7 +737,7 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
   })
 
   it('works whether or not an index was created beforehand (a host may build it concurrently)', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(AFTER_0001_SQL)
     await pg.exec(`CREATE INDEX llm_calls_created_at_idx ON llm_calls (created_at)`)
     await pg.exec(sqlFile(UPGRADE_0002))
@@ -879,7 +917,7 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
   })
 
   it('the sink writes the v2 columns, reads old rows back, and assertLlmCallsSchema passes', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(AFTER_0001_SQL)
     await pg.exec(OLD_ROW_SQL)
     await pg.exec(sqlFile(UPGRADE_0002))
@@ -896,14 +934,14 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
   })
 
   it('without the upgrade, the 0001 shape fails the schema check and every insert', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(AFTER_0001_SQL)
     const db = drizzle({ client: pg })
     await expect(assertLlmCallsSchema(db)).rejects.toThrow(/sql\/upgrades/)
     const sink = drizzleUsageSink({ db })
     await expect(sink.record(makeRecord())).rejects.toThrow()
   })
-})
+}, 20_000)
 
 /**
  * The SQL statement a SQL file documents in its comments (a `--   ` indented
@@ -933,13 +971,13 @@ describe('a table that was not migrated is detectable, and the engine logs every
   }
 
   it('assertLlmCallsSchema resolves on a fresh install and after the upgrade', async () => {
-    const fresh = new PGlite()
+    const fresh = openPglite()
     await fresh.exec(sqlFile('install.sql'))
     await expect(
       assertLlmCallsSchema(drizzle({ client: fresh })),
     ).resolves.toBeUndefined()
 
-    const upgraded = new PGlite()
+    const upgraded = openPglite()
     await upgraded.exec(PUBLISHED_0_7_2_SQL)
     await upgraded.exec(sqlFile('upgrades/0001-add-error-reason.sql'))
     await upgraded.exec(sqlFile('upgrades/0002-ledger-v2.sql'))
@@ -949,7 +987,7 @@ describe('a table that was not migrated is detectable, and the engine logs every
   })
 
   it('assertLlmCallsSchema rejects on the old shape and points at the upgrade SQL', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(PUBLISHED_0_7_2_SQL)
     const err = (await assertLlmCallsSchema(drizzle({ client: pg })).catch(
       (e: unknown) => e,
@@ -961,7 +999,7 @@ describe('a table that was not migrated is detectable, and the engine logs every
   })
 
   it('a table made by 0.1.1 to 0.4.0 (raw_usage NOT NULL) goes through every upgrade, assertLlmCallsSchema names raw_usage, and the one-line fix makes it pass', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(
       PUBLISHED_0_7_2_SQL.replace(
         'raw_usage             JSONB,',
@@ -997,7 +1035,7 @@ describe('a table that was not migrated is detectable, and the engine logs every
   })
 
   it("a table with raw_usage NOT NULL DEFAULT '{}'::jsonb is named by assertLlmCallsSchema: an error row writes NULL, which the default does not replace", async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(
       PUBLISHED_0_7_2_SQL.replace(
         'raw_usage             JSONB,',
@@ -1024,7 +1062,7 @@ describe('a table that was not migrated is detectable, and the engine logs every
   })
 
   it('through the engine, every row (success, attempt failure, refusal) is dropped with an error-level llm.call.sink.failed and the call is unaffected', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(PUBLISHED_0_7_2_SQL)
     const events: Array<{ level: string; event: string; ctx: Record<string, unknown> }> =
       []
@@ -1081,7 +1119,7 @@ describe('a table that was not migrated is detectable, and the engine logs every
     expect(sinkFailures.every((e) => typeof e.ctx['attemptId'] === 'string')).toBe(true)
     expect((await pg.query('SELECT 1 FROM llm_calls')).rows).toEqual([])
   })
-})
+}, 20_000)
 
 // ---------------------------------------------------------------------------
 // llm_call_payloads: fresh install and upgrade 0004
@@ -1115,7 +1153,7 @@ async function constraintDefs(
 
 describe('install.sql: llm_call_payloads', () => {
   it('has exactly the columns, types, nullability and defaults schema.ts declares', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(sqlFile('install.sql'))
     const columns = await describeTable(pg, PAYLOADS)
     const declared = getTableColumns(llmCallPayloads)
@@ -1143,7 +1181,7 @@ describe('install.sql: llm_call_payloads', () => {
   })
 
   it('declares in schema.ts the same primary key, foreign key and index install.sql creates', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(sqlFile('install.sql'))
     const config = getTableConfig(llmCallPayloads)
 
@@ -1179,7 +1217,7 @@ describe('install.sql: llm_call_payloads', () => {
   })
 
   it('a payload cannot exist without its ledger row, and deleting the ledger row deletes it', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(sqlFile('install.sql'))
     await expect(
       pg.exec(
@@ -1195,17 +1233,17 @@ describe('install.sql: llm_call_payloads', () => {
     await pg.exec(`DELETE FROM llm_calls WHERE attempt_id = 'new_attempt'`)
     expect((await pg.query(`SELECT 1 FROM llm_call_payloads`)).rows).toHaveLength(0)
   })
-})
+}, 20_000)
 
 describe('upgrades/0004-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 and 0002)', () => {
   it('the previous shape has no payload table', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(AFTER_0002_SQL)
     expect(await describeTable(pg, PAYLOADS)).toEqual([])
   })
 
   it('yields the same tables, columns, indexes and constraints as a fresh install, and keeps existing rows', async () => {
-    const upgraded = new PGlite()
+    const upgraded = openPglite()
     await upgraded.exec(AFTER_0002_SQL)
     await upgraded.exec(OLD_ROW_SQL)
     const callsBefore = {
@@ -1215,7 +1253,7 @@ describe('upgrades/0004-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
     }
     await upgraded.exec(sqlFile(UPGRADE_0004))
 
-    const fresh = new PGlite()
+    const fresh = openPglite()
     await fresh.exec(sqlFile('install.sql'))
 
     // The new table: type, precision, nullability, default; index text; every constraint.
@@ -1250,7 +1288,7 @@ describe('upgrades/0004-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
   })
 
   it('leaves no lock_timeout behind on the connection, after success or after the guard fails', async () => {
-    const ok = new PGlite()
+    const ok = openPglite()
     await ok.exec(AFTER_0002_SQL)
     await runStatementwise(ok, sqlFile(UPGRADE_0004))
     expect(
@@ -1259,7 +1297,7 @@ describe('upgrades/0004-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
       lock_timeout: '0',
     })
 
-    const bad = new PGlite()
+    const bad = openPglite()
     await bad.exec(AFTER_0002_SQL)
     await bad.exec(`CREATE TABLE llm_call_payloads (attempt_id uuid)`)
     expect((await runStatementwise(bad, sqlFile(UPGRADE_0004))).join('\n')).toMatch(
@@ -1315,7 +1353,7 @@ describe('upgrades/0004-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
     ]
 
     it.each(lookalikes)('refuses %s, and creates nothing on it', async (_name, ddl) => {
-      const pg = new PGlite()
+      const pg = openPglite()
       await pg.exec(AFTER_0002_SQL)
       await pg.exec(ddl)
       const before = {
@@ -1333,7 +1371,7 @@ describe('upgrades/0004-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
     })
 
     it('accepts the table exactly as this release creates it, and an index already present', async () => {
-      const pg = new PGlite()
+      const pg = openPglite()
       await pg.exec(AFTER_0002_SQL)
       await pg.exec(
         `CREATE TABLE llm_call_payloads (attempt_id TEXT PRIMARY KEY, request JSONB NOT NULL, response JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), ${FK})`,
@@ -1343,14 +1381,14 @@ describe('upgrades/0004-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
     })
 
     it('accepts the table a fresh install creates', async () => {
-      const pg = new PGlite()
+      const pg = openPglite()
       await pg.exec(sqlFile('install.sql'))
       await expect(pg.exec(sqlFile(UPGRADE_0004))).resolves.toBeDefined()
     })
   })
 
   it('runs each statement on its own twice with the same result (idempotent per statement)', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(AFTER_0002_SQL)
     await pg.exec(OLD_ROW_SQL)
 
@@ -1375,7 +1413,7 @@ describe('upgrades/0004-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
   })
 
   it('keeps the rows already in the payload table on a re-run', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(AFTER_0002_SQL)
     await runStatementwise(pg, sqlFile(UPGRADE_0004))
     await pg.exec(OLD_ROW_SQL)
@@ -1390,7 +1428,7 @@ describe('upgrades/0004-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
   })
 
   it('works whether or not the index was created beforehand (a host may build it concurrently)', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(AFTER_0002_SQL)
     await pg.exec(
       `CREATE TABLE llm_call_payloads (
@@ -1407,7 +1445,7 @@ describe('upgrades/0004-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
   })
 
   it('stops with an error, changing nothing, when a different table already has the name', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(AFTER_0002_SQL)
     await pg.exec(
       `CREATE TABLE llm_call_payloads (id BIGSERIAL PRIMARY KEY, call_id TEXT, body TEXT)`,
@@ -1437,7 +1475,7 @@ describe('upgrades/0004-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
   })
 
   it('the sink writes a payload on the upgraded table and assertLlmCallPayloadsSchema passes', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(AFTER_0002_SQL)
     await pg.exec(sqlFile(UPGRADE_0004))
     const db = drizzle({ client: pg })
@@ -1456,7 +1494,7 @@ describe('upgrades/0004-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
   })
 
   it('without the upgrade the schema check rejects and points at 0004; the ledger row still commits', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(AFTER_0002_SQL)
     const db = drizzle({ client: pg })
     await expect(assertLlmCallPayloadsSchema(db)).rejects.toThrow(
@@ -1475,4 +1513,4 @@ describe('upgrades/0004-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
     expect((await pg.query(`SELECT 1 FROM llm_calls`)).rows).toHaveLength(1)
     expect(errors.map(([, message]) => message)).toEqual(['llm.call.payload.failed'])
   })
-})
+}, 20_000)
