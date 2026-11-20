@@ -2,7 +2,7 @@
 
 Items here are designed seams. The ports or type-system placeholders exist; the machinery is deferred.
 
-This is no longer a Gemini-only tree. `@gullabs/google` and `@gullabs/xai` are first-class provider plugins composed via `composeProviders`. Dev-only CLI providers (`@gullabs/claude-cli`, `@gullabs/codex-cli`) exist for local iteration. What remains deferred is listed below.
+This is no longer a Gemini-only tree. `@gullabs/google`, `@gullabs/xai` and `@gullabs/openai` are first-class provider plugins composed via `composeProviders` (`@gullabs/openai` ships a documentation-derived first slice; its deferred capabilities are BACKLOG items, ADR-047). Dev-only CLI providers (`@gullabs/claude-cli`, `@gullabs/codex-cli`) exist for local iteration. What remains deferred is listed below.
 
 ---
 
@@ -54,7 +54,7 @@ See ADR-021 in DECISIONS.md for the reasoning behind deferring this to a host/co
 The following observability features are explicitly deferred by design — they are consumer concerns or future companion packages, not library responsibilities.
 
 - **First-party OpenTelemetry package** — the `Telemetry` port is the designed seam; ship an integration example or a thin `@gullabs/otel` wrapper, not an OTel SDK dependency in core.
-- **W3C `traceparent` propagation into provider calls** — needs per-call header injection, which no adapter exposes. Google's `providerOptions.google.httpOptions` admits only `timeout`, and xAI's `transport.fetch` is per client, so a host that must propagate `traceparent` today wraps `fetch` there and reads its own request context. A per-call `headers` option is the missing piece.
+- **W3C `traceparent` propagation into provider calls** — needs per-call header injection, which no adapter exposes. Google's `providerOptions.google.httpOptions` admits only `timeout`, xAI's `transport.fetch` is per client, and `@gullabs/openai` takes no transport in its first slice, so a host that must propagate `traceparent` today wraps `fetch` there and reads its own request context. A per-call `headers` option is the missing piece.
 - **In-library metrics runtime / `/metrics` endpoint / cache-hit & rate-limiter gauges** — consumers derive metrics from `LlmCallRecord` rows and `Telemetry` events; the library should not own a Prometheus registry or HTTP server.
 - **Error sampling / dedup** — call-level `errorKind` is in every record; sampling policy belongs in the host's error-reporting integration (e.g. Sentry's `sampleRate`).
 - **Persisted stack traces** — stack frames carry no operational value in production error records and inflate storage; `errorKind` + `errorMessage` are sufficient for postmortems.

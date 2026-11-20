@@ -8,7 +8,7 @@ assignees: ''
 
 ## Package affected
 
-<!-- e.g. @gullabs/any-llm, @gullabs/core, @gullabs/google, @gullabs/xai, @gullabs/drizzle, @gullabs/quota, @gullabs/testing -->
+<!-- e.g. @gullabs/any-llm, @gullabs/core, @gullabs/google, @gullabs/xai, @gullabs/openai, @gullabs/drizzle, @gullabs/quota, @gullabs/testing -->
 
 ## Version
 

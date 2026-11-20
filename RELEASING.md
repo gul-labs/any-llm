@@ -26,7 +26,15 @@ information: package.json: "repository.url" is
 
 The Release workflow fails fast if any public package's `repository.url` path does not equal `GITHUB_REPOSITORY`, before `changeset publish` starts. `packages/core/src/package-metadata.test.ts` asserts the same path on every public package and that this file lists each one. After an org/repo rename, update that test's `repoPath` first.
 
-Registry provenance validation is not exercised by `npm publish --dry-run`. A rejected publish does not consume that package's version, so retry by rolling the path fix forward — never revert to a stale path. `changeset publish` is sequential: if a later package fails after an earlier one succeeded, the published versions are immutable. Before merging a metadata-only fix, verify with `npm view @gullabs/<pkg> version` and `git ls-remote --tags origin` and add a patch changeset for any version already on the registry.
+Registry provenance validation is not exercised by `npm publish --dry-run`. A rejected publish does not consume that package's version, so retry by rolling the path fix forward — never revert to a stale path. Changesets publishes in dependency chunks and may publish sibling packages concurrently, so one package can fail while others in the same run succeed, and published versions are immutable. Before merging a metadata-only fix, verify with `npm view @gullabs/<pkg> version` and `git ls-remote --tags origin` and add a patch changeset for any version already on the registry.
+
+### A partial publish
+
+Nothing is rolled back when one package fails to publish and others succeed. Reconcile before acting: `npm view @gullabs/<pkg> version` for every package in the table below, and `git ls-remote --tags origin` for the release tags. Report which versions and tags exist. Once the cause is fixed (an expired or under-scoped `NPM_TOKEN`, a missing trusted publisher, a metadata error), re-run the Release workflow: `changeset publish` skips versions already on the registry and publishes only the missing ones. Do not bump versions or publish by hand to paper over the gap.
+
+### First publish of a new package
+
+A trusted publisher can only be configured on npmjs.com for a package that already exists. A package's first release therefore publishes through the `NPM_TOKEN` fallback and carries **no provenance attestation**. Whether the token is allowed to create a new package in the `@gullabs` scope cannot be checked from outside the workflow before the Version PR merges. If it is not, that package fails while the others publish (a consistent set of the remaining packages at the new version): report it, fix the token, and re-run Release as above; do not work around it. After the first publish, configure the package's trusted publisher so later releases carry an attestation. `@gullabs/openai` is in this position for its first release (0.18.0).
 
 ## Release security
 
@@ -34,7 +42,7 @@ Registry provenance validation is not exercised by `npm publish --dry-run`. A re
 
 ## Versioning: one version for every package
 
-All nine packages are one changesets [`fixed` group](./.changeset/config.json) and always publish at the same version. Any changeset that bumps one of them bumps all of them, including packages with no code change in that release. The compatibility rule is therefore "same version number", and it is the whole compatibility matrix: **mixed versions are unsupported and untested.** Core contracts change on most minors, so a companion built against one core is not known to work with the next, and a per-package peer range would need mixed-version testing on every release.
+All ten packages are one changesets [`fixed` group](./.changeset/config.json) and always publish at the same version. Any changeset that bumps one of them bumps all of them, including packages with no code change in that release. The compatibility rule is therefore "same version number", and it is the whole compatibility matrix: **mixed versions are unsupported and untested.** Core contracts change on most minors, so a companion built against one core is not known to work with the next, and a per-package peer range would need mixed-version testing on every release.
 
 `@gullabs/core` is an **exact-version `peerDependency`** of every other package (`workspace:*` in `peerDependencies`; pnpm replaces it with the exact release version when packing) and a `devDependency` for builds. It is never a regular dependency. Consequences:
 
@@ -64,7 +72,7 @@ Each must install, resolve exactly one `@gullabs/core` copy, load under ESM and 
    - Pending `.changeset/*.md` files → `changesets/action` opens a "Version Packages" PR.
    - Versions already bumped and no pending changesets → `changesets/action` runs `pnpm release` and publishes unpublished versions (trusted publishing via OIDC, `NPM_TOKEN` as fallback).
 
-The changelog generator is `.changeset/changelog.mjs`: the default one, except that a dependent package gets no "Updated dependencies [hash]" line. The nine packages are one fixed group with an exact core peer, so every changeset "updates" every package, and a line per changeset that names no change would bury the real entries.
+The changelog generator is `.changeset/changelog.mjs`: the default one, except that a dependent package gets no "Updated dependencies [hash]" line. The ten packages are one fixed group with an exact core peer, so every changeset "updates" every package, and a line per changeset that names no change would bury the real entries.
 
 Do not block a normal CI release on local `npm whoami`. Local npm auth is only for the emergency manual path.
 
@@ -126,6 +134,7 @@ All packages are published to the `@gullabs` scope with `publishConfig.access = 
 | `@gullabs/core`       | https://www.npmjs.com/package/@gullabs/core       |
 | `@gullabs/google`     | https://www.npmjs.com/package/@gullabs/google     |
 | `@gullabs/xai`        | https://www.npmjs.com/package/@gullabs/xai        |
+| `@gullabs/openai`     | https://www.npmjs.com/package/@gullabs/openai     |
 | `@gullabs/drizzle`    | https://www.npmjs.com/package/@gullabs/drizzle    |
 | `@gullabs/quota`      | https://www.npmjs.com/package/@gullabs/quota      |
 | `@gullabs/testing`    | https://www.npmjs.com/package/@gullabs/testing    |
@@ -138,7 +147,7 @@ All packages are published to the `@gullabs` scope with `publishConfig.access = 
 | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `NPM_TOKEN` | npm automation token with publish access to the `@gullabs` scope. Generate at https://www.npmjs.com/settings → Access Tokens → Generate New Token → Automation. |
 
-`GITHUB_TOKEN` is provided by GitHub Actions and passed to `changesets/action` as `github-token` (v2 no longer reads it from the environment). `NPM_TOKEN` is the fallback for packages without a trusted publisher; once all nine have one, it can be deleted.
+`GITHUB_TOKEN` is provided by GitHub Actions and passed to `changesets/action` as `github-token` (v2 no longer reads it from the environment). `NPM_TOKEN` is the fallback for packages without a trusted publisher; once all ten have one, it can be deleted.
 
 ## Manual release (emergency)
 

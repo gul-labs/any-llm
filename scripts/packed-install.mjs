@@ -349,6 +349,7 @@ export const run = () => client.runStructured(site, { word: 'hi' }, { auth: { ap
     direct: `import { createClient, composeProviders, defineCallSite } from '@gullabs/core'
 import { googleProvider } from '@gullabs/google'
 import { xaiProvider } from '@gullabs/xai'
+import { openaiProvider } from '@gullabs/openai'
 import { claudeCliProvider } from '@gullabs/claude-cli'
 import { codexCliProvider } from '@gullabs/codex-cli'
 import { drizzleUsageSink, llmCalls, llmCallPayloads } from '@gullabs/drizzle'
@@ -357,7 +358,13 @@ import { RecordingSink } from '@gullabs/testing'
 
 export { drizzleUsageSink, llmCalls, llmCallPayloads, providerQuotaMiddleware }
 const client = createClient({
-  ...composeProviders([googleProvider(), xaiProvider(), claudeCliProvider(), codexCliProvider()]),
+  ...composeProviders([
+    googleProvider(),
+    xaiProvider(),
+    openaiProvider(),
+    claudeCliProvider(),
+    codexCliProvider(),
+  ]),
   sink: new RecordingSink(),
 })
 ${callSite}`,
@@ -605,7 +612,8 @@ ${callSite}`,
   const providerSet = workspace.map((w) => w.manifest.name).filter((n) => n !== FACADE)
   const thirdParty = {
     '@google/genai': byName['@gullabs/google'].peerDependencies['@google/genai'],
-    openai: byName['@gullabs/xai'].peerDependencies.openai,
+    // The narrowest openai range among the packages that peer on it.
+    openai: byName['@gullabs/openai'].peerDependencies.openai,
     'drizzle-orm': byName['@gullabs/drizzle'].devDependencies['drizzle-orm'],
   }
 

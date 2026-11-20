@@ -9,7 +9,7 @@
  * @module
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, beforeAll } from 'vitest'
 import { LlmError, createClient } from '@gullabs/core'
 import { FakeClock, FakeIds, RecordingSink } from '@gullabs/testing'
 
@@ -48,6 +48,12 @@ const call = {
   config: { serviceTier: 'fast' },
 }
 const auth = { auth: { apiKey: 'sk-doc' } }
+
+// Load the real SDK once up front, so the first test's budget is not spent on a
+// cold import when the machine is busy.
+beforeAll(async () => {
+  await import('openai')
+}, 60_000)
 
 describe('served tier', () => {
   it('an explicit fast request whose response echoes no tier is unpriced on success', async () => {

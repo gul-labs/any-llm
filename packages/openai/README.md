@@ -66,22 +66,61 @@ The API key is per call (`auth.apiKey`, ADR-019) and is checked before the SDK i
 All four models continue with `'state'` (ADR-029): `result.transientProviderState` is `{ openai: { model, input } }`, the full wire input plus every provider output item in order (encrypted reasoning included). The next turn sends only the new messages (tool results, a new user message) with that state; assistant history beside the state is rejected, and so is a state bound to another provider or model, one whose first developer message differs from `system`, and one that holds an item this release does not produce (a built-in tool call, a file input). A tool result must answer a call the state holds that has not been answered. A function call of a response that did not complete is dropped with a warning.
 
 ```ts
+import { createClient, composeProviders } from '@gullabs/core'
+import type { ToolDefinition } from '@gullabs/core'
+import { openaiProvider } from '@gullabs/openai'
+
+const client = createClient({ ...composeProviders([openaiProvider()]) })
+const auth = { auth: { apiKey: 'YOUR_OPENAI_KEY' } }
+const tools: ToolDefinition[] = [
+  {
+    name: 'weather',
+    description: 'Current temperature for a city',
+    inputJsonSchema: {
+      type: 'object',
+      properties: { city: { type: 'string' } },
+      required: ['city'],
+      additionalProperties: false,
+    },
+  },
+]
+
 const first = await client.generate(
-  { provider: 'openai', model: 'gpt-6.2-sol', messages, tools },
-  { auth },
-)
-const next = await client.generate(
   {
     provider: 'openai',
     model: 'gpt-6.2-sol',
+    messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Weather in Oslo?' }] }],
     tools,
-    transientProviderState: first.transientProviderState,
-    messages: [
-      { role: 'user', parts: [{ kind: 'tool-result', toolCallId, toolName, result }] },
-    ],
   },
-  { auth },
+  auth,
 )
+const call = first.toolCalls?.[0]
+if (call !== undefined && first.transientProviderState !== undefined) {
+  const next = await client.generate(
+    {
+      provider: 'openai',
+      model: 'gpt-6.2-sol',
+      tools,
+      // Only the new messages: the state already holds the history.
+      transientProviderState: first.transientProviderState,
+      messages: [
+        {
+          role: 'user',
+          parts: [
+            {
+              kind: 'tool-result',
+              toolCallId: call.toolCallId,
+              toolName: call.toolName,
+              result: { celsius: -3 },
+            },
+          ],
+        },
+      ],
+    },
+    auth,
+  )
+  console.log(next.text)
+}
 ```
 
 ## Strict JSON Schema

@@ -5,7 +5,7 @@
  * @module
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi, beforeAll } from 'vitest'
 import { LlmError } from '@gullabs/core'
 
 import { buildOpenAiClient, requireApiKey } from './client.js'
@@ -16,6 +16,12 @@ import {
   streamEvents,
   stubFetch,
 } from './test-sse.js'
+
+// Load the real SDK once up front, so the first test's budget is not spent on a
+// cold import when the machine is busy.
+beforeAll(async () => {
+  await import('openai')
+}, 60_000)
 
 describe('requireApiKey', () => {
   it('returns the key', () => {

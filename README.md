@@ -41,8 +41,8 @@ same version, or the import fails with `Cannot find module '@gullabs/core'`.
 Add other providers yourself. Auth stays host-injected on every call.
 
 ```bash
-pnpm add @gullabs/core @gullabs/google @gullabs/xai @google/genai openai
-# peers: @google/genai for Gemini; openai ^7 for xAI Responses (baseURL api.x.ai)
+pnpm add @gullabs/core @gullabs/google @gullabs/xai @gullabs/openai @google/genai openai
+# peers: @google/genai for Gemini; openai ^7.60.0 for OpenAI (and ^7 for xAI Responses, baseURL api.x.ai)
 ```
 
 **One version for every package.** All `@gullabs/*` packages are released together under one
@@ -194,21 +194,24 @@ Gemini 2.5 uses `reasoning.budgetTokens`. Gemini 3 / Gemma built-ins use `reason
 
 Registered Google ids: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemma-4-31b-it`, `gemma-4-26b-a4b-it`. Deleted, with no alias: `gemini-3-flash-preview` and `gemini-3.5-flash` (migrate to `gemini-3.6-flash`).
 
+OpenAI ids (`@gullabs/openai`, documented, not live-verified): `gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6.1-terra`, `gpt-6-luna`.
+
 Dev-only CLI ids: `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`; `claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`. Deleted, with no alias: every `gpt-5*` id, `claude-fable-5`, and `claude-opus-4-8`.
 
 ## Packages
 
-| Package                                        | What it is                                                                          |
-| ---------------------------------------------- | ----------------------------------------------------------------------------------- |
-| [`@gullabs/any-llm`](./packages/any-llm)       | Gemini facade: re-exports core + Google adapter and installs `@google/genai`        |
-| [`@gullabs/core`](./packages/core)             | Engine, ports, cost, records. No provider SDKs                                      |
-| [`@gullabs/google`](./packages/google)         | Gemini / Gemma over `@google/genai`. Flex, thinking, files, cache, grounding        |
-| [`@gullabs/xai`](./packages/xai)               | Grok over the `openai` SDK Responses API. `grok-4.5` / `grok-4.6` / `grok-4.7`      |
-| [`@gullabs/drizzle`](./packages/drizzle)       | Postgres `llm_calls` schema + `drizzleUsageSink`                                    |
-| [`@gullabs/quota`](./packages/quota)           | Provider quota: rpm, rpd (day boundary), tpm; Gemini + xAI presets; in-memory store |
-| [`@gullabs/testing`](./packages/testing)       | Fakes: clock + scheduler, client, sink, error factories, stores, runner. Dev-only   |
-| [`@gullabs/claude-cli`](./packages/claude-cli) | Dev-only local `claude` CLI provider. Not for production                            |
-| [`@gullabs/codex-cli`](./packages/codex-cli)   | Dev-only local `codex` CLI provider. Not for production                             |
+| Package                                        | What it is                                                                             |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------- |
+| [`@gullabs/any-llm`](./packages/any-llm)       | Gemini facade: re-exports core + Google adapter and installs `@google/genai`           |
+| [`@gullabs/core`](./packages/core)             | Engine, ports, cost, records. No provider SDKs                                         |
+| [`@gullabs/google`](./packages/google)         | Gemini / Gemma over `@google/genai`. Flex, thinking, files, cache, grounding           |
+| [`@gullabs/xai`](./packages/xai)               | Grok over the `openai` SDK Responses API. `grok-4.5` / `grok-4.6` / `grok-4.7`         |
+| [`@gullabs/openai`](./packages/openai)         | OpenAI Responses API. `gpt-6.2-astra` / `gpt-6.2-sol` / `gpt-6.1-terra` / `gpt-6-luna` |
+| [`@gullabs/drizzle`](./packages/drizzle)       | Postgres `llm_calls` schema + `drizzleUsageSink`                                       |
+| [`@gullabs/quota`](./packages/quota)           | Provider quota: rpm, rpd (day boundary), tpm; Gemini + xAI presets; in-memory store    |
+| [`@gullabs/testing`](./packages/testing)       | Fakes: clock + scheduler, client, sink, error factories, stores, runner. Dev-only      |
+| [`@gullabs/claude-cli`](./packages/claude-cli) | Dev-only local `claude` CLI provider. Not for production                               |
+| [`@gullabs/codex-cli`](./packages/codex-cli)   | Dev-only local `codex` CLI provider. Not for production                                |
 
 Published on npm under `@gullabs`, Apache-2.0, Node `>=22.12.0`.
 
@@ -216,16 +219,16 @@ Published on npm under `@gullabs`, Apache-2.0, Node `>=22.12.0`.
 
 **Node `>=22.12.0`** is what every package declares in `engines` and what CI runs (22.12.0 and 24; the repository's own tooling needs Node 24). Nothing in the code needs a newer Node.
 
-| Packages                                                                                                     | Runtime                                                                                                                                                                                                                                                                                                                                                                      |
-| ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@gullabs/core`, `@gullabs/google`, `@gullabs/xai`, `@gullabs/quota`, `@gullabs/drizzle`, `@gullabs/any-llm` | **Runtime-agnostic code.** No `node:` import, no `Buffer`, no `process`. They use only web-standard globals: `fetch`, `AbortSignal`, `TextEncoder`, `atob`, `Blob` and `FormData` (the file stores), timers, and `globalThis.crypto.randomUUID()` for ids. Hashes (ADR-038 payloads, Gemini signature state) use a dependency-free SHA-256 (`sha256Hex`), not `node:crypto`. |
-| `@gullabs/claude-cli`, `@gullabs/codex-cli`                                                                  | **Node only.** They spawn the local CLI (`node:child_process`) and keep a scratch directory per call (`node:fs`, `node:os`, `node:path`).                                                                                                                                                                                                                                    |
-| `@gullabs/testing`                                                                                           | **Node only** (a dev dependency): it imports `node:os`, `node:module` and `node:assert/strict`.                                                                                                                                                                                                                                                                              |
+| Packages                                                                                                                        | Runtime                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@gullabs/core`, `@gullabs/google`, `@gullabs/xai`, `@gullabs/openai`, `@gullabs/quota`, `@gullabs/drizzle`, `@gullabs/any-llm` | **Runtime-agnostic code.** No `node:` import, no `Buffer`, no `process`. They use only web-standard globals: `fetch`, `AbortSignal`, `TextEncoder`, `atob`, `Blob` and `FormData` (the file stores), timers, and `globalThis.crypto.randomUUID()` for ids. Hashes (ADR-038 payloads, Gemini signature state) use a dependency-free SHA-256 (`sha256Hex`), not `node:crypto`. |
+| `@gullabs/claude-cli`, `@gullabs/codex-cli`                                                                                     | **Node only.** They spawn the local CLI (`node:child_process`) and keep a scratch directory per call (`node:fs`, `node:os`, `node:path`).                                                                                                                                                                                                                                    |
+| `@gullabs/testing`                                                                                                              | **Node only** (a dev dependency): it imports `node:os`, `node:module` and `node:assert/strict`.                                                                                                                                                                                                                                                                              |
 
 What is verified, and what is not:
 
 - **Node 22.12.0 and 24**: the whole test suite, in CI.
-- **No Node built-ins**: `pnpm test:runtime` (also in CI) loads the built ESM entry of each runtime-agnostic package with every `node:` import blocked, then removes `Buffer` and `process` and runs one fake-backed `generate()` through `core` (with a payload and an inline media part), one through the Gemini adapter (a signed thought, written through the drizzle sink to a fake database) and one through the xAI adapter (an inline image), plus a `quota` store check. ESLint also rejects `node:*` imports, `Buffer`, `process`, `__dirname` and `require` in those packages' non-test source. It proves the library code needs none of them; it does not run another engine.
+- **No Node built-ins**: `pnpm test:runtime` (also in CI) loads the built ESM entry of each runtime-agnostic package with every `node:` import blocked, then removes `Buffer` and `process` and runs one fake-backed `generate()` through `core` (with a payload and an inline media part), one through the Gemini adapter (a signed thought, written through the drizzle sink to a fake database) and one through the xAI adapter (an inline image), one through the OpenAI adapter (an inline image and a rejected media type), plus a `quota` store check. ESLint also rejects `node:*` imports, `Buffer`, `process`, `__dirname` and `require` in those packages' non-test source. It proves the library code needs none of them; it does not run another engine.
 - **Deno 2.4.1**: run by hand (`deno run -A scripts/runtime-smoke/entry.mjs`), every check passes except the first one, which asserts that `node:crypto` is blocked and so only holds under the Node hook (Deno has `node:` built-ins and `Buffer`/`process` globals of its own; the script deletes the globals). Not part of CI.
 - **Not tested**: Bun, Cloudflare Workers, Vercel Edge, browsers (a runtime without `globalThis.crypto.randomUUID()`, such as a browser page served over plain http, needs `ClientConfig.ids`; `createClient` throws `bad_request` otherwise). The library code has no known blocker there, but the provider SDKs it wraps (`@google/genai`, `openai`) set their own runtime support, and a host that needs one of these runtimes should run its own smoke test. The CJS builds are for Node `require`; the built-ins check covers the ESM entries.
 
@@ -265,6 +268,7 @@ Ports & adapters: the engine depends on `ProviderAdapter`, `UsageSink`, `Pricing
 | Every document in `docs/`       | [`docs/README.md`](./docs/README.md)                                             |
 | Gemini files, Flex, cache       | [`packages/google/README.md`](./packages/google/README.md)                       |
 | Grok files, reasoning, priority | [`packages/xai/README.md`](./packages/xai/README.md)                             |
+| OpenAI models, tiers, pricing   | [`packages/openai/README.md`](./packages/openai/README.md)                       |
 
 Input contracts (`callSite.inputSchema`, `request.inputContract`, `requireInputContract`) are documented in ADR-025 and the [`any-llm` skill](./packages/any-llm/skills/any-llm/SKILL.md).
 

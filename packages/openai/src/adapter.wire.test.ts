@@ -6,7 +6,7 @@
  * @module
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, beforeAll } from 'vitest'
 import { LlmError } from '@gullabs/core'
 
 import {
@@ -28,6 +28,12 @@ const ok =
     sseResponse(streamEvents(responseObject(output, options)), {
       'x-request-id': 'req_doc_1',
     })
+
+// Load the real SDK once up front, so the first test's budget is not spent on a
+// cold import when the machine is busy.
+beforeAll(async () => {
+  await import('openai')
+}, 60_000)
 
 describe('request contract (real SDK, stubbed fetch)', () => {
   it('posts one streamed request to the pinned endpoint with store:false and the system as a leading developer message', async () => {

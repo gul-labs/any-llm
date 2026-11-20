@@ -4211,3 +4211,146 @@ over the saved login. The cost is invisible to the library's own ledger, which i
 - A host that relied on the CLI inheriting some other variable (a custom `HOME` is kept; a proxy is kept; a
   corporate `SSL_CERT_FILE` is kept) loses only what is not listed, and adds it with `env`.
 - `ANTHROPIC_API_KEY` in the host environment no longer changes which account a `claude-cli` call uses.
+
+---
+
+## ADR-047: `@gullabs/openai`, a documentation-derived first slice
+
+**Status:** Accepted (2026-11-20). Builds on ADR-019, ADR-022, ADR-023, ADR-029, ADR-031, ADR-034, ADR-036,
+ADR-039 and ADR-040.
+
+**Context:**
+The library had no OpenAI API provider: OpenAI's models were reachable only through the dev-only, unpriced
+`codex-cli`. `@gullabs/xai` already drives a Responses-compatible API through the `openai` SDK, so the shape of
+a provider package is known. The release that adds it may not spend money or make any live provider call, so
+every fact below comes from OpenAI's public documentation and the installed `openai` 7.60.0 SDK source and
+typings, all read 2026-11-20, and nothing is live-verified:
+
+- the model pages `https://developers.openai.com/api/docs/models/<id>` and the catalog
+  `https://developers.openai.com/api/docs/models`;
+- the GPT-6.2 guide `https://developers.openai.com/api/docs/guides/latest-model`, the reasoning guide
+  `.../guides/reasoning`, Fast mode `.../guides/fast-mode`, Flex `.../guides/flex-processing`, prompt caching
+  `.../guides/prompt-caching`, Structured Outputs `.../guides/structured-outputs`, images and vision
+  `.../guides/images-vision`, error codes `.../guides/error-codes` and the pricing page `.../docs/pricing`.
+
+Where the documentation is silent, the schema does not admit the value, and each gap is a BACKLOG item that names
+the probe that would close it.
+
+**Decision:**
+
+1. **Package and identity.** `@gullabs/openai`, adapter id `'openai'`, a self-contained plugin (ADR-023:
+   `openaiProvider()` bundles the adapter, the descriptors and `openaiPricingSource()`), in the changesets
+   `fixed` group, with `@gullabs/core` as an exact peer and `openai` `^7.60.0` as a peer (the floor is the version
+   the wire tests run on). Core is unchanged. Models, in registry order: `gpt-6.2-astra`, `gpt-6.2-sol`,
+   `gpt-6.1-terra`, `gpt-6-luna` (1,050,000-token context, 128,000 output). No alias: the pages list no dated
+   snapshot for these models. Sibling ids (`gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6.2-astra-law`, the
+   5.x family) are not registered.
+2. **First-slice surface.** Text and image input (any other part kind is `bad_request` before dispatch);
+   `reasoning.effort`; `maxOutputTokens` up to 128,000; `serviceTier`; strict structured output; strict
+   client-side function tools; usage and cost. No `providerOptions` lane (so no `ProviderOptionsMap` key), no
+   `countTokens`, no file or document input, no built-in tools, no public fake in `@gullabs/testing`. Reason: each
+   of those needs either a fact the documentation does not give or a capture to test against.
+3. **One strict schema per model.** Effort: `low | medium` on GPT-6.2 Astra and Sol (the pages document that
+   `none` is rejected and name only `low` and `medium` for 6.2; `high | xhigh | max` wait for a probe);
+   `none | low | medium | high | xhigh | max` on Terra and Luna (their model pages). Tier: `fast` on GPT-6.2
+   (GPT-6.2 does not support Flex); `flex | fast` on Terra and Luna. No `ultrafast`. No sampling keys: GPT-6.2 is
+   documented to reject `temperature` and `top_p`, and the Terra and Luna pages are silent. `budgetTokens`,
+   `includeThoughts`, `reasoning.context`, `reasoning.mode`, `reasoning.summary` and verbosity are rejected.
+4. **Credentials and SDK construction (ADR-019).** The per-call API key is required before the SDK is built.
+   Each call builds its own SDK client with `apiKey`, `baseURL: 'https://api.openai.com/v1'`,
+   `organization: null`, `project: null`, `adminAPIKey: null`, `webhookSecret: null`, `logLevel: 'off'` and
+   `maxRetries: 0` (one HTTP request per attempt; retries are the engine's). Reading the 7.60.0 constructor showed
+   one more ambient input: it merges `OPENAI_CUSTOM_HEADERS` into the client's default headers, which the request
+   builder applies after the auth header, so an environment variable could replace `Authorization` or add an
+   organization header. The client deletes those default headers after construction (a subclass of the SDK
+   client, the protected `_options` field). A test with conflicting `OPENAI_API_KEY`, `OPENAI_BASE_URL`,
+   `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`, `OPENAI_ADMIN_KEY`, `OPENAI_WEBHOOK_SECRET`, `OPENAI_LOG` and
+   `OPENAI_CUSTOM_HEADERS` proves the destination and headers are the caller's only and that nothing is logged.
+   The admin key and webhook secret are pinned although 7.60.0 does not send them on a bearer-authenticated
+   Responses request: the pin keeps that true if the SDK changes.
+5. **Streaming through the SDK's own helper (ADR-040 rules).** `run()` streams through `responses.stream()` and
+   keeps only the terminal event's response object. A terminal event (`response.completed`,
+   `response.incomplete`, `response.failed`) is required: the helper resolves a clean early end with its
+   accumulated snapshot, and that snapshot is never used (the call is a `server` error). The event type decides
+   the status. The SDK `timeout` covers only the wait for headers on a stream, so the client also arms one timer
+   over the whole call (`timeoutMs + 5 000`, or one hour): it ends as `timeout`, `reason: 'transport_timeout'`,
+   not retryable. Caller aborts are re-thrown (an `LlmError` abort reason keeps its kind). Before any output event a
+   transient failure is retryable and carries no usage; after it nothing is retried, the error is `mayHaveBilled`
+   and carries the ADR-040 usage estimate. A `response.failed` keeps its terminal usage and echoed tier, is
+   classified by `error.code` (the SDK's `ResponseError.code` union: `server_error` and `rate_limit_exceeded`
+   retry, policy codes `content_filter`, prompt and image codes `bad_request`, anything else `unknown`), is never
+   retried after output, and is always `mayHaveBilled`; an `error` event follows the same table. No public
+   `stream()`.
+6. **Request contract.** `store: false`. `system` is a leading `developer` input message, because the GPT-6.2
+   guide says top-level `instructions` are appended after the input and are not cacheable. `reasoning.context` is
+   not sent (omitting it is the documented way to take the model default; no page states the GPT-6.x default or
+   support for `all_turns`). `parallel_tool_calls` is not sent (per-model support is undocumented). Images go as
+   `input_image` with `detail: 'auto'` (the SDK typing's documented default), from base64 data URLs or fully
+   qualified `http(s)` URLs, of the documented types PNG, JPEG, WebP and GIF, at most 1,500 per request and
+   512 MB of inline payload; a media-resolution hint is rejected.
+7. **Continuation (ADR-029).** All four descriptors declare `continuation: 'state'` and `providerState: true`.
+   State is `{ openai: { model, input } }`: the request input plus every provider output item in order,
+   encrypted reasoning included, minus function calls that did not complete. It is accepted only with new
+   messages, only bound to the same provider and model string, never beside assistant history, and only when
+   every item is a shape this release itself produces (a user or developer message of text and image parts, an
+   assistant message, a `reasoning` item, a `function_call`, a `function_call_output`): a built-in tool call, a
+   file part or any other item is `bad_request`, so state cannot bring a deferred feature back. A `system` sent
+   beside state must equal the developer message the state starts with (it is never sent twice). Tool results
+   pair by `call_id` with an unanswered call in the state. Actionable calls come only from a `completed` response.
+   What the tests prove is the request payload of the second turn (a stubbed two-turn exchange); how OpenAI's
+   server treats the replay, under either `reasoning.context` reading, is not verified.
+8. **Structured output and function tools are not combined** (`structuredOutputWithTools: false`): no page
+   documents the combination for these models.
+9. **Schemas (ADR-034).** `output.jsonSchema` and every tool's `inputJsonSchema` go through core's
+   `assertJsonSchemaProfile(OPENAI_JSON_SCHEMA_PROFILE)` once (it runs `assertStandardJsonSchema` itself), then
+   the strict-mode rules local to this package: an object root that is not `anyOf`, `additionalProperties: false`
+   and every property in `required` on every object, at most 5,000 properties, 10 levels of literal nesting,
+   1,000 enum values and 120,000 characters of property names, definition names and enum values. The profile is
+   the guide's supported list: `type`, `properties`, `required`, `additionalProperties`, `enum`, `anyOf`, `$ref` /
+   `$defs` with recursion, `items`, `minItems` / `maxItems`, `minimum` / `maximum`, `exclusiveMinimum` /
+   `exclusiveMaximum`, `multipleOf`, `pattern` (held to core's regex subset, the dialect being unnamed) and
+   `format` (`date-time`, `time`, `date`, `duration`, `email`, `hostname`, `ipv4`, `ipv6`, `uuid`). `const`,
+   `oneOf`, `prefixItems`, `minLength`, `maxLength`, `minProperties`, `maxProperties` and `uniqueItems` are not
+   named and are rejected. Schemas are forwarded verbatim with `strict: true`; the format name is the schema
+   `title` (the SDK typing's `^[a-zA-Z0-9_-]{1,64}$` rule) or `structured_output`.
+10. **Errors (ADR-036).** Core's classification for HTTP statuses (401 and 403 `invalid_auth`, 400 / 404 / 422
+    `bad_request`, 429 retryable `rate_limited` with `Retry-After` read from the SDK error's headers, 5xx retryable
+    `server`), tested through the pinned SDK. A 429 whose body names a billing, spend or usage limit
+    (`credit_balance_exhausted`, `organization_spend_limit_exceeded`, `project_spend_limit_exceeded`,
+    `organization_usage_limit_exceeded`, or the `insufficient_quota` type) is `rate_limited`, not retryable,
+    `reason: 'credits_exhausted'` (the guide: retrying those "won't restore access"). Only structured fields are
+    read.
+11. **Served-tier pricing, snapshot `openai-2026-11-20` (ADR-039).** The tier priced is the one the response
+    echoes, kept verbatim as `servedServiceTier`: `default` standard, `flex` 50% of every lane (Terra and Luna),
+    `fast` or `priority` 2× every lane (cached and writes included). Any other echo is an unpriced tier. Core prices
+    the requested tier when the adapter reports none, so a response with no echo is marked
+    `usage.details.service_tier_missing = 1`, on success and on a billed failure, and the pricing source returns
+    unpriced for it before it looks at the tier argument. Long context: the band follows the gross `input_tokens`
+    (above 272,000 is long: 2× input and cache, 1.5× output, the whole request); the page does not say whether
+    cached tokens count, so a call whose band the cached reads decide is `estimated`. Cache reads at the cached
+    rate; cache writes 1.25× (30 minutes) and 2.5× (12 hours) of input inside the `input` lane; ordinary input is
+    `input − reads − writes`. That subtraction is an inference from the caching guide ("billed cache reads.
+    Excludes tokens charged as writes"), so every call with writes is `estimated`, and writes without a TTL split
+    are priced at the 30-minute default and `estimated`. Usage that does not reconcile (reads plus writes above
+    the input, a split that does not sum to the writes) or lacks a cache lane (`usage_incomplete`) is unpriced.
+    Regional-processing and FedRAMP surcharges (+10% each) are not modelled. The tests' usage objects are
+    synthetic and prove the arithmetic only.
+12. **Evidence in the tests (ADR-013).** Request mapping and streaming tests run the real `openai` SDK with a
+    stubbed `fetch` that serves SSE frames built from the SDK's own event typings; each helper says it is
+    documentation-derived, not a capture.
+
+**Deferred (BACKLOG, each with its probe):** document and file-id inputs, `countTokens`, a public fake,
+built-in tools, a file store, `prompt_cache_options`, `reasoning.mode: 'pro'`, `text.verbosity`, background
+windows, `ultrafast`, Batch, `high | xhigh | max` on GPT-6.2, reasoning summaries, a transport option, structured
+output with tools, and the unverified facts that limit the schema (GPT-6.2 default effort, sampling on Terra and
+Luna, the `reasoning.context` default, the echo on a `fast` request, cached tokens and the band, the
+ordinary-input subtraction, `parallel_tool_calls`, the error body shape, snapshot ids).
+
+**Consequences:**
+
+- A host calls OpenAI with `{ provider: 'openai', model, ... }` and `openaiProvider()`, priced and ledgered like
+  the other providers. `@gullabs/any-llm` does not re-export it.
+- Every cost from this package rests on documentation; a call with cache writes, or near the band edge, is
+  `estimated`, and a response that echoes no tier is unpriced, until probes settle the open items.
+- The first publish of `@gullabs/openai` has no trusted publisher yet (one can only be configured for an existing
+  package), so it uses the `NPM_TOKEN` fallback and carries no provenance attestation (RELEASING.md).
