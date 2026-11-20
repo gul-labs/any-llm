@@ -336,6 +336,21 @@ export interface GeminiGenerateConfig {
       allowedFunctionNames?: string[]
     }
   }
+  /**
+   * Real field: `GenerateContentConfig.automaticContinuation`, read by the SDK
+   * and never sent. `@google/genai` defaults it to `true`: on a `CONTINUATION`
+   * finish the SDK sends the request again with the continuation token and sums
+   * the usage, several billed requests inside one attempt. The adapter always
+   * sends `false` (one dispatch per attempt, ADR-031).
+   */
+  automaticContinuation?: false
+  /**
+   * Real field: `GenerateContentConfig.store`, serialized as the top-level
+   * request field `store` ("Configures the logging behavior for a given request.
+   * If set, it takes precedence over the project-level logging config"). The
+   * adapter always sends `false`.
+   */
+  store?: false
 }
 
 /**

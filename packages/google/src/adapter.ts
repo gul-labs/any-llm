@@ -677,25 +677,59 @@ function describeSafetyRatings(ratings: unknown): string {
   return `${parts.join(', ')}${more}`
 }
 
+/**
+ * Every `FinishReason` member of `@google/genai` 3.6.1, mapped explicitly
+ * (descriptions from the SDK's enum documentation):
+ *
+ * - `CONTINUATION` ("reached the per-request token limit, but generation is not
+ *   yet complete") is `length`: the adapter sends one request per attempt and
+ *   never replays the continuation token, so the answer is cut like `MAX_TOKENS`.
+ * - The members the SDK documents as a safety or policy block are
+ *   `content_filter`: the safety, recitation, blocklist, prohibited-content and
+ *   SPII stops, the image variants, `ESCALATION` ("filtered by an escalation
+ *   rule"), `PUP_LIMITED_DISABLED` (an account limited or disabled for
+ *   Prohibited Use Policy violations) and `MODEL_ARMOR` ("blocked by Model
+ *   Armor"; documented as not used by the Gemini API).
+ * - The rest (`OTHER`, `LANGUAGE`, malformed or unexpected tool calls,
+ *   `TOO_MANY_TOOL_CALLS`, `MISSING_THOUGHT_SIGNATURE`, `MALFORMED_RESPONSE`,
+ *   `IMAGE_OTHER`, `NO_IMAGE`, `FINISH_REASON_UNSPECIFIED`) is `other`; the raw
+ *   value stays in `providerMetadata.google.candidate.finishReason`.
+ *
+ * A value outside this table (a newer API than the SDK) is `other` as well.
+ *
+ * @internal Exported for the test that holds it equal to the SDK enum.
+ */
+export const GEMINI_FINISH_REASONS: Readonly<Record<string, FinishReason>> =
+  Object.freeze({
+    STOP: 'stop',
+    MAX_TOKENS: 'length',
+    CONTINUATION: 'length',
+    SAFETY: 'content_filter',
+    RECITATION: 'content_filter',
+    BLOCKLIST: 'content_filter',
+    PROHIBITED_CONTENT: 'content_filter',
+    SPII: 'content_filter',
+    IMAGE_SAFETY: 'content_filter',
+    IMAGE_PROHIBITED_CONTENT: 'content_filter',
+    IMAGE_RECITATION: 'content_filter',
+    ESCALATION: 'content_filter',
+    PUP_LIMITED_DISABLED: 'content_filter',
+    MODEL_ARMOR: 'content_filter',
+    FINISH_REASON_UNSPECIFIED: 'other',
+    OTHER: 'other',
+    LANGUAGE: 'other',
+    MALFORMED_FUNCTION_CALL: 'other',
+    UNEXPECTED_TOOL_CALL: 'other',
+    TOO_MANY_TOOL_CALLS: 'other',
+    MISSING_THOUGHT_SIGNATURE: 'other',
+    MALFORMED_RESPONSE: 'other',
+    IMAGE_OTHER: 'other',
+    NO_IMAGE: 'other',
+  })
+
 function mapFinishReason(raw: string | undefined): FinishReason | undefined {
   if (raw === undefined) return undefined
-  switch (raw) {
-    case 'STOP':
-      return 'stop'
-    case 'MAX_TOKENS':
-      return 'length'
-    case 'SAFETY':
-    case 'RECITATION':
-    case 'BLOCKLIST':
-    case 'PROHIBITED_CONTENT':
-    case 'SPII':
-    case 'IMAGE_SAFETY':
-    case 'IMAGE_PROHIBITED_CONTENT':
-    case 'IMAGE_RECITATION':
-      return 'content_filter'
-    default:
-      return 'other'
-  }
+  return Object.hasOwn(GEMINI_FINISH_REASONS, raw) ? GEMINI_FINISH_REASONS[raw] : 'other'
 }
 
 // ---------------------------------------------------------------------------
@@ -1641,12 +1675,20 @@ export function geminiAdapterWithClientFactory(
       // ------------------------------------------------------------------
       let response: GeminiResponseShape
       let servedServiceTier = config.serviceTier
+      // Every generation dispatch, the standard one after a flex capacity error
+      // included, sends `automaticContinuation: false` (the SDK would otherwise
+      // re-send on `CONTINUATION` and sum the usage: several billed requests in
+      // one attempt, ADR-031) and `store: false` (Google stores paid-tier
+      // requests by default for new projects; storage is opt-in in this
+      // library, ADR-038).
       const dispatch = async (): Promise<GeminiResponseShape> => {
         const dispatchConfig: GeminiGenerateConfig = {
           ...config,
           ...(config.httpOptions !== undefined
             ? { httpOptions: { ...config.httpOptions } }
             : {}),
+          automaticContinuation: false,
+          store: false,
         }
         const params = {
           model,
@@ -1977,7 +2019,9 @@ export function geminiAdapterWithClientFactory(
           message: `google: dropped ${droppedCalls.length} function call(s) (${named}) because the candidate ended with finishReason ${candidate.finishReason ?? 'unspecified'}, not STOP: ${
             candidate.finishReason === 'MAX_TOKENS'
               ? 'the call was cut by the output cap and is incomplete'
-              : 'a call beside an abnormal stop is not a call to run'
+              : candidate.finishReason === 'CONTINUATION'
+                ? 'the response reached the per-request output limit before generation finished, so the call is incomplete'
+                : 'a call beside an abnormal stop is not a call to run'
           }. The result carries no tool call; finishReason is "${mapFinishReason(candidate.finishReason) ?? 'other'}".`,
         })
       }
@@ -2069,6 +2113,16 @@ export function geminiAdapterWithClientFactory(
         })
       }
       const finishReason = mapFinishReason(candidate.finishReason)
+      // One dispatch per attempt: a `CONTINUATION` finish is returned as it is,
+      // a cut answer (`length`) with this response's usage alone. The
+      // continuation token is neither replayed nor kept (resuming would be a
+      // second billed request inside the attempt, ADR-031).
+      if (candidate.finishReason === 'CONTINUATION') {
+        warnings.push({
+          type: 'other',
+          message: `google: the response ended with finishReason CONTINUATION: it reached the per-request output limit of "${model}" before generation finished, so the answer is incomplete. The adapter sends one request per attempt and does not resume with the continuation token, so finishReason is "length" and the usage is this response's alone. Resumable long decode is not supported; shorten the task or split it across calls.`,
+        })
+      }
       warnings.push(...groundingWarnings(groundingMetadata))
       warnings.push(...modalityWarnings(response.usageMetadata))
 
