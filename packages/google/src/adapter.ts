@@ -1527,7 +1527,6 @@ export function geminiAdapterWithClientFactory(
         }
         return warnings
       }
-      /** `usage` (and the grounding note) a failed-but-billed attempt carries. */
       /**
        * Warnings about how the call is priced, on every attempt that reports
        * usage: the snapshot rate is not today's bill (Gemini 4 Carbon and Argon
@@ -1552,6 +1551,7 @@ export function geminiAdapterWithClientFactory(
         }
         return out
       }
+      /** `usage` (and the grounding note) a failed-but-billed attempt carries. */
       const billedFailure = (
         meta: GeminiUsageMetadataShape | undefined,
         groundingMetadata?: unknown,
