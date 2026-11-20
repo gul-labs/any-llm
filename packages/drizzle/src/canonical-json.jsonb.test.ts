@@ -9,7 +9,7 @@
 import { PGlite } from '@electric-sql/pglite'
 import { canonicalJson } from '@gullabs/core'
 import type { JsonValue } from '@gullabs/core'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, onTestFinished } from 'vitest'
 
 describe('canonicalJson across a Postgres jsonb round trip', () => {
   it('is identical before and after jsonb reorders object keys', async () => {
@@ -46,6 +46,7 @@ describe('canonicalJson across a Postgres jsonb round trip', () => {
     }
 
     const db = new PGlite()
+    onTestFinished(() => db.close())
     await db.exec('CREATE TABLE t (id int PRIMARY KEY, history jsonb, state jsonb)')
     await db.query('INSERT INTO t VALUES (1, $1::jsonb, $2::jsonb)', [
       JSON.stringify(history),

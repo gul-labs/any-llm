@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { PGlite } from '@electric-sql/pglite'
-import { beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 function read(relative: string): string {
   return readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8')
@@ -141,6 +141,10 @@ describe('docs/ledger.md SQL runs on a table holding rows of both record version
     await pg.exec(
       `INSERT INTO llm_call_payloads (attempt_id, request, response) VALUES ('v2_exact', '{}', '{}')`,
     )
+  })
+
+  afterAll(async () => {
+    await pg?.close()
   })
 
   it('the guide has SQL fences to check', () => {
