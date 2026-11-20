@@ -569,3 +569,138 @@ describe('output progress is tracked apart from terminal and error events (real 
     expect(err.usage?.details['usage_estimated']).toBe(1)
   })
 })
+
+describe('completed items fill what the terminal response omits (real SDK stream decoder)', () => {
+  const tools = [
+    {
+      name: 'weather',
+      description: 'Weather',
+      inputJsonSchema: {
+        type: 'object',
+        properties: { city: { type: 'string' } },
+        required: ['city'],
+        additionalProperties: false,
+      },
+    },
+  ]
+  const twoTurns = async (
+    completedItem: Record<string, unknown>,
+    terminalItem: Record<string, unknown>,
+  ) => {
+    const call = functionCallItem('fc_1', 'call_1', 'weather', '{"city":"Oslo"}')
+    const events = streamEvents(responseObject([completedItem, call]))
+    // The terminal event lists the reasoning item as `terminalItem`.
+    const terminal = events[events.length - 1] as unknown as {
+      response: { output: unknown[] }
+    }
+    terminal.response = { ...terminal.response, output: [terminalItem, call] }
+    const { adapter, calls } = wiredAdapter(
+      () => sseResponse(events),
+      ok([messageItem('msg_2', 'done')]),
+    )
+    const first = await adapter.run(request('gpt-6.2-sol', { tools }), CTX)
+    await adapter.run(
+      request('gpt-6.2-sol', {
+        tools,
+        transientProviderState: first.transientProviderState!,
+        messages: [
+          {
+            role: 'user',
+            parts: [
+              {
+                kind: 'tool-result',
+                toolCallId: 'call_1',
+                toolName: 'weather',
+                result: 1,
+              },
+            ],
+          },
+        ],
+      }),
+      CTX,
+    )
+    return { first, replayed: (calls[1]!.body!['input'] as unknown[])[1] }
+  }
+
+  it('keeps the ciphertext that only the item-completion event carried', async () => {
+    const full = reasoningItem('rs_1', 'gAAAA-from-done-event')
+    const { encrypted_content: _drop, ...withoutCipher } = full
+    const { first, replayed } = await twoTurns(full, withoutCipher)
+    expect(replayed).toEqual(full)
+    expect(first.warnings.some((w) => w.message.includes('encrypted_content'))).toBe(true)
+  })
+
+  it('the terminal value wins when both carry the key', async () => {
+    const fromDone = reasoningItem('rs_1', 'gAAAA-from-done-event')
+    const fromTerminal = reasoningItem('rs_1', 'gAAAA-from-terminal')
+    const { replayed } = await twoTurns(fromDone, fromTerminal)
+    expect(replayed).toEqual(fromTerminal)
+  })
+
+  it('does not add an item the terminal response does not list', async () => {
+    const extra = reasoningItem('rs_extra', 'gAAAA-x')
+    const call = functionCallItem('fc_1', 'call_1', 'weather', '{"city":"Oslo"}')
+    const events = streamEvents(responseObject([extra, call]))
+    const terminal = events[events.length - 1] as unknown as {
+      response: { output: unknown[] }
+    }
+    terminal.response = { ...terminal.response, output: [call] }
+    const { adapter } = wiredAdapter(() => sseResponse(events))
+    const result = await adapter.run(request('gpt-6.2-sol', { tools }), CTX)
+    const state = result.transientProviderState as { openai: { input: unknown[] } }
+    expect(state.openai.input).toHaveLength(2)
+  })
+})
+
+describe('output listed in the terminal snapshot counts as progress', () => {
+  const terminalOnly = (output: Record<string, unknown>[]) => {
+    const failed = responseObject(output, {
+      status: 'failed',
+      error: { code: 'server_error', message: 'doc-derived' },
+      usage: usage(40, output.length > 0 ? 5 : 0),
+    })
+    return [
+      {
+        type: 'response.created',
+        sequence_number: 0,
+        response: { ...failed, status: 'in_progress', output: [], usage: null },
+      },
+      { type: 'response.failed', sequence_number: 1, response: failed },
+    ]
+  }
+
+  it('a terminal-only response.failed with partial output is not retryable and mayHaveBilled', async () => {
+    const { adapter } = wiredAdapter(() =>
+      sseResponse(terminalOnly([messageItem('msg_1', 'part')])),
+    )
+    const err = (await adapter.run(request(), CTX).catch((e: unknown) => e)) as LlmError
+    expect(err.kind).toBe('server')
+    expect(err.retryable).toBe(false)
+    expect(err.mayHaveBilled).toBe(true)
+  })
+
+  it('a terminal-only response.failed with an empty output stays retryable', async () => {
+    const { adapter } = wiredAdapter(() => sseResponse(terminalOnly([])))
+    const err = (await adapter.run(request(), CTX).catch((e: unknown) => e)) as LlmError
+    expect(err.retryable).toBe(true)
+  })
+})
+
+describe('transport failures classify as before (adapter, real error classes)', () => {
+  it('a fetch rejection is a retryable server error', async () => {
+    const { adapter } = wiredAdapter(() => Promise.reject(new TypeError('fetch failed')))
+    const err = (await adapter.run(request(), CTX).catch((e: unknown) => e)) as LlmError
+    expect(err.kind).toBe('server')
+    expect(err.retryable).toBe(true)
+  })
+
+  it('a 500 with a non-JSON body is a retryable server error carrying the status', async () => {
+    const { adapter } = wiredAdapter(
+      () => new Response('<html>oops</html>', { status: 500 }),
+    )
+    const err = (await adapter.run(request(), CTX).catch((e: unknown) => e)) as LlmError
+    expect(err.kind).toBe('server')
+    expect(err.httpStatus).toBe(500)
+    expect(err.retryable).toBe(true)
+  })
+})

@@ -240,8 +240,9 @@ interface MappedUsage {
  * The RAW counters are checked here, before core normalises (and clamps) them:
  * a counter that is present but not a non-negative safe integer, cache reads
  * plus writes above `input_tokens`, a TTL split that does not sum to
- * `cache_write_tokens` (or a split without a write count), or reasoning above
- * `output_tokens` sets `usage.details.usage_irreconcilable = 1`, and the pricing
+ * `cache_write_tokens` (or a split without a write count), reasoning above
+ * `output_tokens`, or `total_tokens` below input plus output sets
+ * `usage.details.usage_irreconcilable = 1`, and the pricing
  * source leaves the call unpriced. A missing read or write count sets
  * `usage_incomplete` (also unpriced). A malformed counter is not copied into the
  * typed fields or `details`.
@@ -305,6 +306,15 @@ function mapUsage(usage: OpenAiUsageShape, servedTier: string | undefined): Mapp
   }
   if (reasoning !== undefined && reasoning > output) {
     problems.push(`reasoning_tokens (${reasoning}) exceed output_tokens (${output})`)
+  }
+  // `total_tokens` is "The total number of tokens used" (SDK `ResponseUsage`), so
+  // it can never be below input plus output: a lower total contradicts the lanes.
+  // A HIGHER total is kept: it means tokens the lanes do not carry, and core's
+  // normalisation already reports that cost as 'estimated' (ADR-039).
+  if (total !== undefined && total < input + output) {
+    problems.push(
+      `total_tokens (${total}) is below input_tokens plus output_tokens (${input + output})`,
+    )
   }
 
   const details: Record<string, number> = { input, output }
@@ -982,6 +992,9 @@ export function openaiAdapterWithSeams(
       // ----------------------------------------------------------------
       if (response.status === 'failed') {
         throw failedResponseError(response, meta?.streamProgressed === true)
+      }
+      for (const note of meta?.streamNotes ?? []) {
+        warnings.push({ type: 'other', message: note })
       }
       if (!hasTokenCounts(response.usage)) {
         throw new LlmError(
