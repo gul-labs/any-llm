@@ -31,6 +31,13 @@
  * (divide the raw integer by 10,000 to get USD per million tokens): e.g.
  * `grok-4.6`'s raw `prompt_text_token_price: 20000` ÷ 10,000 = $2.00/M.
  *
+ * **Re-read 2026-11-20.** The token rates, the 200,000 long-context threshold,
+ * the priority multiplier (2×) and the tool rates were re-read against
+ * https://docs.x.ai/developers/pricing and found unchanged, so
+ * `xaiPricingVersion` stays. The page now also lists code execution ($5 per
+ * 1,000 calls) and collections search ($2.50 per 1,000 calls); they stay
+ * unpriced here (a non-zero counter prices the call `estimated`).
+ *
  * Grok 4.5/4.6 rates were verified against `/v1/models` on 2026-08-12.
  * Grok 4.7 rates are published in xAI's 2026-09-21 release notes:
  * https://docs.x.ai/developers/release-notes. Prior snapshot

@@ -247,8 +247,10 @@ type MappedXaiProviderOptions = {
 /**
  * `providerOptions.xai.searchBudget`: ceilings the adapter compares with the
  * search counters xAI reports after the call. xAI offers no per-call ceiling
- * on search volume (`maxTurns` is not enforced), so this only tells the host
- * the call exceeded what it expected to pay for.
+ * on search volume (`maxTurns` caps turns, not searches, and whether xAI
+ * enforces it is open: fixture 33, 2026-10-02, saw it ignored; the tool usage
+ * guide read 2026-11-20 says it is applied), so this only tells the host the
+ * call exceeded what it expected to pay for.
  */
 type XaiSearchBudget = { maxWebSearchCalls?: number; maxXItems?: number }
 
@@ -505,20 +507,41 @@ function mapXaiSearchTools(
 // FinishReason mapping (xAI status/incomplete_details → our FinishReason)
 // ---------------------------------------------------------------------------
 
-function mapFinishReason(response: XaiResponseShape): FinishReason {
+/**
+ * `incomplete_details.reason` values xAI's published OpenAPI document lists
+ * (https://docs.x.ai/openapi.json, schema `IncompleteDetails`, read 2026-11-20;
+ * documented, not live-verified except `max_output_tokens`, fixture 08):
+ * `max_output_tokens` is the output cap and maps to `length`; `content_filter`
+ * maps to `content_filter`; `max_prompt_tokens` and `max_time_limit` have no
+ * counterpart in the closed core `FinishReason` union and map to `other`, with
+ * a warning that names the reason. A reason outside the four is mapped to
+ * `other` the same way.
+ */
+function mapFinishReason(response: XaiResponseShape): {
+  finishReason: FinishReason
+  warning?: Warning
+} {
   if (response.status === 'completed') {
-    return 'stop'
+    return { finishReason: 'stop' }
   }
-  if (
-    response.status === 'incomplete' &&
-    response.incomplete_details?.reason === 'max_output_tokens'
-  ) {
-    return 'length'
+  if (response.status === 'incomplete') {
+    const reason = response.incomplete_details?.reason
+    if (reason === 'max_output_tokens') return { finishReason: 'length' }
+    if (reason === 'content_filter') return { finishReason: 'content_filter' }
+    if (typeof reason === 'string') {
+      return {
+        finishReason: 'other',
+        warning: {
+          type: 'other',
+          message: `xai: the response is incomplete with reason "${boundedNote(reason)}", which has no finish reason of its own here; finishReason is "other".`,
+        },
+      }
+    }
   }
   // Any other status/incomplete_details combination without fixture
   // evidence (or a status we don't recognize) maps to 'other' — the core
   // FinishReason union is closed to these four values.
-  return 'other'
+  return { finishReason: 'other' }
 }
 
 // ---------------------------------------------------------------------------
@@ -1951,7 +1974,9 @@ export function xaiAdapterWithSeams(
         }
 
         const usage = mapUsage(response.usage)
-        let finishReason = mapFinishReason(response)
+        const mappedFinish = mapFinishReason(response)
+        let finishReason = mappedFinish.finishReason
+        if (mappedFinish.warning !== undefined) warnings.push(mappedFinish.warning)
         if (refusal !== undefined) {
           // The model declined: not a cut answer, so the cap keeps its own reason.
           if (finishReason !== 'length') finishReason = 'content_filter'

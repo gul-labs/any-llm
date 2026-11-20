@@ -619,7 +619,7 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
   | `tools`             | `tools`               | `web_search` / `x_search`, at most one of each; needs `capabilities.grounding`                                                                                           |
   | `parallelToolCalls` | `parallel_tool_calls` | boolean                                                                                                                                                                  |
   | `toolChoice`        | `tool_choice`         | `'auto' \| 'required' \| 'none'` for the search tools only; needs non-empty `tools`; rejected with function tools, file attachments or the request-level `toolChoice`    |
-  | `maxTurns`          | `max_turns`           | integer ≥ 1; needs non-empty `tools`; caps agentic turns, not searches; xAI did not enforce it as of 2026-10-02                                                          |
+  | `maxTurns`          | `max_turns`           | integer ≥ 1; needs non-empty `tools`; caps agentic turns, not searches; enforcement is open (ADR-030)                                                                    |
   | `searchBudget`      | none (observed only)  | `{ maxWebSearchCalls?, maxXItems? }`, integers ≥ 1, at least one; needs the matching tool; over budget → warning + `details.search_budget_exceeded = 1`, result returned |
 
 - xAI structured output and tool parameters take standard JSON Schema (ADR-034). A nullable
@@ -640,10 +640,13 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
   headers are on `providerMetadata.xai` as `requestId` and `rateLimitRemaining`
   (the real client reads them with the SDK's `.withResponse()`; a fake client reports none).
 - **Output mapping (ADR-040 Amendment B).** A `function_call` is a tool call only on a `completed` response
-  (an `incomplete` one drops every call, with a warning, and `finishReason` stays `length` / `other`); a
+  (an `incomplete` one drops every call, with a warning, and `finishReason` stays `length` / `content_filter` / `other`); a
   completed call with non-JSON arguments is a non-retryable `server` error with usage; a `refusal` content
-  part is `content_filter` with no text; reasoning summary parts join with a blank line. `temperature` is 0 to 2,
-  `topP` 0 to 1, and a structured-output schema `title` must match `^[a-zA-Z0-9_-]{1,64}$` (else `bad_request`).
+  part is `content_filter` with no text; reasoning summary parts join with a blank line. `temperature` is 0 to 1 and
+  `topP` 0 to 0.95 (xAI samples higher values at those caps while echoing the value sent, so the schema rejects them),
+  an `incomplete` response's `incomplete_details.reason` maps `max_output_tokens` to `length`, `content_filter` to
+  `content_filter`, and `max_prompt_tokens`, `max_time_limit` or any other value to `other` with a warning naming it,
+  and a structured-output schema `title` must match `^[a-zA-Z0-9_-]{1,64}$` (else `bad_request`).
 - Search tools plus `output.jsonSchema` is admitted on all three models
   (`structuredOutputWithTools`). A response reporting `num_server_side_tools_used: 0` and no
   `server_side_tool_usage_details` prices exactly with no tool fee. See ADR-030.

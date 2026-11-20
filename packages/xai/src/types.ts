@@ -44,9 +44,14 @@ export type XaiProviderOptions = {
   /**
    * Responses API `max_turns`: the cap on agentic tool-calling turns for the
    * server-side search tools. A turn can run several searches, so this is
-   * not a search count. Requires `tools`. As of 2026-10-02 xAI did not
-   * enforce it on grok-4.5 / 4.6 / 4.7; assert on
-   * `usage.details.web_search_calls` rather than trusting the cap.
+   * not a search count. Requires `tools`. Whether xAI enforces it is open. A
+   * live call on 2026-10-02 did not (fixture 33: with `max_turns: 1`
+   * grok-4.5 / 4.6 / 4.7 ran 10 to 17 searches over several rounds). xAI's
+   * tool usage guide, read 2026-11-20
+   * (https://docs.x.ai/developers/tools/tool-usage-details), now says the cap
+   * is applied ("When the agent reaches the limit, it will stop making
+   * additional tool calls"; documented, not live-verified). Open until a live
+   * probe: assert on `usage.details.web_search_calls` rather than trusting the cap.
    */
   maxTurns?: number
 }
