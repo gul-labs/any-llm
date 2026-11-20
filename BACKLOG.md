@@ -136,10 +136,10 @@ paths to other repos.
 
 ## Model refresh deferrals (2026-09-25)
 
-- **2027-01-01 Gemini intro-price re-snapshot.** `gemini-3.6-flash`, `gemini-3.7-flash`, and `gemini-3.8-flash` ship at the published intro rates $0.75 / $0.075 / $3.75 per million (input / cached / output). On 2027-01-01 those become $1.50 / $0.15 / $7.50. Re-snapshot `GEMINI_PRICING` and bump `pricingVersion` before that date. The owner chose a dated backlog item instead of date-windowed pricing (plan D1).
+- **2027-01-01 Gemini intro-price re-snapshot.** `gemini-3.6-flash` and `gemini-3.8-flash` ship at the published intro rates $0.75 / $0.075 / $3.75 per million (input / cached / output; flex half). On 2027-01-01 those become $1.50 / $0.15 / $7.50 (re-read 2026-11-20 at <https://aistudio.google.com/docs/pricing>: "$0.75 through December 31, 2026. $1.50 starting January 1, 2027."). Re-snapshot `GEMINI_PRICING` and bump `pricingVersion` on that date. The owner chose a dated backlog item instead of date-windowed pricing (plan D1). (`gemini-3.7-flash`, once in this item, was removed on 2026-11-20, ADR-048.)
 - **2027-05-07 `gemini-3.1-flash-lite` shutdown.** Google's deprecations page (read 2026-10-03) lists the date and `gemini-3.5-flash-lite` as the replacement. The descriptor warns from 2027-02-06 (`shutdownDate`, ADR-043). After the date, delete the descriptor, its pricing row, config schema and fixtures in one change; do not keep an alias to the replacement. Re-read the page before each release: a new shutdown date is a one-line descriptor change.
 - **`gemini-3.5-flash` status.** The README and `docs/architecture.md` say it is deleted (a live 404 when the registry was refreshed); Google's pricing and deprecations pages still listed it when read 2026-10. Re-read both pages and re-probe the id before the next release; if it serves, it is a registry decision, not an alias.
-- Gemini `priority` tier. A live flex call (2026-09-26) echoed `usageMetadata.serviceTier`, and the adapter reads the served tier. Priority still needs live admission, pricing, and downgrade accounting before the schema admits it.
+- Gemini `priority` tier. A live flex call (2026-09-26) echoed `usageMetadata.serviceTier`, and the adapter reads the served tier. Priority still needs live admission, pricing, and downgrade accounting before the schema admits it. Read 2026-11-20 (<https://aistudio.google.com/docs/priority-inference>): priority costs 75-100% more than standard (1.8x on every token line checked, Gemini 4 included), and a downgrade is signalled by the response header `x-gemini-service-tier: standard`; the downgrade accounting must read it before priority is admitted.
 - Other Gemini features: built-in tools beyond `googleSearch` (URL context, Maps, code execution, file search); `media_resolution: ultra_high`; `gemini-3.1-pro-preview-customtools`.
 - xAI models not in this refresh: grok-4.3, the grok-4.20 family (including multi-agent), grok-build-0.1.
 - xAI tools not supported: code execution, collections, remote MCP.
@@ -157,6 +157,19 @@ paths to other repos.
 - **xAI `include: ["no_inline_citations"]`.** Suppresses inline `[[N]](url)` links in the text (<https://docs.x.ai/developers/tools/citations>). Expose only if a host needs citation-free text.
 - **xAI `max_turns` enforcement.** Exposed as `providerOptions.xai.maxTurns`; not enforced by xAI on 2026-10-02 (fixture 33, ADR-030). Re-probe when xAI changes the agentic loop, then update the README.
 - Not exposed on purpose (xAI docs mark them compatibility-only, unsupported, or silently ignored): `reasoning.summary`, function `strict`, `metadata`, `truncation`, `background`, `logprobs`, `search_parameters`, `service_tier: 'fast'`.
+
+## Gemini refresh deferrals (2026-11-20, ADR-048)
+
+Every Gemini 4 fact below is documented and not live-verified; no call was made for this release.
+
+- **2026-12-01: Gemini 4 Carbon / Argon re-snapshot.** The snapshot `gemini-2026-11-20` carries the rates Google bills from 2026-12-01 ($4.00 / $0.20 / $20.00, flex half) and marks every Carbon and Argon cost `estimated` with a warning, because through 2026-11-30 Google bills half. On 2026-12-01: re-read <https://aistudio.google.com/docs/pricing>, remove the two entries of `GEMINI_ESTIMATED_RATE_REASONS` (and nothing else), bump `pricingVersion`, update ADR-048 and the changeset. No date logic is added.
+- **Confirm `store: false` live.** The first thing to check with a key: that `store: false` is accepted on every registered model and that the request is not logged (Google's request-level logging field, `GenerateContentRequest.store`).
+- **Resumable long decode.** The adapter sends `automaticContinuation: false` and returns a `CONTINUATION` finish as `length` (one dispatch per attempt, ADR-031). Resuming with `continuationToken` ("contents ... must identically replicate the prompt", cumulative `maxOutputTokens`) would be a second billed request: it needs a design (one ledger row per hop, the token kept out of the ledger) and a live probe of the per-hop usage before it can be offered.
+- **Gemini 4 schema + Search.** The Gemini 4 descriptors have no `structuredOutputWithTools` and their schemas no `allowSchemaWithSearch`, so the pair is rejected. Google documents the combination as a preview; run the P4 probe (four schema calls per model, ADR-035) and admit the opt-in where it shows Search running.
+- **Gemini 4 Search + flex.** Rejected before dispatch: no page shows it and the Gemini 4 flex price tab has no grounding row. Probe one grounded flex call per model and read the bill before admitting it.
+- **Gemini 4 JSON Schema profile.** Documentation only: `pattern`, `minLength`, `maxLength`, `items: false` and the `email` format are rejected on Gemini 4 because the structured-output guide does not list them. Run the P3 probe on the four models and widen the profile to what it shows enforced.
+- **Gemini 4 grounding instruction tokens.** The pricing page says Gemini 4 bills grounding's internal tool instructions and function declarations as tokens; whether `promptTokenCount` includes them is not documented. A grounded call is therefore `estimated` even with zero queries. Reconcile one grounded call against a billing export.
+- **Gemini 4 fields admitted on the general API reference only.** `stopSequences` and `safetySettings` are admitted on Gemini 4 because the generateContent reference documents them and the Gemini 4 migration notes do not remove them; probe both.
 
 ## Follow-ups from Gemini 3 thought signatures (2026-10-03)
 

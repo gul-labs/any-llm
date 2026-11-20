@@ -16,6 +16,7 @@ import type { Cost, PricingSource, Usage } from '@gullabs/core'
 
 import {
   GEMINI_PRICING,
+  geminiEstimatedRateReason,
   pricingVersion,
   resolveGeminiGroundingRate,
   resolveGeminiRates,
@@ -140,12 +141,18 @@ export function promptLanes(usage: Usage): {
  * sent but none reported, cached tokens whose audio share nothing rules out, or
  * counts that do not add up.
  *
+ * **Estimated rates.** A model listed in `GEMINI_ESTIMATED_RATE_REASONS`
+ * (Gemini 4 Carbon and Argon in `gemini-2026-11-20`) is priced at its snapshot
+ * rates and marked `'estimated'`, before the grounding rules below.
+ *
  * **Missing usage.** `details.usage_missing` (the response had no
  * `usageMetadata`) is unpriced and `'estimated'`: the amount is unknown.
  *
  * **Grounding.**
  * - No `web_search_requested`: the call is token-priced and exact.
- * - Requested, count known to be zero: Search did not run; token-priced, exact.
+ * - Requested, count known to be zero: Search did not run; token-priced, exact,
+ *   except on a model whose grounding rate bills instruction tokens (Gemini 4),
+ *   where it stays `'estimated'`.
  * - Requested, count unknown (`web_search_calls` absent): the fee cannot be
  *   known, so the `tools` lane stays 0 and the cost is `'estimated'`.
  * - Search ran (count >= 1): the fee is added to `tools` and the cost is
@@ -204,20 +211,34 @@ function priceCall(model: string, usage: Usage, tier: string | undefined): Cost 
   }
 
   if (cost.microUsd === null) return cost
+  const tokenMicroUsd = cost.microUsd
+
+  // A snapshot rate that is known not to be the bill today (Gemini 4 Carbon and
+  // Argon until 2026-11-30): same amount and lanes, never `exact`. The reason
+  // reaches the ledger as an adapter warning.
+  if (geminiEstimatedRateReason(model) !== undefined) {
+    cost = { ...cost, confidence: 'estimated' }
+  }
 
   if (usage.details['web_search_requested'] !== 1) return cost
 
-  const calls = usage.details['web_search_calls']
-  if (calls === 0) return cost
-
   const rate = resolveGeminiGroundingRate(model)
+  const calls = usage.details['web_search_calls']
+  // Gemini 4 bills grounding's internal instructions as tokens, in a share of
+  // the reported counts nothing isolates: estimated even with no query.
+  if (calls === 0) {
+    return rate?.instructionTokensBilled === true
+      ? { ...cost, confidence: 'estimated' }
+      : cost
+  }
+
   const tools =
     rate === undefined || calls === undefined
       ? 0
       : rate.unit === 'query'
         ? Math.round(calls * rate.microUsdPerUnit)
         : rate.microUsdPerUnit
-  const microUsd = cost.microUsd + tools
+  const microUsd = tokenMicroUsd + tools
   return {
     ...cost,
     microUsd,

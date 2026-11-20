@@ -19,6 +19,7 @@ import {
   pricingVersion,
   GEMINI_PRICING,
   GEMINI_PRICED_TIERS,
+  GEMINI_ESTIMATED_RATE_REASONS,
   resolveGeminiRates,
 } from './pricing.js'
 
@@ -554,6 +555,72 @@ describe('per-tier golden table — published flex cached rates', () => {
       cachedPerM: 12_500,
       outputPerM: 750_000,
     },
+    // Gemini 4, read 2026-11-20 from https://aistudio.google.com/docs/pricing.md
+    // (Carbon and Argon: the rates from 2026-12-01; documented, not live-verified).
+    {
+      model: 'gemini-4-carbon',
+      tier: 'standard',
+      context: 'le200k',
+      inputPerM: 4_000_000,
+      cachedPerM: 200_000,
+      outputPerM: 20_000_000,
+    },
+    {
+      model: 'gemini-4-carbon',
+      tier: 'flex',
+      context: 'le200k',
+      inputPerM: 2_000_000,
+      cachedPerM: 100_000,
+      outputPerM: 10_000_000,
+    },
+    {
+      model: 'gemini-4-argon',
+      tier: 'standard',
+      context: 'le200k',
+      inputPerM: 4_000_000,
+      cachedPerM: 200_000,
+      outputPerM: 20_000_000,
+    },
+    {
+      model: 'gemini-4-argon',
+      tier: 'flex',
+      context: 'le200k',
+      inputPerM: 2_000_000,
+      cachedPerM: 100_000,
+      outputPerM: 10_000_000,
+    },
+    {
+      model: 'gemini-4-neon',
+      tier: 'standard',
+      context: 'le200k',
+      inputPerM: 3_000_000,
+      cachedPerM: 150_000,
+      outputPerM: 15_000_000,
+    },
+    {
+      model: 'gemini-4-neon',
+      tier: 'flex',
+      context: 'le200k',
+      inputPerM: 1_500_000,
+      cachedPerM: 75_000,
+      outputPerM: 7_500_000,
+    },
+    {
+      model: 'gemini-4-hydrogen',
+      tier: 'standard',
+      context: 'le200k',
+      inputPerM: 1_500_000,
+      cachedPerM: 75_000,
+      outputPerM: 7_500_000,
+    },
+    {
+      model: 'gemini-4-hydrogen',
+      tier: 'flex',
+      context: 'le200k',
+      inputPerM: 750_000,
+      cachedPerM: 37_500,
+      outputPerM: 3_750_000,
+    },
   ]
 
   const PREMIUM_MODELS = new Set(['gemini-3.1-pro-preview'])
@@ -604,7 +671,11 @@ describe('per-tier golden table — published flex cached rates', () => {
             tools: 0,
           })
           expect(cost.microUsd).toBe(expectedInput + expectedCached + expectedOutput)
-          expect(cost.confidence).toBe('exact')
+          expect(cost.confidence).toBe(
+            Object.hasOwn(GEMINI_ESTIMATED_RATE_REASONS, row.model)
+              ? 'estimated'
+              : 'exact',
+          )
         }
 
         const resolved = resolveGeminiRates(row.model, row.tier)

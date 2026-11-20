@@ -89,11 +89,52 @@ const GEMMA_PROFILE: JsonSchemaProfile = {
 }
 
 /**
+ * Gemini 4: no probe has run, so the profile is what the structured-output
+ * guide documents (https://aistudio.google.com/docs/structured-output.md, read
+ * 2026-11-20; documented, not live-verified). It lists `type` (with `"null"` in a
+ * type array), `properties`, `required`, `additionalProperties`, `enum`,
+ * `format` (naming `date-time`, `date` and `time`), `minimum` / `maximum`,
+ * `items`, `prefixItems` and `minItems` / `maxItems`, and shows `anyOf` and
+ * recursive `$ref` / `$defs` in its examples and recursion guidance; it says
+ * "The model ignores unsupported properties". `pattern`, `minLength`,
+ * `maxLength`, `items: false` and the `email` format are not documented, so they
+ * are rejected here, as the P3 probe's keywords are not carried over to a model
+ * it never ran on.
+ */
+const GEMINI_4_PROFILE: JsonSchemaProfile = {
+  provider: 'google',
+  keywords: [
+    'type',
+    'properties',
+    'required',
+    'additionalProperties',
+    'enum',
+    'anyOf',
+    '$ref',
+    '$defs',
+    'items',
+    'prefixItems',
+    'minItems',
+    'maxItems',
+    'minimum',
+    'maximum',
+    'format',
+  ],
+  formats: ['date-time', 'date', 'time'],
+  limits: {},
+  circularRefs: true,
+  booleanItems: false,
+  patternSubset: true,
+}
+
+/**
  * The keyword profile the adapter enforces for a model.
  *
  * @param canonicalModel The resolved descriptor's canonical `model`, never the
  *   request string (which may be a declared alias).
  */
 export function googleJsonSchemaProfile(canonicalModel: string): JsonSchemaProfile {
-  return canonicalModel.startsWith('gemma-') ? GEMMA_PROFILE : GEMINI_PROFILE
+  if (canonicalModel.startsWith('gemma-')) return GEMMA_PROFILE
+  if (canonicalModel.startsWith('gemini-4-')) return GEMINI_4_PROFILE
+  return GEMINI_PROFILE
 }

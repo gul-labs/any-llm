@@ -56,6 +56,7 @@ export {
   STANDARD_DEFAULT_TIMEOUT_MS,
   TRANSPORT_TIMEOUT_BUFFER_MS,
 } from './client.js'
+export { GEMINI_4_DEFAULT_TIMEOUT_MS } from './request-rules.js'
 export { isGeminiCapacityError } from './flex-fallback.js'
 export { GEMINI_INPUT_MIME_TYPES } from './model-limits.js'
 export type {

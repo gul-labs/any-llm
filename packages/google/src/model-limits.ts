@@ -8,10 +8,10 @@
  *
  * Sources, all read 2026-10-03:
  *
- * - Gemini: `https://ai.google.dev/gemini-api/docs/models/<model-id>`, one page
- *   per model. Every registered Gemini model lists "Input token limit
- *   1,048,576" and "Output token limit 65,536". The output limit includes
- *   thinking tokens.
+ * - Gemini 2.5 and 3.x: `https://ai.google.dev/gemini-api/docs/models/<model-id>`,
+ *   one page per model. Each lists "Input token limit 1,048,576" and "Output
+ *   token limit 65,536". The output limit includes thinking tokens. Gemini 4:
+ *   see {@link gemini4Limits} (read 2026-11-20).
  * - Gemma 4: the model card, `https://ai.google.dev/gemma/docs/core/model_card_4`,
  *   states a "256K tokens" context window (read as 262,144). Neither it nor
  *   `https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api` documents an
@@ -50,12 +50,27 @@ type GoogleModelId =
   | 'gemini-3.8-flash'
   | 'gemini-3.6-flash'
   | 'gemini-3.5-flash-lite'
+  | 'gemini-4-carbon'
+  | 'gemini-4-argon'
+  | 'gemini-4-neon'
+  | 'gemini-4-hydrogen'
   | 'gemma-4-31b-it'
   | 'gemma-4-26b-a4b-it'
 
 /** One frozen object per model: no descriptor can change another's limits. */
 const geminiLimits = (): ModelLimits =>
   Object.freeze({ contextWindow: 1_048_576, maxOutputTokens: 65_536 })
+/**
+ * Gemini 4: "Context window (unified input and output token limit) 1,048,576"
+ * on every model page. The output cap is the per-request one on a non-streaming
+ * REST call, which is what this adapter sends: Carbon and Argon return "up to
+ * 32,768 tokens" there (65,536 only when streaming, more with long decode), Neon
+ * and Hydrogen 65,536. https://aistudio.google.com/docs/models/<model-id>.md and
+ * https://aistudio.google.com/docs/whats-new-gemini-4-carbon.md, read 2026-11-20;
+ * documented, not live-verified.
+ */
+const gemini4Limits = (maxOutputTokens: number): ModelLimits =>
+  Object.freeze({ contextWindow: 1_048_576, maxOutputTokens })
 const gemma4Limits = (): ModelLimits =>
   Object.freeze({ contextWindow: 262_144, maxOutputTokens: null })
 
@@ -66,6 +81,10 @@ export const GOOGLE_MODEL_LIMITS: Readonly<Record<GoogleModelId, ModelLimits>> =
   'gemini-3.8-flash': geminiLimits(),
   'gemini-3.6-flash': geminiLimits(),
   'gemini-3.5-flash-lite': geminiLimits(),
+  'gemini-4-carbon': gemini4Limits(32_768),
+  'gemini-4-argon': gemini4Limits(32_768),
+  'gemini-4-neon': gemini4Limits(65_536),
+  'gemini-4-hydrogen': gemini4Limits(65_536),
   'gemma-4-31b-it': gemma4Limits(),
   'gemma-4-26b-a4b-it': gemma4Limits(),
 }

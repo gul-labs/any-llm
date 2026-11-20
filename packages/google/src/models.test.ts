@@ -24,6 +24,10 @@ const EXPECTED_GEMINI_MODEL_IDS = [
   'gemini-3.8-flash',
   'gemini-3.6-flash',
   'gemini-3.5-flash-lite',
+  'gemini-4-carbon',
+  'gemini-4-argon',
+  'gemini-4-neon',
+  'gemini-4-hydrogen',
 ] as const
 const EXPECTED_GEMMA_MODEL_IDS = ['gemma-4-31b-it', 'gemma-4-26b-a4b-it'] as const
 const EXPECTED_BUILT_IN_MODEL_IDS = [

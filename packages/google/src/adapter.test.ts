@@ -660,6 +660,10 @@ describe('reasoning mapping', () => {
     expect(descriptors.map((desc) => desc.model).sort()).toEqual([
       'gemini-3.1-pro-preview',
       'gemini-3.8-flash',
+      'gemini-4-argon',
+      'gemini-4-carbon',
+      'gemini-4-hydrogen',
+      'gemini-4-neon',
     ])
 
     for (const modelDescriptor of descriptors) {
@@ -2406,7 +2410,7 @@ describe('grounding — providerMetadata merge', () => {
 
 describe('grounding — registry capabilities', () => {
   it('every Gemini model descriptor has capabilities.grounding === true', () => {
-    expect(geminiModelDescriptors).toHaveLength(6)
+    expect(geminiModelDescriptors).toHaveLength(10)
     for (const desc of geminiModelDescriptors) {
       expect(desc.capabilities?.grounding).toBe(true)
     }

@@ -12,6 +12,7 @@ import { describe, it, expect } from 'vitest'
 import * as surface from './index.js'
 import {
   FLEX_DEFAULT_TIMEOUT_MS,
+  GEMINI_4_DEFAULT_TIMEOUT_MS,
   TRANSPORT_TIMEOUT_BUFFER_MS,
   googleProvider,
 } from './index.js'
@@ -24,6 +25,10 @@ import type {
 describe('@gullabs/google package surface: timeout constants', () => {
   it('FLEX_DEFAULT_TIMEOUT_MS is exported and equals 1_500_000', () => {
     expect(FLEX_DEFAULT_TIMEOUT_MS).toBe(1_500_000)
+  })
+
+  it('GEMINI_4_DEFAULT_TIMEOUT_MS is exported and equals 1_200_000 (20 minutes)', () => {
+    expect(GEMINI_4_DEFAULT_TIMEOUT_MS).toBe(1_200_000)
   })
 
   it('TRANSPORT_TIMEOUT_BUFFER_MS is exported and equals 5_000', () => {

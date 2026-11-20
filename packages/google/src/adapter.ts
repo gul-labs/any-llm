@@ -67,6 +67,9 @@ import type {
   GeminiCountTokensParams,
 } from './client.js'
 import { isGeminiCapacityError } from './flex-fallback.js'
+import { googleRequestRules } from './request-rules.js'
+import { geminiEstimatedRateReason, resolveGeminiGroundingRate } from './pricing.js'
+import type { GoogleRequestRules } from './request-rules.js'
 import { classifyGoogleError } from './errors.js'
 import { PLATFORM_SCHEDULER } from './platform-scheduler.js'
 import { promptLanes } from './cost.js'
@@ -522,6 +525,59 @@ function assertSamplingAllowed(
     throw new LlmError(
       `Sampling parameters [${offendingSampling.join(', ')}] are not supported for model "${model}" (fixed sampling).`,
       { kind: 'bad_request', retryable: false },
+    )
+  }
+}
+
+/**
+ * The final-turn rules of {@link GoogleRequestRules}, before dispatch: a last
+ * non-empty turn that is a model turn (Google answers 400 on 3.6 Flash, 3.5
+ * Flash-Lite and every later model), and, where the model documents it (3.8
+ * Flash), a final user turn without non-empty text. A final turn of function
+ * responses is not held to the text rule.
+ */
+function assertFinalTurnAdmitted(
+  messages: readonly Message[],
+  rules: GoogleRequestRules,
+  model: string,
+): void {
+  if (rules.rejectsFinalModelTurn !== true && rules.requiresFinalUserText !== true) return
+  let index = messages.length - 1
+  let last: Message | undefined
+  for (; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message !== undefined && message.parts.length > 0) {
+      last = message
+      break
+    }
+  }
+  if (last === undefined) return
+  const path = `messages[${index}]`
+  if (rules.rejectsFinalModelTurn === true && last.role === 'assistant') {
+    throw new LlmError(
+      `${path} is an assistant turn, and the last non-empty turn of a request to model "${model}" must not be a model turn: Google rejects a prefilled model turn with 400 on this model. End the request with a user turn.`,
+      {
+        kind: 'bad_request',
+        retryable: false,
+        provider: 'google',
+        issues: [{ path, message: 'the last non-empty turn is a model turn' }],
+      },
+    )
+  }
+  if (
+    rules.requiresFinalUserText === true &&
+    last.role === 'user' &&
+    !last.parts.some((part) => part.kind === 'tool-result') &&
+    !last.parts.some((part) => part.kind === 'text' && part.text.length > 0)
+  ) {
+    throw new LlmError(
+      `${path} is the final user turn of a request to model "${model}" and holds no non-empty text; Google documents that this model's final user turn must contain non-empty text. Add a text part.`,
+      {
+        kind: 'bad_request',
+        retryable: false,
+        provider: 'google',
+        issues: [{ path, message: 'the final user turn has no non-empty text' }],
+      },
     )
   }
 }
@@ -1037,6 +1093,8 @@ export function geminiAdapterWithClientFactory(
       const descriptor = req.modelDescriptor
       assertModelMatchesDescriptor(req, descriptor, 'google')
       assertInputMimeTypesAdmitted(req.messages, descriptor, 'google')
+      const rules = googleRequestRules(descriptor.model)
+      assertFinalTurnAdmitted(req.messages, rules, model)
       const signsHistory = descriptor.capabilities?.providerState === true
       if (req.transientProviderState !== undefined && !signsHistory) {
         throw new LlmError(`Model "${model}" does not admit transientProviderState.`, {
@@ -1123,6 +1181,15 @@ export function geminiAdapterWithClientFactory(
       // 3. Reasoning → thinkingConfig
       // ------------------------------------------------------------------
       const reasoning = genConfig.reasoning
+      if (
+        reasoning === undefined &&
+        rules.defaultThinkingLevel !== undefined &&
+        descriptor.capabilities?.reasoningApi === 'level'
+      ) {
+        // Google calls thinkingLevel required for Gemini 4 and documents a
+        // default per model: sending that default is valid under both readings.
+        config.thinkingConfig = { thinkingLevel: rules.defaultThinkingLevel }
+      }
       if (reasoning !== undefined) {
         const reasoningApi = descriptor.capabilities?.reasoningApi
 
@@ -1192,8 +1259,9 @@ export function geminiAdapterWithClientFactory(
             )
           }
 
-          // Real SDK ThinkingLevel enum: "LOW" | "MEDIUM" | "HIGH" | "MINIMAL".
-          // `none` maps to MINIMAL only when the descriptor admits it.
+          // Real SDK ThinkingLevel enum (3.6.1): "MINIMAL" | "LOW" | "MEDIUM" |
+          // "HIGH" | "XHIGH". `none` maps to MINIMAL and `xhigh` to XHIGH only
+          // when the descriptor admits them.
           const admitted = descriptor.capabilities?.admittedReasoningEfforts
           const admitsNone = admitted?.includes('none') === true
           let thinkingLevel: string | undefined
@@ -1218,10 +1286,14 @@ export function geminiAdapterWithClientFactory(
                 thinkingLevel = 'HIGH'
                 break
               case 'xhigh':
-                throw new LlmError(
-                  `reasoning.effort "${reasoning.effort}" is not supported for model "${model}".`,
-                  { kind: 'bad_request', retryable: false },
-                )
+                if (admitted?.includes('xhigh') !== true) {
+                  throw new LlmError(
+                    `reasoning.effort "${reasoning.effort}" is not supported for model "${model}".`,
+                    { kind: 'bad_request', retryable: false },
+                  )
+                }
+                thinkingLevel = 'XHIGH'
+                break
               default:
                 assertNever(reasoning.effort)
             }
@@ -1241,8 +1313,11 @@ export function geminiAdapterWithClientFactory(
             })
           }
 
+          // No effort (only includeThoughts): the model's documented default
+          // level, where the request rules name one (Gemini 4).
+          const level = thinkingLevel ?? rules.defaultThinkingLevel
           config.thinkingConfig = {
-            ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
+            ...(level !== undefined ? { thinkingLevel: level } : {}),
             ...(reasoning.includeThoughts === true ? { includeThoughts: true } : {}),
           }
         } else {
@@ -1295,7 +1370,7 @@ export function geminiAdapterWithClientFactory(
         model,
         structuredOutputRequested,
         descriptorGrounding: descriptor.capabilities?.grounding,
-        descriptorCaching: descriptor.capabilities?.caching !== undefined,
+        descriptorCaching: descriptor.capabilities?.caching?.explicit === true,
         structuredOutputWithTools: descriptor.capabilities?.structuredOutputWithTools,
       })
       // Search facts, normalised across providers (ADR-035): `web_search_requested`
@@ -1315,6 +1390,24 @@ export function geminiAdapterWithClientFactory(
       const searchDeclared =
         googleSearchSent ||
         googleProviderConfig.cachedToolKinds?.includes('googleSearch') === true
+      if (
+        rules.rejectsSearchWithFlex === true &&
+        config.serviceTier === 'flex' &&
+        searchDeclared
+      ) {
+        throw new LlmError(
+          `providerOptions.google.tools (googleSearch) cannot be combined with serviceTier "flex" for model "${model}": nothing documents Search on this model's flex tier (its flex price tab has no grounding row). Send the grounded call at the standard tier.`,
+          {
+            kind: 'bad_request',
+            retryable: false,
+            provider: 'google',
+            issues: [
+              { path: 'providerOptions.google.tools', message: 'Search with flex' },
+              { path: 'serviceTier', message: 'Search with flex' },
+            ],
+          },
+        )
+      }
       const requireGrounding = googleProviderConfig.requireGrounding === true
       // A schema call on a model where Search misses under a response schema, with no
       // Search declared (a bare cache name may hold the tool): not blocked up front, so the
@@ -1435,6 +1528,30 @@ export function geminiAdapterWithClientFactory(
         return warnings
       }
       /** `usage` (and the grounding note) a failed-but-billed attempt carries. */
+      /**
+       * Warnings about how the call is priced, on every attempt that reports
+       * usage: the snapshot rate is not today's bill (Gemini 4 Carbon and Argon
+       * until 2026-11-30), and Search on a model that bills grounding's internal
+       * instructions as tokens in a share nothing isolates (Gemini 4).
+       */
+      const pricingWarnings = (groundingMetadata: unknown): Warning[] => {
+        const priced = descriptor.pricingFamily ?? descriptor.model
+        const out: Warning[] = []
+        const reason = geminiEstimatedRateReason(priced)
+        if (reason !== undefined) {
+          out.push({ type: 'other', message: `google: ${reason}` })
+        }
+        if (
+          (searchDeclared || groundingMetadata !== undefined) &&
+          resolveGeminiGroundingRate(priced)?.instructionTokensBilled === true
+        ) {
+          out.push({
+            type: 'other',
+            message: `google: "${model}" bills grounding's internal tool instructions and function declarations as tokens, and usageMetadata does not show which share of the reported counts they are, so the counts are priced as reported and cost.confidence is "estimated" even when no search query ran.`,
+          })
+        }
+        return out
+      }
       const billedFailure = (
         meta: GeminiUsageMetadataShape | undefined,
         groundingMetadata?: unknown,
@@ -1443,6 +1560,7 @@ export function geminiAdapterWithClientFactory(
         const failureWarnings = [
           ...groundingWarnings(groundingMetadata),
           ...modalityWarnings(meta),
+          ...pricingWarnings(groundingMetadata),
         ]
         return {
           usage: usageFor(meta, groundingMetadata),
@@ -1593,22 +1711,28 @@ export function geminiAdapterWithClientFactory(
         }
       }
 
+      // The default deadline when the host sets no `timeoutMs`: flex 25 minutes;
+      // standard 5 minutes, or the model's own default (Gemini 4: 20 minutes,
+      // also with no tier); none otherwise.
+      const standardDeadlineMs =
+        rules.standardDefaultTimeoutMs ?? STANDARD_DEFAULT_TIMEOUT_MS
+      const defaultDeadlineFor = (tier: string | undefined): number | undefined =>
+        tier === 'flex'
+          ? FLEX_DEFAULT_TIMEOUT_MS
+          : tier === 'standard'
+            ? standardDeadlineMs
+            : rules.standardDefaultTimeoutMs
+
       const applyTierTimeout = (tier: string | undefined): void => {
         clearTierTimeout()
         delete config.abortSignal
 
         const defaultTimeoutMs =
-          genConfig.timeoutMs === undefined
-            ? tier === 'flex'
-              ? FLEX_DEFAULT_TIMEOUT_MS
-              : tier === 'standard'
-                ? STANDARD_DEFAULT_TIMEOUT_MS
-                : undefined
-            : undefined
+          genConfig.timeoutMs === undefined ? defaultDeadlineFor(tier) : undefined
 
         if (defaultTimeoutMs !== undefined) {
           const tierController = new AbortController()
-          const tierLabel = tier === 'standard' ? 'Standard' : 'Flex'
+          const tierLabel = tier === 'flex' ? 'Flex' : 'Standard'
           const timeoutReason = new DOMException(
             `${tierLabel} timeout: call exceeded ${defaultTimeoutMs}ms client-side ceiling` +
               ' (@google/genai #1277 belt-and-suspenders)',
@@ -1640,7 +1764,9 @@ export function geminiAdapterWithClientFactory(
       //       ceiling at timeoutMs) always fires before the SDK transport timer.
       //    3. serviceTier 'flex', no timeoutMs → FLEX_DEFAULT_TIMEOUT_MS (no
       //       buffer; there is no engine AbortSignal deadline in this case).
-      //    4. serviceTier 'standard', no timeoutMs → STANDARD_DEFAULT_TIMEOUT_MS.
+      //    4. serviceTier 'standard', no timeoutMs → STANDARD_DEFAULT_TIMEOUT_MS,
+      //       or the model's own default (Gemini 4: GEMINI_4_DEFAULT_TIMEOUT_MS,
+      //       which also applies with no tier).
       //
       //    Only assign config.httpOptions when the merged object is non-empty
       //    (exactOptionalPropertyTypes-safe).
@@ -1653,11 +1779,7 @@ export function geminiAdapterWithClientFactory(
       const computedTimeoutMs: number | undefined =
         genConfig.timeoutMs !== undefined
           ? genConfig.timeoutMs + TRANSPORT_TIMEOUT_BUFFER_MS
-          : config.serviceTier === 'flex'
-            ? FLEX_DEFAULT_TIMEOUT_MS
-            : config.serviceTier === 'standard'
-              ? STANDARD_DEFAULT_TIMEOUT_MS
-              : undefined
+          : defaultDeadlineFor(config.serviceTier)
 
       const mergedHttpOptions: { timeout?: number } = {
         ...(computedTimeoutMs !== undefined ? { timeout: computedTimeoutMs } : {}),
@@ -1751,14 +1873,14 @@ export function geminiAdapterWithClientFactory(
               typed.httpStatus ?? 'no status'
             }) and was sent again at the standard tier, billed at standard rates.${
               genConfig.timeoutMs === undefined
-                ? ` Without timeoutMs the standard attempt runs under the ${STANDARD_DEFAULT_TIMEOUT_MS} ms client-side ceiling, not the flex ${FLEX_DEFAULT_TIMEOUT_MS} ms one.`
+                ? ` Without timeoutMs the standard attempt runs under the ${standardDeadlineMs} ms client-side ceiling, not the flex ${FLEX_DEFAULT_TIMEOUT_MS} ms one.`
                 : ''
             }`,
           })
           const fallbackTimeout =
             genConfig.timeoutMs !== undefined
               ? genConfig.timeoutMs + TRANSPORT_TIMEOUT_BUFFER_MS
-              : STANDARD_DEFAULT_TIMEOUT_MS
+              : standardDeadlineMs
           config.httpOptions = {
             timeout: fallbackTimeout,
             ...callerHttpOptions,
@@ -2125,6 +2247,9 @@ export function geminiAdapterWithClientFactory(
       }
       warnings.push(...groundingWarnings(groundingMetadata))
       warnings.push(...modalityWarnings(response.usageMetadata))
+      if (response.usageMetadata !== undefined) {
+        warnings.push(...pricingWarnings(groundingMetadata))
+      }
 
       // Where each answer-text part sits in `text`, so a grounding segment
       // (UTF-8 byte offsets into one part) becomes a range of `text`. Gemini's
