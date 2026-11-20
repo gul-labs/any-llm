@@ -4315,7 +4315,7 @@ the probe that would close it.
    naming the status and location. `'manual'` rather than `'error'`, because `'error'` rejects inside `fetch`
    as an anonymous `TypeError` that cannot be told from a network failure and would classify as a retryable
    connection error. A 200 that is not the stream is refused too: a `content-type` other than
-   `text/event-stream` is a non-retryable `bad_request` that may have billed (a `fetch` that buffered or rewrote
+   `text/event-stream` is a non-retryable `server` error that may have billed (a `fetch` that buffered or rewrote
    the answer), and a missing body is an early end. It uses two SDK modules whose runtime graph reads no environment variable and does not load
    the client module (checked in the installed 7.60.0: `streaming.js`, `core/streaming.js`, `core/error.js`,
    `error.js`, `internal/{tslib,errors,shims}.js`, `internal/decoders/line.js`,

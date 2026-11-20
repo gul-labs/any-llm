@@ -190,11 +190,11 @@ describe('the fill rule treats a terminal null as an omission', () => {
 })
 
 describe('a 200 that is not a usable stream', () => {
-  it('a JSON content-type is a non-retryable bad_request that may have billed', async () => {
+  it('a JSON content-type is a non-retryable server error that may have billed', async () => {
     const { err } = await run(() =>
       raw(JSON.stringify(responseObject([])), 'application/json'),
     )
-    expect(err.kind).toBe('bad_request')
+    expect(err.kind).toBe('server')
     expect(err.retryable).toBe(false)
     expect(err.mayHaveBilled).toBe(true)
     expect(err.message).toContain('content-type "application/json"')

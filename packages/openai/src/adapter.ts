@@ -520,10 +520,12 @@ function classifyStreamError(
         ...common,
       })
     case 'not_event_stream':
-      // A 200 that is not the requested stream (a fetch that buffered or rewrote
-      // it): not retried, and the upstream call may have run and billed.
+      // A 200 that is not the requested stream (a fetch or an intermediary that
+      // buffered or rewrote it). The fault is on the response side, not in the
+      // host's request, so it is `server`: not retried (the upstream call may have
+      // run and billed, and the same path would answer the same way).
       return new LlmError(err.message, {
-        kind: 'bad_request',
+        kind: 'server',
         retryable: false,
         ...common,
         mayHaveBilled: true,
