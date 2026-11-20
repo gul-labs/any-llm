@@ -339,9 +339,14 @@ const TERMINAL_STATUS: Readonly<Record<string, string>> = {
  * `maxRetries: 0` (one HTTP request per attempt; the engine owns retries). The
  * SDK constructor also parses `OPENAI_CUSTOM_HEADERS` into default headers that
  * are applied after the auth header, and no option turns that read off; the
- * client builds the SDK client inside {@link withoutAmbientCustomHeaders}, so
- * the variable is never parsed (a malformed value cannot fail a call) and no
- * environment variable can add or replace a header.
+ * client has two lines of defence. It builds the SDK client inside
+ * {@link withoutAmbientCustomHeaders}, so the variable is not parsed (a malformed
+ * value cannot fail a call), and the SDK client subclass drops whatever default
+ * headers the constructor collected, so no environment variable can add or
+ * replace a header on any path. Where the view cannot be installed (no
+ * configurable `globalThis.process`), the only thing lost is robustness to a
+ * malformed value: the SDK then parses it, a malformed one throws in the
+ * constructor, and a well-formed one is still dropped.
  *
  * The call streams through the SDK's own `responses.stream()` helper. A
  * terminal event (`response.completed`, `response.incomplete` or
@@ -354,14 +359,31 @@ const TERMINAL_STATUS: Readonly<Record<string, string>> = {
  * @param auth - `{ apiKey }`.
  * @param fetchImpl - Test seam: the `fetch` the SDK uses (defaults to the
  *   global `fetch`). Not exported from the package index.
+ * @param ambientHost - Test seam: the object whose `process` property the view
+ *   replaces (defaults to `globalThis`); a host without one exercises the path
+ *   where the view cannot be installed.
  */
 export async function buildOpenAiClient(
   auth: AuthMaterial,
   fetchImpl?: typeof fetch,
+  ambientHost: object = globalThis,
 ): Promise<OpenAiClientLike> {
   const apiKey = requireApiKey(auth)
   const sdk = await import('openai')
   const OpenAI = sdk.default
+
+  /**
+   * The SDK client without the default headers its constructor collected. This
+   * client never sets `defaultHeaders`, so the only source of them is
+   * `OPENAI_CUSTOM_HEADERS`; dropping them (the protected `_options` field the
+   * request builder reads) holds whether or not the view was installed.
+   */
+  class PinnedOpenAI extends OpenAI {
+    constructor(options: ConstructorParameters<typeof OpenAI>[0]) {
+      super(options)
+      delete this._options.defaultHeaders
+    }
+  }
 
   /** An `error` event: the SDK throws an `APIError` with no HTTP status for it. */
   const isErrorEvent = (err: unknown): err is InstanceType<typeof sdk.APIError> =>
@@ -389,7 +411,7 @@ export async function buildOpenAiClient(
         }
         const client = withoutAmbientCustomHeaders(
           () =>
-            new OpenAI({
+            new PinnedOpenAI({
               apiKey,
               baseURL: OPENAI_BASE_URL,
               organization: null,
@@ -400,6 +422,7 @@ export async function buildOpenAiClient(
               maxRetries: 0,
               fetch: capturingFetch,
             }),
+          ambientHost,
         )
 
         const controller = new AbortController()
@@ -501,7 +524,7 @@ const CUSTOM_HEADERS_VARIABLE = 'OPENAI_CUSTOM_HEADERS'
  * `super()`. For the duration of the call `globalThis.process` is replaced by a
  * view of the real `process` whose `env` hides that one variable (every other
  * property and variable passes through untouched), and the original property
- * descriptor is restored in `finally`.
+ * descriptor is restored in `finally`, also when `construct` throws.
  *
  * Why this is safe: the SDK constructor is synchronous (no `await`, no timer, no
  * callback), so no other code in this JavaScript realm can run while the view is
@@ -510,12 +533,20 @@ const CUSTOM_HEADERS_VARIABLE = 'OPENAI_CUSTOM_HEADERS'
  * this realm's `globalThis` only: the OS environment, child processes and worker
  * threads (each has its own `globalThis`) never see a change. No value is read,
  * copied or logged by this library; the view only declines one key. A runtime
- * without a configurable `globalThis.process` calls `construct` unchanged (there,
- * `readEnv` falls back to `Deno.env` on Deno and to nothing elsewhere; Deno 2
- * exposes `process`, so the view applies there too).
+ * without a configurable `globalThis.process` (or without an `env` object) calls
+ * `construct` unchanged: the SDK then parses the variable, and the subclass in
+ * {@link buildOpenAiClient} still drops the headers, so only robustness to a
+ * malformed value is lost there (Deno 2 exposes `process`, so the view applies
+ * there too). Remove this function when the SDK gains an option that turns the
+ * read off (BACKLOG).
+ *
+ * @internal
  */
-function withoutAmbientCustomHeaders<T>(construct: () => T): T {
-  const host = globalThis as { process?: unknown }
+export function withoutAmbientCustomHeaders<T>(
+  construct: () => T,
+  ambientHost: object = globalThis,
+): T {
+  const host = ambientHost as { process?: unknown }
   const descriptor = Object.getOwnPropertyDescriptor(host, 'process')
   const real = host.process
   if (

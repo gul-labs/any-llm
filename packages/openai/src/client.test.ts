@@ -8,7 +8,11 @@
 import { afterEach, describe, expect, it, vi, beforeAll } from 'vitest'
 import { LlmError } from '@gullabs/core'
 
-import { buildOpenAiClient, requireApiKey } from './client.js'
+import {
+  buildOpenAiClient,
+  requireApiKey,
+  withoutAmbientCustomHeaders,
+} from './client.js'
 import {
   messageItem,
   responseObject,
@@ -138,5 +142,70 @@ describe('a malformed OPENAI_CUSTOM_HEADERS cannot fail a call', () => {
     expect(Object.getOwnPropertyDescriptor(globalThis, 'process')?.get).toBeTypeOf(
       'function',
     )
+  })
+})
+
+describe('the second line of defence and the view itself', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('where the view cannot be installed, a well-formed ambient OPENAI_CUSTOM_HEADERS is still not sent', async () => {
+    vi.stubEnv(
+      'OPENAI_CUSTOM_HEADERS',
+      'Authorization: Bearer sk-ambient-header\nX-Ambient: 1\nOpenAI-Organization: org-header',
+    )
+    const stub = stubFetch(() =>
+      sseResponse(streamEvents(responseObject([messageItem('msg_1', 'ok')]))),
+    )
+    // A host with no `process` property: the view is not installed, so the SDK
+    // parses the real environment and only the header drop protects the call.
+    const client = await buildOpenAiClient({ apiKey: 'sk-caller' }, stub.fetch, {})
+    await client.responses.create({ model: 'gpt-6.2-sol', input: [], store: false })
+    const call = stub.calls[0]!
+    expect(call.headers.get('authorization')).toBe('Bearer sk-caller')
+    expect(call.headers.has('x-ambient')).toBe(false)
+    expect(call.headers.has('openai-organization')).toBe(false)
+  })
+
+  it('without a view the construct runs unchanged and sees the real host', () => {
+    const host = {}
+    expect(withoutAmbientCustomHeaders(() => 'built', host)).toBe('built')
+    expect(Object.keys(host)).toEqual([])
+  })
+
+  it('hides only OPENAI_CUSTOM_HEADERS while construct runs', () => {
+    const env = { OPENAI_CUSTOM_HEADERS: 'X: 1', OTHER: 'kept' }
+    const host = { process: { env, version: 'v0' } }
+    const seen = withoutAmbientCustomHeaders(() => {
+      const p = host.process
+      return [
+        p.env['OPENAI_CUSTOM_HEADERS'],
+        p.env['OTHER'],
+        p.version,
+        'OPENAI_CUSTOM_HEADERS' in p.env,
+      ]
+    }, host)
+    expect(seen).toEqual([undefined, 'kept', 'v0', false])
+    expect(host.process.env).toBe(env)
+  })
+
+  it('restores the process descriptor when the constructor throws', () => {
+    const real = { env: { OPENAI_CUSTOM_HEADERS: 'X: 1' } }
+    const host: Record<string, unknown> = {}
+    const getter = () => real
+    Object.defineProperty(host, 'process', {
+      get: getter,
+      configurable: true,
+      enumerable: false,
+    })
+    const before = Object.getOwnPropertyDescriptor(host, 'process')
+    expect(() =>
+      withoutAmbientCustomHeaders(() => {
+        throw new Error('constructor failed')
+      }, host),
+    ).toThrow('constructor failed')
+    expect(Object.getOwnPropertyDescriptor(host, 'process')).toEqual(before)
+    expect(host['process']).toBe(real)
   })
 })
