@@ -70,7 +70,7 @@ Every `generate()`/`runStructured()` request and every `defineCallSite()` requir
 explicit top-level `provider` (e.g. `'google'`, `'claude-cli'`, `'codex-cli'`) alongside
 the bare, provider-native `model` string. The engine routes by `req.provider` directly
 — it never derives, parses, or guesses a provider from `model`, and it never accepts a
-slash-joined string like `'google/gemini-2.5-flash'`. A request with no `provider`, an
+slash-joined string like `'google/gemini-3.8-flash'`. A request with no `provider`, an
 unconfigured `provider`, or a `(provider, model)` pair the registry doesn't recognize is
 rejected with `LlmError({ kind: 'bad_request' })` before any I/O. This also means the
 same bare model id can exist under multiple providers with different config schemas —
@@ -92,7 +92,7 @@ const client = createClient({
 const result = await client.generate(
   {
     provider: 'google',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.8-flash',
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello!' }] }],
   },
   { auth: { apiKey: myResolvedGeminiKey } },
@@ -123,7 +123,7 @@ declare const myResolvedGeminiKey: string
 const count = await client.countTokens(
   {
     provider: 'google',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.8-flash',
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello!' }] }],
   },
   { auth: { apiKey: myResolvedGeminiKey } },
@@ -245,7 +245,7 @@ const { system, messages } = geminiContentToMessages({
 const result = await client.generate(
   {
     provider: 'google',
-    model: 'gemini-2.5-pro',
+    model: 'gemini-4-neon',
     ...(system !== undefined ? { system } : {}),
     messages,
   },
@@ -284,7 +284,7 @@ declare const text: string
 const summarize = defineCallSite({
   id: 'summarize-article', // persisted as callSiteId on every record
   provider: 'google',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-2.5-flash-lite',
   system: 'You are a concise summarizer.',
   userTemplate: 'Summarize this article in 3 sentences:\n\n{{article}}',
   config: { temperature: 0.3 },
@@ -319,7 +319,7 @@ declare const auth: AuthMaterial
 const summarize = defineCallSite({
   id: 'summarize-article',
   provider: 'google',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-3.8-flash',
   userTemplate: 'Summarize this article in 3 sentences:\n\n{{article}}',
 })
 
@@ -353,7 +353,7 @@ declare const diff: string
 const reviewCallSite = defineCallSite({
   id: 'code-review',
   provider: 'google',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-3.8-flash',
   userTemplate: 'Review this diff as {{reviewer}}:\n\n{{diff}}',
   inputSchema: z.object({
     reviewer: z.string().min(1),
@@ -384,7 +384,7 @@ const myZodSchema = z.object({ article: z.string() })
 const result = await client.generate(
   {
     provider: 'google',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.8-flash',
     messages: [{ role: 'user', parts: [{ kind: 'text', text: renderedPrompt }] }],
     inputContract: { schema: myZodSchema, value: sourceContext },
   },
@@ -511,7 +511,7 @@ const client = createClient({
 const result = await client.generate(
   {
     provider: 'google',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.8-flash',
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Rate this PR 1-10.' }] }],
     output: {
       jsonSchema: {
@@ -592,7 +592,7 @@ Bad input or config throws `bad_request` (or `invalid_auth`) **before any I/O** 
 nothing is silently clamped, coerced, or defaulted around a typo. Examples already
 enforced by the engine/adapter: a request or call site with no `provider`, a `provider`
 that doesn't match any configured adapter, a `(provider, model)` pair absent from the
-registry (including a bare model string with a slash, like `'google/gemini-2.5-flash'`
+registry (including a bare model string with a slash, like `'google/gemini-3.8-flash'`
 — slash strings are never parsed), a config value that fails the selected descriptor
 schema, a `reasoning.budgetTokens` set on a model whose API only supports
 `reasoning.effort`, duplicate adapter/middleware `id`s, and a grounding +
@@ -611,30 +611,31 @@ config: {
 ```
 
 `ReasoningEffort` is `'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'`. Admitted values
-are per-model. Two provider APIs exist under the hood: Gemini 2.5 models take a
-token `budgetTokens`; Gemini 3.x / Gemma 4 / xAI take a discrete `effort` level.
+are per-model. Two provider APIs exist under the hood: the Gemini 2.5 model takes a
+token `budgetTokens`; Gemini 3.x / Gemini 4 / Gemma 4 / xAI take a discrete `effort` level.
 
 Use the model-native boundary directly:
 
-- Gemini 2.5: `reasoning.budgetTokens` or admitted `reasoning.effort` (not `xhigh` or `max`)
+- Gemini 2.5 (`gemini-2.5-flash-lite`): `reasoning.budgetTokens` or admitted `reasoning.effort` (not `xhigh` or `max`)
 - Gemini 3 / Gemma 4: `reasoning.effort` (not `xhigh` or `max`)
+- Gemini 4: `reasoning.effort` `'low' | 'medium' | 'high'`, plus `'xhigh'` on `gemini-4-neon` and `gemini-4-hydrogen`; with no effort the model's documented default level is sent
 - xAI `grok-4.5`: `reasoning.effort` `'low' | 'medium' | 'high'`
 - xAI `grok-4.6` and `grok-4.7`: `reasoning.effort` `'low' | 'medium' | 'high' | 'xhigh'`
 
-Registered Google ids: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`,
-`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
-`gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemma-4-31b-it`,
-`gemma-4-26b-a4b-it`. `gemini-3-flash-preview` and `gemini-3.5-flash` do not resolve.
+Registered Google ids: `gemini-2.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.8-flash`, `gemini-4-carbon`, `gemini-4-argon`, `gemini-4-neon`, `gemini-4-hydrogen`, `gemma-4-31b-it`, `gemma-4-26b-a4b-it`. `gemini-3-flash-preview`, `gemini-3.5-flash` and the ids
+removed on 2026-11-20 (ADR-048) do not resolve.
 
 Exact model reminders:
 
-- `gemini-3.1-pro-preview`, `gemini-3.7-flash`, and `gemini-3.8-flash` do **not** admit `effort: 'none'`
-- Explicit-cache floors: 1024 on all six registered Gemini 3.x ids, live-verified on 2026-09-26 by a 103-token rejection and exact 1024-token create; 2048 remains configured on Gemini 2.5.
+- `gemini-3.1-pro-preview`, `gemini-3.8-flash` and the Gemini 4 models do **not** admit `effort: 'none'`
+- Explicit-cache floors: 1024 on the registered Gemini 3.x ids, live-verified on 2026-09-26 by a 103-token rejection and exact 1024-token create; 2048 remains configured on Gemini 2.5 Flash-Lite. Gemini 4 has no explicit caching (`cachedContent` and `GoogleCacheStore.create` are rejected for it).
+- Gemini 4 (documented, not live-verified): no schema with Search, no Search with `flex`, `maxOutputTokens` at most 32,768 on Carbon and Argon and 65,536 on Neon and Hydrogen, a 20-minute default deadline without `timeoutMs` (flex 25). Carbon and Argon costs are `estimated` until the 2026-12-01 re-snapshot.
+- Every Google generation request is sent with `store: false` and as one request per attempt (a `CONTINUATION` finish is `length`, never resumed). A request ending with an assistant turn is `bad_request` on 3.5 Flash-Lite, 3.6 and 3.8 Flash and Gemini 4.
 - Gemma 4 is binary: only `effort: 'none'` or `effort: 'high'`
 - Omit `serviceTier` for provider-standard; set `flex` explicitly
 - `priority` remains rejected by the library even though Google documents it
-- July 21, 2026: Google deprecated sampling parameters `temperature`, `top_p`, and `top_k`. Gemini 3.x schemas already omit them. Gemini 2.5 and Gemma stay tunable.
-- September 18, 2026: Gemini 2.5 access is restricted to projects that already used 2.5. The three 2.5 ids stay registered.
+- July 21, 2026: Google deprecated sampling parameters `temperature`, `top_p`, and `top_k`. Gemini 3.x and Gemini 4 schemas omit them. Gemini 2.5 Flash-Lite and Gemma stay tunable.
+- September 18, 2026: Gemini 2.5 access is restricted to projects that already used 2.5. `gemini-2.5-flash-lite` stays registered; the other two 2.5 ids were removed on 2026-11-20 (ADR-048).
 - xAI long-context rates apply at gross input `>= 200_000` (`long_context_threshold` is inclusive).
 
 ## Context caching — `GoogleCacheStore`
@@ -721,7 +722,7 @@ const handle = await cacheStore.create({
   the Gemini Developer API (API-key auth) is supported.
 - Catching a `bad_request` `LlmError` and retrying with a clamped/guessed value instead
   of fixing the call — the library never silently coerces invalid config.
-- Setting `reasoning.budgetTokens` on a `thinkingLevel`-API model (Gemini 3.x / Gemma 4) — use `reasoning.effort` instead; the descriptor schema should reject it.
+- Setting `reasoning.budgetTokens` on a `thinkingLevel`-API model (Gemini 3.x / Gemini 4 / Gemma 4) — use `reasoning.effort` instead; the descriptor schema should reject it.
 - Assuming omitted `serviceTier` still means Flex — it now stays omitted and
   uses provider-default request behavior unless you explicitly opt into `flex`.
 

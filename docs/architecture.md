@@ -486,12 +486,14 @@ Each descriptor carries:
   suffixes). Exact-match keys too; sent to the provider unchanged and priced under this descriptor.
 - `provider` — matches the `ProviderAdapter.id` used for routing. `createClient` verifies at
   construction that every registry descriptor's `provider` matches a configured adapter's `id`.
-- `pricingFamily` — the key into the pricing table (e.g., `"gemini-2.5-pro"` for
-  `"gemini-2.5-pro-001"`, when that string is a declared alias).
-- `capabilities.reasoningApi` — `'budget'` (Gemini 2.5 series, `thinkingBudget`) or
-  `'level'` (Gemini 3.x series, `thinkingLevel`).
-- `capabilities.sampling` — `'tunable'` (Gemini 2.5 series) or `'fixed'` (Gemini 3.x series).
-- `capabilities.caching` — `{ explicit: boolean; minTokens: number }`.
+- `pricingFamily` — the key into the pricing table (e.g., `"gemini-3.8-flash"` for
+  `"gemini-3.8-flash-001"`, when that string is a declared alias).
+- `capabilities.reasoningApi` — `'budget'` (Gemini 2.5 Flash-Lite, `thinkingBudget`) or
+  `'level'` (Gemini 3.x and Gemini 4, `thinkingLevel`).
+- `capabilities.sampling` — `'tunable'` (Gemini 2.5 Flash-Lite, Gemma) or `'fixed'` (Gemini 3.x and 4).
+- `capabilities.caching` — `{ explicit: boolean; minTokens: number }`. Gemini 4 is
+  `{ explicit: false, minTokens: 4096 }`: implicit caching only, so `cachedContent` and
+  `GoogleCacheStore.create` are rejected for it.
 - `capabilities.grounding` — whether the model supports Google Search grounding.
 - `capabilities.nativeStructuredOutput` — whether the adapter may send provider-native
   `responseMimeType` / `responseJsonSchema` for `output.jsonSchema` (standard JSON Schema,
@@ -514,7 +516,7 @@ Each descriptor carries:
 1. Exact match on the (`provider`, `model`) pair — O(1) hash lookup. Declared `aliases` are
    additional keys for the same descriptor, unique within the provider.
 2. `undefined` — no descriptor found. There is no prefix matching: an unregistered sibling such as
-   `gemini-2.5-flash-image` next to `gemini-2.5-flash` is unknown, never priced as the shorter id.
+   `gemini-3.8-flash-image` next to `gemini-3.8-flash` is unknown, never priced as the shorter id.
 
 When `undefined`, the engine throws `LlmError('bad_request')` at the public API boundary.
 There is no provider derivation, no `provider/model` slash convention, and no `'unknown'`
@@ -528,11 +530,8 @@ exports its own descriptor arrays and a ready-to-use registry; `@gullabs/google`
 `geminiModelDescriptors`, `gemmaModelDescriptors`, and `defaultGeminiRegistry` (built from
 `createModelRegistry([...geminiModelDescriptors, ...gemmaModelDescriptors])` in
 `packages/google/src/models.ts`). Registered Google ids:
-`gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`,
-`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
-`gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemma-4-31b-it`,
-`gemma-4-26b-a4b-it`. `gemini-3-flash-preview` and `gemini-3.5-flash` do not
-resolve. Hosts wire it in
+`gemini-2.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.8-flash`, `gemini-4-carbon`, `gemini-4-argon`, `gemini-4-neon`, `gemini-4-hydrogen`, `gemma-4-31b-it`, `gemma-4-26b-a4b-it`. `gemini-3-flash-preview`, `gemini-3.5-flash` and the ids removed on 2026-11-20
+(ADR-048) do not resolve. Hosts wire it in
 explicitly via `composeProviders`, e.g. `composeProviders([googleProvider()])`, which flattens
 every plugin's `modelDescriptors` into `ClientConfig.modelRegistry` — nothing is auto-populated
 into `createClient` without that call. Hosts can also supply `ClientConfig.modelRegistry`

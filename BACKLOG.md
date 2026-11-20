@@ -97,7 +97,8 @@ paths to other repos.
 - **Priority:** P3
 - **Status:** done. The routine devDeps, `openai@7` (peer `^7`), `@google/genai@2` (peer `^2`),
   `@changesets/cli@3`, Vitest 5 and `actions/setup-node@v7` are on `main`, and `pnpm quality`
-  passes against them. TypeScript stays on 6.x: 7 is a separate plan.
+  passes against them. TypeScript stays on 6.x: 7 is a separate plan. `@google/genai` moved to
+  3.x on 2026-11-20 (peer `^3.6.1`, ADR-048).
 - **Origin:** open dependabot PRs.
 - **Next step:** none; re-run the review when Dependabot opens the next major.
 

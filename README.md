@@ -68,7 +68,7 @@ const client = createClient({
 const codeReview = defineCallSite({
   id: 'code-review',
   provider: 'google',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-3.8-flash',
   jsonSchema: {
     type: 'object',
     properties: {
@@ -151,7 +151,7 @@ const client = createClient({
 
 async function generateWithFallback(messages: Message[], externalId: string) {
   const targets = [
-    { provider: 'google', model: 'gemini-2.5-pro', auth: { apiKey: googleKey } },
+    { provider: 'google', model: 'gemini-4-neon', auth: { apiKey: googleKey } },
     { provider: 'xai', model: 'grok-4.6', auth: { apiKey: xaiKey } },
   ]
   let last: unknown
@@ -190,9 +190,9 @@ The key is redacted from persisted records and logs. Vertex AI is not in this tr
 - **Side effects fail-open.** A broken sink, logger, telemetry hook (`async` ones whose promise rejects included) or pricing source cannot fail the LLM call. Rate-limiter rejection is the one exception — backpressure is real.
 - **No network in tests.** Use [`@gullabs/testing`](./packages/testing).
 
-Gemini 2.5 uses `reasoning.budgetTokens`. Gemini 3 / Gemma built-ins use `reasoning.effort`. `gemini-3.1-pro-preview`, `gemini-3.7-flash`, and `gemini-3.8-flash` do not admit `effort: 'none'`. Omit `serviceTier` for provider default; set `flex` only when you want that lane. Google `priority` is documented upstream and still rejected here. The adapter records the provider's `usageMetadata.serviceTier` echo when present and falls back to the dispatched tier when absent.
+`gemini-2.5-flash-lite` uses `reasoning.budgetTokens`. Gemini 3, Gemini 4 and Gemma built-ins use `reasoning.effort`. `gemini-3.1-pro-preview`, `gemini-3.8-flash` and the Gemini 4 models do not admit `effort: 'none'`; `xhigh` is admitted on `gemini-4-neon` and `gemini-4-hydrogen` only, and a Gemini 4 call without an effort sends the model's documented default level. Omit `serviceTier` for provider default; set `flex` only when you want that lane. Google `priority` is documented upstream and still rejected here. The adapter records the provider's `usageMetadata.serviceTier` echo when present and falls back to the dispatched tier when absent.
 
-Registered Google ids: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemma-4-31b-it`, `gemma-4-26b-a4b-it`. Deleted, with no alias: `gemini-3-flash-preview` and `gemini-3.5-flash` (migrate to `gemini-3.6-flash`).
+Registered Google ids: `gemini-2.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.8-flash`, `gemini-4-carbon`, `gemini-4-argon`, `gemini-4-neon`, `gemini-4-hydrogen`, `gemma-4-31b-it`, `gemma-4-26b-a4b-it`. The Gemini 4 contract is documented, not live-verified (ADR-048). Deleted, with no alias: `gemini-3-flash-preview` and `gemini-3.5-flash` (migrate to `gemini-3.6-flash`), and the three ids removed in the 2026-11-20 refresh (ADR-048 and the `@gullabs/google` changelog name them and their replacements). Every Google generation request is sent with `store: false` and one request per attempt.
 
 Dev-only CLI ids: `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`; `claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`. Deleted, with no alias: every `gpt-5*` id, `claude-fable-5`, and `claude-opus-4-8`.
 

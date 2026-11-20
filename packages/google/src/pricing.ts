@@ -35,7 +35,7 @@
  * rates of the models already priced are unchanged from `gemini-2026-10-03`.
  * New: the four Gemini 4 models (standard and flex, flex half of standard on
  * every lane; implicit caching only, so no storage lane) and their grounding
- * rate. Removed with their models: 2.5 Pro, 2.5 Flash and 3.7 Flash. Gemini 4
+ * rate. The rates of the three models removed that day went with them (ADR-048). Gemini 4
  * Carbon and Argon carry the rates that apply from 2026-12-01 ($4.00 input,
  * $0.20 cached, $20.00 output); through 2026-11-30 Google bills half of that, so
  * their costs are `estimated` ({@link GEMINI_ESTIMATED_RATE_REASONS}). The

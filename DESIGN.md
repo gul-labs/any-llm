@@ -393,10 +393,8 @@ unknown key is rejected outright, never silently dropped or clamped.
 - **codex-cli** models: `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`.
   `reasoning.effort`: `low | medium | high | xhigh | max`. No `gpt-5*` id is registered.
 
-Registered Google ids: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`,
-`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
-`gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemma-4-31b-it`,
-`gemma-4-26b-a4b-it`. `gemini-3-flash-preview` and `gemini-3.5-flash` do not resolve.
+Registered Google ids: `gemini-2.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.8-flash`, `gemini-4-carbon`, `gemini-4-argon`, `gemini-4-neon`, `gemini-4-hydrogen`, `gemma-4-31b-it`, `gemma-4-26b-a4b-it`. `gemini-3-flash-preview`, `gemini-3.5-flash` and the ids
+removed on 2026-11-20 (ADR-048) do not resolve.
 xAI ids: `grok-4.5`, `grok-4.6`, `grok-4.7`.
 
 ### Adapter-owned invariant flags

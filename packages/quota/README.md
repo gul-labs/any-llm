@@ -43,8 +43,8 @@ const quotaStore = upstashQuotaStore({
 
 const policy = quotaPolicyForGemini({
   models: {
-    'gemini-2.5-pro': { rpm: 60, rpd: 2_000, tpm: 1_000_000 },
-    'gemini-2.5-flash': { rpm: 120, rpd: 10_000, tpm: 2_000_000 },
+    'gemini-4-neon': { rpm: 60, rpd: 2_000, tpm: 1_000_000 },
+    'gemini-3.8-flash': { rpm: 120, rpd: 10_000, tpm: 2_000_000 },
   },
 })
 
