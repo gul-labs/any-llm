@@ -311,19 +311,6 @@ describe('a 200 that reports failure (doc-derived shapes)', () => {
     }).run(makeReq(), FAKE_CTX)
     expect(truncated.finishReason).toBe('length')
   })
-
-  it('incomplete_details.reason content_filter is NOT mapped: no fixture shows it, so it stays other', async () => {
-    const result = await xaiAdapter({
-      client: makeFakeXai(
-        fakeXaiResponse({
-          text: '',
-          status: 'incomplete',
-          incompleteReason: 'content_filter',
-        }),
-      ),
-    }).run(makeReq(), FAKE_CTX)
-    expect(result.finishReason).toBe('other')
-  })
 })
 
 describe('parallelToolCalls needs a tool', () => {

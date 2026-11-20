@@ -191,7 +191,12 @@ export const XaiProviderOptionsSchema = z
         description:
           'xAI Responses `max_turns`: cap on agentic tool-calling turns for the ' +
           'server-side search tools. Requires `tools`. A turn can run several ' +
-          'searches. Not enforced by xAI as of 2026-10-02.',
+          'searches. Whether xAI enforces it is open. A live call on 2026-10-02 did not ' +
+          '(fixture 33: with max_turns 1 the three models ran 10 to 17 searches over ' +
+          "several rounds). xAI's tool usage guide, read 2026-11-20 " +
+          '(https://docs.x.ai/developers/tools/tool-usage-details), now says the cap is ' +
+          'applied ("When the agent reaches the limit, it will stop making additional ' +
+          'tool calls"; documented, not live-verified). Open until a live probe.',
       }),
     searchBudget: XaiSearchBudgetSchema.optional(),
   })

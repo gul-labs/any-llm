@@ -155,8 +155,18 @@ paths to other repos.
 - **xAI `safety_identifier`.** New Responses request field (September 2026 release notes, <https://docs.x.ai/developers/faq/security>): an opaque, hashed end-user id. Candidate `providerOptions.xai.safetyIdentifier` for multi-tenant hosts on one key. Needs a live probe before admission.
 - **xAI `POST /v1/responses/compact`.** Documented transcript compaction (<https://docs.x.ai/developers/advanced-api-usage/context-compaction>). grok-4.7 replay resends the full wire input; compaction would be the cost control. Needs a design: a second endpoint plus an opaque `compaction` input item.
 - **xAI `include: ["no_inline_citations"]`.** Suppresses inline `[[N]](url)` links in the text (<https://docs.x.ai/developers/tools/citations>). Expose only if a host needs citation-free text.
-- **xAI `max_turns` enforcement.** Exposed as `providerOptions.xai.maxTurns`; not enforced by xAI on 2026-10-02 (fixture 33, ADR-030). Re-probe when xAI changes the agentic loop, then update the README.
+- **xAI `max_turns` enforcement.** Exposed as `providerOptions.xai.maxTurns`; not enforced by xAI on 2026-10-02 (fixture 33, ADR-030), and described as applied in xAI's tool usage guide read 2026-11-20 (<https://docs.x.ai/developers/tools/tool-usage-details>), which is documentation, not a probe. **Probe:** repeat the fixture 33 call (`web_search`, `tool_choice: 'required'`, `max_turns: 1`) on grok-4.5, 4.6 and 4.7 and read the search counters. Enforced: drop the "open" wording from the schema description, `types.ts`, the package README, `SPEC.md` and ADR-030. Still ignored: say so and decide whether the option stays.
 - Not exposed on purpose (xAI docs mark them compatibility-only, unsupported, or silently ignored): `reasoning.summary`, function `strict`, `metadata`, `truncation`, `background`, `logprobs`, `search_parameters`, `service_tier: 'fast'`.
+
+## xAI observed 2026-11-20, not modelled
+
+Read on 2026-11-20 from xAI's public documentation (<https://docs.x.ai/developers/models>, <https://docs.x.ai/developers/pricing>, <https://docs.x.ai/developers/release-notes>, <https://docs.x.ai/developers/rest-api-reference/inference/responses>, <https://docs.x.ai/openapi.json>). None is admitted, priced or sent by `@gullabs/xai`; each needs a design and, where it changes a request or a bill, a live probe first.
+
+- New Responses request fields: `min_p`, `top_k`, `guidelines` (custom moderation controls), `safety_identifier`, `context_management`, `prompt_cache_key` beyond today's `promptCacheKey` option.
+- The US regional endpoint `https://us.api.x.ai/v1` (grok-4.7 and grok-4.6), billed at 1.1x the global token rates. The client pins `https://api.x.ai/v1`; a host that points elsewhere would be under-priced by 10%.
+- `usage.cost_in_nano_usd` and `usage.context_details`, beside the `cost_in_usd_ticks` the adapter already reads.
+- Tool types `shell` and `tool_search` (OpenAPI `ModelTool`), with no usage counter and no price row; code execution ($5 per 1,000 calls) and collections search ($2.50 per 1,000 calls) have published rates but stay unpriced here.
+- Models not registered: `grok-4.3` and the `grok-4.20-*` family, listed on the models page with their own rates.
 
 ## Follow-ups from Gemini 3 thought signatures (2026-10-03)
 

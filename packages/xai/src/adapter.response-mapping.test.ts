@@ -118,6 +118,26 @@ describe('a function call that did not complete is not a tool call', () => {
   })
 
   it('maps an incomplete response with another reason to "other" and still drops the call', async () => {
+    // `max_prompt_tokens` is a documented `IncompleteDetails.reason` (OpenAPI,
+    // read 2026-11-20) with no finish reason of its own: this response is
+    // documentation-derived, not a capture.
+    const result = await run(
+      response({
+        status: 'incomplete',
+        incomplete_details: { reason: 'max_prompt_tokens' },
+        output: [functionCall()],
+      }),
+    )
+    expect(result.finishReason).toBe('other')
+    expect(result.toolCalls).toBeUndefined()
+    expect(result.warnings).toHaveLength(2)
+    expect(result.warnings.some((w) => w.message.includes('"get"'))).toBe(true)
+    expect(
+      result.warnings.some((w) => w.message.includes('incomplete with reason')),
+    ).toBe(true)
+  })
+
+  it('maps an incomplete content_filter response to content_filter and still drops the call', async () => {
     const result = await run(
       response({
         status: 'incomplete',
@@ -125,9 +145,11 @@ describe('a function call that did not complete is not a tool call', () => {
         output: [functionCall()],
       }),
     )
-    expect(result.finishReason).toBe('other')
+    expect(result.finishReason).toBe('content_filter')
     expect(result.toolCalls).toBeUndefined()
-    expect(result.warnings[0]?.message).toContain('"other"')
+    expect(result.warnings).toHaveLength(1)
+    expect(result.warnings[0]?.message).toContain('"get"')
+    expect(result.warnings[0]?.message).toContain('"content_filter"')
   })
 
   it('drops a call whose own status is not completed beside a completed response', async () => {

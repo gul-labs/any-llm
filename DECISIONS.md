@@ -1943,6 +1943,16 @@ does not turn this into an in-flight ceiling: whether xAI stops billing an abort
 testable, so the observed-after-the-call budget stays the only budget control. `maxTurns` stays and is
 re-probed at every model refresh.
 
+### Amendment (2026-11-20): `maxTurns` enforcement is open
+
+Item 2 recorded that xAI did not enforce `max_turns` on 2026-10-02 (fixture 33). xAI's tool usage guide,
+read 2026-11-20 (<https://docs.x.ai/developers/tools/tool-usage-details>), now says that when the agent
+reaches the limit "it will stop making additional tool calls and generate a final response". That is
+documentation, not a probe: no call was made on 2026-11-20, so both facts stand side by side and the
+question is open until a live probe (`BACKLOG.md`). The option is unchanged: it forwards the validated
+integer verbatim, and it is still a cap on turns, not on searches or cost. The schema description, the
+`maxTurns` doc comment in `types.ts`, the package README and `SPEC.md` state both dated facts.
+
 ---
 
 ## ADR-031: Ledger rows are per attempt; correlation is `externalId`
