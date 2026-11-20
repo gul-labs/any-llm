@@ -215,6 +215,8 @@ export interface ReasoningIntent {
    * Abstract effort level. Admitted values are per-model (`admittedReasoningEfforts`).
    * - Gemini 2.5 → maps to `thinkingBudget` tokens (`xhigh` is rejected).
    * - Gemini 3.x → maps to `thinkingLevel` (`xhigh` is rejected).
+   * - Gemini 4 → maps to `thinkingLevel`; Neon and Hydrogen admit `xhigh`.
+   * - OpenAI GPT-6 → Responses `reasoning.effort`, per-model sets.
    * - xAI grok-4.6/4.7 → Responses `reasoning.effort`, including native `xhigh`.
    * - Codex and Claude CLI → native `max` where admitted by the model schema.
    */
@@ -679,7 +681,7 @@ export interface LlmResult {
    * route on it: send the next turn with the `model` string you sent.
    */
   model: string
-  /** Provider-specific model version string (e.g. `"gemini-2.5-pro-001"`). */
+  /** Provider-specific model version string (e.g. `"gemini-3.8-flash-001"`). */
   modelVersion?: string
   /** Why the model stopped generating. */
   finishReason?: FinishReason

@@ -117,7 +117,7 @@ function selectRates(
  *    `details.input + details.cached + details.output + details.tools === microUsd`
  *    exactly. Token-only sources (this function) set `tools: 0`.
  *
- * @param model - Model identifier string used for routing (e.g. `"gemini-2.5-pro"`).
+ * @param model - Model identifier string used for routing (e.g. `"gemini-3.8-flash"`).
  * @param usage - GROSS token usage for the call.
  * @param tier - Opaque, provider-defined service tier string (e.g. `'flex'`,
  *   `'standard'`). `undefined` means "no tier specified"; the

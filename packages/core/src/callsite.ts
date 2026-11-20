@@ -24,7 +24,7 @@ import type { StandardSchemaV1 } from './standard-schema.js'
  * const summarise = defineCallSite({
  *   id: 'summarise-article',
  *   provider: 'google',
- *   model: 'gemini-2.5-pro',
+ *   model: 'gemini-3.8-flash',
  *   system: 'You are a concise summariser.',
  *   userTemplate: 'Summarise this article in 3 sentences:\n\n{{article}}',
  *   config: { temperature: 0.3 },
@@ -112,7 +112,7 @@ export interface CallSite {
  * const classify = defineCallSite({
  *   id: 'classify-sentiment',
  *   provider: 'google',
- *   model: 'gemini-2.5-flash',
+ *   model: 'gemini-3.8-flash',
  *   jsonSchema: {
  *     type: 'object',
  *     properties: { sentiment: { type: 'string', enum: ['positive', 'negative', 'neutral'] } },

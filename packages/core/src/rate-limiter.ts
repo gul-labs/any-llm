@@ -32,10 +32,10 @@ export interface InMemoryRateLimiterOptions {
  * ```ts
  * const limiter = inMemoryRateLimiter({ maxConcurrency: 2 })
  *
- * const release1 = await limiter.acquire('google:gemini-2.5-pro')
- * const release2 = await limiter.acquire('google:gemini-2.5-pro')
+ * const release1 = await limiter.acquire('google:gemini-3.8-flash')
+ * const release2 = await limiter.acquire('google:gemini-3.8-flash')
  * // Third call blocks until release1() or release2() is called.
- * const p3 = limiter.acquire('google:gemini-2.5-pro')
+ * const p3 = limiter.acquire('google:gemini-3.8-flash')
  * release1()        // resolves p3
  * const release3 = await p3
  * release2()
