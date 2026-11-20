@@ -4314,9 +4314,13 @@ the probe that would close it.
    and the bearer token to an unpinned URL): every 3xx, or an opaque redirect, is a non-retryable `server` error
    naming the status and location. `'manual'` rather than `'error'`, because `'error'` rejects inside `fetch`
    as an anonymous `TypeError` that cannot be told from a network failure and would classify as a retryable
-   connection error. A 200 that is not the stream is refused too: a `content-type` other than
-   `text/event-stream` is a non-retryable `server` error that may have billed (a `fetch` that buffered or rewrote
-   the answer), and a missing body is an early end. It uses two SDK modules whose runtime graph reads no environment variable and does not load
+   connection error. A 200 that is not the stream is refused too: unless its `content-type` is exactly the media
+   type `text/event-stream` (type and subtype compared case-insensitively, optional surrounding whitespace,
+   optional parameters after `;`; a missing or empty header, a lookalike such as `text/event-stream+json`, and a
+   comma-joined list, which is not one media type under RFC 9110 §8.3.1, all fail), it is a non-retryable
+   `server` error that may have billed (a `fetch` that buffered or rewrote the answer: a bare JSON answer would
+   otherwise decode to nothing and look like a retryable early end). Only a response that is
+   `text/event-stream` with a missing or empty body is the retryable early end. It uses two SDK modules whose runtime graph reads no environment variable and does not load
    the client module (checked in the installed 7.60.0: `streaming.js`, `core/streaming.js`, `core/error.js`,
    `error.js`, `internal/{tslib,errors,shims}.js`, `internal/decoders/line.js`,
    `internal/utils/{bytes,log,values}.js`): `openai/error`, whose `APIError.generate` and connection errors are
@@ -4340,15 +4344,20 @@ the probe that would close it.
    taken as terminal. Every decoded event of type `error` is an error event, in both framings: a named
    `event: error` frame (the decoder throws for it) and a data-only frame whose JSON has `type: "error"` (the
    decoder yields it; the SDK's `ResponseStream` threw for it), both with the code and message read the same
-   way. An event whose data is not JSON (a truncated or corrupted frame) is a malformed body: a `server` error,
-   retryable only before output. A terminal event
+   way. Every decoded payload must be an object with an own, non-empty string `type`, checked before it can count
+   as output; JSON `null`, a number, a string, an array, `{}` or a bad `type`, and an event whose data is not JSON
+   at all (a truncated or corrupted frame), are a malformed body: a `server` error, retryable only before output,
+   `mayHaveBilled` after it, and never itself counted as output. A terminal event
    (`response.completed`, `response.incomplete`, `response.failed`) is required: a stream that ends without one
    is a `server` error. The event type decides the status. Completed items and the terminal object are
    reconciled minimally: for each terminal output item with the same `id` as an item a
    `response.output_item.done` event completed, each key of the completed item takes the completed value when
    the terminal copy lacks the key or carries `null` for it and the completed value is not `null`; every non-null
    terminal value wins. A terminal `null` beside a real value the stream delivered is an omission (`null` is how
-   the typings say "none"), and keeping it would replay a reasoning item without its ciphertext. There is a
+   the typings say "none"), and keeping it would replay a reasoning item without its ciphertext. Values are read
+   and defined as own data properties, so a provider key such as `__proto__` or `constructor` (which `JSON.parse`
+   creates as an own property) is copied verbatim rather than setting the prototype; the item copy itself is an
+   object spread, which defines own properties too. There is a
    warning for each fill; no item the terminal response
    does not list is added, because the terminal object is the provider's statement of the response and the state
    replays it. This keeps a reasoning item's `encrypted_content` when only the completion event carried it.
