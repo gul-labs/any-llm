@@ -1,5 +1,26 @@
 # @gullabs/xai
 
+## 0.18.0
+
+### Minor Changes
+
+- f8343fb: The xAI client no longer lets the ambient `OPENAI_*` environment reach a call. The `openai` SDK client it
+  builds now pins `organization: null`, `project: null`, `adminAPIKey: null`, `webhookSecret: null` and
+  `logLevel: 'off'` (they used to default from `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`, `OPENAI_ADMIN_KEY`,
+  `OPENAI_WEBHOOK_SECRET` and `OPENAI_LOG`), and drops the default headers the SDK parses from
+  `OPENAI_CUSTOM_HEADERS`, so an `OpenAI-Organization`, `OpenAI-Project` or custom header from the
+  environment is no longer sent to `https://api.x.ai/v1`.
+
+  What a host must change: nothing, unless it relied on those variables to add headers to xAI calls (they
+  never belonged there). Known gap: a malformed `OPENAI_CUSTOM_HEADERS` still makes the SDK constructor throw,
+  so `buildXaiClient` fails while it is set; moving the xAI client to an isolated transport is a BACKLOG item.
+
+- f8343fb: Breaking: the `grok-4.5`, `grok-4.6` and `grok-4.7` config schemas now admit `temperature` from 0 to 1 and `topP` from 0 to 0.95 (both inclusive); they were 0 to 2 and 0 to 1. xAI's Responses API reference (read 2026-11-20) says it samples a `temperature` above 1 as 1 and a `top_p` above 0.95 as 0.95 while echoing the value sent, so a higher value was silently clamped; the schema now rejects it with `bad_request` before dispatch, naming the path. A host that sends a `temperature` above 1 or a `topP` above 0.95 must lower it to the value xAI actually samples (1 or 0.95) or drop it.
+
+  An `incomplete` response whose `incomplete_details.reason` is `content_filter` now returns `finishReason: 'content_filter'` (it was `other`). `max_prompt_tokens`, `max_time_limit` and any reason xAI adds later map to `other` by default and now carry one `other` warning naming the reason; as before, a refusal in the same response still makes the finish reason `content_filter` and adds its own warning. `max_output_tokens` is still `length`. The reasons come from xAI's published OpenAPI document and are documented, not live-verified. A host that treated `other` as the signal for an xAI content-filter stop must handle `content_filter`.
+
+  The `maxOutputTokens` description no longer says the cap includes reasoning tokens: xAI documents that it applies to visible output only (no behaviour change). The `maxTurns` description now records that xAI ignored the cap in a live call on 2026-10-02 and documents it as applied on 2026-11-20; enforcement is open until a live probe, and the option is unchanged. Token and tool rates were re-read on 2026-11-20 and are unchanged.
+
 ## 0.17.0
 
 ### Patch Changes

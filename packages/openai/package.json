@@ -1,6 +1,6 @@
 {
   "name": "@gullabs/openai",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "OpenAI provider adapter for any-llm — Responses API, reasoning effort, strict structured output, function calling, vision.",
   "type": "module",
   "license": "Apache-2.0",
