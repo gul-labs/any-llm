@@ -105,3 +105,38 @@ describe('ambient environment cannot move or re-credential a call', () => {
     expect(stub.calls[0]!.headers.get('x-ambient')).toBe('1')
   })
 })
+
+describe('a malformed OPENAI_CUSTOM_HEADERS cannot fail a call', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('the raw SDK constructor throws on it (the SDK behaviour the guard exists for)', async () => {
+    vi.stubEnv('OPENAI_CUSTOM_HEADERS', 'Bad Header: value')
+    const { default: OpenAI } = await import('openai')
+    expect(() => new OpenAI({ apiKey: 'sk-caller', maxRetries: 0 })).toThrow(
+      /valid HTTP token/,
+    )
+  })
+
+  it('a valid call succeeds, sends no ambient header, and leaves the environment as it was', async () => {
+    vi.stubEnv('OPENAI_CUSTOM_HEADERS', 'Bad Header: value')
+    const stub = stubFetch(() =>
+      sseResponse(streamEvents(responseObject([messageItem('msg_1', 'ok')]))),
+    )
+    const client = await buildOpenAiClient({ apiKey: 'sk-caller' }, stub.fetch)
+    const response = await client.responses.create({
+      model: 'gpt-6.2-sol',
+      input: [],
+      store: false,
+    })
+    expect(response.status).toBe('completed')
+    expect([...stub.calls[0]!.headers.keys()].some((name) => name.includes('bad'))).toBe(
+      false,
+    )
+    expect(process.env['OPENAI_CUSTOM_HEADERS']).toBe('Bad Header: value')
+    expect(Object.getOwnPropertyDescriptor(globalThis, 'process')?.get).toBeTypeOf(
+      'function',
+    )
+  })
+})

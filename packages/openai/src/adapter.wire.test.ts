@@ -315,7 +315,8 @@ describe('streaming failures (real SDK)', () => {
     const { adapter } = wiredAdapter(() =>
       errorResponse(
         429,
-        { message: 'doc-derived', type: 'insufficient_quota', code },
+        // A neutral type, so only the code can make this a billing error.
+        { message: 'doc-derived', type: 'requests', code },
         { 'retry-after': '1' },
       ),
     )
@@ -323,6 +324,29 @@ describe('streaming failures (real SDK)', () => {
     expect(err.kind).toBe('rate_limited')
     expect(err.retryable).toBe(false)
     expect(err.reason).toBe('credits_exhausted')
+  })
+
+  it('a 429 whose type is insufficient_quota (with no billing code) is not retryable (credits_exhausted)', async () => {
+    const { adapter } = wiredAdapter(() =>
+      errorResponse(
+        429,
+        { message: 'doc-derived', type: 'insufficient_quota', code: null },
+        { 'retry-after': '1' },
+      ),
+    )
+    const err = (await adapter.run(request(), CTX).catch((e: unknown) => e)) as LlmError
+    expect(err.kind).toBe('rate_limited')
+    expect(err.retryable).toBe(false)
+    expect(err.reason).toBe('credits_exhausted')
+  })
+
+  it('a 429 with a neutral type and code is an ordinary retryable rate limit', async () => {
+    const { adapter } = wiredAdapter(() =>
+      errorResponse(429, { message: 'doc-derived', type: 'requests', code: 'slow_down' }),
+    )
+    const err = (await adapter.run(request(), CTX).catch((e: unknown) => e)) as LlmError
+    expect(err.retryable).toBe(true)
+    expect(err.reason).toBeUndefined()
   })
 
   it.each([
@@ -468,5 +492,80 @@ describe('streaming failures (real SDK)', () => {
     expect(result.finishReason).toBe('content_filter')
     expect(result.text).toBeUndefined()
     expect(result.warnings.some((w) => w.message.includes('refused'))).toBe(true)
+  })
+})
+
+describe('output progress is tracked apart from terminal and error events (real SDK)', () => {
+  const failedBody = (code: string, output: Record<string, unknown>[]) =>
+    responseObject(output, {
+      status: 'failed',
+      error: { code, message: 'doc-derived' },
+      usage: usage(40, output.length > 0 ? 5 : 0),
+      serviceTier: 'default',
+    })
+  const run = async (events: ReturnType<typeof streamEvents>) => {
+    const { adapter } = wiredAdapter(() => sseResponse(events))
+    return (await adapter.run(request(), CTX).catch((e: unknown) => e)) as LlmError
+  }
+
+  it.each(['server_error', 'rate_limit_exceeded'])(
+    'response.failed (%s) before any output event is retryable',
+    async (code) => {
+      const err = await run(
+        streamEvents(failedBody(code, []), { terminal: 'response.failed' }),
+      )
+      expect(err.retryable).toBe(true)
+      expect(err.mayHaveBilled).toBe(true)
+      expect(err.usage?.inputTokens).toBe(40)
+    },
+  )
+
+  it.each(['server_error', 'rate_limit_exceeded'])(
+    'response.failed (%s) after an output delta is not retryable, mayHaveBilled, with its usage',
+    async (code) => {
+      const err = await run(
+        streamEvents(failedBody(code, [messageItem('msg_1', 'partial')]), {
+          terminal: 'response.failed',
+        }),
+      )
+      expect(err.retryable).toBe(false)
+      expect(err.mayHaveBilled).toBe(true)
+      expect(err.usage?.inputTokens).toBe(40)
+      expect(err.usage?.outputTokens).toBe(5)
+    },
+  )
+
+  const errorEvent = (code: string) => ({
+    type: 'error',
+    sequence_number: 99,
+    code,
+    message: 'doc-derived',
+    param: null,
+  })
+
+  it('an error event with server_error before any output is retryable', async () => {
+    const before = streamEvents(responseObject([]), { cutAfter: 2 })
+    const err = await run([...before, errorEvent('server_error')])
+    expect(err.kind).toBe('server')
+    expect(err.retryable).toBe(true)
+    expect(err.mayHaveBilled).toBe(true)
+    expect(err.usage).toBeUndefined()
+  })
+
+  it('an error event with rate_limit_exceeded is never retried, even before output (ADR-040)', async () => {
+    const before = streamEvents(responseObject([]), { cutAfter: 2 })
+    const err = await run([...before, errorEvent('rate_limit_exceeded')])
+    expect(err.kind).toBe('rate_limited')
+    expect(err.retryable).toBe(false)
+    expect(err.mayHaveBilled).toBe(true)
+  })
+
+  it('an error event with server_error after an output delta is not retryable and carries the estimate', async () => {
+    const after = streamEvents(responseObject([messageItem('msg_1', 'abc')]), {
+      cutAfter: 5,
+    })
+    const err = await run([...after, errorEvent('server_error')])
+    expect(err.retryable).toBe(false)
+    expect(err.usage?.details['usage_estimated']).toBe(1)
   })
 })
