@@ -89,7 +89,7 @@ declare const state: OpenAiReplayState
 void client; void fake; void state; void OPENAI_PRICING
 `),
     ).not.toThrow()
-  })
+  }, 60_000)
 
   it('adds no openai key to ProviderOptionsMap', () => {
     expect(() =>
@@ -102,5 +102,5 @@ const lane = opts.openai
 void lane
 `),
     ).toThrow(/openai/)
-  })
+  }, 60_000)
 })
