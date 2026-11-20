@@ -694,12 +694,12 @@ Documented, not live-verified (ADR-047; every page read 2026-11-20). Full detail
   `reasoning.effort` (6.2: `low | medium`; Terra and Luna: `none | low | medium | high | xhigh | max`),
   `serviceTier` (6.2: `fast`; Terra and Luna: `flex | fast`), `timeoutMs`. No sampling keys, no
   `providerOptions`, no `countTokens`.
-- **SDK construction.** Built per call with `apiKey`, `baseURL: 'https://api.openai.com/v1'`,
-  `organization: null`, `project: null`, `adminAPIKey: null`, `webhookSecret: null`, `logLevel: 'off'`,
-  `maxRetries: 0`, constructed while `OPENAI_CUSTOM_HEADERS` is unreadable (a synchronous, restored view of
-  `globalThis.process`; no option turns the SDK's read off) and with the SDK's collected default headers dropped
-  after construction, so no `OPENAI_*` environment variable changes the destination or the headers on any path;
-  where the view cannot be installed, a malformed value can still fail construction.
+- **Transport.** No SDK client is constructed (its constructor reads `OPENAI_*` variables, one of them with no
+  opt-out). The adapter `POST`s `https://api.openai.com/v1/responses` itself with exactly `authorization`,
+  `content-type` and `accept` headers through the injected or global `fetch`, and uses only the SDK's
+  environment-free `openai/error` (`APIError.generate`, the connection errors, built as the SDK's request path
+  builds them) and `openai/streaming` (`Stream.fromSSEResponse`). One request per attempt; no environment
+  variable changes the destination or the headers.
 - **Request.** `store: false`; `system` is a leading `developer` input message; text and image input
   (PNG, JPEG, WebP, GIF as base64 or a fully qualified `http(s)` URL, `detail: 'auto'`, at most 1,500
   images and 512 MB inline per request; the URL is checked on the string sent and the data as padded standard
@@ -709,17 +709,19 @@ Documented, not live-verified (ADR-047; every page read 2026-11-20). Full detail
   core's `assertJsonSchemaProfile(OPENAI_JSON_SCHEMA_PROFILE)` (`const` admitted) and the strict-mode structure
   (a root of exactly `type: "object"`, no root `anyOf`, every object typed, closed and with `required` equal to
   its properties, 5,000 properties, 10 levels, 1,000 enum values, 120,000 characters of names, enum and const
-  values, 15,000 characters of enum values above 250 of them).
+  values, and per enum 15,000 characters of values when it has more than 250).
 - **Continuation `'state'` (ADR-029).** State is `{ openai: { model, input } }`: the request input plus every
   output item in order. It is accepted only with new messages, only for the same provider and model, only
   when its items pass the split check (the adapter's own request items exact, unknown keys rejected;
   provider `message`, `reasoning` and `function_call` items type-gated and replayed as returned, unknown keys
   tolerated, values only deferred features produce rejected), and a tool result must answer an unanswered call
   in it.
-- **Streaming (ADR-036, ADR-040 rules).** `run()` streams through the SDK's `responses.stream()`; a terminal
-  event is required (an early clean end is `server`, never the snapshot). One deadline (`timeoutMs + 5 000`,
-  or one hour) covers the whole stream (`timeout`, `transport_timeout`, not retryable); caller aborts are
-  re-thrown. Output has begun once an event other than the lifecycle events and `error` arrives. Before
+- **Streaming (ADR-036, ADR-040 rules).** `run()` decodes the event stream; a terminal event is required (an
+  early clean end is `server`). One deadline (`timeoutMs + 5 000`, or one hour) covers the whole call from its
+  start (`timeout`, `transport_timeout`, not retryable); caller aborts are re-thrown. A terminal item missing a
+  key its `response.output_item.done` event carried (a reasoning item's `encrypted_content`) gets it from the
+  completed item. Output has begun once an event other than the lifecycle events and `error` arrives, or when
+  the terminal snapshot itself lists output. Before
   that a transient failure is retryable with no usage; after it nothing is retried, the error is
   `mayHaveBilled` and carries a usage estimate. `response.failed` classifies through the `error.code` table
   and keeps the terminal usage and echoed tier; an `error` event uses the same table but only `server_error`

@@ -12,8 +12,9 @@ taken from OpenAI's documentation (read 2026-11-20); nothing is live-verified ye
 - Text and image input (PNG, JPEG, WebP, GIF as base64 or an `http(s)` URL), strict structured output,
   strict client-side function tools with `'state'` continuation, usage and cost. Anything else is
   `bad_request` before dispatch.
-- Calls stream internally through the SDK's `responses.stream()`; a terminal event is required. The SDK
-  client is built per call with no ambient `OPENAI_*` setting able to change its destination or headers.
+- Calls stream internally over a small transport of their own (`fetch` plus the SDK's environment-free
+  `openai/streaming` decoder and `openai/error` classes); no SDK client is constructed, so no ambient
+  `OPENAI_*` setting can change the destination or the headers, and a terminal event is required.
 - Pricing snapshot `openai-2026-11-20` prices the tier the response echoes; a response that echoes no tier
   is unpriced. Cache writes and long context are priced; costs that rest on undocumented accounting are
   `estimated`.

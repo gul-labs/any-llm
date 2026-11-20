@@ -62,8 +62,9 @@ export const OPENAI_LONG_CONTEXT_THRESHOLD = 272_000
  * - `usageIrreconcilable`: 1 when a raw counter is present but not a
  *   non-negative integer, or the counters contradict each other (reads plus
  *   writes above the input, a TTL split that does not sum to the writes,
- *   reasoning above the output). The adapter checks the raw values before core
- *   normalises them, because normalisation clamps.
+ *   reasoning above the output, a total below input plus output). The
+ *   adapter checks the raw values before core normalises them, because
+ *   normalisation clamps.
  * - `cacheWrite`, `cacheWrite30m`, `cacheWrite12h`: write tokens and their TTL
  *   split as reported.
  * - `usageEstimated`: 1 on usage the adapter ESTIMATED for a stream that failed
@@ -228,7 +229,7 @@ export function computeOpenAiCost(model: string, usage: Usage, tier?: string): C
   }
   if (usage.details[keys.usageIrreconcilable] === 1) {
     return unpriced(
-      'The OpenAI usage counters do not reconcile (a malformed counter, cache reads plus writes above the input, a TTL split that does not sum to the writes, or reasoning above the output).',
+      'The OpenAI usage counters do not reconcile (a malformed counter, cache reads plus writes above the input, a TTL split that does not sum to the writes, reasoning above the output, or a total below input plus output).',
     )
   }
   if (usage.details[keys.usageIncomplete] === 1) {

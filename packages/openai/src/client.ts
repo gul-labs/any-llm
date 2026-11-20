@@ -1,14 +1,16 @@
 /**
  * Structural `OpenAiClientLike` interface + `buildOpenAiClient` factory.
  *
- * The adapter depends only on the structural interface below. The real
- * `openai` SDK is imported ONLY in {@link buildOpenAiClient}, so a test or a
- * runtime smoke can inject a structural client without the SDK. This is the
- * only file in `packages/openai/src` that imports `openai`.
+ * The adapter depends only on the structural interface below. The `openai`
+ * package is imported ONLY in {@link buildOpenAiClient}, and only its
+ * environment-free `openai/streaming` and `openai/error` modules: no SDK client
+ * is ever constructed (ADR-019, ADR-047), so a test or a runtime smoke can also
+ * inject a structural client without the SDK. This is the only file in
+ * `packages/openai/src` that imports `openai`.
  *
- * Written against the installed `openai` 7.60.0 (`src/client.ts`,
- * `src/lib/responses/ResponseStream.ts`, `src/lib/EventStream.ts`,
- * `src/core/error.ts`, `src/resources/responses/responses.ts`), read
+ * Written against the installed `openai` 7.60.0 (`src/client.ts` for the
+ * request path it reproduces, `src/core/streaming.ts`, `src/core/error.ts`,
+ * `src/internal/errors.ts`, `src/resources/responses/responses.ts`), read
  * 2026-11-20.
  *
  * @module
@@ -129,7 +131,7 @@ export interface OpenAiFunctionTool {
   strict: true
 }
 
-/** Parameters the adapter sends to `responses.stream` (the SDK adds `stream: true`). */
+/** Parameters the adapter sends; the transport adds `stream: true`. */
 export interface OpenAiResponseCreateParams {
   model: string
   input: OpenAiRequestInputItem[]
@@ -185,8 +187,10 @@ export interface OpenAiResponseShape {
 export interface OpenAiResponseMeta {
   /** The `x-request-id` response header. Absent when none was sent. */
   requestId?: string
-  /** True when output events arrived before the terminal event. */
+  /** True when output arrived before the response ended (an output event, or output listed in the terminal snapshot). */
   streamProgressed?: boolean
+  /** What reconciling the terminal response with the completed stream items did; one warning each. */
+  streamNotes?: string[]
 }
 
 /** Per-request options the adapter passes to `responses.create`. */
@@ -325,72 +329,139 @@ const TERMINAL_STATUS: Readonly<Record<string, string>> = {
 }
 
 // ---------------------------------------------------------------------------
-// buildOpenAiClient: imports the real `openai` SDK
+// buildOpenAiClient: an isolated transport over the SDK's environment-free parts
 // ---------------------------------------------------------------------------
 
 /**
- * Build a real `openai`-SDK-backed client from {@link AuthMaterial}.
+ * Build the real client from {@link AuthMaterial}.
  *
- * The key is checked before the SDK is imported. Each `create` call builds its
- * own SDK client with every option the SDK would otherwise read from the
- * environment pinned (ADR-019, ADR-047): explicit `apiKey`, explicit
- * `baseURL` ({@link OPENAI_BASE_URL}), `organization: null`, `project: null`,
- * `adminAPIKey: null`, `webhookSecret: null`, `logLevel: 'off'` and
- * `maxRetries: 0` (one HTTP request per attempt; the engine owns retries). The
- * SDK constructor also parses `OPENAI_CUSTOM_HEADERS` into default headers that
- * are applied after the auth header, and no option turns that read off; the
- * client has two lines of defence. It builds the SDK client inside
- * {@link withoutAmbientCustomHeaders}, so the variable is not parsed (a malformed
- * value cannot fail a call), and the SDK client subclass drops whatever default
- * headers the constructor collected, so no environment variable can add or
- * replace a header on any path. Where the view cannot be installed (no
- * configurable `globalThis.process`), the only thing lost is robustness to a
- * malformed value: the SDK then parses it, a malformed one throws in the
- * constructor, and a well-formed one is still dropped.
+ * **No SDK client is constructed.** The `openai` 7.60.0 `OpenAI` constructor is
+ * inherently ambient (`src/client.ts`): it reads `OPENAI_BASE_URL`,
+ * `OPENAI_API_KEY`, `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`, `OPENAI_ADMIN_KEY`,
+ * `OPENAI_WEBHOOK_SECRET`, `OPENAI_LOG` and `OPENAI_CUSTOM_HEADERS` through
+ * `readEnv`, and no option turns the custom-header read off (a malformed value
+ * throws inside the constructor). Under ADR-019 the client therefore sends the
+ * request itself and uses only two SDK modules, both environment-free:
  *
- * The call streams through the SDK's own `responses.stream()` helper. A
- * terminal event (`response.completed`, `response.incomplete` or
- * `response.failed`) is required: a stream that ends cleanly without one is an
- * {@link OpenAiStreamError} (`ended_early`), never the SDK's accumulated
- * snapshot. The SDK `timeout` covers only the wait for response headers on a
- * stream, so `timeout` also arms a client timer over the whole call. The caller's
- * signal is forwarded, its reason kept.
+ * - `openai/error` (`src/core/error.ts`): `APIError.generate` turns a non-2xx
+ *   response into the SDK's own status error, and `APIConnectionError` /
+ *   `APIConnectionTimeoutError` wrap a `fetch` rejection, exactly as the SDK's
+ *   request path (`makeRequest`, `makeStatusError`) builds them, so core's
+ *   `classifyError`, the `Retry-After` reading and the billing-code checks see
+ *   the same objects as before.
+ * - `openai/streaming` (`src/core/streaming.ts`): `Stream.fromSSEResponse`
+ *   decodes the event stream and turns an `error` event into an `APIError` with
+ *   no status.
+ *
+ * Their runtime module graph (`streaming.js`, `core/streaming.js`,
+ * `core/error.js`, `error.js`, `internal/{tslib,errors,shims}.js`,
+ * `internal/decoders/line.js`, `internal/utils/{bytes,log,values}.js`) reads no
+ * environment variable and does not load the client module (its reference to
+ * `OpenAI` is type-only); checked in the installed 7.60.0 on 2026-11-20. One
+ * side effect remains: `Stream.fromSSEResponse` without a client logs two fixed
+ * lines (no payload) through `console.error` when an event is not valid JSON,
+ * just before it throws.
+ *
+ * The request: `POST https://api.openai.com/v1/responses` through the injected
+ * or global `fetch`, with exactly `authorization: Bearer <key>`,
+ * `content-type: application/json` and `accept: text/event-stream`, the body
+ * `JSON.stringify({ ...params, stream: true })`, and the call's own abort
+ * signal. No `user-agent` is set: the runtime's `fetch` supplies its default,
+ * and a package version string would have to be injected at build time for a
+ * value the API does not need. One HTTP request per attempt, by construction
+ * (there is no retry loop here; retries are the engine's).
+ *
+ * A terminal event (`response.completed`, `response.incomplete` or
+ * `response.failed`) is required: a stream that ends without one is an
+ * {@link OpenAiStreamError} (`ended_early`). `timeout` arms one timer from the
+ * start of the call that covers the wait for headers and the whole body (the
+ * SDK's own `timeout` only bounded the wait for headers on a stream). The
+ * caller's signal is forwarded, its reason kept.
+ *
+ * Reconciling the terminal response with completed items: see
+ * {@link reconcileWithCompletedItems}.
  *
  * @param auth - `{ apiKey }`.
- * @param fetchImpl - Test seam: the `fetch` the SDK uses (defaults to the
- *   global `fetch`). Not exported from the package index.
- * @param ambientHost - Test seam: the object whose `process` property the view
- *   replaces (defaults to `globalThis`); a host without one exercises the path
- *   where the view cannot be installed.
+ * @param fetchImpl - Test seam: the `fetch` to use (defaults to the global
+ *   `fetch`). Not exported from the package index.
  */
 export async function buildOpenAiClient(
   auth: AuthMaterial,
   fetchImpl?: typeof fetch,
-  ambientHost: object = globalThis,
 ): Promise<OpenAiClientLike> {
   const apiKey = requireApiKey(auth)
-  const sdk = await import('openai')
-  const OpenAI = sdk.default
+  const [{ Stream }, errors] = await Promise.all([
+    import('openai/streaming'),
+    import('openai/error'),
+  ])
 
-  /**
-   * The SDK client without the default headers its constructor collected. This
-   * client never sets `defaultHeaders`, so the only source of them is
-   * `OPENAI_CUSTOM_HEADERS`; dropping them (the protected `_options` field the
-   * request builder reads) holds whether or not the view was installed.
-   */
-  class PinnedOpenAI extends OpenAI {
-    constructor(options: ConstructorParameters<typeof OpenAI>[0]) {
-      super(options)
-      delete this._options.defaultHeaders
+  /** An `error` event: the stream decoder throws an `APIError` with no HTTP status for it. */
+  const isErrorEvent = (err: unknown): err is InstanceType<typeof errors.APIError> =>
+    err instanceof errors.APIError &&
+    err.status === undefined &&
+    !(err instanceof errors.APIConnectionError) &&
+    !(err instanceof errors.APIUserAbortError)
+
+  /** The SDK's mapping of a `fetch` rejection (`makeRequest`, 7.60.0). */
+  const connectionError = (raw: unknown): Error => {
+    const error = raw instanceof Error ? raw : new Error(String(raw))
+    const cause: unknown = (error as { cause?: unknown }).cause
+    const isTimeout =
+      error.name === 'AbortError' ||
+      /timed? ?out/i.test(
+        String(error) +
+          (cause instanceof Error
+            ? String(cause)
+            : typeof cause === 'string'
+              ? cause
+              : ''),
+      )
+    if (isTimeout) {
+      const code =
+        typeof cause === 'object' && cause !== null
+          ? (cause as { code?: unknown }).code
+          : undefined
+      const timeoutError = new errors.APIConnectionTimeoutError(
+        code === 'UND_ERR_HEADERS_TIMEOUT'
+          ? {
+              message:
+                'Request timed out. Node.js fetch timed out waiting for response headers.',
+            }
+          : {},
+      )
+      return Object.assign(timeoutError, { cause: error })
     }
+    return new errors.APIConnectionError({ cause: error })
   }
 
-  /** An `error` event: the SDK throws an `APIError` with no HTTP status for it. */
-  const isErrorEvent = (err: unknown): err is InstanceType<typeof sdk.APIError> =>
-    err instanceof sdk.APIError &&
-    err.status === undefined &&
-    !(err instanceof sdk.APIConnectionError) &&
-    !(err instanceof sdk.APIUserAbortError)
+  /** The SDK's mapping of a non-2xx response (`makeRequest` and `makeStatusError`, 7.60.0). */
+  const statusError = async (response: Response): Promise<Error> => {
+    const text = await response
+      .text()
+      .catch((err: unknown) => (err instanceof Error ? err.message : String(err)))
+    let json: unknown
+    try {
+      json = JSON.parse(text)
+    } catch {
+      json = undefined
+    }
+    const message = json !== undefined ? undefined : text
+    const normalized =
+      json !== null &&
+      typeof json === 'object' &&
+      ((json as { error?: unknown }).error === null ||
+        (json as { error?: unknown }).error === undefined)
+        ? { error: json }
+        : json
+    return errors.APIError.generate(
+      response.status,
+      normalized as object | undefined,
+      message,
+      response.headers,
+    )
+  }
+
+  const send = fetchImpl ?? ((input, init) => fetch(input, init))
 
   return {
     responses: {
@@ -399,32 +470,6 @@ export async function buildOpenAiClient(
         options?: OpenAiRequestOptions,
       ): Promise<OpenAiResponseShape> {
         const { signal, timeout, onResponse } = options ?? {}
-        let requestId: string | undefined
-        const capturingFetch: typeof fetch = async (input, init) => {
-          const response =
-            fetchImpl !== undefined
-              ? await fetchImpl(input, init)
-              : await fetch(input, init)
-          const id = response.headers.get('x-request-id')
-          if (id !== null && id !== '') requestId = id
-          return response
-        }
-        const client = withoutAmbientCustomHeaders(
-          () =>
-            new PinnedOpenAI({
-              apiKey,
-              baseURL: OPENAI_BASE_URL,
-              organization: null,
-              project: null,
-              adminAPIKey: null,
-              webhookSecret: null,
-              logLevel: 'off',
-              maxRetries: 0,
-              fetch: capturingFetch,
-            }),
-          ambientHost,
-        )
-
         const controller = new AbortController()
         const forwardAbort = (): void => {
           controller.abort(signal?.reason)
@@ -458,25 +503,54 @@ export async function buildOpenAiClient(
           return undefined
         }
         try {
-          const stream = client.responses.stream(
-            params as unknown as Parameters<typeof client.responses.stream>[0],
-            {
+          let response: Response
+          try {
+            response = await send(`${OPENAI_BASE_URL}/responses`, {
+              method: 'POST',
+              headers: {
+                authorization: `Bearer ${apiKey}`,
+                'content-type': 'application/json',
+                accept: 'text/event-stream',
+              },
+              body: JSON.stringify({ ...params, stream: true }),
               signal: controller.signal,
-              ...(timeout !== undefined ? { timeout } : {}),
-            },
+            })
+          } catch (err) {
+            const why: unknown = stopped() ?? connectionError(err)
+            throw why
+          }
+          const idHeader = response.headers.get('x-request-id')
+          const requestId = idHeader !== null && idHeader !== '' ? idHeader : undefined
+          if (!response.ok) {
+            const err = await statusError(response)
+            const why: unknown = stopped() ?? err
+            throw why
+          }
+
+          const stream = Stream.fromSSEResponse<Record<string, unknown>>(
+            response,
+            controller,
           )
-          // The helper rejects its end promise on failure; the iterator below
-          // reports the failure, so the promise is observed here.
-          stream.done().catch(() => undefined)
+          const completed = new Map<string, OpenAiOutputItem>()
           let terminal: { type: string; response: unknown } | undefined
           try {
             for await (const event of stream) {
-              const type = (event as { type: string }).type
+              const type = typeof event['type'] === 'string' ? event['type'] : ''
               if (!NON_OUTPUT_EVENTS.has(type)) progress.progressed = true
-              const delta = (event as { delta?: unknown }).delta
+              const delta = event['delta']
               if (typeof delta === 'string') progress.outputChars += delta.length
+              if (type === 'response.output_item.done') {
+                const item = event['item']
+                if (
+                  isRecord(item) &&
+                  typeof item['id'] === 'string' &&
+                  item['id'] !== ''
+                ) {
+                  completed.set(item['id'], item as OpenAiOutputItem)
+                }
+              }
               if (TERMINAL_STATUS[type] !== undefined) {
-                terminal = { type, response: (event as { response?: unknown }).response }
+                terminal = { type, response: event['response'] }
                 break
               }
             }
@@ -484,23 +558,28 @@ export async function buildOpenAiClient(
             const why: unknown = stopped() ?? streamFailure(err, progress, isErrorEvent)
             throw why
           }
-          if (terminal === undefined) {
+          if (terminal === undefined || !isRecord(terminal.response)) {
             const why: unknown =
               stopped() ?? new OpenAiStreamError({ kind: 'ended_early' }, progress)
             throw why
           }
+          // A terminal snapshot that already lists output means the model
+          // generated, even when no separate output event preceded it.
+          const listed = terminal.response['output']
+          if (Array.isArray(listed) && listed.length > 0) progress.progressed = true
           const status = TERMINAL_STATUS[terminal.type] as string
           // The event type decides the status (`response.incomplete` is incomplete
           // whatever its object says), as the xAI client does (ADR-040).
-          const response = {
-            ...(terminal.response as OpenAiResponseShape),
-            status,
-          }
+          const reconciled = reconcileWithCompletedItems(
+            terminal.response as unknown as OpenAiResponseShape,
+            completed,
+          )
           onResponse?.({
             ...(requestId !== undefined ? { requestId } : {}),
             streamProgressed: progress.progressed,
+            ...(reconciled.notes.length > 0 ? { streamNotes: reconciled.notes } : {}),
           })
-          return response
+          return { ...reconciled.response, status }
         } finally {
           if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
           signal?.removeEventListener('abort', forwardAbort)
@@ -510,77 +589,54 @@ export async function buildOpenAiClient(
   }
 }
 
-/** The one environment variable the SDK reads that no constructor option overrides. */
-const CUSTOM_HEADERS_VARIABLE = 'OPENAI_CUSTOM_HEADERS'
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
 
 /**
- * Run `construct` (the SDK constructor) with `OPENAI_CUSTOM_HEADERS` unreadable.
- *
- * `openai` 7.60.0 reads that variable in its constructor through `readEnv`
- * (`src/internal/utils/env.ts`: `globalThis.process.env?.[name]`), unless a
- * `provider` or an X.509 `credential` is configured, which this client never
- * uses; nothing else turns the read off, and `defaultHeaders` is merged after
- * the parsed value rather than replacing it, so a malformed value throws inside
- * `super()`. For the duration of the call `globalThis.process` is replaced by a
- * view of the real `process` whose `env` hides that one variable (every other
- * property and variable passes through untouched), and the original property
- * descriptor is restored in `finally`, also when `construct` throws.
- *
- * Why this is safe: the SDK constructor is synchronous (no `await`, no timer, no
- * callback), so no other code in this JavaScript realm can run while the view is
- * installed, and nothing the constructor starts keeps a reference to it (the
- * constructor reads the variables once and stores the values). The view lives on
- * this realm's `globalThis` only: the OS environment, child processes and worker
- * threads (each has its own `globalThis`) never see a change. No value is read,
- * copied or logged by this library; the view only declines one key. A runtime
- * without a configurable `globalThis.process` (or without an `env` object) calls
- * `construct` unchanged: the SDK then parses the variable, and the subclass in
- * {@link buildOpenAiClient} still drops the headers, so only robustness to a
- * malformed value is lost there (Deno 2 exposes `process`, so the view applies
- * there too). Remove this function when the SDK gains an option that turns the
- * read off (BACKLOG).
- *
- * @internal
+ * Fill in what the terminal response's copy of an item lacks from the item its
+ * `response.output_item.done` event completed (matched by `id`). The terminal
+ * copy wins for every key it carries; a key only the completed item carries
+ * (for example a reasoning item's `encrypted_content`, which the replay needs) is
+ * copied in. No item the terminal response does not list is added: the terminal
+ * object is the provider's statement of what the response is, and the state
+ * replays it; filling gaps keeps that statement and only stops a field the
+ * stream did deliver from being lost. When the terminal response has no `output`
+ * array at all, the completed items are used in their stream order, with a
+ * note (the billed answer is not thrown away for its shape).
  */
-export function withoutAmbientCustomHeaders<T>(
-  construct: () => T,
-  ambientHost: object = globalThis,
-): T {
-  const host = ambientHost as { process?: unknown }
-  const descriptor = Object.getOwnPropertyDescriptor(host, 'process')
-  const real = host.process
-  if (
-    descriptor === undefined ||
-    descriptor.configurable !== true ||
-    typeof real !== 'object' ||
-    real === null
-  ) {
-    return construct()
+function reconcileWithCompletedItems(
+  response: OpenAiResponseShape,
+  completed: ReadonlyMap<string, OpenAiOutputItem>,
+): { response: OpenAiResponseShape; notes: string[] } {
+  const notes: string[] = []
+  const output = (response as { output?: unknown }).output
+  if (!Array.isArray(output)) {
+    if (completed.size > 0) {
+      notes.push(
+        `openai: the terminal response carried no output array; the ${completed.size} item(s) completed by the stream are used.`,
+      )
+    }
+    return { response: { ...response, output: [...completed.values()] }, notes }
   }
-  const env = (real as { env?: unknown }).env
-  if (typeof env !== 'object' || env === null) return construct()
-  const envView = new Proxy(env, {
-    get: (target, key) =>
-      key === CUSTOM_HEADERS_VARIABLE
-        ? undefined
-        : (Reflect.get(target, key, target) as unknown),
-    has: (target, key) => key !== CUSTOM_HEADERS_VARIABLE && Reflect.has(target, key),
+  const filled: string[] = []
+  const merged = output.map((item: unknown) => {
+    if (!isRecord(item) || typeof item['id'] !== 'string') return item as OpenAiOutputItem
+    const done = completed.get(item['id'])
+    if (done === undefined) return item as OpenAiOutputItem
+    const missing = Object.keys(done).filter((key) => !Object.hasOwn(item, key))
+    if (missing.length === 0) return item as OpenAiOutputItem
+    filled.push(`${item['id']} (${missing.join(', ')})`)
+    const copy: Record<string, unknown> = { ...item }
+    for (const key of missing) copy[key] = done[key]
+    return copy as OpenAiOutputItem
   })
-  const view = new Proxy(real, {
-    get: (target, key) =>
-      key === 'env' ? envView : (Reflect.get(target, key, target) as unknown),
-  })
-  Object.defineProperty(host, 'process', {
-    configurable: true,
-    enumerable: descriptor.enumerable ?? false,
-    writable: true,
-    value: view,
-  })
-  try {
-    return construct()
-  } finally {
-    Object.defineProperty(host, 'process', descriptor)
+  if (filled.length > 0) {
+    notes.push(
+      `openai: filled field(s) the terminal response omitted from the completed stream items: ${filled.join('; ')}.`,
+    )
   }
+  return { response: { ...response, output: merged }, notes }
 }
 
 /**

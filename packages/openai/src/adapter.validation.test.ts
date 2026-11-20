@@ -329,6 +329,71 @@ describe('provider output items are replayed as returned', () => {
   })
 })
 
+describe('values the typings allow that activate no deferred feature round-trip over two turns', () => {
+  const roundTrip = async (item: Record<string, unknown>) => {
+    const client = {
+      responses: {
+        create: (): Promise<OpenAiResponseShape> =>
+          Promise.resolve({
+            id: 'resp_1',
+            model: 'gpt-6.2-sol',
+            status: 'completed',
+            output: [item as OpenAiResponseShape['output'][number]],
+            usage: {
+              input_tokens: 10,
+              input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+              output_tokens: 2,
+              output_tokens_details: { reasoning_tokens: 0 },
+            },
+            service_tier: 'default',
+          }),
+      },
+    }
+    const first = await openaiAdapter({ client }).run(request('gpt-6.2-sol'), CTX)
+    expect(first.warnings.some((w) => w.message.includes('rejected'))).toBe(false)
+    const sent = await accepts(
+      request('gpt-6.2-sol', {
+        transientProviderState: first.transientProviderState!,
+        messages: [userText('next')],
+      }),
+    )
+    expect(sent.input[1]).toEqual(item)
+  }
+
+  it.each([
+    ['caller: null', { ...call, caller: null }],
+    ['caller: direct', { ...call, caller: { type: 'direct' } }],
+    ['async: false', { ...call, async: false }],
+    ['no caller, async or namespace', { ...call }],
+    [
+      'empty logprobs',
+      {
+        ...message,
+        content: [{ type: 'output_text', text: 'a', annotations: [], logprobs: [] }],
+      },
+    ],
+    ['empty annotations', { ...message }],
+    ['phase: commentary', { ...message, phase: 'commentary' }],
+    ['phase: final_answer', { ...message, phase: 'final_answer' }],
+    ['phase: null', { ...message, phase: null }],
+    ['message status incomplete', { ...message, status: 'incomplete' }],
+    ['reasoning status in_progress', { ...reasoning, status: 'in_progress' }],
+    ['reasoning status incomplete', { ...reasoning, status: 'incomplete' }],
+    ['reasoning without status', { type: 'reasoning', id: 'rs_3', summary: [] }],
+    ['encrypted_content: null', { ...reasoning, encrypted_content: null }],
+    [
+      'reasoning content parts',
+      { ...reasoning, content: [{ type: 'reasoning_text', text: 'r' }] },
+    ],
+  ])('%s', async (_label, item) => {
+    await roundTrip(item as Record<string, unknown>)
+  })
+
+  it('async that is not a boolean is refused', async () => {
+    await rejects(withState([user, { ...call, async: 'yes' }]), /async must be a boolean/)
+  })
+})
+
 describe('the deferred-feature value rules hold in state and at result time', () => {
   const deferred: Array<[string, Record<string, unknown>, RegExp]> = [
     [
@@ -617,11 +682,30 @@ describe('strict schema root, required and const', () => {
     )
   })
 
-  it('rejects more than 15,000 characters of enum values when there are more than 250', async () => {
+  it('rejects a single enum of 251 values over 15,000 characters, naming its path', async () => {
     const values = Array.from({ length: 251 }, (_, i) => `${'v'.repeat(60)}${i}`)
     await rejects(
       schema(closed({ a: { type: 'string', enum: values } })),
-      /251 enum values totalling/,
+      /output\.jsonSchema\.properties\.a\.enum: 251 values totalling/,
+    )
+  })
+
+  it('accepts a single enum of 251 values under 15,000 characters', async () => {
+    const values = Array.from({ length: 251 }, (_, i) => `v${i}`)
+    await accepts(schema(closed({ a: { type: 'string', enum: values } })))
+  })
+
+  it('accepts two 150-value enums totalling more than 15,000 characters (the cap is per enum)', async () => {
+    const values = (tag: string) =>
+      Array.from({ length: 150 }, (_, i) => `${tag}${'v'.repeat(60)}${i}`)
+    // 300 values, about 18,600 characters across the two enums.
+    await accepts(
+      schema(
+        closed({
+          a: { type: 'string', enum: values('a') },
+          b: { type: 'string', enum: values('b') },
+        }),
+      ),
     )
   })
 

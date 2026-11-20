@@ -39,8 +39,10 @@
  *   `["object", "null"]` below the root).
  * - Limits: "up to 5000 object properties total, with up to 10 levels of
  *   nesting"; 120,000 characters as quoted above; "up to 1000 enum values across
- *   all enum properties"; "the total string length of all enum values cannot
- *   exceed 15,000 characters when there are more than 250 enum values".
+ *   all enum properties"; and, per enum, "For a single enum property with string
+ *   values, the total string length of all enum values cannot exceed 15,000
+ *   characters when there are more than 250 enum values." (checked on each
+ *   `enum` on its own, never summed across the schema).
  * - `items: false` is undocumented and rejected; `pattern` is held to core's
  *   regex subset because the guide does not name the regex dialect.
  *
@@ -96,7 +98,7 @@ export const OPENAI_STRICT_SCHEMA_LIMITS = Object.freeze({
   maxNestingDepth: 10,
   maxSchemaStringChars: 120_000,
   maxEnumValues: 1_000,
-  /** Applies when the schema has more than {@link maxEnumValuesBeforeCharCap} enum values. */
+  /** Per enum: applies to one `enum` with more than {@link maxEnumValuesBeforeCharCap} values. */
   maxEnumStringChars: 15_000,
   maxEnumValuesBeforeCharCap: 250,
 })
@@ -133,7 +135,6 @@ interface Tally {
   properties: number
   chars: number
   enumValues: number
-  enumChars: number
 }
 
 /**
@@ -153,11 +154,21 @@ function walkStrict(node: JsonValue, path: string, depth: number, tally: Tally):
   const enumValues = node['enum']
   if (Array.isArray(enumValues)) {
     tally.enumValues += enumValues.length
+    let ownChars = 0
     for (const value of enumValues) {
       if (typeof value === 'string') {
         tally.chars += value.length
-        tally.enumChars += value.length
+        ownChars += value.length
       }
+    }
+    const limits = OPENAI_STRICT_SCHEMA_LIMITS
+    if (
+      enumValues.length > limits.maxEnumValuesBeforeCharCap &&
+      ownChars > limits.maxEnumStringChars
+    ) {
+      throw bad(
+        `${path}.enum: ${enumValues.length} values totalling ${ownChars} characters; a single enum with more than ${limits.maxEnumValuesBeforeCharCap} values may hold at most ${limits.maxEnumStringChars} characters of them in an OpenAI strict schema.`,
+      )
     }
   }
   const constValue = node['const']
@@ -239,7 +250,7 @@ export function assertOpenAiStrictSchema(schema: JsonValue, path: string): void 
   if (schema['anyOf'] !== undefined) {
     throw bad(`${path}.anyOf: the root of an OpenAI strict schema cannot be anyOf.`)
   }
-  const tally: Tally = { properties: 0, chars: 0, enumValues: 0, enumChars: 0 }
+  const tally: Tally = { properties: 0, chars: 0, enumValues: 0 }
   walkStrict(schema, path, 1, tally)
   const limits = OPENAI_STRICT_SCHEMA_LIMITS
   if (tally.properties > limits.maxObjectProperties) {
@@ -250,14 +261,6 @@ export function assertOpenAiStrictSchema(schema: JsonValue, path: string): void 
   if (tally.chars > limits.maxSchemaStringChars) {
     throw bad(
       `${path}: ${tally.chars} characters across property names, definition names, enum values and const values; OpenAI strict schemas allow at most ${limits.maxSchemaStringChars}.`,
-    )
-  }
-  if (
-    tally.enumValues > limits.maxEnumValuesBeforeCharCap &&
-    tally.enumChars > limits.maxEnumStringChars
-  ) {
-    throw bad(
-      `${path}: ${tally.enumValues} enum values totalling ${tally.enumChars} characters; with more than ${limits.maxEnumValuesBeforeCharCap} enum values OpenAI strict schemas allow at most ${limits.maxEnumStringChars} characters of them.`,
     )
   }
   if (tally.enumValues > limits.maxEnumValues) {

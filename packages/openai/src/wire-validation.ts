@@ -26,9 +26,13 @@
  *   adds one. What stays refused are the values that carry a deferred feature,
  *   even where the typings name the key: non-empty `annotations` (citations and
  *   file paths come from built-in tools), non-empty `logprobs` (never
- *   requested), a function call's `caller` other than `{ type: 'direct' }`
- *   (programmatic tool calling), and `async` or `namespace` on a function call
- *   (async tools and tool namespaces are never declared).
+ *   requested), a function call's programmatic `caller` (programmatic tool
+ *   calling), `async: true` (async function tools) and any `namespace` (tool
+ *   namespaces are never declared). Every value the typings allow that does
+ *   not activate one of those replays unchanged: `caller` absent, `null` or
+ *   `{ type: 'direct' }`; `async` absent or `false`; empty `annotations`; absent
+ *   or empty `logprobs`; `phase` `commentary`, `final_answer` or `null`; any
+ *   item `status`; `encrypted_content` a string or `null`.
  *
  * State a host has altered is outside the contract: the checks catch the
  * host-built shapes exactly and the deferred features on provider items, not
@@ -338,10 +342,21 @@ export function assertReplayItem(item: unknown, path: string): void {
           name: req(nonEmptyString),
           id: opt(nonEmptyString),
           status: opt(ITEM_STATUS),
+          // Typed `Direct | Program | null`: null and a direct caller replay as given,
+          // a programmatic caller is programmatic tool calling (deferred).
           caller: opt((value, p) => {
+            if (value === null) return
             exact(value, p, { type: req(literal('direct')) }, 'replay')
           }),
-          async: opt(forbidden('async function tools are never declared')),
+          // Typed `boolean`: `false` is an ordinary call; `true` is an async tool.
+          async: opt((value, p) => {
+            if (value === false) return
+            if (value === true) {
+              forbidden('async function tools are never declared')(value, p)
+            }
+            throw bad(`${p} must be a boolean.`)
+          }),
+          // Typed `string`: any namespace means a namespaced tool, never declared here.
           namespace: opt(forbidden('tool namespaces are never declared')),
         },
         'replay',
