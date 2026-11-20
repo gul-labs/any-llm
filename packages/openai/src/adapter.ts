@@ -510,10 +510,23 @@ function classifyStreamError(
   const failure = err.failure
   switch (failure.kind) {
     case 'ended_early':
+    case 'malformed':
+      // A connection that closed early or a body that is not valid event JSON is a
+      // transient provider fault; a retry may complete, but only while nothing was
+      // generated (ADR-040).
       return new LlmError(err.message, {
         kind: 'server',
         retryable: !progressed,
         ...common,
+      })
+    case 'not_event_stream':
+      // A 200 that is not the requested stream (a fetch that buffered or rewrote
+      // it): not retried, and the upstream call may have run and billed.
+      return new LlmError(err.message, {
+        kind: 'bad_request',
+        retryable: false,
+        ...common,
+        mayHaveBilled: true,
       })
     case 'cut': {
       const base = classifyOpenAiError(err.cause)

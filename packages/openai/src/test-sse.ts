@@ -243,6 +243,8 @@ export interface FetchCall {
   headers: Headers
   body: Plain | undefined
   signal: AbortSignal | null | undefined
+  /** The `redirect` mode the request asked for (a stub never follows one itself). */
+  redirect: RequestInit['redirect']
 }
 
 /**
@@ -266,6 +268,7 @@ export function stubFetch(
       headers: new Headers(init?.headers),
       body: typeof rawBody === 'string' ? (JSON.parse(rawBody) as Plain) : undefined,
       signal: init?.signal,
+      redirect: init?.redirect,
     }
     calls.push(call)
     const responder = responders[Math.min(calls.length - 1, responders.length - 1)]

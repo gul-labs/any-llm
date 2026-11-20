@@ -696,7 +696,8 @@ Documented, not live-verified (ADR-047; every page read 2026-11-20). Full detail
   `providerOptions`, no `countTokens`.
 - **Transport.** No SDK client is constructed (its constructor reads `OPENAI_*` variables, one of them with no
   opt-out). The adapter `POST`s `https://api.openai.com/v1/responses` itself with exactly `authorization`,
-  `content-type` and `accept` headers through the injected or global `fetch`, and uses only the SDK's
+  `content-type` and `accept` headers through the injected or global `fetch` with `redirect: 'manual'` (any 3xx
+  is a non-retryable error, never followed; a 200 that is not `text/event-stream` is refused), and uses only the SDK's
   environment-free `openai/error` (`APIError.generate`, the connection errors, built as the SDK's request path
   builds them) and `openai/streaming` (`Stream.fromSSEResponse`). One request per attempt; no environment
   variable changes the destination or the headers.
@@ -719,8 +720,9 @@ Documented, not live-verified (ADR-047; every page read 2026-11-20). Full detail
 - **Streaming (ADR-036, ADR-040 rules).** `run()` decodes the event stream; a terminal event is required (an
   early clean end is `server`). One deadline (`timeoutMs + 5 000`, or one hour) covers the whole call from its
   start (`timeout`, `transport_timeout`, not retryable); caller aborts are re-thrown. A terminal item missing a
-  key its `response.output_item.done` event carried (a reasoning item's `encrypted_content`) gets it from the
-  completed item. Output has begun once an event other than the lifecycle events and `error` arrives, or when
+  key its `response.output_item.done` event carried, or carrying `null` for it (a reasoning item's
+  `encrypted_content`), gets the completed item's value. An `error` event is an error whether it is a named
+  frame or a data-only frame of `type: "error"`; terminal types are matched as own keys only. Output has begun once an event other than the lifecycle events and `error` arrives, or when
   the terminal snapshot itself lists output. Before
   that a transient failure is retryable with no usage; after it nothing is retried, the error is
   `mayHaveBilled` and carries a usage estimate. `response.failed` classifies through the `error.code` table
