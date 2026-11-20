@@ -219,4 +219,38 @@ describe('output', () => {
       expect(err.retryable).toBe(retryable)
     },
   )
+
+  it('warns when a provider output item would be refused in the replay state', async () => {
+    const result = await run({
+      output: [
+        {
+          type: 'message',
+          id: 'msg_1',
+          role: 'assistant',
+          status: 'completed',
+          content: [
+            {
+              type: 'output_text',
+              text: 'a',
+              annotations: [
+                {
+                  type: 'url_citation',
+                  url: 'https://x.test',
+                  title: 't',
+                  start_index: 0,
+                  end_index: 1,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+    expect(result.text).toBe('a')
+    expect(
+      result.warnings.some((w) =>
+        w.message.includes('output[0].content[0].annotations must be an empty array'),
+      ),
+    ).toBe(true)
+  })
 })

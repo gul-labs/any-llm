@@ -49,11 +49,11 @@ import type {
 } from './client.js'
 import { assertOpenAiStrictSchema } from './json-schema.js'
 import {
-  OPENAI_INPUT_MIME_TYPES,
   OPENAI_MAX_IMAGES_PER_REQUEST,
   OPENAI_MAX_INLINE_IMAGE_PAYLOAD_BYTES,
 } from './model-limits.js'
 import { openaiRegistry } from './models.js'
+import { assertReplayItem, isBase64, isFullyQualifiedHttpUrl } from './wire-validation.js'
 import { OPENAI_USAGE_DETAIL_KEYS } from './pricing.js'
 
 // ---------------------------------------------------------------------------
@@ -90,26 +90,6 @@ const DEFAULT_SCHEMA_NAME = 'structured_output'
 // Image input (documented MIME types and URL forms; ADR-047)
 // ---------------------------------------------------------------------------
 
-/** A fully qualified `http(s)` URL with a host, or `undefined`. */
-function httpUrl(uri: string): URL | undefined {
-  try {
-    const url = new URL(uri)
-    return (url.protocol === 'https:' || url.protocol === 'http:') && url.hostname !== ''
-      ? url
-      : undefined
-  } catch {
-    return undefined
-  }
-}
-
-const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/
-
-/** The media type of an admitted image data URL, or `undefined`. */
-function dataUrlMediaType(value: string): string | undefined {
-  const match = /^data:([a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+);base64,/i.exec(value)
-  return match?.[1]?.toLowerCase()
-}
-
 /**
  * Map a user-message part. Text is `input_text`; an inline image is a base64
  * data URL; a `file-uri` image must be a fully qualified `http(s)` URL (the images
@@ -127,9 +107,9 @@ function mapUserPart(part: Part, path: string): OpenAiInputContentPart {
           `${path}.mediaResolution is not supported by @gullabs/openai in this release; remove it.`,
         )
       }
-      if (!BASE64.test(part.data)) {
+      if (!isBase64(part.data)) {
         throw bad(
-          `${path}.data must be unwrapped base64 (no whitespace or data: prefix).`,
+          `${path}.data must be non-empty, padded standard base64 (RFC 4648: the A-Z a-z 0-9 + / alphabet, "=" only at the end, a length that is a multiple of 4; no whitespace or data: prefix).`,
         )
       }
       return {
@@ -144,7 +124,7 @@ function mapUserPart(part: Part, path: string): OpenAiInputContentPart {
           `${path}.mediaResolution is not supported by @gullabs/openai in this release; remove it.`,
         )
       }
-      if (httpUrl(part.uri) === undefined) {
+      if (!isFullyQualifiedHttpUrl(part.uri)) {
         throw bad(
           `${path}.uri must be a fully qualified http(s) image URL; got "${bounded(part.uri)}".`,
         )
@@ -196,100 +176,6 @@ function assertImageLimits(input: readonly OpenAiRequestInputItem[]): void {
 // Replay state (ADR-029): validated against the wire items this release admits
 // ---------------------------------------------------------------------------
 
-/** Input-part checks shared by host messages and replayed state. */
-function assertReplayInputPart(part: unknown, path: string): void {
-  if (!isPlainRecord(part)) throw bad(`${path} must be an object.`)
-  if (part['type'] === 'input_text') {
-    if (typeof part['text'] !== 'string') throw bad(`${path}.text must be a string.`)
-    return
-  }
-  if (part['type'] === 'input_image') {
-    const url = part['image_url']
-    if (typeof url !== 'string') throw bad(`${path}.image_url must be a string.`)
-    const media = url.startsWith('data:') ? dataUrlMediaType(url) : undefined
-    const admitted = url.startsWith('data:')
-      ? media !== undefined && OPENAI_INPUT_MIME_TYPES.includes(media)
-      : httpUrl(url) !== undefined
-    if (!admitted) {
-      throw bad(
-        `${path}.image_url must be an http(s) URL or a base64 data URL of ${OPENAI_INPUT_MIME_TYPES.join(', ')}.`,
-      )
-    }
-    if (part['detail'] !== 'auto') throw bad(`${path}.detail must be "auto".`)
-    return
-  }
-  throw bad(
-    `${path}.type "${String(part['type'])}" is not a content part @gullabs/openai sends in this release.`,
-  )
-}
-
-/** Output-part checks for a replayed assistant `message` item. */
-function assertReplayOutputPart(part: unknown, path: string): void {
-  if (!isPlainRecord(part)) throw bad(`${path} must be an object.`)
-  if (part['type'] === 'output_text' && typeof part['text'] === 'string') return
-  if (part['type'] === 'refusal' && typeof part['refusal'] === 'string') return
-  throw bad(
-    `${path}.type "${String(part['type'])}" is not an output part @gullabs/openai admits in replay state.`,
-  )
-}
-
-/**
- * One replayed item must be a shape this release itself produced: a user or
- * developer message of `input_text` / `input_image` parts, an assistant message
- * (history text, or a provider `message` item of `output_text` / `refusal`
- * parts), a `reasoning` item, a `function_call` or a `function_call_output`.
- * Anything else (a built-in tool call, a file input, a compaction item) would
- * bring a deferred feature back through the state and is rejected.
- */
-function assertReplayItem(item: unknown, path: string): void {
-  if (!isPlainRecord(item)) throw bad(`${path} must be an object.`)
-  switch (item['type']) {
-    case 'message': {
-      const role = item['role']
-      const content = item['content']
-      if (role === 'user' || role === 'developer') {
-        if (!Array.isArray(content)) throw bad(`${path}.content must be an array.`)
-        content.forEach((part, i) => {
-          assertReplayInputPart(part, `${path}.content[${i}]`)
-        })
-        return
-      }
-      if (role === 'assistant') {
-        if (typeof content === 'string') return
-        if (!Array.isArray(content)) {
-          throw bad(`${path}.content must be a string or an array of output parts.`)
-        }
-        content.forEach((part, i) => {
-          assertReplayOutputPart(part, `${path}.content[${i}]`)
-        })
-        return
-      }
-      throw bad(`${path}.role "${String(role)}" is not admitted in replay state.`)
-    }
-    case 'reasoning':
-      if (!Array.isArray(item['summary'])) throw bad(`${path}.summary must be an array.`)
-      return
-    case 'function_call':
-      if (
-        typeof item['call_id'] !== 'string' ||
-        typeof item['name'] !== 'string' ||
-        typeof item['arguments'] !== 'string'
-      ) {
-        throw bad(`${path} must carry string call_id, name and arguments.`)
-      }
-      return
-    case 'function_call_output':
-      if (typeof item['call_id'] !== 'string' || typeof item['output'] !== 'string') {
-        throw bad(`${path} must carry string call_id and output.`)
-      }
-      return
-    default:
-      throw bad(
-        `${path}.type "${String(item['type'])}" is not an item @gullabs/openai admits in replay state (message, reasoning, function_call, function_call_output).`,
-      )
-  }
-}
-
 function parseReplayState(value: unknown, model: string): OpenAiReplayState | undefined {
   if (value === undefined) return undefined
   const keys = isPlainRecord(value) ? Object.keys(value) : []
@@ -335,49 +221,117 @@ function leadingDeveloperText(
 // Usage (ADR-004 gross convention) and served tier
 // ---------------------------------------------------------------------------
 
+/** A token counter as OpenAI documents it: a non-negative safe integer. */
 const isCount = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isFinite(value) && value >= 0
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+
+/** Usage plus what in the raw counters did not reconcile. */
+interface MappedUsage {
+  usage: Usage
+  /** One line per raw counter that is malformed or contradicts another. */
+  irreconcilable: string[]
+}
 
 /**
  * Map `Response.usage`. `input_tokens` is gross (it includes cache reads and
  * writes) and `output_tokens` includes reasoning. Cache writes and their TTL
- * split go to provider-local details; a missing read or write count marks the
- * usage incomplete, and the pricing source then leaves the call unpriced.
+ * split go to provider-local details.
+ *
+ * The RAW counters are checked here, before core normalises (and clamps) them:
+ * a counter that is present but not a non-negative safe integer, cache reads
+ * plus writes above `input_tokens`, a TTL split that does not sum to
+ * `cache_write_tokens` (or a split without a write count), or reasoning above
+ * `output_tokens` sets `usage.details.usage_irreconcilable = 1`, and the pricing
+ * source leaves the call unpriced. A missing read or write count sets
+ * `usage_incomplete` (also unpriced). A malformed counter is not copied into the
+ * typed fields or `details`.
  */
-function mapUsage(usage: OpenAiUsageShape, servedTier: string | undefined): Usage {
+function mapUsage(usage: OpenAiUsageShape, servedTier: string | undefined): MappedUsage {
   const keys = OPENAI_USAGE_DETAIL_KEYS
+  const problems: string[] = []
+  const present = (value: unknown): boolean => value !== undefined && value !== null
+  const counter = (value: unknown, name: string): number | undefined => {
+    if (!present(value)) return undefined
+    if (isCount(value)) return value
+    problems.push(`${name} is ${JSON.stringify(value)}, not a non-negative integer`)
+    return undefined
+  }
   const inputDetails = isPlainRecord(usage.input_tokens_details)
     ? usage.input_tokens_details
     : undefined
-  const cached = inputDetails?.cached_tokens
-  const writes = inputDetails?.cache_write_tokens
+  const outputDetails = isPlainRecord(usage.output_tokens_details)
+    ? usage.output_tokens_details
+    : undefined
   const ttl = isPlainRecord(inputDetails?.cache_write_tokens_details)
     ? inputDetails.cache_write_tokens_details
     : undefined
-  const reasoning = isPlainRecord(usage.output_tokens_details)
-    ? usage.output_tokens_details.reasoning_tokens
-    : undefined
-  const details: Record<string, number> = {
-    input: usage.input_tokens,
-    output: usage.output_tokens,
+  if (present(usage.input_tokens_details) && inputDetails === undefined) {
+    problems.push('input_tokens_details is not an object')
   }
-  if (isCount(cached)) details['cached'] = cached
-  if (isCount(reasoning)) details['thinking'] = reasoning
-  if (isCount(writes)) details[keys.cacheWrite] = writes
-  if (ttl !== undefined) {
-    if (isCount(ttl.ttl_30m_tokens)) details[keys.cacheWrite30m] = ttl.ttl_30m_tokens
-    if (isCount(ttl.ttl_12h_tokens)) details[keys.cacheWrite12h] = ttl.ttl_12h_tokens
+  if (present(usage.output_tokens_details) && outputDetails === undefined) {
+    problems.push('output_tokens_details is not an object')
   }
-  if (!isCount(cached) || !isCount(writes)) details[keys.usageIncomplete] = 1
+  if (present(inputDetails?.cache_write_tokens_details) && ttl === undefined) {
+    problems.push('input_tokens_details.cache_write_tokens_details is not an object')
+  }
+  const input = usage.input_tokens
+  const output = usage.output_tokens
+  const cached = counter(
+    inputDetails?.cached_tokens,
+    'input_tokens_details.cached_tokens',
+  )
+  const writes = counter(
+    inputDetails?.cache_write_tokens,
+    'input_tokens_details.cache_write_tokens',
+  )
+  const ttl30 = counter(ttl?.ttl_30m_tokens, 'cache_write_tokens_details.ttl_30m_tokens')
+  const ttl12 = counter(ttl?.ttl_12h_tokens, 'cache_write_tokens_details.ttl_12h_tokens')
+  const reasoning = counter(
+    outputDetails?.reasoning_tokens,
+    'output_tokens_details.reasoning_tokens',
+  )
+  const total = counter(usage.total_tokens, 'total_tokens')
+  if ((cached ?? 0) + (writes ?? 0) > input) {
+    problems.push(
+      `cached_tokens (${cached ?? 0}) plus cache_write_tokens (${writes ?? 0}) exceed input_tokens (${input})`,
+    )
+  }
+  if (ttl !== undefined && (ttl30 ?? 0) + (ttl12 ?? 0) !== (writes ?? 0)) {
+    problems.push(
+      `the cache-write TTL split (${ttl30 ?? 0} + ${ttl12 ?? 0}) differs from cache_write_tokens (${
+        writes ?? 'absent'
+      })`,
+    )
+  }
+  if (reasoning !== undefined && reasoning > output) {
+    problems.push(`reasoning_tokens (${reasoning}) exceed output_tokens (${output})`)
+  }
+
+  const details: Record<string, number> = { input, output }
+  if (cached !== undefined) details['cached'] = cached
+  if (reasoning !== undefined) details['thinking'] = reasoning
+  if (writes !== undefined) details[keys.cacheWrite] = writes
+  if (ttl30 !== undefined) details[keys.cacheWrite30m] = ttl30
+  if (ttl12 !== undefined) details[keys.cacheWrite12h] = ttl12
+  if (
+    !present(inputDetails?.cached_tokens) ||
+    !present(inputDetails?.cache_write_tokens)
+  ) {
+    details[keys.usageIncomplete] = 1
+  }
+  if (problems.length > 0) details[keys.usageIrreconcilable] = 1
   if (servedTier === undefined) details[keys.serviceTierMissing] = 1
   return {
-    inputTokens: usage.input_tokens,
-    outputTokens: usage.output_tokens,
-    details,
-    raw: usage as unknown as JsonValue,
-    ...(isCount(cached) ? { cachedInputTokens: cached } : {}),
-    ...(isCount(reasoning) ? { thinkingTokens: reasoning } : {}),
-    ...(isCount(usage.total_tokens) ? { totalTokens: usage.total_tokens } : {}),
+    usage: {
+      inputTokens: input,
+      outputTokens: output,
+      details,
+      raw: usage as unknown as JsonValue,
+      ...(cached !== undefined ? { cachedInputTokens: cached } : {}),
+      ...(reasoning !== undefined ? { thinkingTokens: reasoning } : {}),
+      ...(total !== undefined ? { totalTokens: total } : {}),
+    },
+    irreconcilable: problems,
   }
 }
 
@@ -402,7 +356,9 @@ function billing(response: OpenAiResponseShape): {
 } {
   const tier = echoedTier(response)
   return {
-    ...(hasTokenCounts(response.usage) ? { usage: mapUsage(response.usage, tier) } : {}),
+    ...(hasTokenCounts(response.usage)
+      ? { usage: mapUsage(response.usage, tier).usage }
+      : {}),
     ...(tier !== undefined ? { servedServiceTier: tier } : {}),
   }
 }
@@ -818,8 +774,26 @@ export function openaiAdapterWithSeams(
       const stateCalls = callIds('function_call')
       const answered = callIds('function_call_output')
 
+      const firstNewItem = input.length
       req.messages.forEach((message: Message, m) => {
         const where = `messages[${m}]`
+        const before = input.length
+        mapMessage(message, where)
+        // A message that maps to nothing would be dropped silently; it is refused.
+        if (input.length === before) {
+          throw bad(
+            `${where}: the message maps to no input item for model "${model}" (no parts, or nothing to send); remove it or give it content.`,
+          )
+        }
+      })
+      if (input.length === firstNewItem) {
+        throw bad(
+          `The request for model "${model}" has no new message to send${
+            replay !== undefined ? ' after the replayed state' : ''
+          }.`,
+        )
+      }
+      function mapMessage(message: Message, where: string): void {
         if (message.role === 'assistant') {
           if (replay !== undefined) {
             throw bad(
@@ -875,7 +849,7 @@ export function openaiAdapterWithSeams(
           content.push(mapUserPart(part, `${where}.parts[${p}]`))
         })
         flush()
-      })
+      }
       assertImageLimits(input)
 
       // ----------------------------------------------------------------
@@ -1023,6 +997,15 @@ export function openaiAdapterWithSeams(
       }
       const billed = billing(response)
       const usage = billed.usage as Usage
+      const { irreconcilable } = mapUsage(response.usage, billed.servedServiceTier)
+      if (irreconcilable.length > 0) {
+        warnings.push({
+          type: 'other',
+          message: `openai: the usage counters do not reconcile (${irreconcilable.join(
+            '; ',
+          )}); the call is unpriced.`,
+        })
+      }
       if (billed.servedServiceTier === undefined) {
         warnings.push({
           type: 'other',
@@ -1158,6 +1141,22 @@ function mapResult(
       message: `openai: ignored ${count} output ${what} item(s) this release does not map; they stay in the replay state, which the next request rejects.`,
     })
   }
+
+  // The state replays these items verbatim and the next request validates them
+  // exactly; say now when one will be refused, rather than only on that request.
+  output.forEach((item, i) => {
+    if (droppedItems.has(item) || !ADMITTED_OUTPUT_TYPES.has(item.type)) return
+    try {
+      assertReplayItem(item, `output[${i}]`)
+    } catch (err) {
+      warnings.push({
+        type: 'other',
+        message: `openai: ${
+          err instanceof Error ? err.message : String(err)
+        } The replay state carries this item, so the next request with it is rejected.`,
+      })
+    }
+  })
 
   let finishReason = mapFinishReason(response)
   if (response.status === 'incomplete' && finishReason === 'other') {

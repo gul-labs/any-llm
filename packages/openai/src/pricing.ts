@@ -58,7 +58,12 @@ export const OPENAI_LONG_CONTEXT_THRESHOLD = 272_000
  *
  * - `serviceTierMissing`: 1 when the response echoed no `service_tier`.
  * - `usageIncomplete`: 1 when `input_tokens_details.cached_tokens` or
- *   `cache_write_tokens` is missing or not a number.
+ *   `cache_write_tokens` is missing.
+ * - `usageIrreconcilable`: 1 when a raw counter is present but not a
+ *   non-negative integer, or the counters contradict each other (reads plus
+ *   writes above the input, a TTL split that does not sum to the writes,
+ *   reasoning above the output). The adapter checks the raw values before core
+ *   normalises them, because normalisation clamps.
  * - `cacheWrite`, `cacheWrite30m`, `cacheWrite12h`: write tokens and their TTL
  *   split as reported.
  * - `usageEstimated`: 1 on usage the adapter ESTIMATED for a stream that failed
@@ -67,6 +72,7 @@ export const OPENAI_LONG_CONTEXT_THRESHOLD = 272_000
 export const OPENAI_USAGE_DETAIL_KEYS = Object.freeze({
   serviceTierMissing: 'service_tier_missing',
   usageIncomplete: 'usage_incomplete',
+  usageIrreconcilable: 'usage_irreconcilable',
   cacheWrite: 'cache_write',
   cacheWrite30m: 'cache_write_30m',
   cacheWrite12h: 'cache_write_12h',
@@ -218,6 +224,11 @@ export function computeOpenAiCost(model: string, usage: Usage, tier?: string): C
   if (usage.details[keys.serviceTierMissing] === 1) {
     return unpriced(
       'The OpenAI response did not echo service_tier; the served tier, and so the rate, is unknown.',
+    )
+  }
+  if (usage.details[keys.usageIrreconcilable] === 1) {
+    return unpriced(
+      'The OpenAI usage counters do not reconcile (a malformed counter, cache reads plus writes above the input, a TTL split that does not sum to the writes, or reasoning above the output).',
     )
   }
   if (usage.details[keys.usageIncomplete] === 1) {

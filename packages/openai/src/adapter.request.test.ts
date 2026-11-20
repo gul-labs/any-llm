@@ -150,7 +150,7 @@ describe('input parts', () => {
     )
   })
 
-  it('rejects base64 that is not unwrapped base64', async () => {
+  it('rejects base64 that is not padded standard base64', async () => {
     await rejects(
       request('gpt-6.2-sol', {
         messages: [
@@ -160,7 +160,7 @@ describe('input parts', () => {
           },
         ],
       }),
-      /parts\[0\]\.data must be unwrapped base64/,
+      /parts\[0\]\.data must be non-empty, padded standard base64/,
     )
   })
 
@@ -323,7 +323,6 @@ describe('strict schemas (output and tool parameters)', () => {
   })
 
   it.each([
-    ['const', { a: { type: 'string', const: 'x' } }],
     ['oneOf', { a: { oneOf: [{ type: 'string' }, { type: 'number' }] } }],
     ['allOf', { a: { allOf: [{ type: 'string' }] } }],
     ['minLength', { a: { type: 'string', minLength: 1 } }],

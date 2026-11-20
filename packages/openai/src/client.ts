@@ -252,7 +252,7 @@ export type OpenAiStreamFailure =
 
 /** What the stream had delivered when it failed. */
 export interface OpenAiStreamProgress {
-  /** True once any event other than `response.created/queued/in_progress` arrived. */
+  /** True once an output event arrived (any event outside the lifecycle events and `error`). */
   progressed: boolean
   /** Characters received in `*.delta` events. */
   outputChars: number
@@ -298,10 +298,24 @@ function describeFailure(failure: OpenAiStreamFailure): string {
   }
 }
 
-const SNAPSHOT_EVENTS = new Set([
+/**
+ * The stream events that are NOT output: the six lifecycle events and `error`.
+ * In the `openai` 7.60.0 typings (`ResponseStreamEvent`) every other event
+ * reports model output (an output item, a content part, a text, refusal,
+ * reasoning, function-argument or audio delta or done, an annotation, a tool
+ * call's progress); all of them except the audio events carry `output_index`.
+ * Output has begun once any event outside this set arrives. A terminal event or
+ * an `error` event is not output, so a failure that arrives before any output
+ * event keeps the "before output" rule (ADR-040).
+ */
+const NON_OUTPUT_EVENTS: ReadonlySet<string> = new Set([
   'response.created',
   'response.queued',
   'response.in_progress',
+  'response.completed',
+  'response.incomplete',
+  'response.failed',
+  'error',
 ])
 
 const TERMINAL_STATUS: Readonly<Record<string, string>> = {
@@ -323,9 +337,16 @@ const TERMINAL_STATUS: Readonly<Record<string, string>> = {
  * `baseURL` ({@link OPENAI_BASE_URL}), `organization: null`, `project: null`,
  * `adminAPIKey: null`, `webhookSecret: null`, `logLevel: 'off'` and
  * `maxRetries: 0` (one HTTP request per attempt; the engine owns retries). The
- * SDK constructor also merges `OPENAI_CUSTOM_HEADERS` into its default headers,
- * which are applied after the auth header; the client drops them, so no
- * environment variable can add or replace a header.
+ * SDK constructor also parses `OPENAI_CUSTOM_HEADERS` into default headers that
+ * are applied after the auth header, and no option turns that read off; the
+ * client has two lines of defence. It builds the SDK client inside
+ * {@link withoutAmbientCustomHeaders}, so the variable is not parsed (a malformed
+ * value cannot fail a call), and the SDK client subclass drops whatever default
+ * headers the constructor collected, so no environment variable can add or
+ * replace a header on any path. Where the view cannot be installed (no
+ * configurable `globalThis.process`), the only thing lost is robustness to a
+ * malformed value: the SDK then parses it, a malformed one throws in the
+ * constructor, and a well-formed one is still dropped.
  *
  * The call streams through the SDK's own `responses.stream()` helper. A
  * terminal event (`response.completed`, `response.incomplete` or
@@ -338,16 +359,25 @@ const TERMINAL_STATUS: Readonly<Record<string, string>> = {
  * @param auth - `{ apiKey }`.
  * @param fetchImpl - Test seam: the `fetch` the SDK uses (defaults to the
  *   global `fetch`). Not exported from the package index.
+ * @param ambientHost - Test seam: the object whose `process` property the view
+ *   replaces (defaults to `globalThis`); a host without one exercises the path
+ *   where the view cannot be installed.
  */
 export async function buildOpenAiClient(
   auth: AuthMaterial,
   fetchImpl?: typeof fetch,
+  ambientHost: object = globalThis,
 ): Promise<OpenAiClientLike> {
   const apiKey = requireApiKey(auth)
   const sdk = await import('openai')
   const OpenAI = sdk.default
 
-  /** The SDK client without the default headers the environment can inject. */
+  /**
+   * The SDK client without the default headers its constructor collected. This
+   * client never sets `defaultHeaders`, so the only source of them is
+   * `OPENAI_CUSTOM_HEADERS`; dropping them (the protected `_options` field the
+   * request builder reads) holds whether or not the view was installed.
+   */
   class PinnedOpenAI extends OpenAI {
     constructor(options: ConstructorParameters<typeof OpenAI>[0]) {
       super(options)
@@ -379,17 +409,21 @@ export async function buildOpenAiClient(
           if (id !== null && id !== '') requestId = id
           return response
         }
-        const client = new PinnedOpenAI({
-          apiKey,
-          baseURL: OPENAI_BASE_URL,
-          organization: null,
-          project: null,
-          adminAPIKey: null,
-          webhookSecret: null,
-          logLevel: 'off',
-          maxRetries: 0,
-          fetch: capturingFetch,
-        })
+        const client = withoutAmbientCustomHeaders(
+          () =>
+            new PinnedOpenAI({
+              apiKey,
+              baseURL: OPENAI_BASE_URL,
+              organization: null,
+              project: null,
+              adminAPIKey: null,
+              webhookSecret: null,
+              logLevel: 'off',
+              maxRetries: 0,
+              fetch: capturingFetch,
+            }),
+          ambientHost,
+        )
 
         const controller = new AbortController()
         const forwardAbort = (): void => {
@@ -438,7 +472,7 @@ export async function buildOpenAiClient(
           try {
             for await (const event of stream) {
               const type = (event as { type: string }).type
-              if (!SNAPSHOT_EVENTS.has(type)) progress.progressed = true
+              if (!NON_OUTPUT_EVENTS.has(type)) progress.progressed = true
               const delta = (event as { delta?: unknown }).delta
               if (typeof delta === 'string') progress.outputChars += delta.length
               if (TERMINAL_STATUS[type] !== undefined) {
@@ -473,6 +507,79 @@ export async function buildOpenAiClient(
         }
       },
     },
+  }
+}
+
+/** The one environment variable the SDK reads that no constructor option overrides. */
+const CUSTOM_HEADERS_VARIABLE = 'OPENAI_CUSTOM_HEADERS'
+
+/**
+ * Run `construct` (the SDK constructor) with `OPENAI_CUSTOM_HEADERS` unreadable.
+ *
+ * `openai` 7.60.0 reads that variable in its constructor through `readEnv`
+ * (`src/internal/utils/env.ts`: `globalThis.process.env?.[name]`), unless a
+ * `provider` or an X.509 `credential` is configured, which this client never
+ * uses; nothing else turns the read off, and `defaultHeaders` is merged after
+ * the parsed value rather than replacing it, so a malformed value throws inside
+ * `super()`. For the duration of the call `globalThis.process` is replaced by a
+ * view of the real `process` whose `env` hides that one variable (every other
+ * property and variable passes through untouched), and the original property
+ * descriptor is restored in `finally`, also when `construct` throws.
+ *
+ * Why this is safe: the SDK constructor is synchronous (no `await`, no timer, no
+ * callback), so no other code in this JavaScript realm can run while the view is
+ * installed, and nothing the constructor starts keeps a reference to it (the
+ * constructor reads the variables once and stores the values). The view lives on
+ * this realm's `globalThis` only: the OS environment, child processes and worker
+ * threads (each has its own `globalThis`) never see a change. No value is read,
+ * copied or logged by this library; the view only declines one key. A runtime
+ * without a configurable `globalThis.process` (or without an `env` object) calls
+ * `construct` unchanged: the SDK then parses the variable, and the subclass in
+ * {@link buildOpenAiClient} still drops the headers, so only robustness to a
+ * malformed value is lost there (Deno 2 exposes `process`, so the view applies
+ * there too). Remove this function when the SDK gains an option that turns the
+ * read off (BACKLOG).
+ *
+ * @internal
+ */
+export function withoutAmbientCustomHeaders<T>(
+  construct: () => T,
+  ambientHost: object = globalThis,
+): T {
+  const host = ambientHost as { process?: unknown }
+  const descriptor = Object.getOwnPropertyDescriptor(host, 'process')
+  const real = host.process
+  if (
+    descriptor === undefined ||
+    descriptor.configurable !== true ||
+    typeof real !== 'object' ||
+    real === null
+  ) {
+    return construct()
+  }
+  const env = (real as { env?: unknown }).env
+  if (typeof env !== 'object' || env === null) return construct()
+  const envView = new Proxy(env, {
+    get: (target, key) =>
+      key === CUSTOM_HEADERS_VARIABLE
+        ? undefined
+        : (Reflect.get(target, key, target) as unknown),
+    has: (target, key) => key !== CUSTOM_HEADERS_VARIABLE && Reflect.has(target, key),
+  })
+  const view = new Proxy(real, {
+    get: (target, key) =>
+      key === 'env' ? envView : (Reflect.get(target, key, target) as unknown),
+  })
+  Object.defineProperty(host, 'process', {
+    configurable: true,
+    enumerable: descriptor.enumerable ?? false,
+    writable: true,
+    value: view,
+  })
+  try {
+    return construct()
+  } finally {
+    Object.defineProperty(host, 'process', descriptor)
   }
 }
 

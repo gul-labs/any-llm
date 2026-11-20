@@ -180,6 +180,7 @@ export interface Usage {
 //   service_tier_missing  1 when an OpenAI response echoed no `service_tier`: the served tier is unknown and the
 //                         cost is unpriced, never the requested tier's (ADR-047), else absent
 //   usage_incomplete      1 when OpenAI usage lacks `cached_tokens` or `cache_write_tokens` (unpriced), else absent
+//   usage_irreconcilable  1 when an OpenAI raw counter is malformed or contradicts another (unpriced), else absent
 //   cache_write, cache_write_30m, cache_write_12h  OpenAI cache-write tokens and their TTL split, as reported
 // `normalizeUsage` also warns, and the engine reports the cost as 'estimated', when totalTokens
 // is larger than inputTokens + outputTokens (the provider counted tokens the fields omit).
@@ -695,26 +696,34 @@ Documented, not live-verified (ADR-047; every page read 2026-11-20). Full detail
   `providerOptions`, no `countTokens`.
 - **SDK construction.** Built per call with `apiKey`, `baseURL: 'https://api.openai.com/v1'`,
   `organization: null`, `project: null`, `adminAPIKey: null`, `webhookSecret: null`, `logLevel: 'off'`,
-  `maxRetries: 0`, and the SDK's `OPENAI_CUSTOM_HEADERS` default headers dropped, so no `OPENAI_*`
-  environment variable changes the destination or the headers.
+  `maxRetries: 0`, constructed while `OPENAI_CUSTOM_HEADERS` is unreadable (a synchronous, restored view of
+  `globalThis.process`; no option turns the SDK's read off) and with the SDK's collected default headers dropped
+  after construction, so no `OPENAI_*` environment variable changes the destination or the headers on any path;
+  where the view cannot be installed, a malformed value can still fail construction.
 - **Request.** `store: false`; `system` is a leading `developer` input message; text and image input
   (PNG, JPEG, WebP, GIF as base64 or a fully qualified `http(s)` URL, `detail: 'auto'`, at most 1,500
-  images and 512 MB inline per request); any other part kind is `bad_request`. `reasoning.context` and
+  images and 512 MB inline per request; the URL is checked on the string sent and the data as padded standard
+  base64); any other part kind, and a message that maps to no input item, is `bad_request`. `reasoning.context` and
   `parallel_tool_calls` are never sent. Structured output is `text.format` with `strict: true`; tools are
   strict function tools; the two cannot be combined (`structuredOutputWithTools: false`). Both schemas pass
-  core's `assertJsonSchemaProfile(OPENAI_JSON_SCHEMA_PROFILE)` and the strict-mode structure (object root,
-  no root `anyOf`, every object closed and fully required, 5,000 properties, 10 levels, 1,000 enum values,
-  120,000 characters).
+  core's `assertJsonSchemaProfile(OPENAI_JSON_SCHEMA_PROFILE)` (`const` admitted) and the strict-mode structure
+  (a root of exactly `type: "object"`, no root `anyOf`, every object typed, closed and with `required` equal to
+  its properties, 5,000 properties, 10 levels, 1,000 enum values, 120,000 characters of names, enum and const
+  values, 15,000 characters of enum values above 250 of them).
 - **Continuation `'state'` (ADR-029).** State is `{ openai: { model, input } }`: the request input plus every
   output item in order. It is accepted only with new messages, only for the same provider and model, only
-  with items this release produces (message, reasoning, function call and output), and a tool result must
-  answer an unanswered call in it.
+  when its items pass the split check (the adapter's own request items exact, unknown keys rejected;
+  provider `message`, `reasoning` and `function_call` items type-gated and replayed as returned, unknown keys
+  tolerated, values only deferred features produce rejected), and a tool result must answer an unanswered call
+  in it.
 - **Streaming (ADR-036, ADR-040 rules).** `run()` streams through the SDK's `responses.stream()`; a terminal
   event is required (an early clean end is `server`, never the snapshot). One deadline (`timeoutMs + 5 000`,
   or one hour) covers the whole stream (`timeout`, `transport_timeout`, not retryable); caller aborts are
-  re-thrown. Before any output event a transient failure is retryable with no usage; after it nothing is
-  retried, the error is `mayHaveBilled` and carries a usage estimate. `response.failed` and `error` events
-  classify through the `error.code` table and keep the terminal usage and echoed tier.
+  re-thrown. Output has begun once an event other than the lifecycle events and `error` arrives. Before
+  that a transient failure is retryable with no usage; after it nothing is retried, the error is
+  `mayHaveBilled` and carries a usage estimate. `response.failed` classifies through the `error.code` table
+  and keeps the terminal usage and echoed tier; an `error` event uses the same table but only `server_error`
+  before output retries (`rate_limit_exceeded` mid-stream never does).
 - **Errors.** 401/403 `invalid_auth`, 400/404/422 `bad_request`, 429 retryable `rate_limited` with
   `Retry-After`, 5xx retryable `server`; a 429 billing, spend or usage-limit code is not retryable,
   `reason: 'credits_exhausted'`.
@@ -723,8 +732,9 @@ Documented, not live-verified (ADR-047; every page read 2026-11-20). Full detail
   unknown echo is an unpriced tier. Long context above 272,000 gross input tokens (2× input and cache, 1.5×
   output). Cache writes 1.25× (30 minutes) or 2.5× (12 hours) of input inside the `input` lane
   (`usage.details.cache_write`, `cache_write_30m`, `cache_write_12h`); a call with writes, or whose band the
-  cached reads decide, is `estimated`; usage that does not reconcile or lacks its cache lanes
-  (`usage.details.usage_incomplete`) is unpriced.
+  cached reads decide, is `estimated`; raw counters that do not reconcile
+  (`usage.details.usage_irreconcilable`, checked before core normalises them) or usage that lacks its cache
+  lanes (`usage.details.usage_incomplete`) is unpriced.
 
 ---
 
