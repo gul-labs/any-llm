@@ -4299,10 +4299,17 @@ the probe that would close it.
    Each call builds its own SDK client with `apiKey`, `baseURL: 'https://api.openai.com/v1'`,
    `organization: null`, `project: null`, `adminAPIKey: null`, `webhookSecret: null`, `logLevel: 'off'` and
    `maxRetries: 0` (one HTTP request per attempt; retries are the engine's). Reading the 7.60.0 constructor showed
-   one more ambient input: it merges `OPENAI_CUSTOM_HEADERS` into the client's default headers, which the request
-   builder applies after the auth header, so an environment variable could replace `Authorization` or add an
-   organization header. The client deletes those default headers after construction (a subclass of the SDK
-   client, the protected `_options` field). A test with conflicting `OPENAI_API_KEY`, `OPENAI_BASE_URL`,
+   one more ambient input: it parses `OPENAI_CUSTOM_HEADERS` (through `readEnv`, `globalThis.process.env`) into
+   the client's default headers, which the request builder applies after the auth header, so an environment
+   variable could replace `Authorization` or add an organization header, and a malformed value throws inside the
+   constructor and fails a valid call. No constructor option turns the read off (only a `provider` or an X.509
+   `credential` skips it, and the client uses neither; `defaultHeaders` is merged after the parsed value, not
+   instead of it). So the client constructs the SDK client while `globalThis.process` is a view of the real
+   `process` whose `env` hides that one variable, and restores the original property in `finally`. This is
+   safe because the constructor is synchronous (no other code in the realm runs in between), the view lives on
+   this realm's `globalThis` only (the OS environment, child processes and worker threads never see it), and
+   nothing is read or copied: the view declines one key. A test with a malformed value shows the raw SDK throws
+   and the client's call succeeds. A test with conflicting `OPENAI_API_KEY`, `OPENAI_BASE_URL`,
    `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`, `OPENAI_ADMIN_KEY`, `OPENAI_WEBHOOK_SECRET`, `OPENAI_LOG` and
    `OPENAI_CUSTOM_HEADERS` proves the destination and headers are the caller's only and that nothing is logged.
    The admin key and webhook secret are pinned although 7.60.0 does not send them on a bearer-authenticated
@@ -4313,27 +4320,49 @@ the probe that would close it.
    accumulated snapshot, and that snapshot is never used (the call is a `server` error). The event type decides
    the status. The SDK `timeout` covers only the wait for headers on a stream, so the client also arms one timer
    over the whole call (`timeoutMs + 5 000`, or one hour): it ends as `timeout`, `reason: 'transport_timeout'`,
-   not retryable. Caller aborts are re-thrown (an `LlmError` abort reason keeps its kind). Before any output event a
+   not retryable. Caller aborts are re-thrown (an `LlmError` abort reason keeps its kind). **Output has begun**
+   once any event arrives other than the six lifecycle events (`response.created`, `.queued`, `.in_progress`,
+   `.completed`, `.incomplete`, `.failed`) and `error`: in the 7.60.0 `ResponseStreamEvent` union every other
+   event reports model output (an output item, a content part, a text, refusal, reasoning, function-argument or
+   audio delta or done, an annotation, a tool call's progress). A terminal or `error` event is not output, so a
+   failure that arrives before any output event is judged as "before output". Before any output event a
    transient failure is retryable and carries no usage; after it nothing is retried, the error is `mayHaveBilled`
    and carries the ADR-040 usage estimate. A `response.failed` keeps its terminal usage and echoed tier, is
    classified by `error.code` (the SDK's `ResponseError.code` union: `server_error` and `rate_limit_exceeded`
-   retry, policy codes `content_filter`, prompt and image codes `bad_request`, anything else `unknown`), is never
-   retried after output, and is always `mayHaveBilled`; an `error` event follows the same table. No public
-   `stream()`.
+   are retryable, policy codes `content_filter`, prompt and image codes `bad_request`, anything else `unknown`),
+   keeps that retryability only before output, and is always `mayHaveBilled`. An `error` event uses the same
+   table with ADR-040 Amendment A's stricter rule: only `server_error` before output is retried, and
+   `rate_limit_exceeded` is never retried, even before output. The reason is ADR-040's: the event arrives inside a
+   stream the provider accepted and started, so the request was admitted and may have done billed work, and a
+   rate limit reported there is not the pre-admission 429 a retry is meant for (that one is the HTTP status path,
+   which stays retryable with `Retry-After`). No public `stream()`.
 6. **Request contract.** `store: false`. `system` is a leading `developer` input message, because the GPT-6.2
    guide says top-level `instructions` are appended after the input and are not cacheable. `reasoning.context` is
    not sent (omitting it is the documented way to take the model default; no page states the GPT-6.x default or
    support for `all_turns`). `parallel_tool_calls` is not sent (per-model support is undocumented). Images go as
    `input_image` with `detail: 'auto'` (the SDK typing's documented default), from base64 data URLs or fully
    qualified `http(s)` URLs, of the documented types PNG, JPEG, WebP and GIF, at most 1,500 per request and
-   512 MB of inline payload; a media-resolution hint is rejected.
+   512 MB of inline payload; a media-resolution hint is rejected. The URL is checked on the string that is sent
+   (scheme, `://`, a non-empty authority; no whitespace, control character or backslash; it must also parse to
+   that scheme and a host), because the WHATWG parser accepts and normalises `https:host/x`. Inline data must be
+   non-empty, padded standard base64 (RFC 4648 alphabet, `=` only at the end, a length that is a multiple of 4),
+   checked without decoding. The same validators apply to images in replayed state. Every message must map to at
+   least one input item (a message with no parts is `bad_request`, with or without state), and a request must add
+   at least one new item.
 7. **Continuation (ADR-029).** All four descriptors declare `continuation: 'state'` and `providerState: true`.
    State is `{ openai: { model, input } }`: the request input plus every provider output item in order,
    encrypted reasoning included, minus function calls that did not complete. It is accepted only with new
    messages, only bound to the same provider and model string, never beside assistant history, and only when
-   every item is a shape this release itself produces (a user or developer message of text and image parts, an
-   assistant message, a `reasoning` item, a `function_call`, a `function_call_output`): a built-in tool call, a
-   file part or any other item is `bad_request`, so state cannot bring a deferred feature back. A `system` sent
+   every item and every nested part matches an exact allowlist of keys and value types: the request items this
+   adapter builds (user and developer messages of `input_text` / `input_image` parts, assistant history text,
+   `function_call_output`) and the provider output items it reads, with the keys the 7.60.0 typings define
+   (`ResponseOutputMessage`, `ResponseOutputText` / `ResponseOutputRefusal`, `ResponseReasoningItem` with its
+   `summary_text` / `reasoning_text` parts, `ResponseFunctionToolCall`). An unknown key anywhere (a `file_id` on
+   an image, a `prompt_cache_breakpoint`, any extra field) is `bad_request` naming the path. Values only a deferred
+   feature produces are refused even where the typings name the key: `annotations` must be empty and `logprobs`
+   absent or empty, a function call's `caller` only `{ type: 'direct' }`, and `async` and `namespace` are not
+   admitted. So state cannot bring a deferred feature back. A response whose own output item would fail this
+   check is returned with a warning saying the next request with that state is rejected. A `system` sent
    beside state must equal the developer message the state starts with (it is never sent twice). Tool results
    pair by `call_id` with an unanswered call in the state. Actionable calls come only from a `completed` response.
    What the tests prove is the request payload of the second turn (a stubbed two-turn exchange); how OpenAI's
@@ -4342,13 +4371,21 @@ the probe that would close it.
    documents the combination for these models.
 9. **Schemas (ADR-034).** `output.jsonSchema` and every tool's `inputJsonSchema` go through core's
    `assertJsonSchemaProfile(OPENAI_JSON_SCHEMA_PROFILE)` once (it runs `assertStandardJsonSchema` itself), then
-   the strict-mode rules local to this package: an object root that is not `anyOf`, `additionalProperties: false`
-   and every property in `required` on every object, at most 5,000 properties, 10 levels of literal nesting,
-   1,000 enum values and 120,000 characters of property names, definition names and enum values. The profile is
-   the guide's supported list: `type`, `properties`, `required`, `additionalProperties`, `enum`, `anyOf`, `$ref` /
+   the strict-mode rules local to this package: a root of exactly `type: "object"` that is not `anyOf` ("the root
+   level object of a schema must be an object, and not use `anyOf`"); `additionalProperties: false` on every
+   object; `required` naming exactly the object's property names, each once ("all fields or function parameters
+   must be specified as `required`"); any schema that uses an object keyword (`properties`, `required`,
+   `additionalProperties`) declaring `type: "object"` (or `["object", "null"]` below the root: the guide does not
+   say a nested object must declare its type, but every example does and an untyped object is not a documented
+   shape); at most 5,000 properties and 10 levels of literal nesting; 1,000 enum values; 120,000 characters of
+   property names, definition names, enum values and const values; and, with more than 250 enum values, 15,000
+   characters of enum values. The profile is the guide's supported list plus `const`, which the guide counts in
+   its size limit ("total string length of all property names, definition names, enum values, and const values
+   cannot exceed 120,000 characters"): `type`, `properties`, `required`, `additionalProperties`, `enum`, `const`,
+   `anyOf`, `$ref` /
    `$defs` with recursion, `items`, `minItems` / `maxItems`, `minimum` / `maximum`, `exclusiveMinimum` /
    `exclusiveMaximum`, `multipleOf`, `pattern` (held to core's regex subset, the dialect being unnamed) and
-   `format` (`date-time`, `time`, `date`, `duration`, `email`, `hostname`, `ipv4`, `ipv6`, `uuid`). `const`,
+   `format` (`date-time`, `time`, `date`, `duration`, `email`, `hostname`, `ipv4`, `ipv6`, `uuid`).
    `oneOf`, `prefixItems`, `minLength`, `maxLength`, `minProperties`, `maxProperties` and `uniqueItems` are not
    named and are rejected. Schemas are forwarded verbatim with `strict: true`; the format name is the schema
    `title` (the SDK typing's `^[a-zA-Z0-9_-]{1,64}$` rule) or `structured_output`.
@@ -4370,8 +4407,11 @@ the probe that would close it.
     rate; cache writes 1.25× (30 minutes) and 2.5× (12 hours) of input inside the `input` lane; ordinary input is
     `input − reads − writes`. That subtraction is an inference from the caching guide ("billed cache reads.
     Excludes tokens charged as writes"), so every call with writes is `estimated`, and writes without a TTL split
-    are priced at the 30-minute default and `estimated`. Usage that does not reconcile (reads plus writes above
-    the input, a split that does not sum to the writes) or lacks a cache lane (`usage_incomplete`) is unpriced.
+    are priced at the 30-minute default and `estimated`. The adapter checks the RAW counters before core normalises
+    them (normalisation clamps cached tokens to the input): a counter that is present but not a non-negative safe
+    integer, reads plus writes above `input_tokens`, a TTL split that does not sum to `cache_write_tokens`, or
+    reasoning above `output_tokens` sets `usage.details.usage_irreconcilable = 1` with a warning naming what did not
+    reconcile, and the call is unpriced; usage that lacks a cache lane (`usage_incomplete`) is unpriced too.
     Regional-processing and FedRAMP surcharges (+10% each) are not modelled. The tests' usage objects are
     synthetic and prove the arithmetic only.
 12. **Evidence in the tests (ADR-013).** Request mapping and streaming tests run the real `openai` SDK with a
