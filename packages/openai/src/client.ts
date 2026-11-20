@@ -254,7 +254,7 @@ export type OpenAiStreamFailure =
   | { kind: 'cut'; detail: string }
   | { kind: 'error_event'; code?: string; message?: string }
   | { kind: 'malformed'; detail: string }
-  | { kind: 'not_event_stream'; contentType: string }
+  | { kind: 'not_event_stream'; contentType: string | null }
 
 /** What the stream had delivered when it failed. */
 export interface OpenAiStreamProgress {
@@ -298,9 +298,13 @@ function describeFailure(failure: OpenAiStreamFailure): string {
     case 'cut':
       return `OpenAI stream failed after output began: ${failure.detail}`
     case 'malformed':
-      return `OpenAI stream body is not valid event JSON: ${failure.detail}`
+      return `OpenAI stream body is malformed: ${failure.detail}`
     case 'not_event_stream':
-      return `OpenAI answered 200 with content-type "${failure.contentType}", not text/event-stream; the request asked for a stream (a fetch that buffers or rewrites the response?)`
+      return `OpenAI answered 200 with ${
+        failure.contentType === null
+          ? 'no content-type'
+          : `content-type ${JSON.stringify(failure.contentType)}`
+      }, not text/event-stream; the request asked for a stream (a fetch that buffers or rewrites the response?)`
     case 'error_event':
       return `OpenAI stream sent an error event${
         failure.code !== undefined ? ` (code "${failure.code}")` : ''
@@ -567,7 +571,7 @@ export async function buildOpenAiClient(
           }
 
           const contentType = response.headers.get('content-type')
-          if (contentType !== null && !/^\s*text\/event-stream\b/i.test(contentType)) {
+          if (!isEventStreamMediaType(contentType)) {
             response.body?.cancel().catch(() => undefined)
             const why: unknown =
               stopped() ??
@@ -586,8 +590,20 @@ export async function buildOpenAiClient(
           const completed = new Map<string, OpenAiOutputItem>()
           let terminal: { type: string; response: unknown } | undefined
           try {
-            for await (const event of stream) {
-              const type = typeof event['type'] === 'string' ? event['type'] : ''
+            for await (const decoded of stream as AsyncIterable<unknown>) {
+              // Every payload must be an object with a non-empty string `type` (own
+              // property), checked before it can count as output or be read further.
+              if (!isEventPayload(decoded)) {
+                throw new OpenAiStreamError(
+                  {
+                    kind: 'malformed',
+                    detail: `an event payload is ${describePayload(decoded)}, not an object with a non-empty string type`,
+                  },
+                  progress,
+                )
+              }
+              const event = decoded
+              const type = event['type']
               // A data-only frame of type `error` (no `event: error` line) is an error
               // event too: the decoder throws only for a named error frame or a frame
               // with an `error` field, and the SDK's `ResponseStream` threw for this
@@ -657,6 +673,42 @@ export async function buildOpenAiClient(
   }
 }
 
+/**
+ * True when a `content-type` value is exactly the media type `text/event-stream`:
+ * the type/subtype compared case-insensitively, optional whitespace around it,
+ * and optional parameters after `;`. A media type (RFC 9110 §8.3.1) is
+ * `type "/" subtype *( OWS ";" OWS parameter )`, one value: a missing or empty
+ * header, a lookalike subtype (`event-stream+json`, `event-streamx`) and a
+ * comma-joined list (`text/event-stream, application/json`, which is what
+ * `Headers.get` returns for two `content-type` fields and is not one media type)
+ * are all something else.
+ */
+export function isEventStreamMediaType(value: string | null): boolean {
+  if (value === null) return false
+  const semicolon = value.indexOf(';')
+  const essence = (semicolon === -1 ? value : value.slice(0, semicolon)).trim()
+  return essence.toLowerCase() === 'text/event-stream'
+}
+
+/** A decoded event payload this client reads: an object with an own non-empty string `type`. */
+function isEventPayload(
+  value: unknown,
+): value is Record<string, unknown> & { type: string } {
+  if (!isRecord(value) || !Object.hasOwn(value, 'type')) return false
+  const type = (value as { type?: unknown }).type
+  return typeof type === 'string' && type !== ''
+}
+
+/** A short description of a payload for a malformed-stream message (no content). */
+function describePayload(value: unknown): string {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'an array'
+  if (typeof value !== 'object') return `a ${typeof value}`
+  return Object.hasOwn(value, 'type')
+    ? `an object whose type is a ${typeof (value as { type?: unknown }).type}`
+    : 'an object without a type'
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -698,16 +750,30 @@ function reconcileWithCompletedItems(
     if (done === undefined) return item as OpenAiOutputItem
     // A key the terminal copy lacks, or carries as `null`, takes the completed
     // item's non-null value; every non-null terminal value wins.
+    // Values are read and written as OWN data properties: a provider key such as
+    // `__proto__` (which JSON.parse creates as an own property) must be copied
+    // verbatim, never through an accessor or the prototype chain.
+    const own = (target: object, key: string): unknown =>
+      Object.getOwnPropertyDescriptor(target, key)?.value
     const missing = Object.keys(done).filter(
       (key) =>
-        (!Object.hasOwn(item, key) || item[key] === null) &&
-        done[key] !== null &&
-        done[key] !== undefined,
+        (!Object.hasOwn(item, key) || own(item, key) === null) &&
+        own(done, key) !== null &&
+        own(done, key) !== undefined,
     )
     if (missing.length === 0) return item as OpenAiOutputItem
     filled.push(`${item['id']} (${missing.join(', ')})`)
+    // Object spread defines own properties (CreateDataProperty), so it copies an
+    // own `__proto__` key as a key; assignment would set the prototype instead.
     const copy: Record<string, unknown> = { ...item }
-    for (const key of missing) copy[key] = done[key]
+    for (const key of missing) {
+      Object.defineProperty(copy, key, {
+        value: own(done, key),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      })
+    }
     return copy as OpenAiOutputItem
   })
   if (filled.length > 0) {
@@ -744,6 +810,7 @@ function streamFailure(
     err: unknown,
   ) => err is { code?: string | null | undefined; error?: unknown },
 ): unknown {
+  if (err instanceof OpenAiStreamError) return err
   if (isErrorEvent(err)) {
     const body = err.error as { code?: unknown; message?: unknown } | undefined
     const code =
@@ -766,9 +833,13 @@ function streamFailure(
   // The decoder throws a `SyntaxError` for an event whose data is not JSON (a
   // truncated or corrupted frame): a malformed body, before or after output.
   if (err instanceof SyntaxError) {
-    return new OpenAiStreamError({ kind: 'malformed', detail: err.message }, progress, {
-      cause: err,
-    })
+    return new OpenAiStreamError(
+      { kind: 'malformed', detail: `an event is not valid event JSON (${err.message})` },
+      progress,
+      {
+        cause: err,
+      },
+    )
   }
   if (!progress.progressed) return err
   return new OpenAiStreamError(
