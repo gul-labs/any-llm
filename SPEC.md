@@ -124,7 +124,7 @@ export interface GenConfig {
   providerOptions?: ProviderOptionsMap // open interface; each provider package augments it via declaration merging and enforces its own strict per-model allowlist (not a raw SDK passthrough)
 }
 export interface ReasoningIntent {
-  effort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' // gemini-2.5 → thinkingBudget; gemini-3/4 → thinkingLevel (Gemini 4 Neon/Hydrogen and xAI 4.6 admit xhigh)
+  effort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' // admitted values are per model (descriptor `admittedReasoningEfforts`); gemini-2.5 → thinkingBudget; gemini-3/4 → thinkingLevel; xAI and OpenAI → reasoning.effort
   budgetTokens?: number
   includeThoughts?: boolean
 }
@@ -533,8 +533,11 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
   passed per call; no Vertex support in v1 — see DESIGN.md). The SDK client is built with `vertexai: false`,
   `apiVersion: 'v1beta'` and the pinned Developer API base URL, so no environment variable moves a call
   (ADR-048).
-- One request per attempt, nothing stored at Google: every `generateContent`, the standard dispatch after a
-  flex capacity error included, sends `store: false` and `automaticContinuation: false`. A `CONTINUATION`
+- No hidden continuation, and request logging switched off: every `generateContent` sends
+  `automaticContinuation: false`, so the SDK never re-sends a request on its own, and `store: false`, Google's
+  request-level logging override (it overrides the project's logging setting for that request; it is not a
+  statement about any other retention at Google). An attempt is one dispatch, except that a flex call with
+  `flexFallback` makes a second, standard dispatch after a flex capacity error; both carry the two fields. A `CONTINUATION`
   finish is `length` with that response's usage and a warning; calls beside it are dropped; the
   continuation token is never replayed. Every SDK `FinishReason` member is mapped explicitly (policy blocks
   → `content_filter`, `MAX_TOKENS`/`CONTINUATION` → `length`, the rest → `other`).

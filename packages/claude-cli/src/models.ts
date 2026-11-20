@@ -106,9 +106,12 @@ const CONFIG_SCHEMAS: Record<ClaudeCliModelId, z.ZodType> = {
  * documents them for the API: 1M tokens of context and 128K tokens of output for
  * Fable 5.2, Opus 5.5, Sonnet 5.5 and Haiku 5.5
  * (`https://platform.claude.com/docs/en/about-claude/models/overview`, read
- * 2026-11-20). Documented, not live-verified: the value the `claude` CLI reports in
- * `modelUsage` for these ids has not been captured, and the CLI exposes no
- * output-size knob, so a call may run under a smaller output limit than the API's.
+ * 2026-11-20). For `claude-opus-5-5` the CLI itself reported the same two figures in
+ * the captured `modelUsage` (`__fixtures__/model-refresh-p-a1.json`, Claude Code
+ * 2.1.282, 2026-09-26). For the three ids registered on 2026-11-20 (Fable 5.2,
+ * Sonnet 5.5, Haiku 5.5) the figures are documented, not live-verified: no
+ * `modelUsage` has been captured for them, and the CLI exposes no output-size knob,
+ * so a call may run under a smaller output limit than the API's.
  */
 const CLAUDE_CLI_LIMITS: ModelLimits = {
   contextWindow: 1_000_000,

@@ -4,6 +4,8 @@
  * @module
  */
 
+import { readFileSync } from 'node:fs'
+
 import { describe, it, expect } from 'vitest'
 import { assertRegistryInvariants } from '@gullabs/testing'
 import {
@@ -133,8 +135,8 @@ describe('registry', () => {
 })
 
 describe('claude-cli limits and media', () => {
-  // The documented API figures (Anthropic models overview, read 2026-11-20), not a
-  // value the CLI has been captured reporting for these ids.
+  // The documented API figures (Anthropic models overview, read 2026-11-20). Only
+  // Opus 5.5 also has a CLI-reported value (the next test).
   it('states the documented 1M context and 128K output for every model, and admits no media', () => {
     for (const d of claudeCliModelDescriptors) {
       expect(d.limits, d.model).toEqual({
@@ -142,6 +144,32 @@ describe('claude-cli limits and media', () => {
         maxOutputTokens: 128_000,
       })
       expect(d.capabilities?.inputMimeTypes).toEqual([])
+    }
+  })
+
+  // The capture (Claude Code 2.1.282, 2026-09-26) holds a `modelUsage` for one id
+  // that is still registered. Its ids for removed models are not registry claims.
+  it('claude-opus-5-5 states the limits the CLI reported in the captured modelUsage', () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        new URL('./__fixtures__/model-refresh-p-a1.json', import.meta.url),
+        'utf8',
+      ),
+    ) as {
+      responses: Record<
+        string,
+        { modelUsage: Record<string, { contextWindow: number; maxOutputTokens: number }> }
+      >
+    }
+    const reported = fixture.responses['claude-opus-5-5']?.modelUsage['claude-opus-5-5']
+    expect(reported).toBeDefined()
+    expect(claudeCliRegistry.resolve('claude-cli', 'claude-opus-5-5')?.limits).toEqual({
+      contextWindow: reported?.contextWindow,
+      maxOutputTokens: reported?.maxOutputTokens,
+    })
+    const captured = Object.keys(fixture.responses)
+    for (const d of claudeCliModelDescriptors) {
+      if (d.model !== 'claude-opus-5-5') expect(captured, d.model).not.toContain(d.model)
     }
   })
 })

@@ -196,5 +196,7 @@ An older CLI does not know the id.
 The descriptors' `limits` are the documented API figures for all four models: 1M
 context and 128K output (Anthropic models overview,
 `https://platform.claude.com/docs/en/about-claude/models/overview`, read 2026-11-20).
-Documented, not live-verified: the value the CLI reports in `modelUsage` for these ids
-has not been captured, and the CLI exposes no output-size knob.
+For `claude-opus-5-5` the CLI reported the same two figures in the captured
+`modelUsage` (Claude Code 2.1.282, 2026-09-26). For `claude-fable-5-2`,
+`claude-sonnet-5-5` and `claude-haiku-5-5` they are documented, not live-verified: no
+`modelUsage` has been captured for those ids, and the CLI exposes no output-size knob.

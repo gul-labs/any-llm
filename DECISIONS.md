@@ -4234,9 +4234,10 @@ Everything here is documented, not live-verified: no CLI was run for it.
    `low` through `max` (Anthropic effort documentation), so the Haiku no-effort schema is gone. `ultracode`
    and `ultra` stay excluded: both are CLI workflow or delegation switches, not model levels.
 2. **Limits (replaces the last sentence of point 4).** `claude-cli` states the documented API figures,
-   1,000,000 context and 128,000 output for all four (Anthropic models overview); the value the CLI reports in
-   `modelUsage` for these ids has not been captured (no capture exists for the new ids), so the four limits are
-   not CLI-reported values, which point 4 above had made them for the old ids. `codex-cli` states, per model, the context window Codex
+   1,000,000 context and 128,000 output for all four (Anthropic models overview). For `claude-opus-5-5` the
+   2.1.282 capture reports the same two figures in `modelUsage`, and a test holds the descriptor equal to it.
+   For the three ids registered on 2026-11-20 no `modelUsage` has been captured, so their limits are API
+   figures, not the CLI-reported values point 4 above required. `codex-cli` states, per model, the context window Codex
    CLI runs by default (500,000 for `gpt-6.2-sol` and `gpt-6.1-terra`, 272,000 for `gpt-6.2-astra` and
    `gpt-6-luna`, from the model catalog bundled with Codex CLI 0.171.0), not the API's 1,050,000, because a call
    through this provider runs under the CLI's window; output is the API's 128,000.
