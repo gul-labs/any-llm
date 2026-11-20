@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { PGlite } from '@electric-sql/pglite'
 import { drizzle } from 'drizzle-orm/pglite'
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, onTestFinished } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { drizzleUsageSink } from './sink.js'
 import { llmCalls } from './schema.js'
@@ -87,8 +87,18 @@ function makeRecord(overrides: Partial<LlmCallRecord> = {}): LlmCallRecord {
 
 type PgliteDb = ReturnType<typeof drizzle>
 
+/**
+ * A fresh in-memory database for the current test, closed when the test finishes,
+ * whether it passed or failed. PGlite keeps its WASM heap resident until `close()`.
+ */
+function openPglite(): PGlite {
+  const pg = new PGlite()
+  onTestFinished(() => pg.close())
+  return pg
+}
+
 async function createTestDb(): Promise<PgliteDb> {
-  const pglite = new PGlite()
+  const pglite = openPglite()
   await pglite.exec(CREATE_TABLE_SQL)
   return drizzle({ client: pglite })
 }

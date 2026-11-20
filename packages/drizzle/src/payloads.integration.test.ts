@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { PGlite } from '@electric-sql/pglite'
 import { drizzle } from 'drizzle-orm/pglite'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, onTestFinished } from 'vitest'
 import {
   LlmError,
   createClient,
@@ -52,8 +52,18 @@ function ok(text = 'the answer'): AdapterResult {
   }
 }
 
-async function freshDb(): Promise<{ pg: PGlite; db: ReturnType<typeof drizzle> }> {
+/**
+ * A fresh in-memory database for the current test, closed when the test finishes,
+ * whether it passed or failed. PGlite keeps its WASM heap resident until `close()`.
+ */
+function openPglite(): PGlite {
   const pg = new PGlite()
+  onTestFinished(() => pg.close())
+  return pg
+}
+
+async function freshDb(): Promise<{ pg: PGlite; db: ReturnType<typeof drizzle> }> {
+  const pg = openPglite()
   await pg.exec(INSTALL_SQL)
   return { pg, db: drizzle({ client: pg }) }
 }
@@ -586,7 +596,7 @@ describe('purgeLlmCallPayloads runs in bounded batches', () => {
   }
 
   it('deletes in batches of batchSize, returns the total, and keeps newer payloads and every ledger row', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(INSTALL_SQL)
     const statements: string[] = []
     const db = drizzle({
@@ -605,7 +615,7 @@ describe('purgeLlmCallPayloads runs in bounded batches', () => {
   })
 
   it('never selects the deleted ids back: the statement returns one count', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(INSTALL_SQL)
     const statements: string[] = []
     const db = drizzle({
@@ -621,7 +631,7 @@ describe('purgeLlmCallPayloads runs in bounded batches', () => {
   })
 
   it('an exact multiple of the batch size ends with one empty batch, and zero rows is zero', async () => {
-    const pg = new PGlite()
+    const pg = openPglite()
     await pg.exec(INSTALL_SQL)
     const db = drizzle({ client: pg })
     await seed(pg, 10, 0)
@@ -639,7 +649,7 @@ describe('purgeLlmCallPayloads runs in bounded batches', () => {
   it.each([0, -1, 1.5, Number.NaN, 1_000_001, '5'])(
     'batchSize %s is bad_request and deletes nothing',
     async (batchSize) => {
-      const pg = new PGlite()
+      const pg = openPglite()
       await pg.exec(INSTALL_SQL)
       const db = drizzle({ client: pg })
       await seed(pg, 3, 0)
