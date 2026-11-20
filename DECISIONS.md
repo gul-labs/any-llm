@@ -4314,13 +4314,17 @@ the probe that would close it.
    and the bearer token to an unpinned URL): every 3xx, or an opaque redirect, is a non-retryable `server` error
    naming the status and location. `'manual'` rather than `'error'`, because `'error'` rejects inside `fetch`
    as an anonymous `TypeError` that cannot be told from a network failure and would classify as a retryable
-   connection error. A 200 that is not the stream is refused too: unless its `content-type` is exactly the media
-   type `text/event-stream` (type and subtype compared case-insensitively, optional surrounding whitespace,
-   optional parameters after `;`; a missing or empty header, a lookalike such as `text/event-stream+json`, and a
-   comma-joined list, which is not one media type under RFC 9110 §8.3.1, all fail), it is a non-retryable
+   connection error. A 200 that is not the stream is refused too: unless its `content-type` parses, as a whole,
+   as ONE media type under the RFC 9110 grammar (`type "/" subtype *( OWS ";" OWS [ parameter ] )`, `parameter =
+token "=" ( token / quoted-string )`) whose type and subtype are `text` and `event-stream`
+   (case-insensitive), it is a non-retryable
    `server` error that may have billed (a `fetch` that buffered or rewrote the answer: a bare JSON answer would
    otherwise decode to nothing and look like a retryable early end). Only a response that is
-   `text/event-stream` with a missing or empty body is the retryable early end. It uses two SDK modules whose runtime graph reads no environment variable and does not load
+   `text/event-stream` with a missing or empty body is the retryable early end. So a comma outside a quoted
+   string (two media types, which is what `Headers.get` joins duplicate fields into), a parameter the grammar
+   does not admit (`; =x`, `; charset`, `charset = x`, an unterminated quote), a missing or empty header and a
+   lookalike subtype (`event-stream+json`) are refused; a comma inside a quoted value and an empty parameter (a
+   trailing `;`, which the grammar's optional `parameter` admits) are accepted. It uses two SDK modules whose runtime graph reads no environment variable and does not load
    the client module (checked in the installed 7.60.0: `streaming.js`, `core/streaming.js`, `core/error.js`,
    `error.js`, `internal/{tslib,errors,shims}.js`, `internal/decoders/line.js`,
    `internal/utils/{bytes,log,values}.js`): `openai/error`, whose `APIError.generate` and connection errors are
@@ -4328,8 +4332,10 @@ the probe that would close it.
    parsed as JSON when it is JSON, an object without `error` wrapped as `{ error }`, the text as the message
    otherwise; a `fetch` rejection is `APIConnectionTimeoutError` when it is an `AbortError` or says it timed out,
    else `APIConnectionError`, the original as `cause`), so core's `classifyError`, `Retry-After` and the billing
-   checks see the same objects; and `openai/streaming`, whose `Stream.fromSSEResponse` decodes the events and
-   turns an `error` event into a status-less `APIError`. Both are imported dynamically after the key check. One
+   checks see the same objects; and `openai/streaming`, whose `Stream.fromSSEResponse` is used in its `'events'`
+   mode with event names: it parses each frame's JSON, stops at `[DONE]`, and yields `{ event, data }` for every
+   frame without deciding anything (its default `'legacy'` mode throws for `event: error` frames and for any
+   payload with an `error` field before the payload's shape could be checked). Both are imported dynamically after the key check. One
    side effect remains in that decoder: without a client it logs two fixed lines (no payload) through
    `console.error` when an event is not JSON, then throws. One HTTP request per attempt holds by construction.
    Tests: with every variable above set, a malformed and a well-formed `OPENAI_CUSTOM_HEADERS` included, the
@@ -4341,13 +4347,17 @@ the probe that would close it.
    through the SDK's `responses.stream()` helper: the helper needs a constructed client (item 4). The client
    iterates the decoded events and keeps only the terminal event's response object. Terminal event types are
    matched as own keys of a `Map`, so a provider-controlled `type` such as `constructor` or `__proto__` is never
-   taken as terminal. Every decoded event of type `error` is an error event, in both framings: a named
-   `event: error` frame (the decoder throws for it) and a data-only frame whose JSON has `type: "error"` (the
-   decoder yields it; the SDK's `ResponseStream` threw for it), both with the code and message read the same
-   way. Every decoded payload must be an object with an own, non-empty string `type`, checked before it can count
-   as output; JSON `null`, a number, a string, an array, `{}` or a bad `type`, and an event whose data is not JSON
-   at all (a truncated or corrupted frame), are a malformed body: a `server` error, retryable only before output,
-   `mayHaveBilled` after it, and never itself counted as output. A terminal event
+   taken as terminal. Each frame is decided in one place, in this order. (1) Shape: the payload must be an
+   object with an own, non-empty string `type`; JSON `null`, a number, a string, an array, `{}`, a bad `type`, and
+   a frame whose data is not JSON at all (a truncated or corrupted frame) are a malformed body, whatever the
+   frame's event name, so a named `event: error` frame with `null` or `{}`, and a data-only payload with an
+   `error` field but no `type`, are malformed, not an API error. (2) Framing: the streaming reference names each
+   SSE event after its payload's `type`, so a frame whose `event:` name differs from its `type` is not a
+   documented shape and is malformed too (neither wins); a data-only frame is read by its `type`. (3) Error: a
+   payload of type `error` is an error event in either framing, its code and message read as the SDK's
+   `ResponseStream` read them, and the error keeps the response's `x-request-id`. (4) Terminal, output and
+   lifecycle events as above. A malformed body is a `server` error, retryable only before output and
+   `mayHaveBilled` after it, and never itself counts as output. A terminal event
    (`response.completed`, `response.incomplete`, `response.failed`) is required: a stream that ends without one
    is a `server` error. The event type decides the status. Completed items and the terminal object are
    reconciled minimally: for each terminal output item with the same `id` as an item a
