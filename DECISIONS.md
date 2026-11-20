@@ -4482,8 +4482,10 @@ page), and announced that from 2026-12-01 requests to `gemini-2.5-pro` and `gemi
    request is a `model` turn, the API returns a `400` error." That request is `bad_request` before dispatch on
    `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.8-flash` and the four Gemini 4 models. The 3.8 Flash
    migration notes also say "ensure the final user turn contains non-empty text": on 3.8 Flash a final user
-   turn without non-empty text is `bad_request` unless it is a turn of tool results (the 2026-10-03 capture
-   shows 3.8 Flash accepting a function-response turn last). The text rule is not applied to Gemini 4, whose
+   turn without non-empty text (text that is not all whitespace) is `bad_request`, unless every part of that
+   turn is a tool result (the 2026-10-03 capture shows 3.8 Flash accepting a final turn made only of function
+   responses); a turn that mixes a tool result with any other part, or with whitespace-only text, needs the
+   text too. The text rule is not applied to Gemini 4, whose
    pages do not state it. The rules live in `@gullabs/google` (`request-rules.ts`), keyed by the canonical
    model id; core gains nothing (ADR-023).
 7. **Removals, with no alias.** `gemini-3.7-flash`, `gemini-2.5-pro` and `gemini-2.5-flash` are deleted

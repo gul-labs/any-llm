@@ -13,8 +13,8 @@
  *   returns a `400` error").
  * - Final user text: https://aistudio.google.com/docs/whats-new-gemini-3.8.md
  *   ("ensure the final user turn contains non-empty text", in the 3.8 Flash
- *   migration checklist; no other model is named). A final turn of function
- *   responses is exempt: the live capture of 2026-10-03
+ *   migration checklist; no other model is named). A final turn made entirely of
+ *   function responses is exempt: the live capture of 2026-10-03
  *   (`__fixtures__/thought-signatures-2026-10-03.json`) shows 3.8 Flash
  *   accepting a replay whose last turn holds only function responses.
  * - Gemini 4: the per-model pages under https://aistudio.google.com/docs/models
@@ -52,8 +52,8 @@ export interface GoogleRequestRules {
   /** A request whose last non-empty turn is a model turn is rejected. */
   readonly rejectsFinalModelTurn?: true
   /**
-   * The final turn, when it is a user turn of anything but function responses,
-   * must hold non-empty text.
+   * The final turn, when it is a user turn, must hold text that is not all
+   * whitespace, unless every part of it is a function response (tool result).
    */
   readonly requiresFinalUserText?: true
   /** Google Search is not admitted together with the flex tier. */

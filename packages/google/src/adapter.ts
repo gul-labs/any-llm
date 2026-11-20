@@ -533,8 +533,10 @@ function assertSamplingAllowed(
  * The final-turn rules of {@link GoogleRequestRules}, before dispatch: a last
  * non-empty turn that is a model turn (Google answers 400 on 3.6 Flash, 3.5
  * Flash-Lite and every later model), and, where the model documents it (3.8
- * Flash), a final user turn without non-empty text. A final turn of function
- * responses is not held to the text rule.
+ * Flash), a final user turn without non-empty text (text that is not all
+ * whitespace). Only a final turn made entirely of function responses (tool-result
+ * parts and nothing else, the shape the 2026-10-03 capture shows accepted) is
+ * exempt; a turn that mixes a tool result with any other part needs the text too.
  */
 function assertFinalTurnAdmitted(
   messages: readonly Message[],
@@ -567,11 +569,11 @@ function assertFinalTurnAdmitted(
   if (
     rules.requiresFinalUserText === true &&
     last.role === 'user' &&
-    !last.parts.some((part) => part.kind === 'tool-result') &&
-    !last.parts.some((part) => part.kind === 'text' && part.text.length > 0)
+    !last.parts.every((part) => part.kind === 'tool-result') &&
+    !last.parts.some((part) => part.kind === 'text' && part.text.trim() !== '')
   ) {
     throw new LlmError(
-      `${path} is the final user turn of a request to model "${model}" and holds no non-empty text; Google documents that this model's final user turn must contain non-empty text. Add a text part.`,
+      `${path} is the final user turn of a request to model "${model}" and holds no non-empty text; Google documents that this model's final user turn must contain non-empty text. Only a turn made entirely of tool results is exempt. Add a text part with non-whitespace text.`,
       {
         kind: 'bad_request',
         retryable: false,

@@ -382,6 +382,112 @@ describe('final-turn rules, before dispatch', () => {
     expect(sent).toHaveLength(2)
   })
 
+  describe('3.8 Flash final turn with a tool result: only a turn made entirely of tool results is exempt', () => {
+    const tools = [
+      {
+        name: 'lookup',
+        description: 'Look something up',
+        inputJsonSchema: { type: 'object', properties: { q: { type: 'string' } } },
+      },
+    ]
+    const RESULT = {
+      kind: 'tool-result' as const,
+      toolCallId: 'call_1',
+      toolName: 'lookup',
+      result: { a: 1 },
+    }
+    const IMAGE = { kind: 'inline-media' as const, mimeType: 'image/png', data: 'AAAA' }
+
+    /** Turn 1 (a signed call), then the final turn built from `parts`. */
+    async function finalTurn(parts: Message['parts']): Promise<unknown> {
+      responses.push(
+        ok([
+          {
+            functionCall: { id: 'call_1', name: 'lookup', args: { q: 'x' } },
+            thoughtSignature: 'c2ln',
+          },
+        ]),
+      )
+      const first = await geminiAdapter().run(request('gemini-3.8-flash', { tools }), CTX)
+      responses.push(ok())
+      return geminiAdapter()
+        .run(
+          request('gemini-3.8-flash', {
+            tools,
+            messages: [USER, first.message, { role: 'user', parts }],
+            transientProviderState: first.transientProviderState as JsonValue,
+          }),
+          CTX,
+        )
+        .then(
+          () => undefined,
+          (e: unknown) => e,
+        )
+    }
+
+    it('only tool results: dispatched', async () => {
+      expect(await finalTurn([RESULT])).toBeUndefined()
+      expect(sent).toHaveLength(2)
+    })
+
+    it('a tool result and an image without text: bad_request naming the turn, not dispatched', async () => {
+      const err = (await finalTurn([RESULT, IMAGE])) as LlmError
+      expect(err).toBeInstanceOf(LlmError)
+      expect(err).toMatchObject({
+        kind: 'bad_request',
+        retryable: false,
+        provider: 'google',
+      })
+      expect(err.issues?.[0]?.path).toBe('messages[2]')
+      expect(sent).toHaveLength(1)
+    })
+
+    it('a tool result, an image and non-empty text: dispatched', async () => {
+      expect(
+        await finalTurn([
+          RESULT,
+          IMAGE,
+          { kind: 'text', text: 'Describe the image too.' },
+        ]),
+      ).toBeUndefined()
+      expect(sent).toHaveLength(2)
+    })
+
+    it('a tool result, an image and whitespace-only text: bad_request', async () => {
+      const err = (await finalTurn([
+        RESULT,
+        IMAGE,
+        { kind: 'text', text: '  \n' },
+      ])) as LlmError
+      expect(err).toMatchObject({ kind: 'bad_request' })
+      expect(err.issues?.[0]?.path).toBe('messages[2]')
+      expect(sent).toHaveLength(1)
+    })
+
+    // The documented rule is "the final user turn contains non-empty text"; the
+    // only exemption is the captured shape, a turn of function responses alone.
+    // A turn that adds a text part is no longer that shape, and whitespace is
+    // not text, so it is rejected.
+    it('a tool result and whitespace-only text: bad_request (not the captured all-tool-result shape)', async () => {
+      const err = (await finalTurn([RESULT, { kind: 'text', text: ' ' }])) as LlmError
+      expect(err).toMatchObject({ kind: 'bad_request' })
+      expect(sent).toHaveLength(1)
+    })
+
+    it('a user turn of whitespace-only text alone: bad_request', async () => {
+      const err = await rejectionOf(
+        geminiAdapter().run(
+          request('gemini-3.8-flash', {
+            messages: [{ role: 'user', parts: [{ kind: 'text', text: '\t ' }] }],
+          }),
+          CTX,
+        ),
+      )
+      expect(err.kind).toBe('bad_request')
+      expect(sent).toHaveLength(0)
+    })
+  })
+
   it('Gemini 4 is not held to the 3.8 text rule (not documented for it)', async () => {
     responses.push(ok())
     await geminiAdapter().run(
