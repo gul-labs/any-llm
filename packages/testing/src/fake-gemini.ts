@@ -83,7 +83,7 @@ export interface GeminiUsageMetadataLike {
 export interface GeminiResponseLike {
   candidates?: GeminiCandidateLike[]
   usageMetadata?: GeminiUsageMetadataLike
-  /** Provider-specific model version string (e.g. `"gemini-2.5-pro-001"`). */
+  /** Provider-specific model version string (e.g. `"gemini-3.8-flash-001"`). */
   modelVersion?: string
   /** Provider-assigned response ID. */
   responseId?: string

@@ -29,7 +29,7 @@ import { MAX_TIMER_MS } from './client.js'
 import { geminiPricingSource } from './cost.js'
 import { GEMINI_PRICING } from './pricing.js'
 import { defaultGeminiRegistry } from './models.js'
-import { Gemini25ProConfigSchema } from './model-config/gemini-2.5-pro.js'
+import { Gemini25FlashLiteConfigSchema } from './model-config/gemini-2.5-flash-lite.js'
 import { Gemini36FlashConfigSchema } from './model-config/gemini-3.6-flash.js'
 import { Gemma431bItConfigSchema } from './model-config/gemma-4-31b-it.js'
 
@@ -42,7 +42,7 @@ function makeReq(
   config: ResolvedRequest['config'] = {},
   overrides: Partial<ResolvedRequest> = {},
 ): ResolvedRequest {
-  const model = overrides.model ?? 'gemini-2.5-flash'
+  const model = overrides.model ?? 'gemini-2.5-flash-lite'
   return {
     provider: 'google',
     model,
@@ -116,7 +116,7 @@ describe('httpOptions.timeout', () => {
   })
 
   it.each([
-    ['gemini-2.5-pro', Gemini25ProConfigSchema],
+    ['gemini-2.5-flash-lite', Gemini25FlashLiteConfigSchema],
     ['gemini-3.6-flash', Gemini36FlashConfigSchema],
     ['gemma-4-31b-it', Gemma431bItConfigSchema],
   ])(
@@ -186,12 +186,12 @@ describe('options a model cannot honour', () => {
 
   it('allowSchemaWithSearch is not in the Gemini 2.5 or Gemma schemas, which the adapter always rejects it for', () => {
     const parse = (
-      schema: typeof Gemini25ProConfigSchema | typeof Gemma431bItConfigSchema,
+      schema: typeof Gemini25FlashLiteConfigSchema | typeof Gemma431bItConfigSchema,
     ) =>
       schema.safeParse({
         providerOptions: { google: { allowSchemaWithSearch: true } },
       }).success
-    expect(parse(Gemini25ProConfigSchema)).toBe(false)
+    expect(parse(Gemini25FlashLiteConfigSchema)).toBe(false)
     expect(parse(Gemma431bItConfigSchema)).toBe(false)
     expect(
       Gemini36FlashConfigSchema.safeParse({
@@ -308,7 +308,7 @@ describe('flex fallback and the retry pin', () => {
       return fakeGeminiResponse({ text: 'ok' })
     })
     const result = await geminiAdapter({ client: fake }).run(
-      makeReq({ serviceTier: 'flex' }, { model: 'gemini-2.5-pro' }),
+      makeReq({ serviceTier: 'flex' }, { model: 'gemini-2.5-flash-lite' }),
       FAKE_CTX,
     )
     const warning = result.warnings.map((w) => w.message).join('\n')
@@ -324,7 +324,10 @@ describe('flex fallback and the retry pin', () => {
       return fakeGeminiResponse({ text: 'ok' })
     })
     const result = await geminiAdapter({ client: fake }).run(
-      makeReq({ serviceTier: 'flex', timeoutMs: 120_000 }, { model: 'gemini-2.5-pro' }),
+      makeReq(
+        { serviceTier: 'flex', timeoutMs: 120_000 },
+        { model: 'gemini-2.5-flash-lite' },
+      ),
       FAKE_CTX,
     )
     const warning = result.warnings.map((w) => w.message).join('\n')
@@ -361,7 +364,7 @@ describe('flex fallback and the retry pin', () => {
     })
     const { client, sink } = makeClient(fake)
     const result = await client.generate(
-      { provider: 'google', model: 'gemini-2.5-flash', messages },
+      { provider: 'google', model: 'gemini-2.5-flash-lite', messages },
       { auth: { apiKey: 'k' } },
     )
     expect(result.text).toBe('ok')
@@ -393,7 +396,7 @@ describe('flex fallback and the retry pin', () => {
       .generate(
         {
           provider: 'google',
-          model: 'gemini-2.5-flash',
+          model: 'gemini-2.5-flash-lite',
           messages,
           config: { serviceTier: 'flex' },
         },
@@ -406,8 +409,8 @@ describe('flex fallback and the retry pin', () => {
 
 describe('GEMINI_PRICING is deep-frozen', () => {
   it('no rate, long-context band or audio rate can be changed', () => {
-    const pro = GEMINI_PRICING['gemini-2.5-pro']!
-    const flash = GEMINI_PRICING['gemini-2.5-flash']!
+    const pro = GEMINI_PRICING['gemini-3.1-pro-preview']!
+    const flash = GEMINI_PRICING['gemini-2.5-flash-lite']!
     expect(Object.isFrozen(pro)).toBe(true)
     expect(Object.isFrozen(pro.standard)).toBe(true)
     expect(Object.isFrozen(pro.flex)).toBe(true)
@@ -461,7 +464,7 @@ describe('one pinned endpoint for the SDK and the REST countTokens (real SDK, st
     await adapter.countTokens!(
       {
         provider: 'google',
-        model: 'gemini-2.5-flash',
+        model: 'gemini-2.5-flash-lite',
         messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
       },
       FAKE_CTX,
@@ -469,16 +472,16 @@ describe('one pinned endpoint for the SDK and the REST countTokens (real SDK, st
     await adapter.countTokens!(
       {
         provider: 'google',
-        model: 'gemini-2.5-flash',
+        model: 'gemini-2.5-flash-lite',
         system: 'Be brief.',
         messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
       },
       FAKE_CTX,
     )
     expect(urls).toEqual([
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:countTokens',
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:countTokens',
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent',
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:countTokens',
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:countTokens',
     ])
   })
 })

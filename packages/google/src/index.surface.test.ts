@@ -41,7 +41,7 @@ describe('@gullabs/google package surface: grounding facts', () => {
       unit: 'query',
       microUsdPerUnit: 14_000,
     })
-    expect(surface.GEMINI_GROUNDING_PRICING['gemini-2.5-flash']).toEqual({
+    expect(surface.GEMINI_GROUNDING_PRICING['gemini-2.5-flash-lite']).toEqual({
       unit: 'prompt',
       microUsdPerUnit: 35_000,
     })
@@ -62,9 +62,9 @@ describe('@gullabs/google package surface: deleted citation helper', () => {
 
 describe('@gullabs/google package surface: token counting', () => {
   it('GeminiCountTokensParams/GeminiCountTokensResponseShape types are reachable', () => {
-    const params: GeminiCountTokensParams = { model: 'gemini-2.5-pro', contents: [] }
+    const params: GeminiCountTokensParams = { model: 'gemini-3.8-flash', contents: [] }
     const response: GeminiCountTokensResponseShape = { totalTokens: 1 }
-    expect(params.model).toBe('gemini-2.5-pro')
+    expect(params.model).toBe('gemini-3.8-flash')
     expect(response.totalTokens).toBe(1)
   })
 })

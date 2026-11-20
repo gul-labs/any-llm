@@ -243,7 +243,7 @@ function priceCall(model: string, usage: Usage, tier: string | undefined): Cost 
  * import { geminiPricingSource } from '@gullabs/google'
  *
  * const pricing = geminiPricingSource()
- * const cost = pricing.price('gemini-2.5-pro', usage, 'flex')
+ * const cost = pricing.price('gemini-3.8-flash', usage, 'flex')
  * ```
  */
 export function geminiPricingSource(): PricingSource {

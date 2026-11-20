@@ -45,8 +45,14 @@ function accepts(run: () => void): boolean {
 
 describe('portable JSON Schema subset', () => {
   it('covers every Gemini 3.x model the Google package registers', () => {
-    expect(GEMINI_3.length).toBeGreaterThanOrEqual(6)
-    expect(GEMMA.length).toBeGreaterThanOrEqual(2)
+    expect([...GEMINI_3].sort()).toEqual([
+      'gemini-3.1-flash-lite',
+      'gemini-3.1-pro-preview',
+      'gemini-3.5-flash-lite',
+      'gemini-3.6-flash',
+      'gemini-3.8-flash',
+    ])
+    expect([...GEMMA].sort()).toEqual(['gemma-4-26b-a4b-it', 'gemma-4-31b-it'])
   })
 
   describe.each(GEMINI_3)('against %s and xAI', (model) => {

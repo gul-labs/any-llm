@@ -323,7 +323,7 @@ describe('thinking budget at or above maxOutputTokens', () => {
   }
 
   it('warns, without rejecting, when the effort default budget is not below the cap', async () => {
-    const warnings = await warningsFor('gemini-2.5-flash', {
+    const warnings = await warningsFor('gemini-2.5-flash-lite', {
       maxOutputTokens: 4096,
       reasoning: { effort: 'high' },
     })
@@ -334,13 +334,13 @@ describe('thinking budget at or above maxOutputTokens', () => {
 
   it('warns on an explicit budget equal to the cap, not on one below it', async () => {
     expect(
-      await warningsFor('gemini-2.5-pro', {
+      await warningsFor('gemini-2.5-flash-lite', {
         maxOutputTokens: 2000,
         reasoning: { budgetTokens: 2000 },
       }),
     ).toHaveLength(1)
     expect(
-      await warningsFor('gemini-2.5-pro', {
+      await warningsFor('gemini-2.5-flash-lite', {
         maxOutputTokens: 2000,
         reasoning: { budgetTokens: 1999 },
       }),
@@ -349,13 +349,13 @@ describe('thinking budget at or above maxOutputTokens', () => {
 
   it('is silent with thinking off, with no cap set, and on level models', async () => {
     expect(
-      await warningsFor('gemini-2.5-flash', {
+      await warningsFor('gemini-2.5-flash-lite', {
         maxOutputTokens: 100,
         reasoning: { effort: 'none' },
       }),
     ).toHaveLength(0)
     expect(
-      await warningsFor('gemini-2.5-flash', { reasoning: { effort: 'high' } }),
+      await warningsFor('gemini-2.5-flash-lite', { reasoning: { effort: 'high' } }),
     ).toHaveLength(0)
   })
 

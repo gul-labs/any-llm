@@ -19,7 +19,7 @@
  * **Thinking tokens.** Already inside `outputTokens` (GROSS convention) and
  * billed at the output rate — no separate thinking lane.
  *
- * **Audio input.** Gemini 2.5 Flash, 2.5 Flash-Lite and 3.1 Flash-Lite charge
+ * **Audio input.** Gemini 2.5 Flash-Lite and 3.1 Flash-Lite charge
  * more for audio input than for text, image and video tokens ({@link GeminiRates.audio}).
  * The adapter records the prompt's per-modality token counts
  * (`usageMetadata.promptTokensDetails` and `cacheTokensDetails`) as
@@ -110,39 +110,6 @@ function tiers(standard: GeminiRates, flex: GeminiRates): GeminiTierRates {
  * 2026-10-01).
  */
 export const GEMINI_PRICING: Readonly<Record<string, GeminiTierRates>> = Object.freeze({
-  // Gemini 2.5 Pro. Flex cached equals standard on both context bands. No separate audio price.
-  'gemini-2.5-pro': tiers(
-    {
-      inputPerM: 1_250_000,
-      cachedPerM: 125_000,
-      outputPerM: 10_000_000,
-      gt200k: { inputPerM: 2_500_000, cachedPerM: 250_000, outputPerM: 15_000_000 },
-    },
-    {
-      inputPerM: 625_000,
-      cachedPerM: 125_000,
-      outputPerM: 5_000_000,
-      gt200k: { inputPerM: 1_250_000, cachedPerM: 250_000, outputPerM: 7_500_000 },
-    },
-  ),
-
-  // Gemini 2.5 Flash. Flex cached stays $0.03. Audio: $1.00 / cached $0.10 standard,
-  // $0.50 / cached $0.10 flex.
-  'gemini-2.5-flash': tiers(
-    {
-      inputPerM: 300_000,
-      cachedPerM: 30_000,
-      outputPerM: 2_500_000,
-      audio: { inputPerM: 1_000_000, cachedPerM: 100_000 },
-    },
-    {
-      inputPerM: 150_000,
-      cachedPerM: 30_000,
-      outputPerM: 1_250_000,
-      audio: { inputPerM: 500_000, cachedPerM: 100_000 },
-    },
-  ),
-
   // Gemini 2.5 Flash-Lite. Flex cached stays $0.01. Audio: $0.30 / cached $0.03
   // standard, $0.15 / cached $0.03 flex.
   'gemini-2.5-flash-lite': tiers(
@@ -177,13 +144,9 @@ export const GEMINI_PRICING: Readonly<Record<string, GeminiTierRates>> = Object.
     },
   ),
 
-  // Gemini 3.8 / 3.7 / 3.6 Flash intro rates (2026-09-25), one rate for all
+  // Gemini 3.8 / 3.6 Flash intro rates (2026-09-25), one rate for all
   // modalities. Flex cached is half of the intro cached rate. Re-snapshot on 2027-01-01.
   'gemini-3.8-flash': tiers(
-    { inputPerM: 750_000, cachedPerM: 75_000, outputPerM: 3_750_000 },
-    { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
-  ),
-  'gemini-3.7-flash': tiers(
     { inputPerM: 750_000, cachedPerM: 75_000, outputPerM: 3_750_000 },
     { inputPerM: 375_000, cachedPerM: 37_500, outputPerM: 1_875_000 },
   ),
@@ -255,12 +218,9 @@ const PER_GROUNDED_PROMPT: GeminiGroundingRate = Object.freeze({
 
 export const GEMINI_GROUNDING_PRICING: Readonly<Record<string, GeminiGroundingRate>> =
   Object.freeze({
-    'gemini-2.5-pro': PER_GROUNDED_PROMPT,
-    'gemini-2.5-flash': PER_GROUNDED_PROMPT,
     'gemini-2.5-flash-lite': PER_GROUNDED_PROMPT,
     'gemini-3.1-flash-lite': PER_QUERY,
     'gemini-3.8-flash': PER_QUERY,
-    'gemini-3.7-flash': PER_QUERY,
     'gemini-3.6-flash': PER_QUERY,
     'gemini-3.5-flash-lite': PER_QUERY,
     'gemini-3.1-pro-preview': PER_QUERY,

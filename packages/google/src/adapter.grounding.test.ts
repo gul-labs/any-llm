@@ -38,7 +38,7 @@ const FAKE_CTX: AdapterCtx = {
   logger: { info() {}, warn() {}, error() {}, debug() {} },
 }
 const GEMINI_3 = 'gemini-3.6-flash'
-const GEMINI_25 = 'gemini-2.5-flash'
+const GEMINI_25 = 'gemini-2.5-flash-lite'
 
 const SCHEMA = {
   type: 'object',
@@ -259,7 +259,7 @@ describe('providerOptions.google.allowSchemaWithSearch', () => {
     expect(fake.calls).toHaveLength(0)
   })
 
-  it.each(['gemini-2.5-pro', 'gemini-2.5-flash', 'gemma-4-31b-it', 'gemma-4-26b-a4b-it'])(
+  it.each(['gemini-2.5-flash-lite', 'gemma-4-31b-it', 'gemma-4-26b-a4b-it'])(
     '%s: schema + search is rejected with or without the opt-in, because no capture shows Search running there',
     async (model) => {
       const descriptor = descriptorFor(model)
@@ -312,14 +312,10 @@ describe('providerOptions.google.allowSchemaWithSearch', () => {
   })
 })
 
-const GEMINI_3_MODELS = [
-  'gemini-3.1-pro-preview',
-  'gemini-3.8-flash',
-  'gemini-3.7-flash',
-  'gemini-3.6-flash',
-  'gemini-3.5-flash-lite',
-  'gemini-3.1-flash-lite',
-]
+/** The registered Gemini 3.x models; the P4 capture holds a row for each (and keeps its rows for models since removed). */
+const GEMINI_3_MODELS = geminiModelDescriptors
+  .map((d) => d.model)
+  .filter((model) => model.startsWith('gemini-3.'))
 
 describe('P4: no Gemini 3.x model is default-on (live capture, 2026-10-03)', () => {
   interface Cell {
@@ -843,10 +839,16 @@ describe('live Gemini 2.5 usage with a repeated query (P5 capture, 2026-10-03)',
 
   const callFor = (model: string) => fixture.gemini25and3.find((c) => c.model === model)!
 
+  // The capture was taken on 2.5 Flash and 2.5 Pro, both since removed from the
+  // registry. Their responses are replayed under 2.5 Flash-Lite, the registered
+  // 2.5 model with the same per-prompt grounding price: what is tested is how
+  // the adapter and the pricing source read the captured response shape, not
+  // what Flash-Lite returns.
   it.each(['gemini-2.5-flash', 'gemini-2.5-pro'])(
-    '%s: occurrences are counted, tool-use tokens are recorded, and the call is estimated with a warning',
-    async (model) => {
-      const call = callFor(model)
+    'the %s capture: occurrences are counted, tool-use tokens are recorded, and the call is estimated with a warning',
+    async (capturedOn) => {
+      const call = callFor(capturedOn)
+      const model = GEMINI_25
       expect(call.webSearchQueries.length).toBe(3)
       expect(new Set(call.webSearchQueries).size).toBe(1)
       const sink = new RecordingSink()

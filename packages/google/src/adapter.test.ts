@@ -43,10 +43,10 @@ import { makeTestDescriptor } from '../../core/src/test-model-descriptor.js'
 function makeResolvedReq(overrides: Partial<ResolvedRequest> = {}): ResolvedRequest {
   return {
     provider: 'google',
-    model: 'gemini-2.5-pro',
+    model: 'gemini-2.5-flash-lite',
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
     config: { serviceTier: 'flex' },
-    modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-pro')!,
+    modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-flash-lite')!,
     ...overrides,
   }
 }
@@ -84,7 +84,7 @@ describe('observability', () => {
     expect(debugFn).toHaveBeenCalledOnce()
     const [obj, msg] = debugFn.mock.calls[0]!
     expect(msg).toBe('llm.adapter.dispatch')
-    expect(obj).toMatchObject({ model: 'gemini-2.5-pro' })
+    expect(obj).toMatchObject({ model: 'gemini-2.5-flash-lite' })
     expect(Array.isArray(obj.configKeys)).toBe(true)
   })
 })
@@ -239,11 +239,13 @@ describe('service tier', () => {
   it('omits serviceTier when a flex-capable model has no explicit tier', async () => {
     const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
     const adapter = geminiAdapter({ client })
-    const descriptor = geminiModelDescriptors.find((d) => d.model === 'gemini-2.5-pro')!
+    const descriptor = geminiModelDescriptors.find(
+      (d) => d.model === 'gemini-2.5-flash-lite',
+    )!
 
     await adapter.run(
       makeResolvedReq({
-        model: 'gemini-2.5-pro',
+        model: 'gemini-2.5-flash-lite',
         modelDescriptor: descriptor,
         config: {} as ResolvedRequest['config'],
       }),
@@ -479,7 +481,7 @@ describe('flex fallback', () => {
     const result = await llmClient.generate(
       {
         provider: 'google',
-        model: 'gemini-2.5-pro',
+        model: 'gemini-2.5-flash-lite',
         messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
         config: { serviceTier: 'flex' },
       },
@@ -507,9 +509,9 @@ describe('reasoning mapping', () => {
 
     await adapter.run(
       makeResolvedReq({
-        model: 'gemini-2.5-pro',
+        model: 'gemini-2.5-flash-lite',
         modelDescriptor: makeGoogleDescriptor({
-          model: 'gemini-2.5-pro',
+          model: 'gemini-2.5-flash-lite',
           capabilities: {
             reasoning: true,
             structuredOutput: true,
@@ -539,9 +541,9 @@ describe('reasoning mapping', () => {
 
     await adapter.run(
       makeResolvedReq({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-2.5-flash-lite',
         modelDescriptor: makeGoogleDescriptor({
-          model: 'gemini-2.5-flash',
+          model: 'gemini-2.5-flash-lite',
           capabilities: {
             reasoning: true,
             structuredOutput: true,
@@ -563,15 +565,15 @@ describe('reasoning mapping', () => {
     expect(call?.config?.thinkingConfig?.thinkingBudget).toBe(4096)
   })
 
-  it('maps admitted none effort to thinkingBudget=0 for gemini-2.5-flash', async () => {
+  it('maps admitted none effort to thinkingBudget=0 for gemini-2.5-flash-lite', async () => {
     const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
     const adapter = geminiAdapter({ client })
 
     await adapter.run(
       makeResolvedReq({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-2.5-flash-lite',
         modelDescriptor: makeGoogleDescriptor({
-          model: 'gemini-2.5-flash',
+          model: 'gemini-2.5-flash-lite',
           capabilities: {
             reasoning: true,
             structuredOutput: true,
@@ -657,7 +659,6 @@ describe('reasoning mapping', () => {
     )
     expect(descriptors.map((desc) => desc.model).sort()).toEqual([
       'gemini-3.1-pro-preview',
-      'gemini-3.7-flash',
       'gemini-3.8-flash',
     ])
 
@@ -679,12 +680,23 @@ describe('reasoning mapping', () => {
   it('rejects none on a budget model whose descriptor does not admit it', async () => {
     const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
     const adapter = geminiAdapter({ client })
-    const descriptor = geminiModelDescriptors.find((d) => d.model === 'gemini-2.5-pro')!
+    // No registered budget model lacks `none` (2.5 Flash-Lite admits it); the
+    // guard reads the descriptor, so a host descriptor without it is the subject.
+    const registered = geminiModelDescriptors.find(
+      (d) => d.model === 'gemini-2.5-flash-lite',
+    )!
+    const descriptor: ModelDescriptor = {
+      ...registered,
+      capabilities: {
+        ...registered.capabilities,
+        admittedReasoningEfforts: ['low', 'medium', 'high'],
+      },
+    }
 
     await expect(
       adapter.run(
         makeResolvedReq({
-          model: 'gemini-2.5-pro',
+          model: 'gemini-2.5-flash-lite',
           modelDescriptor: descriptor,
           config: { reasoning: { effort: 'none' } },
         }),
@@ -701,9 +713,9 @@ describe('reasoning mapping', () => {
     await expect(
       adapter.run(
         makeResolvedReq({
-          model: 'gemini-2.5-pro',
+          model: 'gemini-2.5-flash-lite',
           modelDescriptor: makeGoogleDescriptor({
-            model: 'gemini-2.5-pro',
+            model: 'gemini-2.5-flash-lite',
             capabilities: {
               reasoning: true,
               reasoningApi: 'budget',
@@ -770,9 +782,9 @@ describe('reasoning mapping', () => {
     await expect(
       adapter.run(
         makeResolvedReq({
-          model: 'gemini-2.5-pro',
+          model: 'gemini-2.5-flash-lite',
           modelDescriptor: makeGoogleDescriptor({
-            model: 'gemini-2.5-pro',
+            model: 'gemini-2.5-flash-lite',
             capabilities: {
               reasoning: true,
               structuredOutput: true,
@@ -803,9 +815,9 @@ describe('reasoning mapping', () => {
 
     const result = await adapter.run(
       makeResolvedReq({
-        model: 'gemini-2.5-pro',
+        model: 'gemini-2.5-flash-lite',
         modelDescriptor: makeGoogleDescriptor({
-          model: 'gemini-2.5-pro',
+          model: 'gemini-2.5-flash-lite',
           capabilities: {
             reasoning: true,
             structuredOutput: true,
@@ -830,9 +842,9 @@ describe('reasoning mapping', () => {
 
     await adapter.run(
       makeResolvedReq({
-        model: 'gemini-2.5-pro',
+        model: 'gemini-2.5-flash-lite',
         modelDescriptor: makeGoogleDescriptor({
-          model: 'gemini-2.5-pro',
+          model: 'gemini-2.5-flash-lite',
           capabilities: {
             reasoning: true,
             structuredOutput: true,
@@ -1186,7 +1198,9 @@ describe('providerOptions.google lockdown', () => {
   ])('rejects reserved key %s in providerOptions.google', async (_key, googleOptions) => {
     const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
     const adapter = geminiAdapter({ client })
-    const descriptor = geminiModelDescriptors.find((d) => d.model === 'gemini-2.5-pro')!
+    const descriptor = geminiModelDescriptors.find(
+      (d) => d.model === 'gemini-2.5-flash-lite',
+    )!
 
     await expect(
       adapter.run(
@@ -1290,11 +1304,11 @@ describe('providerOptions.google lockdown', () => {
 describe('modelVersion and responseId', () => {
   it('passes modelVersion from response', async () => {
     const client = makeFakeGemini(
-      fakeGeminiResponse({ text: 'ok', modelVersion: 'gemini-2.5-pro-001' }),
+      fakeGeminiResponse({ text: 'ok', modelVersion: 'gemini-2.5-flash-lite-001' }),
     )
     const adapter = geminiAdapter({ client })
     const result = await adapter.run(makeResolvedReq(), FAKE_CTX)
-    expect(result.modelVersion).toBe('gemini-2.5-pro-001')
+    expect(result.modelVersion).toBe('gemini-2.5-flash-lite-001')
   })
 
   it('passes responseId from response', async () => {
@@ -1342,14 +1356,17 @@ describe('message role mapping', () => {
     await adapter.run(
       {
         provider: 'google',
-        model: 'gemini-2.5-pro',
+        model: 'gemini-2.5-flash-lite',
         messages: [
           { role: 'user', parts: [{ kind: 'text', text: 'Hello' }] },
           { role: 'assistant', parts: [{ kind: 'text', text: 'Hi there' }] },
           { role: 'user', parts: [{ kind: 'text', text: 'How are you?' }] },
         ],
         config: { serviceTier: 'flex' },
-        modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-pro')!,
+        modelDescriptor: defaultGeminiRegistry.resolve(
+          'google',
+          'gemini-2.5-flash-lite',
+        )!,
       },
       FAKE_CTX,
     )
@@ -1418,7 +1435,7 @@ describe('full-stack integration', () => {
         cachedContentTokenCount: 20,
         totalTokenCount: 180,
         finishReason: 'STOP',
-        modelVersion: 'gemini-2.5-pro-001',
+        modelVersion: 'gemini-2.5-flash-lite-001',
         responseId: 'integration-resp-1',
       }),
     )
@@ -1442,7 +1459,7 @@ describe('full-stack integration', () => {
     const result = await client.generate(
       {
         provider: 'google',
-        model: 'gemini-2.5-pro',
+        model: 'gemini-2.5-flash-lite',
         messages: [
           {
             role: 'user',
@@ -1460,7 +1477,7 @@ describe('full-stack integration', () => {
 
     // Validate the result
     expect(result.output).toEqual({ answer: 'Paris', confidence: 0.99 })
-    expect(result.modelVersion).toBe('gemini-2.5-pro-001')
+    expect(result.modelVersion).toBe('gemini-2.5-flash-lite-001')
     expect(result.responseId).toBe('integration-resp-1')
     expect(result.finishReason).toBe('stop')
 
@@ -1470,7 +1487,7 @@ describe('full-stack integration', () => {
     expect(result.usage.thinkingTokens).toBe(30)
     expect(result.usage.cachedInputTokens).toBe(20)
 
-    // Cost should be present (gemini-2.5-pro is in the pricing table)
+    // Cost should be present (gemini-2.5-flash-lite is in the pricing table)
     expect(result.cost).toBeDefined()
     expect(result.cost?.microUsd).not.toBeNull()
 
@@ -1482,8 +1499,8 @@ describe('full-stack integration', () => {
     expect(record.callId).toBe('call_1')
     expect(record.attemptId).toBe('attempt_1')
     expect(record.provider).toBe('google')
-    expect(record.model).toBe('gemini-2.5-pro')
-    expect(record.modelVersion).toBe('gemini-2.5-pro-001')
+    expect(record.model).toBe('gemini-2.5-flash-lite')
+    expect(record.modelVersion).toBe('gemini-2.5-flash-lite-001')
     expect(record.responseId).toBe('integration-resp-1')
 
     // Usage on record
@@ -1515,7 +1532,7 @@ describe('full-stack integration', () => {
       client.generate(
         {
           provider: 'google',
-          model: 'gemini-2.5-pro',
+          model: 'gemini-2.5-flash-lite',
           messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Bad prompt' }] }],
         },
         { auth: { apiKey: 'test-key' } },
@@ -1612,7 +1629,7 @@ describe('JSON Schema structured output', () => {
     const result = await llmClient.generate(
       {
         provider: 'google',
-        model: 'gemini-2.5-pro',
+        model: 'gemini-2.5-flash-lite',
         messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Name?' }] }],
         output: { jsonSchema: { type: 'object', additionalProperties: true } },
       },
@@ -1637,7 +1654,7 @@ describe('JSON Schema structured output', () => {
     const result = await llmClient.generate(
       {
         provider: 'google',
-        model: 'gemini-2.5-pro',
+        model: 'gemini-2.5-flash-lite',
         messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Name?' }] }],
         output: { jsonSchema: { type: 'object', additionalProperties: true } },
       },
@@ -1996,25 +2013,23 @@ describe('transport timeout (httpOptions.timeout)', () => {
 // ---------------------------------------------------------------------------
 
 describe('grounding — model-aware tool guard', () => {
-  it.each([
-    'gemini-3.5-flash-lite',
-    'gemini-3.6-flash',
-    'gemini-3.7-flash',
-    'gemini-3.8-flash',
-  ])('allows googleSearch on %s with its descriptor', async (model) => {
-    const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
-    const adapter = geminiAdapter({ client })
-    await adapter.run(
-      makeResolvedReq({
-        model,
-        modelDescriptor: defaultGeminiRegistry.resolve('google', model)!,
-        config: { providerOptions: { google: { tools: [{ googleSearch: {} }] } } },
-      }),
-      FAKE_CTX,
-    )
-    const call = client.calls[0] as { config?: { tools?: unknown[] } }
-    expect(call.config?.tools).toEqual([{ googleSearch: {} }])
-  })
+  it.each(['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.8-flash'])(
+    'allows googleSearch on %s with its descriptor',
+    async (model) => {
+      const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
+      const adapter = geminiAdapter({ client })
+      await adapter.run(
+        makeResolvedReq({
+          model,
+          modelDescriptor: defaultGeminiRegistry.resolve('google', model)!,
+          config: { providerOptions: { google: { tools: [{ googleSearch: {} }] } } },
+        }),
+        FAKE_CTX,
+      )
+      const call = client.calls[0] as { config?: { tools?: unknown[] } }
+      expect(call.config?.tools).toEqual([{ googleSearch: {} }])
+    },
+  )
 
   it('rejects a direct adapter request without a descriptor', async () => {
     const adapter = geminiAdapter({
@@ -2034,7 +2049,7 @@ describe('grounding — model-aware tool guard', () => {
     await expect(
       adapter.run(
         makeResolvedReq({
-          model: 'gemini-2.5-pro',
+          model: 'gemini-2.5-flash-lite',
           modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-3.8-flash')!,
         }),
         FAKE_CTX,
@@ -2046,7 +2061,6 @@ describe('grounding — model-aware tool guard', () => {
   const GEMINI_3_MODELS = [
     'gemini-3.1-pro-preview',
     'gemini-3.8-flash',
-    'gemini-3.7-flash',
     'gemini-3.6-flash',
     'gemini-3.5-flash-lite',
     'gemini-3.1-flash-lite',
@@ -2131,7 +2145,9 @@ describe('grounding — model-aware tool guard', () => {
   it('rejects structured output + googleSearch when the descriptor does not admit it', async () => {
     const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
     const adapter = geminiAdapter({ client })
-    const descriptor = geminiModelDescriptors.find((d) => d.model === 'gemini-2.5-pro')!
+    const descriptor = geminiModelDescriptors.find(
+      (d) => d.model === 'gemini-2.5-flash-lite',
+    )!
     expect(descriptor.capabilities?.structuredOutputWithTools).toBeUndefined()
 
     const err = await adapter
@@ -2230,7 +2246,7 @@ describe('grounding — model-aware tool guard', () => {
       llmClient.generate(
         {
           provider: 'google',
-          model: 'gemini-2.5-pro',
+          model: 'gemini-2.5-flash-lite',
           messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
           output: { jsonSchema: { type: 'object', additionalProperties: true } },
           config: {
@@ -2255,7 +2271,9 @@ describe('grounding — model-aware tool guard', () => {
       fakeGeminiResponse({ text: 'Paris', groundingMetadata: fakeGrounding }),
     )
     const adapter = geminiAdapter({ client })
-    const descriptor = geminiModelDescriptors.find((d) => d.model === 'gemini-2.5-pro')!
+    const descriptor = geminiModelDescriptors.find(
+      (d) => d.model === 'gemini-2.5-flash-lite',
+    )!
 
     const result = await adapter.run(
       makeResolvedReq({
@@ -2347,7 +2365,7 @@ describe('grounding — providerMetadata merge', () => {
     const result = await llmClient.generate(
       {
         provider: 'google',
-        model: 'gemini-2.5-pro',
+        model: 'gemini-2.5-flash-lite',
         messages: [
           { role: 'user', parts: [{ kind: 'text', text: 'Capital of France?' }] },
         ],
@@ -2388,7 +2406,7 @@ describe('grounding — providerMetadata merge', () => {
 
 describe('grounding — registry capabilities', () => {
   it('every Gemini model descriptor has capabilities.grounding === true', () => {
-    expect(geminiModelDescriptors).toHaveLength(9)
+    expect(geminiModelDescriptors).toHaveLength(6)
     for (const desc of geminiModelDescriptors) {
       expect(desc.capabilities?.grounding).toBe(true)
     }
@@ -2423,7 +2441,7 @@ describe('google function calling', () => {
     const result = await adapter.run(
       makeResolvedReq({
         modelDescriptor: {
-          ...defaultGeminiRegistry.resolve('google', 'gemini-2.5-pro')!,
+          ...defaultGeminiRegistry.resolve('google', 'gemini-2.5-flash-lite')!,
         },
         tools: [
           {
@@ -2454,7 +2472,10 @@ describe('google function calling', () => {
     const adapter = geminiAdapter({ client })
     const result = await adapter.run(
       makeResolvedReq({
-        modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-pro')!,
+        modelDescriptor: defaultGeminiRegistry.resolve(
+          'google',
+          'gemini-2.5-flash-lite',
+        )!,
         tools: [
           { name: 'lookup', description: 'd', inputJsonSchema: { type: 'object' } },
         ],
@@ -2483,7 +2504,10 @@ describe('google function calling', () => {
     const adapter = geminiAdapter({ client })
     const result = await adapter.run(
       makeResolvedReq({
-        modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-pro')!,
+        modelDescriptor: defaultGeminiRegistry.resolve(
+          'google',
+          'gemini-2.5-flash-lite',
+        )!,
         tools: [
           { name: 'lookup', description: 'd', inputJsonSchema: { type: 'object' } },
         ],
@@ -2515,7 +2539,10 @@ describe('google function calling', () => {
     const adapter = geminiAdapter({ client })
     const result = await adapter.run(
       makeResolvedReq({
-        modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-pro')!,
+        modelDescriptor: defaultGeminiRegistry.resolve(
+          'google',
+          'gemini-2.5-flash-lite',
+        )!,
         tools: [
           { name: 'lookup', description: 'd', inputJsonSchema: { type: 'object' } },
         ],
@@ -2533,7 +2560,10 @@ describe('google function calling', () => {
     const adapter = geminiAdapter({ client })
     await adapter.run(
       makeResolvedReq({
-        modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-pro')!,
+        modelDescriptor: defaultGeminiRegistry.resolve(
+          'google',
+          'gemini-2.5-flash-lite',
+        )!,
         tools: [
           {
             name: 'get_temperature',
@@ -2608,7 +2638,10 @@ describe('google function calling', () => {
     const adapter = geminiAdapter({ client })
     await adapter.run(
       makeResolvedReq({
-        modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-pro')!,
+        modelDescriptor: defaultGeminiRegistry.resolve(
+          'google',
+          'gemini-2.5-flash-lite',
+        )!,
         tools: [{ name: 'f', description: 'd', inputJsonSchema: { type: 'object' } }],
         toolChoice: choice,
       }),
@@ -2629,7 +2662,7 @@ describe('google function calling', () => {
         makeResolvedReq({
           tools: [{ name: 'f', description: 'd', inputJsonSchema: { type: 'object' } }],
           modelDescriptor: makeGoogleDescriptor({
-            model: 'gemini-2.5-pro',
+            model: 'gemini-2.5-flash-lite',
             capabilities: { serviceTiers: ['flex', 'standard'], functionCalling: false },
           }),
         }),
@@ -2645,7 +2678,10 @@ describe('google function calling', () => {
     await expect(
       adapter.run(
         makeResolvedReq({
-          modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-pro')!,
+          modelDescriptor: defaultGeminiRegistry.resolve(
+            'google',
+            'gemini-2.5-flash-lite',
+          )!,
           tools: [{ name: 'f', description: 'd', inputJsonSchema: { type: 'object' } }],
           config: { providerOptions: { google: { tools: [{ googleSearch: {} }] } } },
         }),
@@ -2697,7 +2733,7 @@ describe('fixed-sampling defensive check', () => {
       adapter.run(
         {
           provider: 'google',
-          model: 'gemini-2.5-pro',
+          model: 'gemini-2.5-flash-lite',
           messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
           config: {
             serviceTier: 'flex',
@@ -2706,8 +2742,8 @@ describe('fixed-sampling defensive check', () => {
             } as unknown as ProviderOptions,
           },
           modelDescriptor: makeGoogleDescriptor({
-            model: 'gemini-2.5-pro',
-            pricingFamily: 'gemini-2.5-pro',
+            model: 'gemini-2.5-flash-lite',
+            pricingFamily: 'gemini-2.5-flash-lite',
             capabilities: {
               reasoning: true,
               structuredOutput: true,
@@ -2895,23 +2931,28 @@ describe('client-side flex AbortSignal ceiling', () => {
 // ---------------------------------------------------------------------------
 
 describe('declared model aliases', () => {
-  const canonical = geminiModelDescriptors.find((d) => d.model === 'gemini-2.5-pro')!
-  const aliased: ModelDescriptor = { ...canonical, aliases: ['gemini-2.5-pro-001'] }
+  const canonical = geminiModelDescriptors.find(
+    (d) => d.model === 'gemini-2.5-flash-lite',
+  )!
+  const aliased: ModelDescriptor = {
+    ...canonical,
+    aliases: ['gemini-2.5-flash-lite-001'],
+  }
 
   it('accepts a declared alias on a first-turn dispatch and sends it to the SDK verbatim', async () => {
     const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
     await geminiAdapter({ client }).run(
-      makeResolvedReq({ model: 'gemini-2.5-pro-001', modelDescriptor: aliased }),
+      makeResolvedReq({ model: 'gemini-2.5-flash-lite-001', modelDescriptor: aliased }),
       FAKE_CTX,
     )
-    expect((client.calls[0] as { model: string }).model).toBe('gemini-2.5-pro-001')
+    expect((client.calls[0] as { model: string }).model).toBe('gemini-2.5-flash-lite-001')
   })
 
   it('rejects a string that is neither the canonical id nor a declared alias', async () => {
     const client = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
     await expect(
       geminiAdapter({ client }).run(
-        makeResolvedReq({ model: 'gemini-2.5-pro-002', modelDescriptor: aliased }),
+        makeResolvedReq({ model: 'gemini-2.5-flash-lite-002', modelDescriptor: aliased }),
         FAKE_CTX,
       ),
     ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
@@ -2923,11 +2964,11 @@ describe('declared model aliases', () => {
     const foreign = makeTestDescriptor({
       provider: 'xai',
       model: 'grok-4.5',
-      aliases: ['gemini-2.5-pro-001'],
+      aliases: ['gemini-2.5-flash-lite-001'],
     })
     await expect(
       geminiAdapter({ client }).run(
-        makeResolvedReq({ model: 'gemini-2.5-pro-001', modelDescriptor: foreign }),
+        makeResolvedReq({ model: 'gemini-2.5-flash-lite-001', modelDescriptor: foreign }),
         FAKE_CTX,
       ),
     ).rejects.toMatchObject({ kind: 'bad_request', retryable: false })
@@ -2949,7 +2990,7 @@ describe('declared model aliases', () => {
     })
     const request = {
       provider: 'google',
-      model: 'gemini-2.5-pro-001',
+      model: 'gemini-2.5-flash-lite-001',
       messages: [
         { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'hi' }] },
       ],
@@ -2957,18 +2998,18 @@ describe('declared model aliases', () => {
 
     await llm.generate(request, { auth: { apiKey: 'test-key' } })
     const viaCanonical = await llm.generate(
-      { ...request, model: 'gemini-2.5-pro' },
+      { ...request, model: 'gemini-2.5-flash-lite' },
       { auth: { apiKey: 'test-key' } },
     )
 
-    expect((client.calls[0] as { model: string }).model).toBe('gemini-2.5-pro-001')
-    expect(sink.records[0]!.model).toBe('gemini-2.5-pro-001')
+    expect((client.calls[0] as { model: string }).model).toBe('gemini-2.5-flash-lite-001')
+    expect(sink.records[0]!.model).toBe('gemini-2.5-flash-lite-001')
     expect(sink.records[0]!.costMicroUsd).toBeGreaterThan(0)
     expect(sink.records[0]!.costMicroUsd).toBe(viaCanonical.cost?.microUsd)
 
     await expect(
       llm.generate(
-        { ...request, model: 'gemini-2.5-pro-002' },
+        { ...request, model: 'gemini-2.5-flash-lite-002' },
         { auth: { apiKey: 'test-key' } },
       ),
     ).rejects.toMatchObject({ kind: 'bad_request' })
@@ -2977,7 +3018,7 @@ describe('declared model aliases', () => {
 
 describe('middleware cannot reroute on the built-in registry (ADR-037)', () => {
   it('a swapped modelDescriptor and post-next provider/model assignments change neither the SDK model nor the price', async () => {
-    const flash = defaultGeminiRegistry.resolve('google', 'gemini-2.5-flash')!
+    const flash = defaultGeminiRegistry.resolve('google', 'gemini-2.5-flash-lite')!
     const client = makeFakeGemini(
       fakeGeminiResponse({
         text: 'ok',
@@ -2999,7 +3040,7 @@ describe('middleware cannot reroute on the built-in registry (ADR-037)', () => {
           async intercept(req, ctx, next) {
             ;(req as { modelDescriptor?: ModelDescriptor }).modelDescriptor = flash
             const out = await next(req, ctx)
-            ;(req as { model: string }).model = 'gemini-2.5-flash'
+            ;(req as { model: string }).model = 'gemini-2.5-flash-lite'
             return out
           },
         },
@@ -3007,17 +3048,21 @@ describe('middleware cannot reroute on the built-in registry (ADR-037)', () => {
     })
     const request = {
       provider: 'google',
-      model: 'gemini-2.5-pro',
+      model: 'gemini-3.1-pro-preview',
       messages: [
         { role: 'user' as const, parts: [{ kind: 'text' as const, text: 'hi' }] },
       ],
     }
 
     const out = await llm.generate(request, { auth: { apiKey: 'test-key' } })
-    const baseline = geminiPricingSource().price('gemini-2.5-pro', out.usage)
+    const baseline = geminiPricingSource().price('gemini-3.1-pro-preview', out.usage)
+    // The swap target is priced differently, so a reroute would show.
+    expect(
+      geminiPricingSource().price('gemini-2.5-flash-lite', out.usage).microUsd,
+    ).not.toBe(baseline.microUsd)
 
-    expect((client.calls[0] as { model: string }).model).toBe('gemini-2.5-pro')
+    expect((client.calls[0] as { model: string }).model).toBe('gemini-3.1-pro-preview')
     expect(out.cost?.microUsd).toBe(baseline.microUsd)
-    expect(sink.records[0]!.model).toBe('gemini-2.5-pro')
+    expect(sink.records[0]!.model).toBe('gemini-3.1-pro-preview')
   })
 })

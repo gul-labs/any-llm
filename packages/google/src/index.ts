@@ -11,7 +11,7 @@
  * })
  *
  * const result = await client.generate(
- *   { provider: 'google', model: 'gemini-2.5-pro', messages: [...] },
+ *   { provider: 'google', model: 'gemini-3.8-flash', messages: [...] },
  *   { auth: { apiKey: process.env.GEMINI_API_KEY! } },
  * )
  * ```

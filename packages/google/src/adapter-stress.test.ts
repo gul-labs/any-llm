@@ -60,10 +60,10 @@ const MESSAGES = [
 function makeReq(overrides: Partial<ResolvedRequest> = {}): ResolvedRequest {
   return {
     provider: 'google',
-    model: 'gemini-2.5-pro',
+    model: 'gemini-2.5-flash-lite',
     messages: MESSAGES,
     config: { serviceTier: 'flex' },
-    modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-pro')!,
+    modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-flash-lite')!,
     ...overrides,
   }
 }
@@ -600,7 +600,7 @@ describe('adapter-stress: non-JSON text + structured output → outputParsed fal
       const result = await client.generate(
         {
           provider: 'google',
-          model: 'gemini-2.5-pro',
+          model: 'gemini-2.5-flash-lite',
           messages: MESSAGES,
           output: { jsonSchema: { type: 'object', additionalProperties: true } },
         },
@@ -670,7 +670,7 @@ describe('adapter-stress: non-JSON text + structured output → outputParsed fal
       const result = await client.generate(
         {
           provider: 'google',
-          model: 'gemini-2.5-pro',
+          model: 'gemini-2.5-flash-lite',
           messages: MESSAGES,
           output: { jsonSchema: { type: 'object', additionalProperties: true } },
         },
@@ -825,7 +825,7 @@ describe('adapter-stress: injected HTTP errors → correct classification', () =
 
       const caught = await client
         .generate(
-          { provider: 'google', model: 'gemini-2.5-pro', messages: MESSAGES },
+          { provider: 'google', model: 'gemini-2.5-flash-lite', messages: MESSAGES },
           { auth: TEST_AUTH },
         )
         .then(

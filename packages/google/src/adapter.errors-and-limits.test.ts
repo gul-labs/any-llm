@@ -34,10 +34,10 @@ const FAKE_CTX: AdapterCtx = {
 function makeReq(overrides: Partial<ResolvedRequest> = {}): ResolvedRequest {
   return {
     provider: 'google',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-2.5-flash-lite',
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
     config: {},
-    modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-flash')!,
+    modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-flash-lite')!,
     ...overrides,
   }
 }
@@ -210,7 +210,10 @@ describe('output-side filter stop', () => {
     const err = await failure(
       geminiAdapter({ client }).run(
         makeReq({
-          modelDescriptor: defaultGeminiRegistry.resolve('google', 'gemini-2.5-flash')!,
+          modelDescriptor: defaultGeminiRegistry.resolve(
+            'google',
+            'gemini-2.5-flash-lite',
+          )!,
           config: {
             providerOptions: {
               google: { tools: [{ googleSearch: {} }], requireGrounding: true },
@@ -242,7 +245,7 @@ describe('output-side filter stop', () => {
       client.generate(
         {
           provider: 'google',
-          model: 'gemini-2.5-flash',
+          model: 'gemini-2.5-flash-lite',
           messages: [{ role: 'user', parts: [{ kind: 'text', text: 'x' }] }],
         },
         { auth: { apiKey: 'k' } },
@@ -623,7 +626,7 @@ describe('inline payload size check', () => {
       geminiAdapter({ client }).countTokens!(
         {
           provider: 'google',
-          model: 'gemini-2.5-flash',
+          model: 'gemini-2.5-flash-lite',
           messages: [
             {
               role: 'user',
@@ -652,7 +655,7 @@ describe('inline payload size check', () => {
 function makeCountReq(overrides: Partial<TokenCountRequest> = {}): TokenCountRequest {
   return {
     provider: 'google',
-    model: 'gemini-2.5-pro',
+    model: 'gemini-2.5-flash-lite',
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
     ...overrides,
   }
@@ -664,7 +667,7 @@ describe('countTokens carries system and tools', () => {
     const runClient = makeFakeGemini(fakeGeminiResponse({ text: 'ok' }))
     const system = 'Be brief.'
     const result = await geminiAdapter({ client: countClient }).countTokens!(
-      makeCountReq({ model: 'gemini-2.5-flash', system, tools: [TOOL] }),
+      makeCountReq({ model: 'gemini-2.5-flash-lite', system, tools: [TOOL] }),
       FAKE_CTX,
     )
     expect(result).toMatchObject({ totalTokens: 77, accuracy: 'exact' })
@@ -794,7 +797,7 @@ describe('countTokens on the wire (real @google/genai, stubbed fetch)', () => {
     const result = await adapter.countTokens!(makeCountReq(), ctx)
     expect(result.totalTokens).toBe(11)
     expect(sent).toHaveLength(1)
-    expect(sent[0]!.url).toMatch(/\/models\/gemini-2\.5-pro:countTokens$/)
+    expect(sent[0]!.url).toMatch(/\/models\/gemini-2\.5-flash-lite:countTokens$/)
     expect(sent[0]!.body).toEqual({
       contents: [{ role: 'user', parts: [{ text: 'Hello' }] }],
     })
@@ -816,13 +819,13 @@ describe('countTokens on the wire (real @google/genai, stubbed fetch)', () => {
     expect(result.raw).toMatchObject({ totalTokens: 123 })
     expect(sent).toHaveLength(1)
     expect(sent[0]!.url).toBe(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:countTokens',
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:countTokens',
     )
     expect(sent[0]!.headers['x-goog-api-key']).toBe('wire-key')
     expect(sent[0]!.headers['content-type']).toBe('application/json')
     expect(sent[0]!.body).toEqual({
       generateContentRequest: {
-        model: 'models/gemini-2.5-pro',
+        model: 'models/gemini-2.5-flash-lite',
         contents: [{ role: 'user', parts: [{ text: 'Hello' }] }],
         systemInstruction: { parts: [{ text: 'Be brief.' }] },
         tools: [
@@ -1031,7 +1034,7 @@ describe('Gemini RetryInfo against the default retryMiddleware', () => {
       .generate(
         {
           provider: 'google',
-          model: 'gemini-2.5-flash',
+          model: 'gemini-2.5-flash-lite',
           messages: [{ role: 'user', parts: [{ kind: 'text', text: 'x' }] }],
         },
         { auth: { apiKey: 'k' } },

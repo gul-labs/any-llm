@@ -44,13 +44,10 @@
 import type { ModelLimits } from '@gullabs/core'
 
 type GoogleModelId =
-  | 'gemini-2.5-pro'
-  | 'gemini-2.5-flash'
   | 'gemini-2.5-flash-lite'
   | 'gemini-3.1-flash-lite'
   | 'gemini-3.1-pro-preview'
   | 'gemini-3.8-flash'
-  | 'gemini-3.7-flash'
   | 'gemini-3.6-flash'
   | 'gemini-3.5-flash-lite'
   | 'gemma-4-31b-it'
@@ -63,13 +60,10 @@ const gemma4Limits = (): ModelLimits =>
   Object.freeze({ contextWindow: 262_144, maxOutputTokens: null })
 
 export const GOOGLE_MODEL_LIMITS: Readonly<Record<GoogleModelId, ModelLimits>> = {
-  'gemini-2.5-pro': geminiLimits(),
-  'gemini-2.5-flash': geminiLimits(),
   'gemini-2.5-flash-lite': geminiLimits(),
   'gemini-3.1-flash-lite': geminiLimits(),
   'gemini-3.1-pro-preview': geminiLimits(),
   'gemini-3.8-flash': geminiLimits(),
-  'gemini-3.7-flash': geminiLimits(),
   'gemini-3.6-flash': geminiLimits(),
   'gemini-3.5-flash-lite': geminiLimits(),
   'gemma-4-31b-it': gemma4Limits(),
