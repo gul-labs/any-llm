@@ -455,9 +455,35 @@ export async function buildXaiClient(
 
   const { default: OpenAI } = await import('openai')
 
-  const client = new OpenAI({
+  /**
+   * The SDK client without the default headers its constructor collected. The
+   * `openai` 7.60.0 constructor parses `OPENAI_CUSTOM_HEADERS` from the
+   * environment into its default headers (no option turns that read off), and
+   * the request builder applies them after the auth header; this client sets no
+   * default headers of its own, so deleting them (the protected
+   * `_options.defaultHeaders` the request builder reads) means a well-formed
+   * value is never sent to xAI. A MALFORMED value still throws inside the
+   * constructor and fails the call: that is a known gap, tracked in BACKLOG
+   * (move this client to an isolated transport, as `@gullabs/openai` did).
+   */
+  class PinnedOpenAI extends OpenAI {
+    constructor(options: ConstructorParameters<typeof OpenAI>[0]) {
+      super(options)
+      delete this._options.defaultHeaders
+    }
+  }
+
+  // Every other value the constructor would read from the environment is pinned
+  // (`OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`, `OPENAI_ADMIN_KEY`,
+  // `OPENAI_WEBHOOK_SECRET`, `OPENAI_LOG`; `apiKey` and `baseURL` already were).
+  const client = new PinnedOpenAI({
     apiKey,
     baseURL: 'https://api.x.ai/v1',
+    organization: null,
+    project: null,
+    adminAPIKey: null,
+    webhookSecret: null,
+    logLevel: 'off',
     maxRetries: 0,
     ...(transport !== undefined
       ? {

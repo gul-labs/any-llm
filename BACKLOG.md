@@ -248,6 +248,14 @@ Every Gemini 4 fact below is documented and not live-verified; no call was made 
   server tools past 300 s was not tested (the longest, 99 s, had the same 15 s gap). Capture one, then tell
   hosts with tool-using calls whether they can drop the transport. Until then they set
   `transport.idleTimeoutMs` and a `bodyTimeout` near their longest quiet gap, not the whole deadline.
+- **xAI client on an isolated transport.** `buildXaiClient` constructs the `openai` SDK client, whose
+  constructor reads `OPENAI_*` variables. The values options can pin are pinned (`organization`, `project`,
+  `adminAPIKey`, `webhookSecret`, `logLevel`, plus `apiKey` and `baseURL`), and the default headers the
+  constructor collects from `OPENAI_CUSTOM_HEADERS` are dropped, so none reaches xAI; but a MALFORMED
+  `OPENAI_CUSTOM_HEADERS` still throws in the constructor and fails every xAI call. Move the xAI client to the
+  isolated transport `@gullabs/openai` uses (ADR-047: `fetch` plus `openai/streaming` and `openai/error`, no
+  constructed client), keeping its live-verified stream reader, deadline and idle timer, and re-run the
+  recorded-fixture tests.
 - **xAI billing of a cut stream.** A stream that fails after output began is not retried and carries a
   lower-bound usage estimate (ADR-040 Amendment A) because whether xAI bills a cut call is unknown (P9b).
   When it is measured, replace the estimate with the real rule and revisit whether a cut stream may retry.
