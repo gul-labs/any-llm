@@ -50,7 +50,7 @@ const client = createClient({ ...composeProviders([claudeCliProvider()]) })
 const result = await client.generate(
   {
     provider: 'claude-cli',
-    model: 'claude-haiku-4-5-20251001',
+    model: 'claude-haiku-5-5',
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
   },
   { auth: { cliSession: true } },
@@ -78,7 +78,9 @@ array directly without a shell.
 ```
 
 `--settings` requests that the CLI disable silent model switches on a safety
-flag; the CLI does not provide strict validation for this setting. Enforcement
+flag; the CLI does not provide strict validation for this setting. The adapter also
+sets `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1` on the child (see the environment section
+below). Enforcement
 comes from the post-run `modelUsage` check: a successful response must report
 the requested id and no other model. Any other model id throws
 `LlmError` kind `server` (not retryable). A successful envelope with
@@ -86,9 +88,12 @@ the requested id and no other model. Any other model id throws
 its billed usage; an error envelope throws `content_filter`.
 
 The live capture of 2026-09-26 (Claude Code 2.1.282) shows it: the invariant argv
-and `--json-schema` completed for all four registered ids, and each success
-envelope contained only its requested id as a `modelUsage` key. The sanitized
-responses are in `src/__fixtures__/model-refresh-p-a1.json`. The full installed CLI version and
+and `--json-schema` completed for four ids (`claude-fable-5-1`, `claude-opus-5-5`,
+`claude-sonnet-5` and `claude-haiku-4-5-20251001`, three of which are no longer
+registered), and each success envelope contained only its requested id as a
+`modelUsage` key. The sanitized responses are in
+`src/__fixtures__/model-refresh-p-a1.json`; they are evidence of the CLI's output
+shape, not a capture of the ids registered today. The full installed CLI version and
 envelope shape are runtime dependencies; an absent `modelUsage` fails closed.
 
 Usage follows Anthropic's accounting, in which `input_tokens` excludes both cache lanes: `inputTokens` is
@@ -105,6 +110,13 @@ stdin, never as a positional argv entry.
 xAI adapters (ADR-034), this adapter does not check the schema against a keyword
 profile: `nullable`, uppercase type names and keywords the CLI may ignore are not
 rejected here, so validate the result yourself.
+
+A structured call reads the `structured_output` field of the `--output-format json`
+result (Claude Code headless documentation, `https://code.claude.com/docs/en/headless`,
+read 2026-11-20); the `result` text is never parsed for it. The documentation says a
+run that ends without valid structured output has no `structured_output` field: the
+adapter then returns no structured output (the engine reports the output as unparsed)
+and a warning. Documented, not live-verified on the current CLI.
 
 ## Environment: the subscription login, never an API key
 
@@ -133,6 +145,15 @@ host environment to the CLI, so a host that has them exported is using them (and
 URL in `HTTPS_PROXY` can carry credentials too). `env` adds to the copy and cannot remove
 from it: to keep the CLI off an ambient token, unset the variable before the call.
 
+The adapter itself sets `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1` on every child. It
+turns off the automatic model switch Claude Code makes after a flagged message
+(documented since Claude Code 2.1.312 in the Claude Code changelog,
+`https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md`, read
+2026-11-20; a CLI older than that ignores it, and it is documented, not live-verified).
+It is adapter-owned: a value in the host environment is not inherited, and naming it in
+`env` is `bad_request`. It is a second protection beside the `--settings` argument; the
+`modelUsage` check stays the one that enforces.
+
 `claudeCliAdapter({ env })` adds variables on top, and they win over the allowlisted
 ones. It is the one way to pass anything else on. Putting an API key there is the
 explicit opt-in: the call is then billed to it. `env` is validated at construction
@@ -157,14 +178,23 @@ semaphore, defaulting to `maxConcurrency: 2`. Override via
 
 ## Supported models
 
-`claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5`,
-`claude-haiku-4-5-20251001`. Fable 5.1, Opus 5.5, and Sonnet 5 accept
-`{ reasoning: { effort }, timeoutMs }` with effort `low | medium | high |
-xhigh | max`. Haiku 4.5 has no `reasoning` key — the CLI drops `--effort`.
-No sampling knobs (`temperature`/`topP`/`topK`/`maxOutputTokens`/`stopSequences`)
-are accepted; the strict config schema rejects unknown keys. `claude-fable-5`
-and `claude-opus-4-8` are deleted with no alias.
+`claude-fable-5-2`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`. All
+four accept `{ reasoning: { effort }, timeoutMs }` with effort
+`low | medium | high | xhigh | max` (Anthropic effort documentation,
+`https://platform.claude.com/docs/en/build-with-claude/effort`, read 2026-11-20).
+`ultracode` is not admitted: `--effort ultracode` is a Claude Code workflow switch, not
+a model level. No sampling knobs (`temperature`/`topP`/`topK`/`maxOutputTokens`/`stopSequences`)
+are accepted; the strict config schema rejects unknown keys. `claude-fable-5-1`,
+`claude-sonnet-5`, `claude-haiku-4-5-20251001`, `claude-fable-5` and `claude-opus-4-8` are
+deleted with no alias.
 
-The descriptors' `limits` are what the CLI reports for its own run (the captured
-`modelUsage.contextWindow` and `maxOutputTokens`), not the API maxima: Fable 5.1
-64 000 and Haiku 4.5 32 000 output tokens, Opus 5.5 and Sonnet 5 128 000.
+Minimum Claude Code version per model, from the Claude Code changelog
+(`https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md`, read 2026-11-20): Sonnet 5.5 needs 2.1.284
+(it added `claude-sonnet-5-5`), Haiku 5.5 needs 2.1.293, and Fable 5.2 needs 2.1.321.
+An older CLI does not know the id.
+
+The descriptors' `limits` are the documented API figures for all four models: 1M
+context and 128K output (Anthropic models overview,
+`https://platform.claude.com/docs/en/about-claude/models/overview`, read 2026-11-20).
+Documented, not live-verified: the value the CLI reports in `modelUsage` for these ids
+has not been captured, and the CLI exposes no output-size knob.

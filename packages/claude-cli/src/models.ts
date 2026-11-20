@@ -25,32 +25,40 @@ import {
 
 /** Every model id `@gullabs/claude-cli` knows how to route. */
 export type ClaudeCliModelId =
-  'claude-fable-5-1' | 'claude-opus-5-5' | 'claude-sonnet-5' | 'claude-haiku-4-5-20251001'
+  'claude-fable-5-2' | 'claude-opus-5-5' | 'claude-sonnet-5-5' | 'claude-haiku-5-5'
 
 export const CLAUDE_CLI_MODEL_IDS: readonly ClaudeCliModelId[] = [
-  'claude-fable-5-1',
+  'claude-fable-5-2',
   'claude-opus-5-5',
-  'claude-sonnet-5',
-  'claude-haiku-4-5-20251001',
+  'claude-sonnet-5-5',
+  'claude-haiku-5-5',
 ]
 
 /**
- * Reasoning effort levels admitted by the `claude` CLI's `--effort` flag.
+ * Reasoning effort levels admitted by the `claude` CLI's `--effort` flag, and by
+ * all four registered models.
  *
- * The CLI admits `low` through `max` on Fable, Opus, and Sonnet. Haiku drops
- * `--effort`, so its descriptor advertises an empty admitted set.
+ * Documented, not live-verified: the Anthropic effort page
+ * (`https://platform.claude.com/docs/en/build-with-claude/effort`, read 2026-11-20)
+ * says Fable 5.2, Opus 5.5, Sonnet 5.5 and Haiku 5.5 each support all five levels,
+ * and the Claude Code model configuration page
+ * (`https://code.claude.com/docs/en/model-config`, read 2026-11-20) lists the same
+ * five for the Fable models and for Opus 5.5, Sonnet 5.5 and Haiku 5.5.
+ *
+ * `ultracode` is deliberately absent. `--effort ultracode` is a Claude Code workflow
+ * switch (it also sets the level to `xhigh`), not a model effort level, so a
+ * request for it is rejected like any other unknown value.
  */
 export const CLAUDE_CLI_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 /**
- * Build the strict per-model config schema for a `claude-cli` model that
- * admits `--effort`.
+ * Build the strict per-model config schema for a `claude-cli` model.
  *
  * No `temperature`/`topP`/`topK`/`maxOutputTokens`/`stopSequences` fields —
  * the CLI does not support tuning any of these, and `z.strictObject` rejects
  * any unknown key outright (reject, don't map/clamp).
  */
-function buildEffortConfigSchema(modelName: string): z.ZodType {
+function buildConfigSchema(modelName: string): z.ZodType {
   return z
     .strictObject({
       reasoning: z
@@ -77,36 +85,16 @@ function buildEffortConfigSchema(modelName: string): z.ZodType {
     })
 }
 
-/**
- * Haiku 4.5 silently drops `--effort`. Accepting a reasoning key would be a
- * silent map, so the schema has no reasoning field.
- */
-function buildHaikuConfigSchema(): z.ZodType {
-  return z
-    .strictObject({
-      timeoutMs: z.number().int().positive().max(1_800_000).optional().meta({
-        title: 'Timeout',
-        description:
-          'Logical request timeout in milliseconds; forwarded to the CLI runner.',
-      }),
-    })
-    .meta({
-      title: 'claude-haiku-4-5-20251001Config',
-      description:
-        'Strict claude-cli config for claude-haiku-4-5-20251001. No reasoning key: the CLI drops --effort.',
-    })
-}
-
-export const ClaudeFable51ConfigSchema = buildEffortConfigSchema('claude-fable-5-1')
-export const ClaudeOpus55ConfigSchema = buildEffortConfigSchema('claude-opus-5-5')
-export const ClaudeSonnet5ConfigSchema = buildEffortConfigSchema('claude-sonnet-5')
-export const ClaudeHaiku45ConfigSchema = buildHaikuConfigSchema()
+export const ClaudeFable52ConfigSchema = buildConfigSchema('claude-fable-5-2')
+export const ClaudeOpus55ConfigSchema = buildConfigSchema('claude-opus-5-5')
+export const ClaudeSonnet55ConfigSchema = buildConfigSchema('claude-sonnet-5-5')
+export const ClaudeHaiku55ConfigSchema = buildConfigSchema('claude-haiku-5-5')
 
 const CONFIG_SCHEMAS: Record<ClaudeCliModelId, z.ZodType> = {
-  'claude-fable-5-1': ClaudeFable51ConfigSchema,
+  'claude-fable-5-2': ClaudeFable52ConfigSchema,
   'claude-opus-5-5': ClaudeOpus55ConfigSchema,
-  'claude-sonnet-5': ClaudeSonnet5ConfigSchema,
-  'claude-haiku-4-5-20251001': ClaudeHaiku45ConfigSchema,
+  'claude-sonnet-5-5': ClaudeSonnet55ConfigSchema,
+  'claude-haiku-5-5': ClaudeHaiku55ConfigSchema,
 }
 
 // ---------------------------------------------------------------------------
@@ -114,21 +102,17 @@ const CONFIG_SCHEMAS: Record<ClaudeCliModelId, z.ZodType> = {
 // ---------------------------------------------------------------------------
 
 /**
- * Context window and maximum output per model, as the CLI itself reports them in
- * the captured `modelUsage` of every registered id
- * (`__fixtures__/model-refresh-p-a1.json`, Claude Code 2.1.282). The CLI exposes no
- * output-size knob, so the limit a call runs under is the CLI's, not the API's:
- * Fable 5.1 reports 64 000 and Haiku 4.5 reports 32 000, below the API maxima in
- * the Anthropic models overview (`https://platform.claude.com/docs/en/about-claude/models/overview`,
- * read 2026-10-03: Fable 5.1 "128K tokens", Haiku 4.5 "64K tokens"). Opus 5.5 and
- * Sonnet 5 report 128 000, equal to the documented value. The context windows
- * agree with the documentation.
+ * Context window and maximum output per model, as the Anthropic models overview
+ * documents them for the API: 1M tokens of context and 128K tokens of output for
+ * Fable 5.2, Opus 5.5, Sonnet 5.5 and Haiku 5.5
+ * (`https://platform.claude.com/docs/en/about-claude/models/overview`, read
+ * 2026-11-20). Documented, not live-verified: the value the `claude` CLI reports in
+ * `modelUsage` for these ids has not been captured, and the CLI exposes no
+ * output-size knob, so a call may run under a smaller output limit than the API's.
  */
-const CLAUDE_CLI_LIMITS: Record<ClaudeCliModelId, ModelLimits> = {
-  'claude-fable-5-1': { contextWindow: 1_000_000, maxOutputTokens: 64_000 },
-  'claude-opus-5-5': { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
-  'claude-sonnet-5': { contextWindow: 1_000_000, maxOutputTokens: 128_000 },
-  'claude-haiku-4-5-20251001': { contextWindow: 200_000, maxOutputTokens: 32_000 },
+const CLAUDE_CLI_LIMITS: ModelLimits = {
+  contextWindow: 1_000_000,
+  maxOutputTokens: 128_000,
 }
 
 export const claudeCliModelDescriptors: ModelDescriptor[] = CLAUDE_CLI_MODEL_IDS.map(
@@ -137,15 +121,14 @@ export const claudeCliModelDescriptors: ModelDescriptor[] = CLAUDE_CLI_MODEL_IDS
     return {
       model: id,
       provider: 'claude-cli',
-      limits: CLAUDE_CLI_LIMITS[id],
+      limits: { ...CLAUDE_CLI_LIMITS },
       capabilities: {
         // The CLI runs text-only: the adapter rejects every non-text part.
         inputMimeTypes: [],
         structuredOutput: true,
         nativeStructuredOutput: true,
-        ...(id !== 'claude-haiku-4-5-20251001' ? { reasoningApi: 'level' as const } : {}),
-        admittedReasoningEfforts:
-          id === 'claude-haiku-4-5-20251001' ? [] : CLAUDE_CLI_EFFORTS,
+        reasoningApi: 'level',
+        admittedReasoningEfforts: CLAUDE_CLI_EFFORTS,
         sampling: 'fixed',
       },
       configSchema,

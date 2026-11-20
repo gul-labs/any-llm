@@ -15,6 +15,26 @@
 
 import { LlmError } from '@gullabs/core'
 
+/**
+ * The variable the adapter itself sets on every child, with this value. It is
+ * adapter-owned, never inherited from the host environment (it is not on the list
+ * below) and never accepted from the host's `env` option, which rejects it.
+ *
+ * `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1` turns off the automatic model switch
+ * Claude Code makes after a flagged message, so a refusal ends as an error instead
+ * of being answered by another model. It is documented since Claude Code 2.1.312 (the
+ * Claude Code changelog,
+ * `https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md`, read
+ * 2026-11-20: "set `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1` to turn them off") and an
+ * older CLI ignores it. It is a second protection beside the `--settings
+ * {"switchModelsOnFlag":false}` argument; the served-model check on `modelUsage`
+ * stays the one that enforces. Documented, not live-verified.
+ */
+export const REFUSAL_FALLBACK_ENV = {
+  name: 'CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK',
+  value: '1',
+} as const
+
 /** Exact names the child inherits (matched case-insensitively on Windows only). */
 const INHERITED_NAMES: ReadonlySet<string> = new Set([
   // Process basics.
@@ -129,6 +149,11 @@ export function parseExtraEnv(
   for (const [name, value] of Object.entries(env)) {
     if (name === '' || name.includes('=') || name.includes('\0')) {
       throw badEnv(`claudeCliAdapter: \`env\` has an invalid name "${name}"`)
+    }
+    if (name.toUpperCase() === REFUSAL_FALLBACK_ENV.name) {
+      throw badEnv(
+        `claudeCliAdapter: \`env.${name}\` is set by the adapter and cannot be passed`,
+      )
     }
     if (typeof value !== 'string' || value.includes('\0')) {
       throw badEnv(

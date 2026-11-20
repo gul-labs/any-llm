@@ -15,7 +15,7 @@
  * const result = await client.generate(
  *   {
  *     provider: 'claude-cli',
- *     model: 'claude-haiku-4-5-20251001',
+ *     model: 'claude-haiku-5-5',
  *     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
  *   },
  *   { auth: { cliSession: true } },
@@ -43,10 +43,10 @@ export type {
 export { claudeCliModelDescriptors, claudeCliRegistry } from './models.js'
 export type { ClaudeCliModelId } from './models.js'
 export {
-  ClaudeFable51ConfigSchema,
+  ClaudeFable52ConfigSchema,
   ClaudeOpus55ConfigSchema,
-  ClaudeSonnet5ConfigSchema,
-  ClaudeHaiku45ConfigSchema,
+  ClaudeSonnet55ConfigSchema,
+  ClaudeHaiku55ConfigSchema,
   CLAUDE_CLI_MODEL_IDS,
   CLAUDE_CLI_EFFORTS,
 } from './models.js'
