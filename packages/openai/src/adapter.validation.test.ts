@@ -183,11 +183,6 @@ describe('replay state: exact keys and value types', () => {
       /detail must be "auto"/,
     ],
     [
-      'an unknown key on an output message',
-      { ...message, extra: true },
-      /input\[1\]\.extra is not a field/,
-    ],
-    [
       'a message with no id',
       { ...message, id: undefined },
       /input\[1\]\.id must be a non-empty string/,
@@ -198,14 +193,6 @@ describe('replay state: exact keys and value types', () => {
       /input\[1\]\.status must be/,
     ],
     ['a bad phase', { ...message, phase: 'draft' }, /input\[1\]\.phase must be/],
-    [
-      'an unknown key on output_text',
-      {
-        ...message,
-        content: [{ type: 'output_text', text: 'a', annotations: [], parsed: {} }],
-      },
-      /content\[0\]\.parsed is not a field/,
-    ],
     [
       'a non-empty annotations list (built-in tool citations)',
       {
@@ -244,16 +231,6 @@ describe('replay state: exact keys and value types', () => {
       /logprobs must be an empty array/,
     ],
     [
-      'an unknown key on a reasoning item',
-      { ...reasoning, other: 1 },
-      /input\[1\]\.other is not a field/,
-    ],
-    [
-      'a reasoning summary part with an extra key',
-      { ...reasoning, summary: [{ type: 'summary_text', text: 's', id: 'x' }] },
-      /summary\[0\]\.id is not a field/,
-    ],
-    [
       'a reasoning summary part of another type',
       { ...reasoning, summary: [{ type: 'reasoning_text', text: 's' }] },
       /summary\[0\]\.type must be "summary_text"/,
@@ -266,27 +243,22 @@ describe('replay state: exact keys and value types', () => {
     [
       'an async function call',
       { ...call, async: true },
-      /input\[1\]\.async is not a field/,
+      /input\[1\]\.async is not admitted in replay state \(async function tools/,
     ],
     [
       'a namespaced function call',
       { ...call, namespace: 'ns' },
-      /input\[1\]\.namespace is not a field/,
+      /input\[1\]\.namespace is not admitted in replay state \(tool namespaces/,
     ],
     [
       'a programmatic caller',
       { ...call, caller: { type: 'program', caller_id: 'p' } },
-      /caller\.caller_id is not a field/,
+      /caller\.type must be "direct"/,
     ],
     [
       'a caller of another type',
       { ...call, caller: { type: 'program' } },
       /caller\.type must be "direct"/,
-    ],
-    [
-      'an unknown key on a function call',
-      { ...call, parsed_arguments: {} },
-      /parsed_arguments is not a field/,
     ],
     [
       'a function_call_output with an extra key',
@@ -306,6 +278,133 @@ describe('replay state: exact keys and value types', () => {
   ])('rejects %s', async (_label, item, match) => {
     await rejects(withState([user, item as JsonValue]), match)
   })
+})
+
+describe('provider output items are replayed as returned', () => {
+  // Keys the SDK 7.60.0 typings do not define, as a newer API could return them.
+  const extended = [
+    {
+      ...message,
+      extra: true,
+      content: [{ type: 'output_text', text: 'a', annotations: [], parsed: {} }],
+    },
+    { ...reasoning, other: 1, summary: [{ type: 'summary_text', text: 's', id: 'x' }] },
+    { ...call, parsed_arguments: {}, caller: { type: 'direct', note: 'n' } },
+  ]
+
+  it('accepts unknown keys on provider items and sends them unchanged', async () => {
+    const sent = await accepts(withState([user, ...(extended as JsonValue[])]))
+    expect(sent.input.slice(1, 4)).toEqual(extended)
+  })
+
+  it('round-trips an output item with an unknown key through the next request', async () => {
+    const turn1Output = { ...message, id: 'msg_9', future_field: { x: 1 } }
+    const client = {
+      responses: {
+        create: (): Promise<OpenAiResponseShape> =>
+          Promise.resolve({
+            id: 'resp_1',
+            model: 'gpt-6.2-sol',
+            status: 'completed',
+            output: [turn1Output],
+            usage: {
+              input_tokens: 10,
+              input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+              output_tokens: 2,
+              output_tokens_details: { reasoning_tokens: 0 },
+            },
+            service_tier: 'default',
+          }),
+      },
+    }
+    const first = await openaiAdapter({ client }).run(request('gpt-6.2-sol'), CTX)
+    expect(first.warnings.some((w) => w.message.includes('rejected'))).toBe(false)
+    const sent = await accepts(
+      request('gpt-6.2-sol', {
+        transientProviderState: first.transientProviderState!,
+        messages: [userText('next')],
+      }),
+    )
+    expect(sent.input[1]).toEqual(turn1Output)
+  })
+})
+
+describe('the deferred-feature value rules hold in state and at result time', () => {
+  const deferred: Array<[string, Record<string, unknown>, RegExp]> = [
+    [
+      'a citation annotation',
+      {
+        ...message,
+        content: [
+          {
+            type: 'output_text',
+            text: 'a',
+            annotations: [
+              {
+                type: 'url_citation',
+                url: 'https://x.test',
+                title: 't',
+                start_index: 0,
+                end_index: 1,
+              },
+            ],
+          },
+        ],
+      },
+      /annotations must be an empty array/,
+    ],
+    [
+      'logprobs',
+      {
+        ...message,
+        content: [
+          { type: 'output_text', text: 'a', annotations: [], logprobs: [{ token: 'a' }] },
+        ],
+      },
+      /logprobs must be an empty array/,
+    ],
+    [
+      'a programmatic caller',
+      { ...call, caller: { type: 'program', caller_id: 'p' } },
+      /caller\.type must be "direct"/,
+    ],
+    ['an async call', { ...call, async: true }, /async is not admitted/],
+    ['a namespaced call', { ...call, namespace: 'ns' }, /namespace is not admitted/],
+  ]
+
+  it.each(deferred)('rejects %s in state', async (_label, item, match) => {
+    await rejects(withState([user, item as JsonValue]), match)
+  })
+
+  it.each(deferred)(
+    'warns about %s when the response carries it',
+    async (_label, item, match) => {
+      const client = {
+        responses: {
+          create: (): Promise<OpenAiResponseShape> =>
+            Promise.resolve({
+              id: 'resp_1',
+              model: 'gpt-6.2-sol',
+              status: 'completed',
+              output: [item as OpenAiResponseShape['output'][number]],
+              usage: {
+                input_tokens: 10,
+                input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+                output_tokens: 2,
+                output_tokens_details: { reasoning_tokens: 0 },
+              },
+              service_tier: 'default',
+            }),
+        },
+      }
+      const result = await openaiAdapter({ client }).run(request('gpt-6.2-sol'), CTX)
+      expect(
+        result.warnings.some(
+          (w) => match.test(w.message) && w.message.includes('rejected'),
+        ),
+      ).toBe(true)
+    },
+  )
 })
 
 describe('messages that map to no input item', () => {

@@ -4,36 +4,35 @@
  * `transientProviderState`.
  *
  * Replay state is forwarded to OpenAI verbatim, so a key it carries is a key the
- * request sends. Every replayed item and every nested part is therefore checked
- * against an exact allowlist of keys and value types; an unknown key anywhere is
- * `bad_request` naming its path. The allowlists are:
+ * request sends. The checks split by who built the item:
  *
- * - The request items this adapter itself builds (`client.ts`): a user or
- *   developer `message` (`type`, `role`, `content`) of `input_text` (`type`,
- *   `text`) and `input_image` (`type`, `image_url`, `detail: 'auto'`) parts; an
- *   assistant history `message` (`type`, `role`, `content` as a string); a
- *   `function_call_output` (`type`, `call_id`, `output` as a string).
- * - The provider output items the adapter reads, with the keys the `openai`
- *   7.60.0 typings define (`src/resources/responses/responses.ts`, read
- *   2026-11-20):
- *   - `ResponseOutputMessage`: `id`, `content`, `role: 'assistant'`, `status`,
- *     `type: 'message'`, `phase?`; content parts `ResponseOutputText` (`type`,
- *     `text`, `annotations`, `logprobs?`) and `ResponseOutputRefusal` (`type`,
- *     `refusal`).
- *   - `ResponseReasoningItem`: `id`, `summary` (`{ type: 'summary_text', text }`),
- *     `type: 'reasoning'`, `content?` (`{ type: 'reasoning_text', text }`),
- *     `encrypted_content?` (string or null), `status?`.
- *   - `ResponseFunctionToolCall`: `arguments`, `call_id`, `name`,
- *     `type: 'function_call'`, `id?`, `status?`, `caller?`, plus `async?` and
- *     `namespace?`.
+ * - **Items this adapter builds are exact.** A user or developer `message`
+ *   (`type`, `role`, `content`) of `input_text` (`type`, `text`) and
+ *   `input_image` (`type`, `image_url`, `detail: 'auto'`) parts; an assistant
+ *   history `message` (`type`, `role`, `content` as a string); a
+ *   `function_call_output` (`type`, `call_id`, `output` as a string). An unknown
+ *   key anywhere in them (a `file_id` on an image, a `prompt_cache_breakpoint`)
+ *   is `bad_request` naming its path: the adapter never writes one.
+ * - **Provider output items are replayed as returned.** `message` (with
+ *   `output_text` / `refusal` parts), `reasoning` (with `summary_text` /
+ *   `reasoning_text` parts) and `function_call` are type-gated, their known keys
+ *   are type-checked against the `openai` 7.60.0 typings
+ *   (`src/resources/responses/responses.ts`, read 2026-11-20), and any other key
+ *   is tolerated and replayed unchanged. The typings are not a capture of what
+ *   the API returns (nothing in this release is live-verified, and keys such as
+ *   `phase` were added recently), and replaying the provider's own items
+ *   unmodified is what ADR-029 and OpenAI's stateless-replay guidance call for:
+ *   rejecting an unknown key would fail every second turn the first time the API
+ *   adds one. What stays refused are the values that carry a deferred feature,
+ *   even where the typings name the key: non-empty `annotations` (citations and
+ *   file paths come from built-in tools), non-empty `logprobs` (never
+ *   requested), a function call's `caller` other than `{ type: 'direct' }`
+ *   (programmatic tool calling), and `async` or `namespace` on a function call
+ *   (async tools and tool namespaces are never declared).
  *
- * Values that only a deferred feature produces are rejected even where the
- * typings name the key, because the state may carry only what this release can
- * produce: `annotations` must be empty (citations and file paths come from
- * built-in tools), `logprobs` absent or empty (logprobs are never requested), a
- * function call's `caller` only `{ type: 'direct' }` (a `program` caller is
- * programmatic tool calling), and `async` and `namespace` are not admitted
- * (async function tools and tool namespaces are never declared).
+ * State a host has altered is outside the contract: the checks catch the
+ * host-built shapes exactly and the deferred features on provider items, not
+ * every edit.
  *
  * @module
  */
@@ -118,9 +117,19 @@ interface Field {
 const req = (check: Check): Field => ({ required: true, check })
 const opt = (check: Check): Field => ({ required: false, check })
 
-function exact(value: unknown, path: string, fields: Record<string, Field>): void {
+/**
+ * Check `value` against `fields`. `unknownKeys: 'reject'` (host-built items) makes
+ * any other key `bad_request`; `'replay'` (provider output items) leaves other
+ * keys to be replayed verbatim.
+ */
+function exact(
+  value: unknown,
+  path: string,
+  fields: Record<string, Field>,
+  unknownKeys: 'reject' | 'replay' = 'reject',
+): void {
   if (!isPlainRecord(value)) throw bad(`${path} must be an object.`)
-  for (const key of Object.keys(value)) {
+  for (const key of unknownKeys === 'reject' ? Object.keys(value) : []) {
     if (!Object.hasOwn(fields, key)) {
       throw bad(
         `${path}.${key} is not a field @gullabs/openai admits in replay state (allowed: ${Object.keys(
@@ -181,6 +190,12 @@ const emptyArray =
 
 const ITEM_STATUS = literal('in_progress', 'completed', 'incomplete')
 
+const forbidden =
+  (why: string): Check =>
+  (_value, path) => {
+    throw bad(`${path} is not admitted in replay state (${why}).`)
+  }
+
 // ---- input parts (the adapter's own request shapes) ------------------------
 
 const imageUrl: Check = (value, path) => {
@@ -219,14 +234,19 @@ const inputPart: Check = (value, path) => {
 const outputPart: Check = (value, path) => {
   const type = isPlainRecord(value) ? value['type'] : undefined
   if (type === 'output_text') {
-    exact(value, path, {
-      type: req(literal('output_text')),
-      text: req(string),
-      annotations: req(emptyArray('annotations come from built-in tools')),
-      logprobs: opt(emptyArray('logprobs are never requested')),
-    })
+    exact(
+      value,
+      path,
+      {
+        type: req(literal('output_text')),
+        text: req(string),
+        annotations: req(emptyArray('annotations come from built-in tools')),
+        logprobs: opt(emptyArray('logprobs are never requested')),
+      },
+      'replay',
+    )
   } else if (type === 'refusal') {
-    exact(value, path, { type: req(literal('refusal')), refusal: req(string) })
+    exact(value, path, { type: req(literal('refusal')), refusal: req(string) }, 'replay')
   } else {
     throw bad(
       `${path}.type ${JSON.stringify(type)} is not an output part @gullabs/openai admits (output_text, refusal).`,
@@ -237,7 +257,7 @@ const outputPart: Check = (value, path) => {
 const reasoningText =
   (kind: 'summary_text' | 'reasoning_text'): Check =>
   (value, path) => {
-    exact(value, path, { type: req(literal(kind)), text: req(string) })
+    exact(value, path, { type: req(literal(kind)), text: req(string) }, 'replay')
   }
 
 // ---- items -----------------------------------------------------------------
@@ -263,14 +283,19 @@ function assertMessage(item: Record<string, unknown>, path: string): void {
   }
   if (role === 'assistant') {
     // A provider `ResponseOutputMessage`.
-    exact(item, path, {
-      type: req(literal('message')),
-      id: req(nonEmptyString),
-      role: req(literal('assistant')),
-      status: req(ITEM_STATUS),
-      content: req(arrayOf(outputPart)),
-      phase: opt(literal('commentary', 'final_answer', null)),
-    })
+    exact(
+      item,
+      path,
+      {
+        type: req(literal('message')),
+        id: req(nonEmptyString),
+        role: req(literal('assistant')),
+        status: req(ITEM_STATUS),
+        content: req(arrayOf(outputPart)),
+        phase: opt(literal('commentary', 'final_answer', null)),
+      },
+      'replay',
+    )
     return
   }
   throw bad(`${path}.role ${JSON.stringify(role)} is not admitted in replay state.`)
@@ -288,27 +313,39 @@ export function assertReplayItem(item: unknown, path: string): void {
       assertMessage(item, path)
       return
     case 'reasoning':
-      exact(item, path, {
-        type: req(literal('reasoning')),
-        id: req(nonEmptyString),
-        summary: req(arrayOf(reasoningText('summary_text'))),
-        content: opt(arrayOf(reasoningText('reasoning_text'))),
-        encrypted_content: opt(stringOrNull),
-        status: opt(ITEM_STATUS),
-      })
+      exact(
+        item,
+        path,
+        {
+          type: req(literal('reasoning')),
+          id: req(nonEmptyString),
+          summary: req(arrayOf(reasoningText('summary_text'))),
+          content: opt(arrayOf(reasoningText('reasoning_text'))),
+          encrypted_content: opt(stringOrNull),
+          status: opt(ITEM_STATUS),
+        },
+        'replay',
+      )
       return
     case 'function_call':
-      exact(item, path, {
-        type: req(literal('function_call')),
-        arguments: req(string),
-        call_id: req(nonEmptyString),
-        name: req(nonEmptyString),
-        id: opt(nonEmptyString),
-        status: opt(ITEM_STATUS),
-        caller: opt((value, p) => {
-          exact(value, p, { type: req(literal('direct')) })
-        }),
-      })
+      exact(
+        item,
+        path,
+        {
+          type: req(literal('function_call')),
+          arguments: req(string),
+          call_id: req(nonEmptyString),
+          name: req(nonEmptyString),
+          id: opt(nonEmptyString),
+          status: opt(ITEM_STATUS),
+          caller: opt((value, p) => {
+            exact(value, p, { type: req(literal('direct')) }, 'replay')
+          }),
+          async: opt(forbidden('async function tools are never declared')),
+          namespace: opt(forbidden('tool namespaces are never declared')),
+        },
+        'replay',
+      )
       return
     case 'function_call_output':
       exact(item, path, {
