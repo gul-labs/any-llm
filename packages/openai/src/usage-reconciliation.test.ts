@@ -126,6 +126,11 @@ describe('irreconcilable raw usage is unpriced through the engine', () => {
     ['a negative write count', base({ writes: -1 }), /cache_write_tokens is -1/],
     ['a string reasoning count', base({ reasoning: '3' }), /reasoning_tokens is "3"/],
     ['a negative total', base({ total: -5 }), /total_tokens is -5/],
+    [
+      'a total below input plus output',
+      { ...base({ input: 50, output: 10 }), total_tokens: 5 },
+      /total_tokens \(5\) is below input_tokens plus output_tokens \(60\)/,
+    ],
   ])('%s', async (_label, usage, warning) => {
     const result = await generate(usage)
     expect(result.cost?.microUsd).toBeNull()
@@ -138,5 +143,15 @@ describe('irreconcilable raw usage is unpriced through the engine', () => {
     const result = await generate({ input_tokens: 50, output_tokens: 10 })
     expect(result.cost?.microUsd).toBeNull()
     expect(result.usage.details['usage_incomplete']).toBe(1)
+  })
+
+  it('a total above input plus output is priced, estimated (tokens the lanes do not carry)', async () => {
+    const result = await generate({
+      ...base({ input: 50, output: 10 }),
+      total_tokens: 70,
+    })
+    expect(result.cost?.microUsd).not.toBeNull()
+    expect(result.cost?.confidence).toBe('estimated')
+    expect(result.usage.details['usage_irreconcilable']).toBeUndefined()
   })
 })

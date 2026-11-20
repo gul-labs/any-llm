@@ -373,8 +373,19 @@ describe('strict schemas (output and tool parameters)', () => {
   })
 
   it('rejects more than 120,000 characters of names and enum values', async () => {
-    const values = Array.from({ length: 900 }, (_, i) => `${'x'.repeat(140)}${i}`)
-    await rejectsSchema(obj({ a: { type: 'string', enum: values } }), /characters across/)
+    // Four enums of 225 values (under the 250-value per-enum cap and the
+    // 1,000-value total), about 127,000 characters in all.
+    const values = (tag: string) =>
+      Array.from({ length: 225 }, (_, i) => `${tag}${'x'.repeat(140)}${i}`)
+    await rejectsSchema(
+      obj({
+        a: { type: 'string', enum: values('a') },
+        b: { type: 'string', enum: values('b') },
+        c: { type: 'string', enum: values('c') },
+        d: { type: 'string', enum: values('d') },
+      }),
+      /characters across/,
+    )
   })
 
   it('accepts recursion through $defs (documented as supported)', async () => {
