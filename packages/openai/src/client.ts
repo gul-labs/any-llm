@@ -742,6 +742,13 @@ export function isEventStreamMediaType(value: string | null): boolean {
         return true
       }
       if (c === '\\') {
+        // quoted-pair = "\\" ( HTAB / SP / VCHAR / obs-text ): the escaped
+        // character is held to the same grammar, so an escaped control or DEL
+        // byte (or a backslash with nothing after it) is not a media type.
+        const escaped = value[i + 1]
+        if (escaped === undefined) return false
+        const escapedCode = escaped.charCodeAt(0)
+        if ((escapedCode < 0x20 && escaped !== '\t') || escapedCode === 0x7f) return false
         i += 2
         continue
       }

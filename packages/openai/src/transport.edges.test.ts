@@ -72,6 +72,7 @@ describe('content-type of a 200: exactly text/event-stream', () => {
     // A comma inside a quoted parameter value is data, not a second media type.
     'text/event-stream; boundary="a,b"',
     'text/event-stream; x="quoted \\" pair"',
+    'text/event-stream; x="escaped\\\ttab and \\ space"',
     'text/event-stream;\tcharset=utf-8',
   ]
   const rejected: Array<string | null> = [
@@ -98,6 +99,11 @@ describe('content-type of a 200: exactly text/event-stream', () => {
     'text/event-stream; charset=',
     'text/event-stream; charset = utf-8',
     'text/event-stream; a="unterminated',
+    // quoted-pair admits HTAB, SP, VCHAR and obs-text only: an escaped DEL or
+    // control byte, or a backslash with nothing after it, is not in the grammar.
+    'text/event-stream; a="x\\\x7f"',
+    'text/event-stream; a="x\\\x01"',
+    'text/event-stream; a="x\\',
     'text/event-stream; a="x"y',
     'text/event-stream x',
     'text/event-stream/',
