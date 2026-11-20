@@ -4296,43 +4296,59 @@ the probe that would close it.
    (GPT-6.2 does not support Flex); `flex | fast` on Terra and Luna. No `ultrafast`. No sampling keys: GPT-6.2 is
    documented to reject `temperature` and `top_p`, and the Terra and Luna pages are silent. `budgetTokens`,
    `includeThoughts`, `reasoning.context`, `reasoning.mode`, `reasoning.summary` and verbosity are rejected.
-4. **Credentials and SDK construction (ADR-019).** The per-call API key is required before the SDK is built.
-   Each call builds its own SDK client with `apiKey`, `baseURL: 'https://api.openai.com/v1'`,
-   `organization: null`, `project: null`, `adminAPIKey: null`, `webhookSecret: null`, `logLevel: 'off'` and
-   `maxRetries: 0` (one HTTP request per attempt; retries are the engine's). Reading the 7.60.0 constructor showed
-   one more ambient input: it parses `OPENAI_CUSTOM_HEADERS` (through `readEnv`, `globalThis.process.env`) into
-   the client's default headers, which the request builder applies after the auth header, so an environment
-   variable could replace `Authorization` or add an organization header, and a malformed value throws inside the
-   constructor and fails a valid call. No constructor option turns the read off (only a `provider` or an X.509
-   `credential` skips it, and the client uses neither; `defaultHeaders` is merged after the parsed value, not
-   instead of it). The client keeps two lines of defence. It constructs the SDK client while
-   `globalThis.process` is a view of the real `process` whose `env` hides that one variable, and restores the
-   original property in `finally` (also when the constructor throws); this is safe because the constructor is
-   synchronous (no other code in the realm runs in between), the view lives on this realm's `globalThis` only
-   (the OS environment, child processes and worker threads never see it), and nothing is read or copied: the view
-   declines one key. And a subclass of the SDK client deletes the default headers its constructor collected (the
-   protected `_options.defaultHeaders`; this client sets none of its own), on every path. Where the view cannot
-   be installed (no configurable `globalThis.process`, or no `env` object) the only thing lost is robustness to a
-   malformed value: the SDK parses it, a malformed one throws in the constructor, a well-formed one is still
-   never sent. Tests: a malformed value with the view (the raw SDK throws, the client's call succeeds), a
-   well-formed value with the view disabled (no ambient header is sent), and the descriptor restored after a
-   throwing constructor. The view is removed once the SDK offers an option that turns the read off (BACKLOG). A test with conflicting `OPENAI_API_KEY`, `OPENAI_BASE_URL`,
-   `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`, `OPENAI_ADMIN_KEY`, `OPENAI_WEBHOOK_SECRET`, `OPENAI_LOG` and
-   `OPENAI_CUSTOM_HEADERS` proves the destination and headers are the caller's only and that nothing is logged.
-   The admin key and webhook secret are pinned although 7.60.0 does not send them on a bearer-authenticated
-   Responses request: the pin keeps that true if the SDK changes.
-5. **Streaming through the SDK's own helper (ADR-040 rules).** `run()` streams through `responses.stream()` and
-   keeps only the terminal event's response object. A terminal event (`response.completed`,
-   `response.incomplete`, `response.failed`) is required: the helper resolves a clean early end with its
-   accumulated snapshot, and that snapshot is never used (the call is a `server` error). The event type decides
-   the status. The SDK `timeout` covers only the wait for headers on a stream, so the client also arms one timer
-   over the whole call (`timeoutMs + 5 000`, or one hour): it ends as `timeout`, `reason: 'transport_timeout'`,
+4. **Credentials and the transport: no SDK client is constructed (ADR-019).** The per-call API key is required
+   before the SDK is imported. The `openai` 7.60.0 `OpenAI` constructor is inherently ambient: it reads
+   `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`, `OPENAI_ADMIN_KEY`,
+   `OPENAI_WEBHOOK_SECRET`, `OPENAI_LOG` and `OPENAI_CUSTOM_HEADERS` through `readEnv`. Options pin most of them,
+   but nothing turns the custom-header read off (only a `provider` or an X.509 `credential` skips it): the parsed
+   headers are applied after the auth header, and a malformed value throws in the constructor and fails a valid
+   call. Two earlier workarounds were rejected in review: dropping the collected headers after construction
+   (a malformed value still fails), and constructing the client under a temporary view of `globalThis.process`
+   (a synchronous host hook can observe the substituted global, and with a non-configurable `process` the read
+   happens anyway). So the client does not construct the SDK client at all. It sends the request itself:
+   `POST https://api.openai.com/v1/responses` through the injected or global `fetch`, with exactly
+   `authorization: Bearer <key>`, `content-type: application/json` and `accept: text/event-stream` (no
+   `user-agent`: the runtime's `fetch` supplies its default, and a version string would need build-time
+   injection for nothing the API requires), the body `JSON.stringify({ ...params, stream: true })` and the call's
+   own abort signal. It uses two SDK modules whose runtime graph reads no environment variable and does not load
+   the client module (checked in the installed 7.60.0: `streaming.js`, `core/streaming.js`, `core/error.js`,
+   `error.js`, `internal/{tslib,errors,shims}.js`, `internal/decoders/line.js`,
+   `internal/utils/{bytes,log,values}.js`): `openai/error`, whose `APIError.generate` and connection errors are
+   built exactly as the SDK's `makeRequest` / `makeStatusError` build them (a non-2xx body is read as text,
+   parsed as JSON when it is JSON, an object without `error` wrapped as `{ error }`, the text as the message
+   otherwise; a `fetch` rejection is `APIConnectionTimeoutError` when it is an `AbortError` or says it timed out,
+   else `APIConnectionError`, the original as `cause`), so core's `classifyError`, `Retry-After` and the billing
+   checks see the same objects; and `openai/streaming`, whose `Stream.fromSSEResponse` decodes the events and
+   turns an `error` event into a status-less `APIError`. Both are imported dynamically after the key check. One
+   side effect remains in that decoder: without a client it logs two fixed lines (no payload) through
+   `console.error` when an event is not JSON, then throws. One HTTP request per attempt holds by construction.
+   Tests: with every variable above set, a malformed and a well-formed `OPENAI_CUSTOM_HEADERS` included, the
+   call succeeds with exactly the three headers, nothing is logged, and `globalThis.process` and `process.env`
+   keep their identity and descriptor; `client.ts` imports only the two modules and constructs no client; a
+   non-JSON error body, a JSON one, a `fetch` rejection, a timed-out one and an abort before headers classify as
+   the SDK path did.
+5. **Streaming over the isolated transport (ADR-040 rules).** This supersedes the plan's decision to stream
+   through the SDK's `responses.stream()` helper: the helper needs a constructed client (item 4). The client
+   iterates the decoded events and keeps only the terminal event's response object. A terminal event
+   (`response.completed`, `response.incomplete`, `response.failed`) is required: a stream that ends without one
+   is a `server` error. The event type decides the status. Completed items and the terminal object are
+   reconciled minimally: for each terminal output item with the same `id` as an item a
+   `response.output_item.done` event completed, every key the terminal copy lacks is filled in from the
+   completed item (the terminal copy wins for keys it carries), with a warning; no item the terminal response
+   does not list is added, because the terminal object is the provider's statement of the response and the state
+   replays it. This keeps a reasoning item's `encrypted_content` when only the completion event carried it.
+   (When the terminal response has no `output` array at all, the completed items are used, with a warning, rather
+   than discarding a billed answer.) One timer, armed when the call starts, covers the wait for headers and the
+   whole body (`timeoutMs + 5 000`, or one hour); the SDK's own `timeout` had covered only the headers. It ends as
+   `timeout`, `reason: 'transport_timeout'`,
    not retryable. Caller aborts are re-thrown (an `LlmError` abort reason keeps its kind). **Output has begun**
    once any event arrives other than the six lifecycle events (`response.created`, `.queued`, `.in_progress`,
    `.completed`, `.incomplete`, `.failed`) and `error`: in the 7.60.0 `ResponseStreamEvent` union every other
    event reports model output (an output item, a content part, a text, refusal, reasoning, function-argument or
    audio delta or done, an annotation, a tool call's progress). A terminal or `error` event is not output, so a
-   failure that arrives before any output event is judged as "before output". Before any output event a
+   failure that arrives before any output event is judged as "before output". A terminal snapshot that itself
+   lists output (a non-empty `output` array) also counts as output having begun, so a terminal-only
+   `response.failed` with partial output is not retried. Before any output event a
    transient failure is retryable and carries no usage; after it nothing is retried, the error is `mayHaveBilled`
    and carries the ADR-040 usage estimate. A `response.failed` keeps its terminal usage and echoed tier, is
    classified by `error.code` (the SDK's `ResponseError.code` union: `server_error` and `rate_limit_exceeded`
@@ -4371,8 +4387,10 @@ the probe that would close it.
    so rejecting an unknown key would fail every second turn the first time the API adds one, while ADR-029 and
    OpenAI's stateless guidance call for replaying the provider's own items unmodified. What stays refused on
    provider items are the values that carry a deferred feature, even where the typings name the key: non-empty
-   `annotations` and `logprobs`, a function call's `caller` other than `{ type: 'direct' }`, and `async` or
-   `namespace` on a function call. A response whose own output item fails that check is returned with a warning
+   `annotations` and `logprobs`, a function call's programmatic `caller`, `async: true`, and any `namespace`.
+   Every value the typings allow that activates none of those round-trips unchanged: `caller` absent, `null` or
+   `{ type: 'direct' }`; `async` absent or `false`; empty `annotations`; absent or empty `logprobs`; `phase`
+   `commentary`, `final_answer` or `null`; any item `status`; `encrypted_content` a string or `null`. A response whose own output item fails that check is returned with a warning
    that the next request with the state is rejected. State a host has altered is outside the contract: the check
    covers the host-built shapes exactly and the deferred features on provider items, not every edit. A `system` sent
    beside state must equal the developer message the state starts with (it is never sent twice). Tool results
@@ -4390,8 +4408,9 @@ the probe that would close it.
    `additionalProperties`) declaring `type: "object"` (or `["object", "null"]` below the root: the guide does not
    say a nested object must declare its type, but every example does and an untyped object is not a documented
    shape); at most 5,000 properties and 10 levels of literal nesting; 1,000 enum values; 120,000 characters of
-   property names, definition names, enum values and const values; and, with more than 250 enum values, 15,000
-   characters of enum values. The profile is the guide's supported list plus `const`, which the guide counts in
+   property names, definition names, enum values and const values; and, per enum, "For a single enum property
+   with string values, the total string length of all enum values cannot exceed 15,000 characters when there are
+   more than 250 enum values" (checked on each `enum` alone, never summed across the schema). The profile is the guide's supported list plus `const`, which the guide counts in
    its size limit ("total string length of all property names, definition names, enum values, and const values
    cannot exceed 120,000 characters"): `type`, `properties`, `required`, `additionalProperties`, `enum`, `const`,
    `anyOf`, `$ref` /
@@ -4421,8 +4440,10 @@ the probe that would close it.
     Excludes tokens charged as writes"), so every call with writes is `estimated`, and writes without a TTL split
     are priced at the 30-minute default and `estimated`. The adapter checks the RAW counters before core normalises
     them (normalisation clamps cached tokens to the input): a counter that is present but not a non-negative safe
-    integer, reads plus writes above `input_tokens`, a TTL split that does not sum to `cache_write_tokens`, or
-    reasoning above `output_tokens` sets `usage.details.usage_irreconcilable = 1` with a warning naming what did not
+    integer, reads plus writes above `input_tokens`, a TTL split that does not sum to `cache_write_tokens`,
+    reasoning above `output_tokens`, or `total_tokens` below input plus output (the typings define it as "The
+    total number of tokens used", so it cannot be lower; a higher total means tokens the lanes do not carry, and
+    core's normalisation already reports that cost `estimated`) sets `usage.details.usage_irreconcilable = 1` with a warning naming what did not
     reconcile, and the call is unpriced; usage that lacks a cache lane (`usage_incomplete`) is unpriced too.
     Regional-processing and FedRAMP surcharges (+10% each) are not modelled. The tests' usage objects are
     synthetic and prove the arithmetic only.

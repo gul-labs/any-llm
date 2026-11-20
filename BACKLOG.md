@@ -299,10 +299,6 @@ Deferred capabilities (rejected by the schema or the adapter today):
 - **Reasoning summaries** (`reasoning.summary`, `includeThoughts`). Probe: `summary: 'auto'` on each model
   (the reasoning guide says organization verification may be required).
 - **A transport option** (`fetch`, `fetchOptions`) for proxies and egress policy, as xAI has.
-- **An SDK option that turns off the `OPENAI_CUSTOM_HEADERS` read.** `openai` 7.60.0 parses it in the
-  constructor with no way to opt out, so the client hides it behind a temporary view of `globalThis.process`
-  (and drops the headers after construction). Ask upstream for a constructor option; once it exists, use it and
-  delete the view.
 - **Structured output together with function tools.** Rejected (`structuredOutputWithTools: false`). Probe:
   a strict schema plus a function tool on each model, checking the call and the final answer.
 
