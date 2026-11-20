@@ -55,8 +55,8 @@ import { makePermissiveTestDescriptor } from '../../core/src/test-model-descript
  * A fresh in-memory database for the current test, closed when the test finishes,
  * whether it passed or failed. Cleanup is registered before any setup SQL runs.
  * PGlite keeps its WASM heap resident until `close()`: an instance that is only
- * dropped holds about 200 MiB even after garbage collection. Without this, the
- * instances this file used to leak pushed CI workers past the 5 s test timeout.
+ * dropped holds about 200 MiB even after garbage collection, and this file opens
+ * dozens of them.
  */
 function openPglite(): PGlite {
   const pg = new PGlite()
@@ -258,6 +258,23 @@ function makeRecord(overrides: Partial<LlmCallRecord> = {}): LlmCallRecord {
   }
 }
 
+// Per-test timeout, in ms, passed to every top-level suite below as `describe`'s
+// third argument (vitest's default is 5 s; the value reaches nested suites and
+// `it.each` cases, and hooks keep their own budget). Each test starts one or two
+// in-memory PGlite databases, and that WASM startup dominates its time; the SQL under
+// test runs in tens of milliseconds. Measured on GitHub-hosted ubuntu-latest runners
+// with the full suite running in parallel (CI run 44660721183, 2026-11-19, every
+// database already closed after its test):
+//
+// - PGlite startup: 1.1-1.9 s per database on Node 24, 1.9-3.1 s on Node 22.12 and
+//   in `verify`; `install.sql` 6-32 ms.
+// - Reported test duration: up to 3.1 s on Node 24 and 5.6-6.4 s on Node 22.12 and in
+//   `verify` for the two-database tests, over the 5 s default. Single-database tests
+//   reached 3.8 s.
+//
+// 20 s is about 3x the slowest measurement and still fails a real hang quickly.
+// Prettier keeps a test call's layout only when this argument is a number literal,
+// so each suite repeats `20_000` instead of naming a constant.
 describe('install.sql (fresh install)', () => {
   it('creates exactly the columns, nullability and indexes that schema.ts declares', async () => {
     const pg = openPglite()
@@ -433,7 +450,7 @@ describe('install.sql (fresh install)', () => {
       costUnpricedReason: 'Unknown model "x"; no pricing entry found.',
     })
   })
-})
+}, 20_000)
 
 describe('cost_unpriced_reason separates possibly billed from known free (engine to PGlite)', () => {
   it('a dispatched failure with no usage carries no_usage_reported; a known-free one has neither cost nor reason', async () => {
@@ -498,7 +515,7 @@ describe('cost_unpriced_reason separates possibly billed from known free (engine
     )
     expect(possiblyBilled.rows).toHaveLength(1)
   })
-})
+}, 20_000)
 
 describe('upgrades/0001-add-error-reason.sql (from the 0.7.2 shape)', () => {
   it('the 0.7.2 fixture has no error_reason column before the upgrade', async () => {
@@ -565,7 +582,7 @@ describe('upgrades/0001-add-error-reason.sql (from the 0.7.2 shape)', () => {
     const sink = drizzleUsageSink({ db })
     await expect(sink.record(makeRecord())).rejects.toThrow()
   })
-})
+}, 20_000)
 
 /** The previously published shape: 0.7.2 plus upgrade 0001. */
 const AFTER_0001_SQL = `${PUBLISHED_0_7_2_SQL}\n${sqlFile('upgrades/0001-add-error-reason.sql')}`
@@ -924,7 +941,7 @@ describe('upgrades/0002-ledger-v2.sql (from the 0.7.2 shape plus 0001)', () => {
     const sink = drizzleUsageSink({ db })
     await expect(sink.record(makeRecord())).rejects.toThrow()
   })
-})
+}, 20_000)
 
 /**
  * The SQL statement a SQL file documents in its comments (a `--   ` indented
@@ -1102,7 +1119,7 @@ describe('a table that was not migrated is detectable, and the engine logs every
     expect(sinkFailures.every((e) => typeof e.ctx['attemptId'] === 'string')).toBe(true)
     expect((await pg.query('SELECT 1 FROM llm_calls')).rows).toEqual([])
   })
-})
+}, 20_000)
 
 // ---------------------------------------------------------------------------
 // llm_call_payloads: fresh install and upgrade 0004
@@ -1216,7 +1233,7 @@ describe('install.sql: llm_call_payloads', () => {
     await pg.exec(`DELETE FROM llm_calls WHERE attempt_id = 'new_attempt'`)
     expect((await pg.query(`SELECT 1 FROM llm_call_payloads`)).rows).toHaveLength(0)
   })
-})
+}, 20_000)
 
 describe('upgrades/0004-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 and 0002)', () => {
   it('the previous shape has no payload table', async () => {
@@ -1496,4 +1513,4 @@ describe('upgrades/0004-llm-call-payloads.sql (from the 0.7.2 shape plus 0001 an
     expect((await pg.query(`SELECT 1 FROM llm_calls`)).rows).toHaveLength(1)
     expect(errors.map(([, message]) => message)).toEqual(['llm.call.payload.failed'])
   })
-})
+}, 20_000)
