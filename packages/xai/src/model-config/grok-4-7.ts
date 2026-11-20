@@ -20,22 +20,26 @@ import { XaiProviderOptionsSchema } from './tools.js'
 
 export const Grok47ConfigSchema = z
   .strictObject({
-    temperature: z.number().min(0).max(2).optional().meta({
+    temperature: z.number().min(0).max(1).optional().meta({
       title: 'Temperature',
       description:
-        'Sampling temperature forwarded verbatim to grok-4.7, from 0 to 2 (the range xAI documents for the Responses API: "between 0 and 2"); a value outside it is rejected.',
+        'Sampling temperature forwarded verbatim to grok-4.7, from 0 to 1 inclusive. xAI accepts up to 2 but samples a temperature above 1 as 1 while echoing the value sent (Responses API reference, read 2026-11-20: "Sampling uses at most `temperature` 1"), so a higher value would be silently clamped; the schema does not admit it and a value outside 0 to 1 is rejected.',
     }),
-    topP: z.number().min(0).max(1).optional().meta({
+    topP: z.number().min(0).max(0.95).optional().meta({
       title: 'Top P',
       description:
-        'Nucleus sampling probability forwarded verbatim to grok-4.7, from 0 to 1 (xAI documents no range for it; a probability mass outside 0 to 1 is meaningless); a value outside it is rejected.',
+        'Nucleus sampling probability forwarded verbatim to grok-4.7, from 0 to 0.95 inclusive. xAI accepts up to 1 but samples a `top_p` above the model default, 0.95 for Grok models, as 0.95 while echoing the value sent (Responses API reference, read 2026-11-20), so a higher value would be silently clamped; the schema does not admit it and a value outside 0 to 0.95 is rejected.',
     }),
     maxOutputTokens: maxOutputTokensSchema(XAI_MODEL_LIMITS['grok-4.7'])
       .optional()
       .meta({
         title: 'Max Output Tokens',
         description:
-          'Maximum output token cap for grok-4.7, including reasoning tokens. No ' +
+          'Maximum output token cap for grok-4.7. xAI documents that it "only applies to ' +
+          'visible output tokens (i.e. does not apply to tokens used for reasoning or ' +
+          'function calls)" (Responses API reference, read 2026-11-20). In the live ' +
+          'grok-4.5 capture (fixture 08) a cap of 16 returned status "incomplete" with ' +
+          'reason "max_output_tokens", 51 output tokens, 35 of them reasoning. No ' +
           'ceiling is applied: xAI documents no output limit and has accepted very ' +
           "large values (live-verified). Truncation surfaces as finishReason:'length', " +
           'not an error.',

@@ -7,6 +7,7 @@
       "@gullabs/any-llm": ["./packages/any-llm/src/index.ts"],
       "@gullabs/google": ["./packages/google/src/index.ts"],
       "@gullabs/xai": ["./packages/xai/src/index.ts"],
+      "@gullabs/openai": ["./packages/openai/src/index.ts"],
       "@gullabs/drizzle": ["./packages/drizzle/src/index.ts"],
       "@gullabs/quota": ["./packages/quota/src/index.ts"],
       "@gullabs/testing": ["./packages/testing/src/index.ts"],

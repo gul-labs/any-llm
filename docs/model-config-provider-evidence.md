@@ -10,7 +10,9 @@ legacy field the provider may still accept.
 
 The July 2026 matrix below is a historical freeze. `gemini-3.5-flash` and
 `gemini-3-flash-preview` were deleted on 2026-09-25 and do not resolve. The
-current catalog is the **2026-09-25 refresh** section.
+2026-09-25 refresh table is kept as recorded; the current Google catalog is the
+**2026-11-20 refresh** section, which supersedes it for Google ids (the xAI and
+CLI rows of the 2026-09-25 table are not re-read there).
 
 ## Evidence Matrix
 
@@ -38,28 +40,29 @@ states the inclusive 200k long-context boundary and 2× priority rate.
 
 Registered after the 2026-09-25 catalog refresh. Hosts migrate deleted ids themselves:
 `gemini-3-flash-preview` and `gemini-3.5-flash` → `gemini-3.6-flash`; `gpt-5.x` →
-`gpt-6-astra` / `gpt-6-sol` / `gpt-6-luna`; `claude-fable-5` → `claude-fable-5-1`;
+`gpt-6.2-sol` / `gpt-6.2-astra` / `gpt-6-luna`; `claude-fable-5` → `claude-fable-5-2`;
 `claude-opus-4-8` → `claude-opus-5-5`. There is no alias.
 
-| Model                                                    | Efforts                                 | SO + search | caching.minTokens | Tiers          | Notes                                                                                                                                                        |
-| -------------------------------------------------------- | --------------------------------------- | ----------- | ----------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `gemini-3.8-flash`                                       | `low`, `medium`, `high`                 | yes         | 1024              | flex, standard | Intro rates. Never emits `thinkingLevel` MINIMAL.                                                                                                            |
-| `gemini-3.7-flash`                                       | `low`, `medium`, `high`                 | yes         | 1024              | flex, standard | Same intro rates. Never emits MINIMAL.                                                                                                                       |
-| `gemini-3.6-flash`                                       | `none`, `low`, `medium`, `high`         | yes         | 1024              | flex, standard | Same intro rates.                                                                                                                                            |
-| `gemini-3.5-flash-lite`                                  | `none`, `low`, `medium`, `high`         | yes         | 1024              | flex, standard | Live cache minimum 1024 (live, 2026-09-26).                                                                                                                  |
-| `gemini-3.1-pro-preview`                                 | `low`, `medium`, `high`                 | yes         | 1024              | flex, standard | Live cache minimum 1024 (live, 2026-09-26).                                                                                                                  |
-| `gemini-3.1-flash-lite`                                  | `none`, `low`, `medium`, `high`         | yes         | 1024              | flex, standard | Live cache minimum 1024 (live, 2026-09-26).                                                                                                                  |
-| `gemini-2.5-pro`                                         | `low`, `medium`, `high`                 | no          | 2048              | flex, standard | Still registered. Budget API. Sampling stays tunable.                                                                                                        |
-| `gemini-2.5-flash`                                       | `none`, `low`, `medium`, `high`         | no          | 2048              | flex, standard | Still registered. Budget API. Sampling stays tunable.                                                                                                        |
-| `gemini-2.5-flash-lite`                                  | `none`, `low`, `medium`, `high`         | no          | 2048              | flex, standard | Still registered. Budget API. Sampling stays tunable.                                                                                                        |
-| `gemma-4-31b-it`                                         | `none`, `high`                          | no          | n/a               | none           | Still registered. Unpriced.                                                                                                                                  |
-| `gemma-4-26b-a4b-it`                                     | `none`, `high`                          | no          | n/a               | none           | Still registered. Unpriced.                                                                                                                                  |
-| `grok-4.5`                                               | `low`, `medium`, `high`                 | n/a         | n/a               | priority       | `xhigh` rejected; priority live-verified 2026-09-25 at 2×. Long-context starts at ≥200,000.                                                                  |
-| `grok-4.6`                                               | `low`, `medium`, `high`, `xhigh`        | n/a         | n/a               | priority       | Long-context starts at ≥200,000. Priority 2×.                                                                                                                |
-| `grok-4.7`                                               | `low`, `medium`, `high`, `xhigh`        | n/a         | n/a               | priority       | Live priority 200 and effort-none 400 fixtures (2026-09-25); stateless encrypted-reasoning replay live-verified 2026-09-26. Long-context starts at ≥200,000. |
-| `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`                 | `low`, `medium`, `high`, `xhigh`, `max` | n/a         | n/a               | n/a            | `--strict-config` is invariant. `ultra` and `none` excluded.                                                                                                 |
-| `claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5` | `low` through `max`                     | n/a         | n/a               | n/a            | `--settings {"switchModelsOnFlag":false}` is best-effort; `modelUsage` enforces the served id.                                                               |
-| `claude-haiku-4-5-20251001`                              | none                                    | n/a         | n/a               | n/a            | No reasoning key. The CLI drops `--effort`.                                                                                                                  |
+| Model                                   | Efforts                                 | SO + search | caching.minTokens | Tiers          | Notes                                                                                                                                                        |
+| --------------------------------------- | --------------------------------------- | ----------- | ----------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `gemini-3.8-flash`                      | `low`, `medium`, `high`                 | yes         | 1024              | flex, standard | Intro rates. Never emits `thinkingLevel` MINIMAL.                                                                                                            |
+| `gemini-3.7-flash`                      | `low`, `medium`, `high`                 | yes         | 1024              | flex, standard | Same intro rates. Never emits MINIMAL.                                                                                                                       |
+| `gemini-3.6-flash`                      | `none`, `low`, `medium`, `high`         | yes         | 1024              | flex, standard | Same intro rates.                                                                                                                                            |
+| `gemini-3.5-flash-lite`                 | `none`, `low`, `medium`, `high`         | yes         | 1024              | flex, standard | Live cache minimum 1024 (live, 2026-09-26).                                                                                                                  |
+| `gemini-3.1-pro-preview`                | `low`, `medium`, `high`                 | yes         | 1024              | flex, standard | Live cache minimum 1024 (live, 2026-09-26).                                                                                                                  |
+| `gemini-3.1-flash-lite`                 | `none`, `low`, `medium`, `high`         | yes         | 1024              | flex, standard | Live cache minimum 1024 (live, 2026-09-26).                                                                                                                  |
+| `gemini-2.5-pro`                        | `low`, `medium`, `high`                 | no          | 2048              | flex, standard | Still registered. Budget API. Sampling stays tunable.                                                                                                        |
+| `gemini-2.5-flash`                      | `none`, `low`, `medium`, `high`         | no          | 2048              | flex, standard | Still registered. Budget API. Sampling stays tunable.                                                                                                        |
+| `gemini-2.5-flash-lite`                 | `none`, `low`, `medium`, `high`         | no          | 2048              | flex, standard | Still registered. Budget API. Sampling stays tunable.                                                                                                        |
+| `gemma-4-31b-it`                        | `none`, `high`                          | no          | n/a               | none           | Still registered. Unpriced.                                                                                                                                  |
+| `gemma-4-26b-a4b-it`                    | `none`, `high`                          | no          | n/a               | none           | Still registered. Unpriced.                                                                                                                                  |
+| `grok-4.5`                              | `low`, `medium`, `high`                 | n/a         | n/a               | priority       | `xhigh` rejected; priority live-verified 2026-09-25 at 2×. Long-context starts at ≥200,000.                                                                  |
+| `grok-4.6`                              | `low`, `medium`, `high`, `xhigh`        | n/a         | n/a               | priority       | Long-context starts at ≥200,000. Priority 2×.                                                                                                                |
+| `grok-4.7`                              | `low`, `medium`, `high`, `xhigh`        | n/a         | n/a               | priority       | Live priority 200 and effort-none 400 fixtures (2026-09-25); stateless encrypted-reasoning replay live-verified 2026-09-26. Long-context starts at ≥200,000. |
+| `gpt-6.2-sol`, `gpt-6.2-astra`          | `low`, `medium`, `high`, `xhigh`, `max` | n/a         | n/a               | n/a            | `--strict-config` is invariant. `ultra` and `none` excluded.                                                                                                 |
+| `gpt-6.1-terra`, `gpt-6-luna`           | `low`, `medium`, `high`, `xhigh`, `max` | n/a         | n/a               | n/a            | `--strict-config` is invariant. `ultra` and `none` excluded.                                                                                                 |
+| `claude-fable-5-2`, `claude-opus-5-5`   | `low` through `max`                     | n/a         | n/a               | n/a            | `--settings {"switchModelsOnFlag":false}` is best-effort; `modelUsage` enforces the served id.                                                               |
+| `claude-sonnet-5-5`, `claude-haiku-5-5` | `low` through `max`                     | n/a         | n/a               | n/a            | `--settings {"switchModelsOnFlag":false}` is best-effort; `modelUsage` enforces the served id.                                                               |
 
 Recorded with this refresh:
 
@@ -72,9 +75,65 @@ Recorded with this refresh:
 - Google's 4096-token table in its caching guide concerns implicit caching. `caching.minTokens` in these descriptors gates explicit cache creation, for which the live endpoint reported 1024.
 - xAI attachment counter: the available xAI key has Zero Data Retention; file upload returned 403 and public URL attachment returned 400. Counter verification needs a non-ZDR key. Fixture `29-attachment-zdr-blocked.json` records the errors.
 - Stateless encrypted-reasoning replay: live grok-4.7 `store:false` returned encrypted reasoning and a function call; replaying the full response output unchanged in the adapter's exact input shape with the function result returned the correct answer. The adapter retains all wire output items in transient provider state outside the ledger. Fixture `28-grok-4-7-replay.json` records both turns. A follow-up live call replayed the full history ending with an assistant message and containing a `web_search_call` item, without re-supplying tools, and returned HTTP 200; fixture `30-grok-4-7-search-replay.json` records both calls and a hash of the replayed input. A live third turn replayed the full fixture 28 history ending in the function answer's assistant message and returned HTTP 200; fixture `31-grok-4-7-third-turn.json` records that result and an input hash.
+- xAI sampling bounds (Responses API reference, <https://docs.x.ai/developers/rest-api-reference/inference/responses>, read 2026-11-20): the API accepts `temperature` up to 2 and `top_p` up to 1 but samples a `temperature` above 1 as 1 and a `top_p` above 0.95 as 0.95, echoing the value sent. The Grok config schemas admit `temperature` 0 to 1 and `topP` 0 to 0.95 only. Documented, not live-verified.
+- xAI `maxOutputTokens`: the same reference says the cap "does not apply to tokens used for reasoning or function calls". Fixture `08-max-output-tokens.json` (live grok-4.5): cap 16, `incomplete` / `max_output_tokens`, 51 output tokens of which 35 reasoning.
+- xAI `incomplete_details.reason` (OpenAPI document, <https://docs.x.ai/openapi.json>, read 2026-11-20): `max_output_tokens`, `max_prompt_tokens`, `max_time_limit`, `content_filter`. Only `max_output_tokens` has a live capture. The adapter maps `content_filter` to `content_filter` and the other two, and unknown values, to `other` with a warning. Documented, not live-verified.
+- xAI `maxTurns` (<https://docs.x.ai/developers/tools/tool-usage-details>, read 2026-11-20): documented as applied; a live call on 2026-10-02 (fixture 33) ignored it. Open until a live probe (ADR-030).
 - xAI `long_context_threshold` is inclusive: gross input at or above 200,000 uses the long-context rates. The xAI lookup owns `>=`; core's selector stays `>`.
 - X Search item counters: live grok-4.7 X Search calls on 2026-09-26 emitted `x_posts_fetched` and `x_users_fetched`, including explicit zeroes. Posts-only (10 posts) and users-only (12 profiles) snapshot costs matched provider `cost_in_usd_ticks` exactly; fixtures `26-x-posts.json` and `27-x-users.json` preserve the usage blocks.
-- Claude CLI argv and `modelUsage`: Claude Code 2.1.282 completed the adapter's invariant argv plus `--json-schema` on all four registered ids on 2026-09-26. Each success envelope's `modelUsage` contained exactly the requested id; sanitized selected response fields are in `packages/claude-cli/src/__fixtures__/model-refresh-p-a1.json`.
+- CLI model refresh (2026-11-20, documentation only, no CLI was run): `claude-cli` registers `claude-fable-5-2`, `claude-opus-5-5`, `claude-sonnet-5-5` and `claude-haiku-5-5` (Anthropic models overview, effort and Claude Code model-configuration pages), all with `low` through `max` and 1M context / 128K output as documented for the API; the value the CLI reports in `modelUsage` for these ids is not captured. `codex-cli` registers `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra` and `gpt-6-luna`, with the context window Codex CLI runs each by default (500,000 for `gpt-6.2-sol` and `gpt-6.1-terra`, 272,000 for `gpt-6.2-astra` and `gpt-6-luna`, per the model catalog bundled with Codex CLI 0.171.0) and 128,000 output from the OpenAI model pages. `claude-cli` reads the documented `structured_output` field of the `--output-format json` result instead of parsing `result`.
+- Claude CLI argv and `modelUsage`: Claude Code 2.1.282 completed the adapter's invariant argv plus `--json-schema` on four ids (`claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`) on 2026-09-26; three of them are no longer registered, so the capture is evidence of the CLI's output shape only, not of the current ids. Each success envelope's `modelUsage` contained exactly the requested id; sanitized selected response fields are in `packages/claude-cli/src/__fixtures__/model-refresh-p-a1.json`.
+
+## 2026-11-20 refresh (Google)
+
+Read 2026-11-20 from Google's documentation, now served under
+<https://aistudio.google.com/docs> (the `ai.google.dev/gemini-api/docs` pages redirect there): the
+model pages, the thinking guide, the Gemini 4 and 3.8 migration notes, the structured-output and
+caching guides, the deprecations page and the pricing page; the `@google/genai` 3.6.1 typings and
+source. **No live call was made**: every new row is documented, not live-verified, and the earlier
+live evidence (2026-09-26, 2026-10-03) is unchanged for the models it covers (ADR-048).
+
+| Model                    | Efforts                          | SO + search | caching              | Tiers          | Max output | Notes                                                                                                           |
+| ------------------------ | -------------------------------- | ----------- | -------------------- | -------------- | ---------- | --------------------------------------------------------------------------------------------------------------- |
+| `gemini-4-carbon`        | `low`, `medium`, `high`          | no          | implicit only (4096) | flex, standard | 32,768     | Default level medium, sent when no effort is set. $4.00 / $0.20 / $20.00 from 2026-12-01; estimated until then. |
+| `gemini-4-argon`         | `low`, `medium`, `high`          | no          | implicit only (4096) | flex, standard | 32,768     | As Carbon.                                                                                                      |
+| `gemini-4-neon`          | `low`, `medium`, `high`, `xhigh` | no          | implicit only (4096) | flex, standard | 65,536     | Default level high. $3.00 / $0.15 / $15.00.                                                                     |
+| `gemini-4-hydrogen`      | `low`, `medium`, `high`, `xhigh` | no          | implicit only (4096) | flex, standard | 65,536     | Default level high. $1.50 / $0.075 / $7.50.                                                                     |
+| `gemini-3.8-flash`       | `low`, `medium`, `high`          | no          | explicit, 1024       | flex, standard | 65,536     | Rates unchanged (intro until 2026-12-31). Final user turn must hold text; no final model turn.                  |
+| `gemini-3.6-flash`       | `none`, `low`, `medium`, `high`  | no          | explicit, 1024       | flex, standard | 65,536     | Rates unchanged (intro until 2026-12-31). No final model turn.                                                  |
+| `gemini-3.5-flash-lite`  | `none`, `low`, `medium`, `high`  | no          | explicit, 1024       | flex, standard | 65,536     | Rates unchanged. No final model turn.                                                                           |
+| `gemini-3.1-pro-preview` | `low`, `medium`, `high`          | no          | explicit, 1024       | flex, standard | 65,536     | Rates unchanged.                                                                                                |
+| `gemini-3.1-flash-lite`  | `none`, `low`, `medium`, `high`  | no          | explicit, 1024       | flex, standard | 65,536     | Rates unchanged. Shutdown 2027-05-07.                                                                           |
+| `gemini-2.5-flash-lite`  | `none`, `low`, `medium`, `high`  | no          | explicit, 2048       | flex, standard | 65,536     | Rates unchanged. Not deprecated; access limited to existing users. The only budget-API model left.              |
+| `gemma-4-31b-it`         | `none`, `high`                   | no          | n/a                  | none           | n/a        | Unchanged. Unpriced.                                                                                            |
+| `gemma-4-26b-a4b-it`     | `none`, `high`                   | no          | n/a                  | none           | n/a        | Unchanged. Unpriced.                                                                                            |
+
+("SO + search" is the default; the Gemini 3.x rows admit it per call with `allowSchemaWithSearch`,
+the Gemini 4 rows do not.)
+
+Removed from the registry on 2026-11-20, with no alias (hosts migrate themselves):
+`gemini-3.7-flash` (deprecated 2026-10-08; Google routes it to `gemini-3.8-flash`, and it is gone from
+the pricing page) → `gemini-3.8-flash`; `gemini-2.5-pro` → `gemini-3.8-flash` (or a Gemini 4 model)
+and `gemini-2.5-flash` → `gemini-3.5-flash-lite` (from 2026-12-01 Google routes both to those models
+and bills their rates). Their rows above, in the 2026-09-25 table and in the July matrix are
+historical.
+
+Recorded with this refresh:
+
+- SDK 3.0.0 made `v1` the Developer API default (explicit caching is not on `v1`) and reads
+  `GOOGLE_GENAI_API_VERSION`; the client is now pinned to `v1beta` with `vertexai: false`.
+- `store` ("Configures the logging behavior for a given request. If set, it takes precedence over the
+  project-level logging config"): new paid-tier projects store requests by default since 2026-10-26;
+  the adapter sends `store: false` on every request. Not yet confirmed live.
+- `automaticContinuation` defaults to `true` in the SDK and re-sends on `CONTINUATION`, summing usage;
+  the adapter sends `false` and maps `CONTINUATION` to `length`.
+- Gemini 4: `thinkingLevel` is called "required for Gemini 4" in the thinking guide; `minimal` is rejected;
+  sampling parameters are ignored; explicit caching "returns an error"; "Set HTTP client timeouts to at
+  least 20 minutes per call"; grounding bills "internal tool system instructions and function
+  declarations" as tokens; the Gemini 4 flex price tabs have no grounding row.
+- 3.6 Flash, 3.5 Flash-Lite "and all future Gemini model releases": "If the last non-empty turn in the
+  request is a `model` turn, the API returns a `400` error." 3.8 Flash: "ensure the final user turn
+  contains non-empty text" (a final turn of function responses was accepted in the 2026-10-03 capture).
 
 ## Contract Notes
 

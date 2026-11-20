@@ -72,7 +72,7 @@ export interface SignalAwareFakeAdapterOptions {
  * await expect(
  *   client.generate({
  *     provider: 'google',
- *     model: 'gemini-2.5-pro',
+ *     model: 'gemini-3.8-flash',
  *     messages,
  *     signal: ctrl.signal,
  *   }),

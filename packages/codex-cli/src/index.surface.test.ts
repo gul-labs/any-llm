@@ -21,8 +21,8 @@ describe('@gullabs/codex-cli package surface', () => {
     expect(typeof codexCliProvider).toBe('function')
   })
 
-  it('codexCliRegistry.resolve("gpt-6-sol") is defined', () => {
-    expect(codexCliRegistry.resolve('codex-cli', 'gpt-6-sol')).toBeDefined()
+  it('codexCliRegistry.resolve("gpt-6.2-sol") is defined', () => {
+    expect(codexCliRegistry.resolve('codex-cli', 'gpt-6.2-sol')).toBeDefined()
   })
 
   it('deleted gpt-5 ids do not resolve', () => {

@@ -45,7 +45,7 @@ const client = createClient({
 const summarize = defineCallSite({
   id: 'summarize',
   provider: 'google',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-3.8-flash',
   jsonSchema: {
     type: 'object',
     properties: {
@@ -75,16 +75,15 @@ const parsedConfig = descriptor.configSchema.parse({
 Built-in descriptors own the strict model-config contract:
 `descriptor.configSchema` parses persisted or user-supplied config, and
 `descriptor.configJsonSchema` is the derived UI/form schema. Use
-`reasoning.effort` for Gemini 3 and Gemma built-ins, omit `serviceTier` for the
+`reasoning.effort` for Gemini 3, Gemini 4 and Gemma built-ins, omit `serviceTier` for the
 provider's standard tier, and set `flex` explicitly when that trade-off is
 intended. `priority` remains rejected by the library for now.
 
-Registered Google ids: `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`,
-`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
-`gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemma-4-31b-it`,
-`gemma-4-26b-a4b-it`. `gemini-3.1-pro-preview`, `gemini-3.7-flash`, and
-`gemini-3.8-flash` do not admit `effort: 'none'`. `gemini-3-flash-preview` and
-`gemini-3.5-flash` do not resolve.
+Registered Google ids: `gemini-2.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.8-flash`, `gemini-4-carbon`, `gemini-4-argon`, `gemini-4-neon`, `gemini-4-hydrogen`, `gemma-4-31b-it`, `gemma-4-26b-a4b-it`. `gemini-3.1-pro-preview`, `gemini-3.8-flash` and the
+Gemini 4 models do not admit `effort: 'none'`; `xhigh` is admitted on `gemini-4-neon` and
+`gemini-4-hydrogen` only. The Gemini 4 contract is documented, not live-verified (ADR-048).
+`gemini-3-flash-preview`, `gemini-3.5-flash` and the ids removed on 2026-11-20 (ADR-048) do not
+resolve. The peer is `@google/genai ^3.6.1`.
 
 ## Key exports
 

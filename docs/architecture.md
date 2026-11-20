@@ -36,17 +36,17 @@ Concrete implementations live outside the engine, in separate packages or in hos
 
 ### Ports
 
-| Port              | Who implements                                                                   | Notes                                                                                                                                                                                                                                                                           |
-| ----------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ProviderAdapter` | `@gullabs/google`, `@gullabs/xai`, dev-only CLI provider packages                | Translates `ResolvedRequest` ↔ raw SDK. Never validates, costs, or persists.                                                                                                                                                                                                    |
-| `UsageSink`       | Host app, `@gullabs/drizzle`                                                     | Receives completed `LlmCallRecord`. Called fail-open.                                                                                                                                                                                                                           |
-| `PricingSource`   | Each provider package (`geminiPricingSource()`, `xaiPricingSource()`), or custom | Provider-scoped source configured per provider via `ClientConfig.pricingSources` (assembled by `composeProviders`); exposes `hasModel`/`listModels` for strict construction-time checks. Core owns only the generic, parameterized `computeCost`. Runtime pricing is fail-open. |
-| `RateLimiter`     | Host app, `@gullabs/quota`, or another companion package                         | Pre-send backpressure. `acquire(key, signal, hint)` is fail-closed and gets an input-token estimate; `Release(usage)` gets the attempt's usage. Default is a no-op; wait time is recorded as `queueDelayMs`.                                                                    |
-| `Telemetry`       | Host app (Sentry / PostHog / OTel hook)                                          | Optional; all callbacks are optional. Called fail-open.                                                                                                                                                                                                                         |
-| `Logger`          | Host app                                                                         | Structured logger (`info`, `warn`, `error`). Defaults to no-op.                                                                                                                                                                                                                 |
-| `Clock`           | `@gullabs/testing` (`FakeClock`) or default                                      | `Date.now()` abstraction for deterministic latency in tests.                                                                                                                                                                                                                    |
-| `Scheduler`       | `@gullabs/testing` (`FakeClock`, also a `Clock`) or default                      | `setTimeout` / `clearTimeout` for every engine wait (attempt timeout, call deadline, sink waits), retry back-off and fake adapter delays; makes timeouts deterministic in tests.                                                                                                |
-| `IdGenerator`     | `@gullabs/testing` (`FakeIds`) or default                                        | `crypto.randomUUID()` abstraction for deterministic records in tests.                                                                                                                                                                                                           |
+| Port              | Who implements                                                                                            | Notes                                                                                                                                                                                                                                                                           |
+| ----------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ProviderAdapter` | `@gullabs/google`, `@gullabs/xai`, `@gullabs/openai`, dev-only CLI provider packages                      | Translates `ResolvedRequest` ↔ raw SDK. Never validates, costs, or persists.                                                                                                                                                                                                    |
+| `UsageSink`       | Host app, `@gullabs/drizzle`                                                                              | Receives completed `LlmCallRecord`. Called fail-open.                                                                                                                                                                                                                           |
+| `PricingSource`   | Each provider package (`geminiPricingSource()`, `xaiPricingSource()`, `openaiPricingSource()`), or custom | Provider-scoped source configured per provider via `ClientConfig.pricingSources` (assembled by `composeProviders`); exposes `hasModel`/`listModels` for strict construction-time checks. Core owns only the generic, parameterized `computeCost`. Runtime pricing is fail-open. |
+| `RateLimiter`     | Host app, `@gullabs/quota`, or another companion package                                                  | Pre-send backpressure. `acquire(key, signal, hint)` is fail-closed and gets an input-token estimate; `Release(usage)` gets the attempt's usage. Default is a no-op; wait time is recorded as `queueDelayMs`.                                                                    |
+| `Telemetry`       | Host app (Sentry / PostHog / OTel hook)                                                                   | Optional; all callbacks are optional. Called fail-open.                                                                                                                                                                                                                         |
+| `Logger`          | Host app                                                                                                  | Structured logger (`info`, `warn`, `error`). Defaults to no-op.                                                                                                                                                                                                                 |
+| `Clock`           | `@gullabs/testing` (`FakeClock`) or default                                                               | `Date.now()` abstraction for deterministic latency in tests.                                                                                                                                                                                                                    |
+| `Scheduler`       | `@gullabs/testing` (`FakeClock`, also a `Clock`) or default                                               | `setTimeout` / `clearTimeout` for every engine wait (attempt timeout, call deadline, sink waits), retry back-off and fake adapter delays; makes timeouts deterministic in tests.                                                                                                |
+| `IdGenerator`     | `@gullabs/testing` (`FakeIds`) or default                                                                 | `crypto.randomUUID()` abstraction for deterministic records in tests.                                                                                                                                                                                                           |
 
 ### Component Diagram
 
@@ -84,6 +84,7 @@ Concrete implementations live outside the engine, in separate packages or in hos
   Provider plugins (composed via composeProviders)
     ├── @gullabs/google (googleProvider → geminiAdapter → @google/genai SDK)
     ├── @gullabs/xai    (xaiProvider → xaiAdapter → openai SDK @ api.x.ai, streamed internally)
+    ├── @gullabs/openai (openaiProvider → openaiAdapter → fetch + openai SDK stream decoder @ api.openai.com)
     └── @gullabs/claude-cli / @gullabs/codex-cli (dev-only local CLI sessions)
 ```
 
@@ -91,7 +92,7 @@ The engine never imports any provider package or provider SDK. The provider pack
 engine's port interfaces but nothing internal, and each ships as a self-contained plugin
 (`adapter + model descriptors + pricing source`) exposed through a single factory
 (`googleProvider()` in `packages/google/src/provider.ts`, `xaiProvider()` in
-`packages/xai/src/provider.ts`) composed via `composeProviders` (ADR-023).
+`packages/xai/src/provider.ts`, `openaiProvider()` in `packages/openai/src/provider.ts`) composed via `composeProviders` (ADR-023).
 
 ---
 
@@ -301,7 +302,7 @@ narrow by `kind` or read `retryable` without parsing message strings.
 | `timeout`        | 408                | Yes         | Request exceeded `timeoutMs` or network timeout. The engine's own deadline timeout is retryable with no `reason` (`retryMiddleware` makes no further attempt, because the budget is spent). Retryable too, except an adapter's `transport_timeout` reason (xAI's idle timer, undici header and body timers and its deadline when `timeoutMs` is unset; Google's client-side ceiling and SDK timer). |
 | `aborted`        | —                  | No          | Caller cancelled via `AbortSignal`. Never retried.                                                                                                                                                                                                                                                                                                                                                  |
 | `bad_request`    | 400, 404, 413, 422 | No          | Malformed request; retrying without change will not help.                                                                                                                                                                                                                                                                                                                                           |
-| `content_filter` | overlay / 200      | No          | Provider refused the call for safety / AUP. Google output blocks are 200-path (a filter stop with no text and no tool call throws); xAI input blocks are the 403 overlay. Unrecorded xAI 200 incomplete reasons stay `finishReason: 'other'`.                                                                                                                                                       |
+| `content_filter` | overlay / 200      | No          | Provider refused the call for safety / AUP. Google output blocks are 200-path (a filter stop with no text and no tool call throws); xAI input blocks are the 403 overlay. An xAI 200 `incomplete` response with reason `content_filter` is `finishReason: 'content_filter'`; its other reasons (`max_prompt_tokens`, `max_time_limit`, unknown) are `'other'` with a warning naming the reason.     |
 | `unknown`        | other              | No          | Uncategorised; inspect `cause` for details.                                                                                                                                                                                                                                                                                                                                                         |
 
 ### Classification
@@ -486,12 +487,14 @@ Each descriptor carries:
   suffixes). Exact-match keys too; sent to the provider unchanged and priced under this descriptor.
 - `provider` — matches the `ProviderAdapter.id` used for routing. `createClient` verifies at
   construction that every registry descriptor's `provider` matches a configured adapter's `id`.
-- `pricingFamily` — the key into the pricing table (e.g., `"gemini-2.5-pro"` for
-  `"gemini-2.5-pro-001"`, when that string is a declared alias).
-- `capabilities.reasoningApi` — `'budget'` (Gemini 2.5 series, `thinkingBudget`) or
-  `'level'` (Gemini 3.x series, `thinkingLevel`).
-- `capabilities.sampling` — `'tunable'` (Gemini 2.5 series) or `'fixed'` (Gemini 3.x series).
-- `capabilities.caching` — `{ explicit: boolean; minTokens: number }`.
+- `pricingFamily` — the key into the pricing table (e.g., `"gemini-3.8-flash"` for
+  `"gemini-3.8-flash-001"`, when that string is a declared alias).
+- `capabilities.reasoningApi` — `'budget'` (Gemini 2.5 Flash-Lite, `thinkingBudget`) or
+  `'level'` (Gemini 3.x and Gemini 4, `thinkingLevel`).
+- `capabilities.sampling` — `'tunable'` (Gemini 2.5 Flash-Lite, Gemma) or `'fixed'` (Gemini 3.x and 4).
+- `capabilities.caching` — `{ explicit: boolean; minTokens: number }`. Gemini 4 is
+  `{ explicit: false, minTokens: 4096 }`: implicit caching only, so `cachedContent` and
+  `GoogleCacheStore.create` are rejected for it.
 - `capabilities.grounding` — whether the model supports Google Search grounding.
 - `capabilities.nativeStructuredOutput` — whether the adapter may send provider-native
   `responseMimeType` / `responseJsonSchema` for `output.jsonSchema` (standard JSON Schema,
@@ -514,7 +517,7 @@ Each descriptor carries:
 1. Exact match on the (`provider`, `model`) pair — O(1) hash lookup. Declared `aliases` are
    additional keys for the same descriptor, unique within the provider.
 2. `undefined` — no descriptor found. There is no prefix matching: an unregistered sibling such as
-   `gemini-2.5-flash-image` next to `gemini-2.5-flash` is unknown, never priced as the shorter id.
+   `gemini-3.8-flash-image` next to `gemini-3.8-flash` is unknown, never priced as the shorter id.
 
 When `undefined`, the engine throws `LlmError('bad_request')` at the public API boundary.
 There is no provider derivation, no `provider/model` slash convention, and no `'unknown'`
@@ -528,11 +531,8 @@ exports its own descriptor arrays and a ready-to-use registry; `@gullabs/google`
 `geminiModelDescriptors`, `gemmaModelDescriptors`, and `defaultGeminiRegistry` (built from
 `createModelRegistry([...geminiModelDescriptors, ...gemmaModelDescriptors])` in
 `packages/google/src/models.ts`). Registered Google ids:
-`gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`,
-`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
-`gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `gemma-4-31b-it`,
-`gemma-4-26b-a4b-it`. `gemini-3-flash-preview` and `gemini-3.5-flash` do not
-resolve. Hosts wire it in
+`gemini-2.5-flash-lite`, `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.8-flash`, `gemini-4-carbon`, `gemini-4-argon`, `gemini-4-neon`, `gemini-4-hydrogen`, `gemma-4-31b-it`, `gemma-4-26b-a4b-it`. `gemini-3-flash-preview`, `gemini-3.5-flash` and the ids removed on 2026-11-20
+(ADR-048) do not resolve. Hosts wire it in
 explicitly via `composeProviders`, e.g. `composeProviders([googleProvider()])`, which flattens
 every plugin's `modelDescriptors` into `ClientConfig.modelRegistry` — nothing is auto-populated
 into `createClient` without that call. Hosts can also supply `ClientConfig.modelRegistry`
@@ -575,7 +575,7 @@ const myAdapter: ProviderAdapter = {
 
 Bundle the adapter with model descriptors (and an optional pricing source) into a
 `ProviderPlugin`, and compose it via `composeProviders` (ADR-023) — the same shape
-`googleProvider()` and `xaiProvider()` use:
+`googleProvider()`, `xaiProvider()` and `openaiProvider()` use:
 
 ```ts no-check
 import { composeProviders, createClient } from '@gullabs/core'
@@ -719,6 +719,18 @@ no bytes at all. A stream that fails before any output event is a retryable `ser
 unpriced attempt); one that fails after output began is never retried and carries a usage
 estimate priced `'estimated'` (ADR-040 Amendments A and B). Search budgets stay observed after the call.
 
+### OpenAI: An Isolated Streaming Transport
+
+`@gullabs/openai`'s `run()` sends the request itself with `fetch` and decodes the stream with the `openai`
+SDK's environment-free `openai/streaming` decoder and `openai/error` classes (ADR-047). No SDK client is
+constructed, so no ambient `OPENAI_*` setting is read. It keeps the terminal event's response object,
+filling keys that object lacks from the items the stream completed: a stream that ends without
+`response.completed`, `response.incomplete` or `response.failed` is a `server` error.
+The request deadline (`timeoutMs + 5 000 ms`, or one hour) is a client timer over the whole stream, and the
+failure rules are the xAI ones (ADR-040): retryable with no usage before any output event, not retried and
+`mayHaveBilled` with a usage estimate after it. Cost follows the `service_tier` the response echoes; a
+response that echoes none is unpriced, so core never prices it at the requested tier.
+
 ---
 
 ## 12. Scope Boundaries
@@ -732,10 +744,11 @@ and extra providers are still out of v1 machinery.
 breaking change to the engine.
 
 **Additional providers.** Shipped today: `@gullabs/google` (Gemini and Gemma), `@gullabs/xai`
-(grok-4.5 / grok-4.6 / grok-4.7), and the dev-only CLI providers
-(`claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`;
-`gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`). The provider-plugin shape (ADR-023) means an
-Anthropic or OpenAI API provider is a new self-contained package composed via
+(grok-4.5 / grok-4.6 / grok-4.7), `@gullabs/openai` (gpt-6.2-astra / gpt-6.2-sol / gpt-6.1-terra /
+gpt-6-luna, documentation-derived first slice, ADR-047), and the dev-only CLI providers
+(`claude-fable-5-2`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`;
+`gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra`, `gpt-6-luna`). The provider-plugin shape (ADR-023) means an
+Anthropic API provider is a new self-contained package composed via
 `composeProviders` — zero core edits. Multi-adapter setups work today: the default router
 matches `req.provider` against adapter ids directly, one adapter configured or ten.
 

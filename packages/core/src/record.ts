@@ -82,7 +82,7 @@ export interface LlmCallRecord {
   // --- routing ---
   /** Provider identifier (e.g. `"google"`). */
   provider: string
-  /** Requested model string (e.g. `"gemini-2.5-pro"`). */
+  /** Requested model string (e.g. `"gemini-3.8-flash"`). */
   model: string
   /** Provider-specific model version returned in the response. */
   modelVersion?: string

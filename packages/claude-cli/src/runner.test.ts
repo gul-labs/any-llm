@@ -313,6 +313,18 @@ describe('buildClaudeCliRunner: the child environment', () => {
     expect(env['HOME']).toBe(process.env['HOME'])
   })
 
+  it('the adapter-owned refusal-fallback variable reaches the child whatever the host sets', async () => {
+    const env = await withEnv({ CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: '0' }, () =>
+      childEnv({ CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: '1' }),
+    )
+    expect(env['CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK']).toBe('1')
+  })
+
+  it('a host-environment value of it is not inherited on its own', async () => {
+    const env = await withEnv({ CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK: '0' }, childEnv)
+    expect(env).not.toHaveProperty('CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK')
+  })
+
   it("opts.env is added on top and wins over the host's own value", async () => {
     const env = await withEnv({ CLAUDE_CONFIG_DIR: '/host' }, () =>
       childEnv({ CLAUDE_CONFIG_DIR: '/explicit', ANTHROPIC_API_KEY: 'explicit-key' }),

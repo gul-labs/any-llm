@@ -25,12 +25,14 @@ import type { ModelDescriptor, ModelLimits, ModelRegistry } from '@gullabs/core'
 // ---------------------------------------------------------------------------
 
 /** The exact set of Codex CLI model identifiers this package supports. */
-export type CodexCliModelId = 'gpt-6-astra' | 'gpt-6-sol' | 'gpt-6-luna'
+export type CodexCliModelId =
+  'gpt-6.2-sol' | 'gpt-6.2-astra' | 'gpt-6.1-terra' | 'gpt-6-luna'
 
 /** All supported {@link CodexCliModelId} values, in registry order. */
 export const CODEX_CLI_MODEL_IDS: readonly CodexCliModelId[] = [
-  'gpt-6-astra',
-  'gpt-6-sol',
+  'gpt-6.2-sol',
+  'gpt-6.2-astra',
+  'gpt-6.1-terra',
   'gpt-6-luna',
 ]
 
@@ -41,8 +43,9 @@ export const CODEX_CLI_MODEL_IDS: readonly CodexCliModelId[] = [
 /**
  * Codex CLI's `model_reasoning_effort` levels.
  *
- * Codex admits `low` through `max`, but not core's `'none'`. `'ultra'` is a CLI delegation switch,
- * not a server reasoning level, so it is excluded.
+ * Codex admits `low` through `max`, but not core's `'none'`. `'ultra'` is a CLI delegation switch
+ * ("Maximum reasoning with automatic task delegation" in the Codex model catalog), not a server
+ * reasoning level, and `gpt-6-luna` does not offer it at all, so it is excluded.
  */
 export const CODEX_CLI_REASONING_EFFORTS = [
   'low',
@@ -93,19 +96,27 @@ function buildCodexCliConfigSchema(modelName: string, title: string) {
     })
 }
 
-export const Gpt6AstraConfigSchema = buildCodexCliConfigSchema(
-  'gpt-6-astra',
-  'Gpt6AstraConfig',
+export const Gpt62SolConfigSchema = buildCodexCliConfigSchema(
+  'gpt-6.2-sol',
+  'Gpt62SolConfig',
 )
-export const Gpt6SolConfigSchema = buildCodexCliConfigSchema('gpt-6-sol', 'Gpt6SolConfig')
+export const Gpt62AstraConfigSchema = buildCodexCliConfigSchema(
+  'gpt-6.2-astra',
+  'Gpt62AstraConfig',
+)
+export const Gpt61TerraConfigSchema = buildCodexCliConfigSchema(
+  'gpt-6.1-terra',
+  'Gpt61TerraConfig',
+)
 export const Gpt6LunaConfigSchema = buildCodexCliConfigSchema(
   'gpt-6-luna',
   'Gpt6LunaConfig',
 )
 
 const CONFIG_SCHEMA_BY_ID: Record<CodexCliModelId, z.ZodType> = {
-  'gpt-6-astra': Gpt6AstraConfigSchema,
-  'gpt-6-sol': Gpt6SolConfigSchema,
+  'gpt-6.2-sol': Gpt62SolConfigSchema,
+  'gpt-6.2-astra': Gpt62AstraConfigSchema,
+  'gpt-6.1-terra': Gpt61TerraConfigSchema,
   'gpt-6-luna': Gpt6LunaConfigSchema,
 }
 
@@ -114,16 +125,26 @@ const CONFIG_SCHEMA_BY_ID: Record<CodexCliModelId, z.ZodType> = {
 // ---------------------------------------------------------------------------
 
 /**
- * Context window and maximum output, read 2026-10-03 from the OpenAI model
- * pages (`https://developers.openai.com/api/docs/models/<model-id>` for
- * gpt-6-astra, gpt-6-sol and gpt-6-luna: "1,050,000 context window",
- * "128,000 max output tokens"). `codex exec` exposes no output-size knob, so
- * the limits are informational here: the config schemas carry no
- * `maxOutputTokens`.
+ * Context window and maximum output per model.
+ *
+ * The context window is what Codex CLI runs the model with by default, from the
+ * model catalog bundled with Codex CLI 0.171.0: 500,000 for `gpt-6.2-sol` and
+ * `gpt-6.1-terra`, 272,000 for `gpt-6.2-astra` and `gpt-6-luna`. The same catalog
+ * lists an effective context window of 95% of each nominal value (475,000 and
+ * 258,400); `contextWindow` keeps the nominal figure. It is not the
+ * API's 1,050,000 (OpenAI model pages, `https://developers.openai.com/api/docs/models/<id>`,
+ * read 2026-11-20): a call through this provider runs under the CLI's window, so the
+ * CLI's figure is the one a host can rely on. Documented, not live-verified.
+ *
+ * `maxOutputTokens` is the API's "128,000 max output tokens" from the same model
+ * pages (read 2026-11-20). `codex exec` exposes no output-size knob, so the limits
+ * are informational here: the config schemas carry no `maxOutputTokens`.
  */
-const CODEX_CLI_LIMITS: ModelLimits = {
-  contextWindow: 1_050_000,
-  maxOutputTokens: 128_000,
+const CODEX_CLI_LIMITS: Record<CodexCliModelId, ModelLimits> = {
+  'gpt-6.2-sol': { contextWindow: 500_000, maxOutputTokens: 128_000 },
+  'gpt-6.2-astra': { contextWindow: 272_000, maxOutputTokens: 128_000 },
+  'gpt-6.1-terra': { contextWindow: 500_000, maxOutputTokens: 128_000 },
+  'gpt-6-luna': { contextWindow: 272_000, maxOutputTokens: 128_000 },
 }
 
 /**
@@ -137,7 +158,7 @@ export const codexCliModelDescriptors: ModelDescriptor[] = CODEX_CLI_MODEL_IDS.m
     return {
       model: id,
       provider: 'codex-cli',
-      limits: CODEX_CLI_LIMITS,
+      limits: CODEX_CLI_LIMITS[id],
       capabilities: {
         // `codex exec` runs text-only: the adapter rejects every non-text part.
         inputMimeTypes: [],

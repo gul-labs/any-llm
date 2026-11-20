@@ -8,7 +8,7 @@ Gemini provider adapter for any-llm. A thin mapping layer over `@google/genai` t
 pnpm add @gullabs/google @gullabs/core @google/genai
 ```
 
-**Peer dependency:** `@google/genai ^2`
+**Peer dependency:** `@google/genai ^3.6.1` (the version the wire tests run on; the client is pinned to the Developer API at `v1beta`, see ADR-019)
 
 ## Key exports
 
@@ -47,7 +47,7 @@ await store.delete(handle, { failClosed: true }) // throw on non-not-found failu
 
 ## Model lifecycle
 
-`gemini-3.1-flash-lite` carries `shutdownDate: '2027-05-07'` (replacement: `gemini-3.5-flash-lite`), read on Google's [deprecations page](https://ai.google.dev/gemini-api/docs/deprecations) (last updated 2026-10-01) on 2026-10-03. From 2027-02-06 on, the first successful call to it on a client has a `{ type: 'shutdown' }` warning saying so (once per client, not on every call). Google also limits Gemini 2.5 access to users who have used those models; no shutdown date is announced for them, so none is set. Gemma 4 is not on the page.
+`gemini-3.1-flash-lite` carries `shutdownDate: '2027-05-07'` (replacement: `gemini-3.5-flash-lite`), read on Google's [deprecations page](https://ai.google.dev/gemini-api/docs/deprecations) (last updated 2026-10-01) on 2026-10-03. From 2027-02-06 on, the first successful call to it on a client has a `{ type: 'shutdown' }` warning saying so (once per client, not on every call). Google limits `gemini-2.5-flash-lite` to projects that have used it and announces no shutdown date, so none is set. Gemma 4 is not on the page. The ids removed on 2026-11-20 (one deprecated and routed to another model, two that Google serves with other models at other rates from 2026-12-01) are gone, with no alias: see ADR-048 and the changelog for the replacements.
 
 ## Quick example
 
@@ -63,7 +63,7 @@ const client = createClient({
 const result = await client.generate(
   {
     provider: 'google',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.8-flash',
     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
   },
   { auth: { apiKey: 'YOUR_GEMINI_API_KEY' } },
@@ -74,8 +74,10 @@ const result = await client.generate(
 
 Gemini 3.x returns an opaque `thoughtSignature` on the first function call of each model turn
 (and sometimes on a text part) and answers HTTP 400 if a replayed function call has lost it
-(live capture, 2026-10-03: all six registered 3.x models; Google signs only the **first** call of a
-parallel set, and every sequential step needs its own). The library handles this without keeping a
+(live capture, 2026-10-03, on the six 3.x models registered then; Google signs only the **first** call
+of a parallel set, and every sequential step needs its own). Gemini 4 documents the same rule ("Pass the
+full conversation history, including thought signatures"); its replay is wire-tested against the SDK
+only, not live. The library handles this without keeping a
 copy of your history. Continuation is `'history'`: append `result.message`, send the full history,
 and pass `result.transientProviderState` back.
 
@@ -222,18 +224,21 @@ when any part carries one.
 `maxOutputTokens` **includes thinking tokens**. A model that thinks for the whole cap returns no answer
 (`finishReason: 'length'`, empty text, `thinkingTokens > 0`), and the library warns about it after the fact
 ("maxOutputTokens (M) was used up by reasoning (T tokens); no answer was produced"). Gemini 2.5 models
-take a thinking budget, and the adapter turns `reasoning.effort` into one:
+take a thinking budget (`gemini-2.5-flash-lite` is the one registered), and the adapter turns
+`reasoning.effort` into one:
 
-| `reasoning.effort` | `thinkingBudget` | Note                                                                        |
-| ------------------ | ---------------- | --------------------------------------------------------------------------- |
-| `none`             | 0                | Thinking off; only the models that admit `none` (2.5 Flash, 2.5 Flash-Lite) |
-| `low`              | 1,024            |                                                                             |
-| `medium`           | 8,192            |                                                                             |
-| `high`             | 24,576           | The Flash maximum, and 75% of 2.5 Pro's 32,768                              |
+| `reasoning.effort` | `thinkingBudget` | Note                       |
+| ------------------ | ---------------- | -------------------------- |
+| `none`             | 0                | Thinking off               |
+| `low`              | 1,024            |                            |
+| `medium`           | 8,192            |                            |
+| `high`             | 24,576           | The 2.5 Flash-Lite maximum |
 
 `xhigh` and `max` are rejected: they have no Gemini budget. `reasoning.budgetTokens` sets the budget
-directly (128 to 32,768 on 2.5 Pro, per its schema) and cannot be combined with `effort`. Gemini 3.x
-and Gemma 4 use `thinkingLevel` and have no token budget.
+directly (0, or 512 to 24,576, per the 2.5 Flash-Lite schema) and cannot be combined with `effort`.
+Gemini 3.x, Gemini 4 and Gemma 4 use `thinkingLevel` and have no token budget. On Gemini 4 `xhigh` is
+`thinkingLevel: XHIGH` (Neon and Hydrogen only), and a call that sets no effort, or only
+`includeThoughts`, sends the model's documented default level (see "Gemini 4").
 
 When a budget model's `thinkingBudget` (from `effort` or `budgetTokens`) is **at or above**
 `maxOutputTokens`, the result carries a warning ("thinkingBudget (B) is not below maxOutputTokens (M);
@@ -245,7 +250,9 @@ Gemini 3.x models take a level, not a budget, so there is nothing to compare wit
 when `reasoning.effort` is `high` and `maxOutputTokens` is below 4,096 (measured: thinking reached 4,000 tokens
 in 7 of 72 3.x calls at `high`, up to 8,859). It does not warn at `low` or `medium` (no 3.x call reached 4,000
 tokens there, and a smaller figure would rest on a prompt-dependent tail the sample cannot place), nor when
-`reasoning` is omitted (the default level was not measured). Warnings never reject.
+`reasoning` is omitted (the default level was not measured; on Gemini 4 the default level the adapter
+sends draws no warning either). The same rule applies to an explicit `high` on Gemini 4, which the
+measurement did not cover. Warnings never reject.
 
 Measured thinking is prompt-driven and heavy-tailed: `docs/thinking-token-distribution.md` has p50, p95
 and max per model and effort (336 calls, 2026-10-03; the raw records are kept outside this repository). At `high`, p95 was 2.5 to 6 times the p50, and the largest value was
@@ -254,10 +261,13 @@ and 1,024 was used up by thinking in most `high` calls.
 
 ## Model limits and input media types
 
-Every descriptor states `limits: { contextWindow, maxOutputTokens }`. The Gemini model pages
-(`ai.google.dev/gemini-api/docs/models/<id>`, read 2026-10-03) give 1,048,576 input and 65,536 output tokens
-for every registered Gemini model, and their config schemas cap `maxOutputTokens` at 65,536 (a larger value is
-`bad_request` before dispatch). The Gemma 4 model card gives a 256K window (262,144) and **no output limit**, so
+Every descriptor states `limits: { contextWindow, maxOutputTokens }`. The Gemini 2.5 and 3.x model pages
+(`ai.google.dev/gemini-api/docs/models/<id>`, read 2026-10-03) give 1,048,576 input and 65,536 output tokens,
+and their config schemas cap `maxOutputTokens` at 65,536 (a larger value is `bad_request` before dispatch).
+The Gemini 4 pages (`aistudio.google.com/docs/models/<id>`, read 2026-11-20) give a 1,048,576-token window
+for input and output together, and a per-request output cap on a non-streaming call (what this adapter
+sends) of 32,768 on Carbon and Argon and 65,536 on Neon and Hydrogen; the schemas cap `maxOutputTokens`
+there. The Gemma 4 model card gives a 256K window (262,144) and **no output limit**, so
 Gemma's `limits.maxOutputTokens` is `null`: no figure is invented, its schema applies no cap, and Google decides
 what it accepts.
 
@@ -285,14 +295,15 @@ Google unchanged.
 - `serviceTier: 'flex'` → Gemini Flex service tier when the model descriptor supports it
 - omitted `serviceTier` → provider-default request behavior
 - `reasoning.includeThoughts` → `thinkingConfig.includeThoughts`; thought parts become `reasoningText`
-- `reasoning.effort` → `thinkingBudget` (Gemini 2.5) or `thinkingLevel` (Gemini 3 / Gemma 4)
+- `reasoning.effort` → `thinkingBudget` (Gemini 2.5) or `thinkingLevel` (Gemini 3, Gemini 4, Gemma 4); Gemini 4 without an effort → its documented default level
+- every generation request → `store: false` (top-level request field) and `automaticContinuation: false` (SDK option): the request-level logging override is set and the SDK never re-sends a request on its own; a flex call with `flexFallback` can still send a second, standard request (ADR-048)
 - `reasoning.budgetTokens` → admitted only on Gemini 2.5 budget-api models; strict descriptors reject it on level-api models (see "Thinking budgets and the output cap")
 - `output.jsonSchema` → `responseMimeType: 'application/json'` + verbatim `responseJsonSchema` when native structured output is enabled, and `tools[].inputJsonSchema` → `parametersJsonSchema` (both standard JSON Schema, in your key order; see "JSON Schema" below); the engine returns parsed output and `outputParsed` without validating shape
 - `providerOptions.google.*` → typed provider-extension lane for admitted keys such as `cachedContent`, `safetySettings`, and exact tool declarations
 - Usage: `promptTokenCount`→`inputTokens`, `candidatesTokenCount`+`thoughtsTokenCount`→`outputTokens` (GROSS)
-- Errors: `401` and a bare `403` default to `invalid_auth`; `429`→`rate_limited`; `5xx`→`server`; timeouts; Gemini safety blocks are a 200-path `content_filter` when `promptFeedback.blockReason` is set, and so is an output filter stop (`SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_*`) that produced no text and no complete tool call (not retryable, usage attached; a stop that kept partial text is a success with `finishReason: 'content_filter'`). A function call is complete only when the candidate finished with `STOP` (or no finish reason): beside `MAX_TOKENS` (cut by the output cap), a filter stop or any other finish it is dropped from `toolCalls` and from `result.message`, a warning names it, and `finishReason` is `length`, `content_filter` or `other`, so a tool loop never runs a call Google stopped. A candidate-less 200 without a block reason is retryable `server`, unless it billed reasoning tokens (the output cap was spent on thinking: the same request fails the same way), which is not retryable. A call that reaches the adapter's own client-side ceiling (5 minutes standard, 25 minutes flex, when no `timeoutMs` is set) or the SDK's transport timer is `timeout`, not retryable, `reason: 'transport_timeout'`, so `retryMiddleware` makes one attempt and the ledger holds one row. The structured body adds: `RetryInfo.retryDelay` → `retryAfterMs`; a per-day quota (`QuotaFailure` quota id containing `PerDay`) → `rate_limited`, not retryable, `reason: 'daily_quota'`; `API_KEY_INVALID` / `API_KEY_EXPIRED` (Google sends the first as HTTP 400) → `invalid_auth`; a stale `cachedContent` (HTTP 403, "CachedContent not found") → `bad_request`, `reason: 'cache_not_found'`. `retryMiddleware` (default `maxDelayMs` 60 s) sleeps a typical per-minute `retryDelay` and retries; a delay over 60 s stops the retry and the 429 surfaces with `retryAfterMs` for a scheduler (raise `maxDelayMs` to wait longer in process).
+- Errors: `401` and a bare `403` default to `invalid_auth`; `429`→`rate_limited`; `5xx`→`server`; timeouts; Gemini safety blocks are a 200-path `content_filter` when `promptFeedback.blockReason` is set, and so is an output filter stop (`SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_*`) that produced no text and no complete tool call (not retryable, usage attached; a stop that kept partial text is a success with `finishReason: 'content_filter'`). A function call is complete only when the candidate finished with `STOP` (or no finish reason): beside `MAX_TOKENS` (cut by the output cap), a filter stop or any other finish it is dropped from `toolCalls` and from `result.message`, a warning names it, and `finishReason` is `length`, `content_filter` or `other`, so a tool loop never runs a call Google stopped. A candidate-less 200 without a block reason is retryable `server`, unless it billed reasoning tokens (the output cap was spent on thinking: the same request fails the same way), which is not retryable. A call that reaches the adapter's own client-side ceiling (when no `timeoutMs` is set: 5 minutes standard, 25 minutes flex; on Gemini 4, 20 minutes standard or untiered, 25 minutes flex) or the SDK's transport timer is `timeout`, not retryable, `reason: 'transport_timeout'`, so `retryMiddleware` makes one attempt and the ledger holds one row. The structured body adds: `RetryInfo.retryDelay` → `retryAfterMs`; a per-day quota (`QuotaFailure` quota id containing `PerDay`) → `rate_limited`, not retryable, `reason: 'daily_quota'`; `API_KEY_INVALID` / `API_KEY_EXPIRED` (Google sends the first as HTTP 400) → `invalid_auth`; a stale `cachedContent` (HTTP 403, "CachedContent not found") → `bad_request`, `reason: 'cache_not_found'`. `retryMiddleware` (default `maxDelayMs` 60 s) sleeps a typical per-minute `retryDelay` and retries; a delay over 60 s stops the retry and the 429 surfaces with `retryAfterMs` for a scheduler (raise `maxDelayMs` to wait longer in process).
 - `providerOptions.google.safetySettings` → `category` is one of `HARM_CATEGORY_HARASSMENT`, `_HATE_SPEECH`, `_SEXUALLY_EXPLICIT`, `_DANGEROUS_CONTENT`, `_CIVIC_INTEGRITY`, `_JAILBREAK` and `threshold` one of `HARM_BLOCK_THRESHOLD_UNSPECIFIED`, `BLOCK_LOW_AND_ABOVE`, `BLOCK_MEDIUM_AND_ABOVE`, `BLOCK_ONLY_HIGH`, `BLOCK_NONE`, `OFF` (Google's safety-settings guide, dated 2026-09-17); anything else is `bad_request` before dispatch.
-- `providerOptions.google.cachedContent` cannot be sent with `system`, `tools` or `providerOptions.google.tools`: Gemini needs them stored in the cache, so pass `tools` / `toolConfig` (and `systemInstruction`) to `GoogleCacheStore.create` instead. The adapter rejects the combination before dispatch. `cachedContent` is admitted only on the models that cache explicitly (Gemini 2.5 and 3.x; Gemma 4 has no caching capability and rejects it). It takes the cache name, or `{ cacheName: handle.cacheName, toolKinds: handle.toolKinds }` from a `GoogleCacheHandle` (not the whole handle: the schema is strict and the type refuses it) (`handle.toolKinds` lists the kinds of tool the cache holds, empty when none); the request sent to Google carries only the name. A cache that holds `googleSearch` sends no search tool in the request, so a handle whose `toolKinds` includes it marks the call as a Search call (priced like a sent tool); with a bare name the library cannot know, so a `groundingMetadata` in the response is the evidence that Search ran (see "Search facts, grounding price and `requireGrounding`").
+- `providerOptions.google.cachedContent` cannot be sent with `system`, `tools` or `providerOptions.google.tools`: Gemini needs them stored in the cache, so pass `tools` / `toolConfig` (and `systemInstruction`) to `GoogleCacheStore.create` instead. The adapter rejects the combination before dispatch. `cachedContent` is admitted only on the models that cache explicitly (Gemini 2.5 Flash-Lite and 3.x; Gemini 4 caches implicitly only and Gemma 4 has no caching capability, so both reject it, and `GoogleCacheStore.create` rejects a Gemini 4 model before its token preflight). It takes the cache name, or `{ cacheName: handle.cacheName, toolKinds: handle.toolKinds }` from a `GoogleCacheHandle` (not the whole handle: the schema is strict and the type refuses it) (`handle.toolKinds` lists the kinds of tool the cache holds, empty when none); the request sent to Google carries only the name. A cache that holds `googleSearch` sends no search tool in the request, so a handle whose `toolKinds` includes it marks the call as a Search call (priced like a sent tool); with a bare name the library cannot know, so a `groundingMetadata` in the response is the evidence that Search ran (see "Search facts, grounding price and `requireGrounding`").
 - Inline media is checked against Google's request limits before dispatch: an inline PDF over 50 MB (matched on the media type whatever its case or `; parameters`), or a request whose inline data and text exceed 100 MB, is `bad_request`; upload it with `GoogleFileStore` and send a `file-uri` part. The result's `providerMetadata.google.candidate` holds the candidate's raw `finishReason`, `finishMessage`, `safetyRatings`, `citationMetadata` and `urlContextMetadata` when Google sent them.
 
 ## JSON Schema
@@ -323,6 +334,11 @@ structured-output guide read the same day):
   `not`, `if`/`then`/`else`, `minProperties` and other `format` values are outside the enforced
   set too, and so is any `propertyNames` except `{ type: 'string' }` (what
   `z.record(z.string(), X)` emits; it constrains nothing and is accepted).
+- **Gemini 4 is documentation-only.** No probe ran on it, so its profile is what Google's
+  structured-output guide lists (read 2026-11-20): the keywords above except `pattern`,
+  `minLength`, `maxLength` and `items: false`, and `format` for the values the guide names,
+  `date-time`, `date` and `time` (not `email`). A portable schema can therefore be `bad_request` on
+  Gemini 4.
 - **Gemma 4 is stricter.** It ignored `format` (7 of 7 samples on both models) and
   `minLength` / `maxLength` (7 of 7 and 6 of 7), so those three keywords are rejected on a Gemma
   model. The profile follows the resolved model descriptor, so a declared alias of a Gemma model
@@ -364,13 +380,14 @@ The Developer API accepted structured JSON plus `googleSearch` on all registered
 Gemini 3.x models in the 2026-09-26 live probes, but the structured responses did
 not include `groundingMetadata` even when asked to search, and Flash-Lite often
 skipped Search. An accepted request is not proof that Search ran, so
-`structuredOutputWithTools` is `false` on every descriptor: the combination fails
-with `bad_request` before dispatch. Make two calls instead (grounded research, then
+`structuredOutputWithTools` is `false` on every Gemini 3.x descriptor (and absent on the
+others): the combination fails with `bad_request` before dispatch. Make two calls instead (grounded research, then
 structured synthesis); see [`docs/grounded-structured.md`](../../docs/grounded-structured.md).
 To send both in one call anyway, set `providerOptions.google.allowSchemaWithSearch: true`.
 That also turns on `requireGrounding` (override with `requireGrounding: false`), because a
 schema'd call can skip Search without saying so. The opt-in exists only for the Gemini 3.x models,
-the only ones with a capture: on Gemini 2.5 and Gemma the pair is rejected with or without it.
+the only ones with a capture: on Gemini 2.5 Flash-Lite, Gemini 4 and Gemma the pair is rejected with or
+without it (the Gemini 4 and Gemma schemas have no `allowSchemaWithSearch`).
 The rule covers Search held by a cache too: `cachedContent: { cacheName, toolKinds: ['googleSearch'] }`
 with a schema needs the same opt-in. A bare cache name is not blocked (its contents are unknown); if the
 response of such a schema call reports search queries it is returned with a warning, priced as `estimated`.
@@ -392,9 +409,12 @@ carries `groundingMetadata`, the response is the evidence: `web_search_requested
 priced from those queries, the cost is `'estimated'` and a warning says the request did not declare
 `googleSearch`. A grounded response is never priced `'exact'` just because the request was silent.
 
-The pricing source puts the grounding fee on `cost.details.tools`: Gemini 3 bills per query
+The pricing source puts the grounding fee on `cost.details.tools`: Gemini 3 and Gemini 4 bill per query
 (`web_search_calls × $0.014`), Gemini 2.5 per grounded prompt (`$0.035`, once however many
-queries ran), from Google's pricing page read 2026-10-03. A call that ran Search is always
+queries ran), from Google's pricing page read 2026-10-03 (Gemini 4: read 2026-11-20). Gemini 4 also
+bills grounding's internal tool instructions and function declarations as tokens, and nothing shows
+which share of the reported counts they are: a grounded Gemini 4 call is `'estimated'` even when it ran
+no query, with a warning. A call that ran Search is always
 `cost.confidence: 'estimated'`: Google's free allowance (as read 2026-10, 5,000
 requests per month shared across Gemini 3.x and 1,500 per day on Gemini 2.5) is shared across a
 project, so no single call can know it was free, and every fee is charged in full. When Search was
@@ -403,7 +423,7 @@ says so. Google's billing of repeated queries and of tool-use tokens is not esta
 
 ### Audio input and cache storage
 
-Gemini 2.5 Flash, 2.5 Flash-Lite and 3.1 Flash-Lite bill audio input at a higher rate than text, image and
+Gemini 2.5 Flash-Lite and 3.1 Flash-Lite bill audio input at a higher rate than text, image and
 video (cached audio apart from cached text), on both the standard and the flex tier. The adapter records the
 prompt's per-modality counts from `usageMetadata.promptTokensDetails` and `cacheTokensDetails` as
 `usage.details.input_<modality>` and `cached_<modality>` (`input_audio`, `cached_audio`, ...), and the
@@ -471,26 +491,28 @@ the REST count both go to one pinned endpoint (`https://generativelanguage.googl
 
 ## Registered models
 
-| id                       | Efforts                         | SO + search | caching.minTokens | Tiers          |
-| ------------------------ | ------------------------------- | ----------- | ----------------- | -------------- |
-| `gemini-2.5-pro`         | `low`, `medium`, `high`         | no          | 2048              | flex, standard |
-| `gemini-2.5-flash`       | `none`, `low`, `medium`, `high` | no          | 2048              | flex, standard |
-| `gemini-2.5-flash-lite`  | `none`, `low`, `medium`, `high` | no          | 2048              | flex, standard |
-| `gemini-3.1-pro-preview` | `low`, `medium`, `high`         | no          | 1024              | flex, standard |
-| `gemini-3.1-flash-lite`  | `none`, `low`, `medium`, `high` | no          | 1024              | flex, standard |
-| `gemini-3.5-flash-lite`  | `none`, `low`, `medium`, `high` | no          | 1024              | flex, standard |
-| `gemini-3.6-flash`       | `none`, `low`, `medium`, `high` | no          | 1024              | flex, standard |
-| `gemini-3.7-flash`       | `low`, `medium`, `high`         | no          | 1024              | flex, standard |
-| `gemini-3.8-flash`       | `low`, `medium`, `high`         | no          | 1024              | flex, standard |
-| `gemma-4-31b-it`         | `none`, `high`                  | no          | n/a               | none           |
-| `gemma-4-26b-a4b-it`     | `none`, `high`                  | no          | n/a               | none           |
+| id                       | Efforts                          | SO + search | caching.minTokens    | Tiers          |
+| ------------------------ | -------------------------------- | ----------- | -------------------- | -------------- |
+| `gemini-2.5-flash-lite`  | `none`, `low`, `medium`, `high`  | no          | 2048                 | flex, standard |
+| `gemini-3.1-pro-preview` | `low`, `medium`, `high`          | no          | 1024                 | flex, standard |
+| `gemini-3.1-flash-lite`  | `none`, `low`, `medium`, `high`  | no          | 1024                 | flex, standard |
+| `gemini-3.5-flash-lite`  | `none`, `low`, `medium`, `high`  | no          | 1024                 | flex, standard |
+| `gemini-3.6-flash`       | `none`, `low`, `medium`, `high`  | no          | 1024                 | flex, standard |
+| `gemini-3.8-flash`       | `low`, `medium`, `high`          | no          | 1024                 | flex, standard |
+| `gemini-4-carbon`        | `low`, `medium`, `high`          | no          | implicit only (4096) | flex, standard |
+| `gemini-4-argon`         | `low`, `medium`, `high`          | no          | implicit only (4096) | flex, standard |
+| `gemini-4-neon`          | `low`, `medium`, `high`, `xhigh` | no          | implicit only (4096) | flex, standard |
+| `gemini-4-hydrogen`      | `low`, `medium`, `high`, `xhigh` | no          | implicit only (4096) | flex, standard |
+| `gemma-4-31b-it`         | `none`, `high`                   | no          | n/a                  | none           |
+| `gemma-4-26b-a4b-it`     | `none`, `high`                   | no          | n/a                  | none           |
 
-All six Gemini 3.x cache-create minimums above were live checked: 103 tokens
-returned `min_total_token_count=1024`; exactly 1024 tokens succeeded.
+The Gemini 3.x cache-create minimums above were live checked on 2026-09-26 (on the 3.x models then
+registered): 103 tokens returned `min_total_token_count=1024`; exactly 1024 tokens succeeded.
 Google's 4096-token table in the caching guide describes **implicit** caching;
-this column is the **explicit cache-create** floor.
+this column is the **explicit cache-create** floor, except on Gemini 4, which has no explicit caching
+and lists its implicit minimum.
 
-`gemini-3.7-flash` and `gemini-3.8-flash` never emit `thinkingLevel` MINIMAL.
+`gemini-3.1-pro-preview`, `gemini-3.8-flash` and the Gemini 4 models never emit `thinkingLevel` MINIMAL.
 `gemini-3-flash-preview` and `gemini-3.5-flash` are deleted and are not aliased.
 Migrate both to `gemini-3.6-flash`. `servedServiceTier` reads the provider's
 `usageMetadata.serviceTier` echo when present, then falls back to the tier
@@ -511,7 +533,7 @@ unpriced (`microUsd: null`, `confidence: 'estimated'`, with an `unpricedReason`)
 must be at least `timeoutMs + 5000`, because a shorter SDK timer would end the call before the engine's
 deadline with a raw SDK abort instead of the clean `timeout`. A flex call the adapter sends again at the
 standard tier (HTTP 503) carries a warning saying so; with no `timeoutMs` the standard attempt then
-runs under the 300000 ms client-side ceiling, not the 25-minute flex one. A retry never gives a request
+runs under the 300000 ms client-side ceiling (1200000 ms on Gemini 4), not the 25-minute flex one. A retry never gives a request
 that named no `serviceTier` one: only a request that asked for a tier is pinned to the tier an attempt
 was served at, and a failed attempt's ledger row keeps the tier it asked for (`serviceTier`) beside the
 tier it was served at (`servedServiceTier`).
@@ -520,6 +542,62 @@ tier it was served at (`servedServiceTier`).
 bounds as `providerMetadata.google.candidate` (50 list entries, 2048 characters per string, 8 levels,
 a warning when something is cut); the citations are built from the full response. `GEMINI_PRICING`
 is deep-frozen.
+
+## SDK 3, no automatic continuation, the request-level logging override
+
+The peer is `@google/genai ^3.6.1`. The SDK client is built with the call's API key, `vertexai: false`,
+`apiVersion: 'v1beta'` and the Developer API base URL, so no ambient setting moves a call:
+`GOOGLE_GENAI_API_VERSION` (SDK 3.0.0 made `v1` the default, where explicit caching does not exist),
+`GOOGLE_GENAI_USE_VERTEXAI` / `GOOGLE_GENAI_USE_ENTERPRISE`, `GOOGLE_GEMINI_BASE_URL` and the SDK's key
+variables are all ignored (a wire test sets every one of them).
+
+Every `generateContent` the adapter sends, the standard one after a flex capacity error included,
+carries `store: false` (Google's request-level logging field, which "takes precedence over the
+project-level logging config"; new paid-tier projects store requests by default since 2026-10-26) and
+`automaticContinuation: false`. The SDK's default would answer a `CONTINUATION` finish by sending the
+request again with the continuation token and summing the usage, several billed requests inside one
+attempt. Here a `CONTINUATION` finish is returned as `finishReason: 'length'` with that response's usage
+and a warning; a function call beside it is dropped like one beside `MAX_TOKENS`, and the token is not
+replayed or kept. Every `FinishReason` member of the SDK is mapped explicitly: the safety and policy
+blocks (`SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, the `IMAGE_*` blocks,
+`ESCALATION`, `PUP_LIMITED_DISABLED`, `MODEL_ARMOR`) are `content_filter`, `MAX_TOKENS` and
+`CONTINUATION` are `length`, `STOP` is `stop`, and the rest is `other`.
+
+So an attempt sends one request, or two when a flex call with `flexFallback` falls back to the standard
+tier after a capacity error; neither is ever continued. `store: false` is a logging override for that
+request, nothing more: this library makes no statement about what Google retains, and that the field is
+accepted and honoured on every model is documented, not live-verified.
+
+A request whose last non-empty turn is an assistant turn is `bad_request` before dispatch on
+`gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.8-flash` and the Gemini 4 models (Google answers
+400 there), and on `gemini-3.8-flash` so is a final user turn with no non-empty text, unless every part
+of it is a tool result; a tool result beside an image still needs the text. Non-empty means a text part
+of length greater than zero; whitespace is not examined, because the documentation does not speak to it.
+
+## Gemini 4
+
+`gemini-4-carbon`, `gemini-4-argon`, `gemini-4-neon` and `gemini-4-hydrogen` (GA). Everything here is
+documented, not live-verified (model pages, thinking guide, migration notes, structured-output guide
+and pricing page under `aistudio.google.com/docs`, read 2026-11-20; ADR-048).
+
+- **Thinking.** Levels only: `low`, `medium`, `high` on all four, plus `xhigh` (`ThinkingLevel.XHIGH`)
+  on Neon and Hydrogen. `none`, `max` and `budgetTokens` are `bad_request`. Google calls `thinkingLevel`
+  required for Gemini 4 and documents a default per model (medium on Carbon and Argon, high on Neon and
+  Hydrogen), so a call without an effort sends that default explicitly.
+- **No sampling keys** (ADR-017; Google ignores them on Gemini 4), **no explicit caching**, **no schema
+  with Search**, and **no Search with flex** (rejected before dispatch: nothing documents it, and the
+  flex price tab has no grounding row).
+- **Output cap** 32,768 on Carbon and Argon, 65,536 on Neon and Hydrogen (`maxOutputTokens`, thinking
+  included). Resumable long decode is not offered (BACKLOG).
+- **Deadline.** With no `timeoutMs`, an untiered or standard call gets a 20-minute client-side ceiling
+  and SDK timeout (`GEMINI_4_DEFAULT_TIMEOUT_MS`; Google: "at least 20 minutes per call"), the standard
+  dispatch after a flex capacity error included; flex keeps 25 minutes.
+- **Pricing** (`gemini-2026-11-20`, per 1M tokens, flex half on every lane): Neon $3.00 input / $0.15
+  cached / $15.00 output, Hydrogen $1.50 / $0.075 / $7.50, Carbon and Argon $4.00 / $0.20 / $20.00.
+  Carbon and Argon carry the rates Google bills from 2026-12-01; through 2026-11-30 Google bills half,
+  so their costs are `cost.confidence: 'estimated'` (an overstatement, never an under-charge) and every
+  attempt that reports usage carries a warning saying why. Search is $14 per 1,000 queries and a grounded
+  call is `'estimated'` even with no query (see "Search facts, grounding price and `requireGrounding`").
 
 ## Gemma 4
 

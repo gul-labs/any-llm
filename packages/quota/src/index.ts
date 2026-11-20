@@ -418,7 +418,7 @@ function validateMaxDeferMs(value: number | undefined): number | undefined {
  * ```ts
  * const policy = quotaPolicy({
  *   provider: 'google',
- *   models: { 'gemini-2.5-pro': { rpm: 150, tpm: 2_000_000 } },
+ *   models: { 'gemini-3.8-flash': { rpm: 150, tpm: 2_000_000 } },
  *   defaults: { rpm: 10 },
  * })
  * ```

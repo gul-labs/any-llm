@@ -1943,6 +1943,16 @@ does not turn this into an in-flight ceiling: whether xAI stops billing an abort
 testable, so the observed-after-the-call budget stays the only budget control. `maxTurns` stays and is
 re-probed at every model refresh.
 
+### Amendment (2026-11-20): `maxTurns` enforcement is open
+
+Item 2 recorded that xAI did not enforce `max_turns` on 2026-10-02 (fixture 33). xAI's tool usage guide,
+read 2026-11-20 (<https://docs.x.ai/developers/tools/tool-usage-details>), now says that when the agent
+reaches the limit "it will stop making additional tool calls and generate a final response". That is
+documentation, not a probe: no call was made on 2026-11-20, so both facts stand side by side and the
+question is open until a live probe (`BACKLOG.md`). The option is unchanged: it forwards the validated
+integer verbatim, and it is still a cap on turns, not on searches or cost. The schema description, the
+`maxTurns` doc comment in `types.ts`, the package README and `SPEC.md` state both dated facts.
+
 ---
 
 ## ADR-031: Ledger rows are per attempt; correlation is `externalId`
@@ -4211,3 +4221,415 @@ over the saved login. The cost is invisible to the library's own ledger, which i
 - A host that relied on the CLI inheriting some other variable (a custom `HOME` is kept; a proxy is kept; a
   corporate `SSL_CERT_FILE` is kept) loses only what is not listed, and adds it with `env`.
 - `ANTHROPIC_API_KEY` in the host environment no longer changes which account a `claude-cli` call uses.
+
+### Amendment A (2026-11-20): CLI model registries, limits and the structured-output field
+
+The CLI registries follow the models the CLIs run now, and two statements in point 4 above are replaced.
+Everything here is documented, not live-verified: no CLI was run for it.
+
+1. **Registries.** `claude-cli` registers `claude-fable-5-2`, `claude-opus-5-5`, `claude-sonnet-5-5` and
+   `claude-haiku-5-5`; `codex-cli` registers `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra` and `gpt-6-luna`.
+   The superseded ids (`claude-fable-5-1`, `claude-sonnet-5`, `claude-haiku-4-5-20251001`, `gpt-6-sol`,
+   `gpt-6-astra`) are deleted with no alias, and `gpt-6.1-sol` is not added. All four Claude models admit
+   `low` through `max` (Anthropic effort documentation), so the Haiku no-effort schema is gone. `ultracode`
+   and `ultra` stay excluded: both are CLI workflow or delegation switches, not model levels.
+2. **Limits (replaces the last sentence of point 4).** `claude-cli` states the documented API figures,
+   1,000,000 context and 128,000 output for all four (Anthropic models overview). For `claude-opus-5-5` the
+   2.1.282 capture reports the same two figures in `modelUsage`, and a test holds the descriptor equal to it.
+   For the three ids registered on 2026-11-20 no `modelUsage` has been captured, so their limits are API
+   figures, not the CLI-reported values point 4 above required. `codex-cli` states, per model, the context window Codex
+   CLI runs by default (500,000 for `gpt-6.2-sol` and `gpt-6.1-terra`, 272,000 for `gpt-6.2-astra` and
+   `gpt-6-luna`, from the model catalog bundled with Codex CLI 0.171.0), not the API's 1,050,000, because a call
+   through this provider runs under the CLI's window; output is the API's 128,000.
+3. **Structured output.** `claude-cli` reads the `structured_output` field the Claude Code headless
+   documentation names for `--json-schema` runs, and never parses `result` for it. A run whose envelope has no
+   such field produces no structured output (the engine reports it as unparsed) and carries a warning.
+4. **A second protection against silent model switches.** The adapter sets `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`
+   on every `claude` child, beside the unchanged `--settings {"switchModelsOnFlag":false}` argument and the
+   unchanged served-model check on `modelUsage`. The variable is adapter-owned, not an allowlisted host variable:
+   a value in the host environment is not inherited and is replaced, and naming it in the adapter's `env` option is
+   `bad_request`. Claude Code documents it since 2.1.312 (its changelog: automatic model switches after a flagged
+   message also cover unrecognised model names, and the variable turns them off); an older CLI ignores it.
+   Documented, not live-verified.
+
+---
+
+## ADR-047: `@gullabs/openai`, a documentation-derived first slice
+
+**Status:** Accepted (2026-11-20). Builds on ADR-019, ADR-022, ADR-023, ADR-029, ADR-031, ADR-034, ADR-036,
+ADR-039 and ADR-040.
+
+**Context:**
+The library had no OpenAI API provider: OpenAI's models were reachable only through the dev-only, unpriced
+`codex-cli`. `@gullabs/xai` already drives a Responses-compatible API through the `openai` SDK, so the shape of
+a provider package is known. The release that adds it may not spend money or make any live provider call, so
+every fact below comes from OpenAI's public documentation and the installed `openai` 7.60.0 SDK source and
+typings, all read 2026-11-20, and nothing is live-verified:
+
+- the model pages `https://developers.openai.com/api/docs/models/<id>` and the catalog
+  `https://developers.openai.com/api/docs/models`;
+- the GPT-6.2 guide `https://developers.openai.com/api/docs/guides/latest-model`, the reasoning guide
+  `.../guides/reasoning`, Fast mode `.../guides/fast-mode`, Flex `.../guides/flex-processing`, prompt caching
+  `.../guides/prompt-caching`, Structured Outputs `.../guides/structured-outputs`, images and vision
+  `.../guides/images-vision`, error codes `.../guides/error-codes` and the pricing page `.../docs/pricing`.
+
+Where the documentation is silent, the schema does not admit the value, and each gap is a BACKLOG item that names
+the probe that would close it.
+
+**Decision:**
+
+1. **Package and identity.** `@gullabs/openai`, adapter id `'openai'`, a self-contained plugin (ADR-023:
+   `openaiProvider()` bundles the adapter, the descriptors and `openaiPricingSource()`), in the changesets
+   `fixed` group, with `@gullabs/core` as an exact peer and `openai` `^7.60.0` as a peer (the floor is the version
+   the wire tests run on). Core is unchanged. Models, in registry order: `gpt-6.2-astra`, `gpt-6.2-sol`,
+   `gpt-6.1-terra`, `gpt-6-luna` (1,050,000-token context, 128,000 output). No alias: the pages list no dated
+   snapshot for these models. Sibling ids (`gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6.2-astra-law`, the
+   5.x family) are not registered.
+2. **First-slice surface.** Text and image input (any other part kind is `bad_request` before dispatch);
+   `reasoning.effort`; `maxOutputTokens` up to 128,000; `serviceTier`; strict structured output; strict
+   client-side function tools; usage and cost. No `providerOptions` lane (so no `ProviderOptionsMap` key), no
+   `countTokens`, no file or document input, no built-in tools, no public fake in `@gullabs/testing`. Reason: each
+   of those needs either a fact the documentation does not give or a capture to test against.
+3. **One strict schema per model.** Effort: `low | medium` on GPT-6.2 Astra and Sol (the pages document that
+   `none` is rejected and name only `low` and `medium` for 6.2; `high | xhigh | max` wait for a probe);
+   `none | low | medium | high | xhigh | max` on Terra and Luna (their model pages). Tier: `fast` on GPT-6.2
+   (GPT-6.2 does not support Flex); `flex | fast` on Terra and Luna. No `ultrafast`. No sampling keys: GPT-6.2 is
+   documented to reject `temperature` and `top_p`, and the Terra and Luna pages are silent. `budgetTokens`,
+   `includeThoughts`, `reasoning.context`, `reasoning.mode`, `reasoning.summary` and verbosity are rejected.
+4. **Credentials and the transport: no SDK client is constructed (ADR-019).** The per-call API key is required
+   before the SDK is imported. The `openai` 7.60.0 `OpenAI` constructor is inherently ambient: it reads
+   `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`, `OPENAI_ADMIN_KEY`,
+   `OPENAI_WEBHOOK_SECRET`, `OPENAI_LOG` and `OPENAI_CUSTOM_HEADERS` through `readEnv`. Options pin most of them,
+   but nothing turns the custom-header read off (only a `provider` or an X.509 `credential` skips it): the parsed
+   headers are applied after the auth header, and a malformed value throws in the constructor and fails a valid
+   call. Two earlier workarounds were rejected in review: dropping the collected headers after construction
+   (a malformed value still fails), and constructing the client under a temporary view of `globalThis.process`
+   (a synchronous host hook can observe the substituted global, and with a non-configurable `process` the read
+   happens anyway). So the client does not construct the SDK client at all. It sends the request itself:
+   `POST https://api.openai.com/v1/responses` through the injected or global `fetch`, with exactly
+   `authorization: Bearer <key>`, `content-type: application/json` and `accept: text/event-stream` (no
+   `user-agent`: the runtime's `fetch` supplies its default, and a version string would need build-time
+   injection for nothing the API requires), the body `JSON.stringify({ ...params, stream: true })`, the call's own
+   abort signal, and `redirect: 'manual'`. A redirect is never followed (a 307 or 308 would re-send the prompt
+   and the bearer token to an unpinned URL): every 3xx, or an opaque redirect, is a non-retryable `server` error
+   naming the status and location. `'manual'` rather than `'error'`, because `'error'` rejects inside `fetch`
+   as an anonymous `TypeError` that cannot be told from a network failure and would classify as a retryable
+   connection error. A 200 that is not the stream is refused too: unless its `content-type` parses, as a whole,
+   as ONE media type under the RFC 9110 grammar (`type "/" subtype *( OWS ";" OWS [ parameter ] )`, `parameter =
+token "=" ( token / quoted-string )`) whose type and subtype are `text` and `event-stream`
+   (case-insensitive), it is a non-retryable
+   `server` error that may have billed (a `fetch` that buffered or rewrote the answer: a bare JSON answer would
+   otherwise decode to nothing and look like a retryable early end). Only a response that is
+   `text/event-stream` with a missing or empty body is the retryable early end. So a comma outside a quoted
+   string (two media types, which is what `Headers.get` joins duplicate fields into), a parameter the grammar
+   does not admit (`; =x`, `; charset`, `charset = x`, an unterminated quote), a missing or empty header and a
+   lookalike subtype (`event-stream+json`) are refused; a comma inside a quoted value and an empty parameter (a
+   trailing `;`, which the grammar's optional `parameter` admits) are accepted. It uses two SDK modules whose runtime graph reads no environment variable and does not load
+   the client module (checked in the installed 7.60.0: `streaming.js`, `core/streaming.js`, `core/error.js`,
+   `error.js`, `internal/{tslib,errors,shims}.js`, `internal/decoders/line.js`,
+   `internal/utils/{bytes,log,values}.js`): `openai/error`, whose `APIError.generate` and connection errors are
+   built exactly as the SDK's `makeRequest` / `makeStatusError` build them (a non-2xx body is read as text,
+   parsed as JSON when it is JSON, an object without `error` wrapped as `{ error }`, the text as the message
+   otherwise; a `fetch` rejection is `APIConnectionTimeoutError` when it is an `AbortError` or says it timed out,
+   else `APIConnectionError`, the original as `cause`), so core's `classifyError`, `Retry-After` and the billing
+   checks see the same objects; and `openai/streaming`, whose `Stream.fromSSEResponse` is used in its `'events'`
+   mode with event names: it parses each frame's JSON, stops at `[DONE]`, and yields `{ event, data }` for every
+   frame without deciding anything (its default `'legacy'` mode throws for `event: error` frames and for any
+   payload with an `error` field before the payload's shape could be checked). Both are imported dynamically after the key check. One
+   side effect remains in that decoder: without a client it logs two fixed lines (no payload) through
+   `console.error` when an event is not JSON, then throws. One HTTP request per attempt holds by construction.
+   Tests: with every variable above set, a malformed and a well-formed `OPENAI_CUSTOM_HEADERS` included, the
+   call succeeds with exactly the three headers, nothing is logged, and `globalThis.process` and `process.env`
+   keep their identity and descriptor; `client.ts` imports only the two modules and constructs no client; a
+   non-JSON error body, a JSON one, a `fetch` rejection, a timed-out one and an abort before headers classify as
+   the SDK path did.
+5. **Streaming over the isolated transport (ADR-040 rules).** This supersedes the plan's decision to stream
+   through the SDK's `responses.stream()` helper: the helper needs a constructed client (item 4). The client
+   iterates the decoded events and keeps only the terminal event's response object. Terminal event types are
+   matched as own keys of a `Map`, so a provider-controlled `type` such as `constructor` or `__proto__` is never
+   taken as terminal. Each frame is decided in one place, in this order. (1) Shape: the payload must be an
+   object with an own, non-empty string `type`; JSON `null`, a number, a string, an array, `{}`, a bad `type`, and
+   a frame whose data is not JSON at all (a truncated or corrupted frame) are a malformed body, whatever the
+   frame's event name, so a named `event: error` frame with `null` or `{}`, and a data-only payload with an
+   `error` field but no `type`, are malformed, not an API error. (2) Framing: the streaming reference names each
+   SSE event after its payload's `type`, so a frame whose `event:` name differs from its `type` is not a
+   documented shape and is malformed too (neither wins); a data-only frame is read by its `type`. (3) Error: a
+   payload of type `error` is an error event in either framing, its code and message read as the SDK's
+   `ResponseStream` read them, and the error keeps the response's `x-request-id`. (4) Terminal, output and
+   lifecycle events as above. A malformed body is a `server` error, retryable only before output and
+   `mayHaveBilled` after it, and never itself counts as output. A terminal event
+   (`response.completed`, `response.incomplete`, `response.failed`) is required: a stream that ends without one
+   is a `server` error. The event type decides the status. Completed items and the terminal object are
+   reconciled minimally: for each terminal output item with the same `id` as an item a
+   `response.output_item.done` event completed, each key of the completed item takes the completed value when
+   the terminal copy lacks the key or carries `null` for it and the completed value is not `null`; every non-null
+   terminal value wins. A terminal `null` beside a real value the stream delivered is an omission (`null` is how
+   the typings say "none"), and keeping it would replay a reasoning item without its ciphertext. Values are read
+   and defined as own data properties, so a provider key such as `__proto__` or `constructor` (which `JSON.parse`
+   creates as an own property) is copied verbatim rather than setting the prototype; the item copy itself is an
+   object spread, which defines own properties too. There is a
+   warning for each fill; no item the terminal response
+   does not list is added, because the terminal object is the provider's statement of the response and the state
+   replays it. This keeps a reasoning item's `encrypted_content` when only the completion event carried it.
+   (When the terminal response has no `output` array at all, the completed items are used, with a warning, rather
+   than discarding a billed answer.) One timer, armed when the call starts, covers the wait for headers and the
+   whole body (`timeoutMs + 5 000`, or one hour); the SDK's own `timeout` had covered only the headers. It ends as
+   `timeout`, `reason: 'transport_timeout'`,
+   not retryable. Caller aborts are re-thrown (an `LlmError` abort reason keeps its kind). **Output has begun**
+   once any event arrives other than the six lifecycle events (`response.created`, `.queued`, `.in_progress`,
+   `.completed`, `.incomplete`, `.failed`) and `error`: in the 7.60.0 `ResponseStreamEvent` union every other
+   event reports model output (an output item, a content part, a text, refusal, reasoning, function-argument or
+   audio delta or done, an annotation, a tool call's progress). A terminal or `error` event is not output, so a
+   failure that arrives before any output event is judged as "before output". A terminal snapshot that itself
+   lists output (a non-empty `output` array) also counts as output having begun, so a terminal-only
+   `response.failed` with partial output is not retried. Before any output event a
+   transient failure is retryable and carries no usage; after it nothing is retried, the error is `mayHaveBilled`
+   and carries the ADR-040 usage estimate. A `response.failed` keeps its terminal usage and echoed tier, is
+   classified by `error.code` (the SDK's `ResponseError.code` union: `server_error` and `rate_limit_exceeded`
+   are retryable, policy codes `content_filter`, prompt and image codes `bad_request`, anything else `unknown`),
+   keeps that retryability only before output, and is always `mayHaveBilled`. An `error` event uses the same
+   table with ADR-040 Amendment A's stricter rule: only `server_error` before output is retried, and
+   `rate_limit_exceeded` is never retried, even before output. The reason is ADR-040's: the event arrives inside a
+   stream the provider accepted and started, so the request was admitted and may have done billed work, and a
+   rate limit reported there is not the pre-admission 429 a retry is meant for (that one is the HTTP status path,
+   which stays retryable with `Retry-After`). No public `stream()`.
+6. **Request contract.** `store: false`. `system` is a leading `developer` input message, because the GPT-6.2
+   guide says top-level `instructions` are appended after the input and are not cacheable. `reasoning.context` is
+   not sent (omitting it is the documented way to take the model default; no page states the GPT-6.x default or
+   support for `all_turns`). `parallel_tool_calls` is not sent (per-model support is undocumented). Images go as
+   `input_image` with `detail: 'auto'` (the SDK typing's documented default), from base64 data URLs or fully
+   qualified `http(s)` URLs, of the documented types PNG, JPEG, WebP and GIF, at most 1,500 per request and
+   512 MB of inline payload; a media-resolution hint is rejected. The URL is checked on the string that is sent
+   (scheme, `://`, a non-empty authority; no whitespace, control character or backslash; it must also parse to
+   that scheme and a host), because the WHATWG parser accepts and normalises `https:host/x`. Inline data must be
+   non-empty, padded standard base64 (RFC 4648 alphabet, `=` only at the end, a length that is a multiple of 4),
+   checked without decoding. The same validators apply to images in replayed state. Every message must map to at
+   least one input item (a message with no parts is `bad_request`, with or without state), and a request must add
+   at least one new item.
+7. **Continuation (ADR-029).** All four descriptors declare `continuation: 'state'` and `providerState: true`.
+   State is `{ openai: { model, input } }`: the request input plus every provider output item in order,
+   encrypted reasoning included, minus function calls that did not complete. It is accepted only with new
+   messages, only bound to the same provider and model string, never beside assistant history, and only when
+   its items pass a check that splits by who built them. Items this adapter builds (user and developer messages
+   of `input_text` / `input_image` parts, assistant history text, `function_call_output`) are exact: an unknown
+   key anywhere in them (a `file_id` on an image, a `prompt_cache_breakpoint`, any extra field) is `bad_request`
+   naming the path, because the adapter never writes one. Provider-produced items (`message` with
+   `output_text` / `refusal` parts, `reasoning` with `summary_text` / `reasoning_text` parts, `function_call`) are
+   replayed as returned: they are type-gated, the keys the 7.60.0 typings define are type-checked, and any other
+   key is tolerated and replayed unchanged. The reason is the evidence: the allowlist would be the typings, not a
+   capture of what the API returns, and nothing here is live-verified (keys such as `phase` are recent additions),
+   so rejecting an unknown key would fail every second turn the first time the API adds one, while ADR-029 and
+   OpenAI's stateless guidance call for replaying the provider's own items unmodified. What stays refused on
+   provider items are the values that carry a deferred feature, even where the typings name the key: non-empty
+   `annotations` and `logprobs`, a function call's programmatic `caller`, `async: true`, and any `namespace`.
+   Every value the typings allow that activates none of those round-trips unchanged: `caller` absent, `null` or
+   `{ type: 'direct' }`; `async` absent or `false`; empty `annotations`; absent or empty `logprobs`; `phase`
+   `commentary`, `final_answer` or `null`; any item `status`; `encrypted_content` a string or `null`. A response whose own output item fails that check is returned with a warning
+   that the next request with the state is rejected. State a host has altered is outside the contract: the check
+   covers the host-built shapes exactly and the deferred features on provider items, not every edit. A `system` sent
+   beside state must equal the developer message the state starts with (it is never sent twice). Tool results
+   pair by `call_id` with an unanswered call in the state. Actionable calls come only from a `completed` response.
+   What the tests prove is the request payload of the second turn (a stubbed two-turn exchange); how OpenAI's
+   server treats the replay, under either `reasoning.context` reading, is not verified.
+8. **Structured output and function tools are not combined** (`structuredOutputWithTools: false`): no page
+   documents the combination for these models.
+9. **Schemas (ADR-034).** `output.jsonSchema` and every tool's `inputJsonSchema` go through core's
+   `assertJsonSchemaProfile(OPENAI_JSON_SCHEMA_PROFILE)` once (it runs `assertStandardJsonSchema` itself), then
+   the strict-mode rules local to this package: a root of exactly `type: "object"` that is not `anyOf` ("the root
+   level object of a schema must be an object, and not use `anyOf`"); `additionalProperties: false` on every
+   object; `required` naming exactly the object's property names, each once ("all fields or function parameters
+   must be specified as `required`"); any schema that uses an object keyword (`properties`, `required`,
+   `additionalProperties`) declaring `type: "object"` (or `["object", "null"]` below the root: the guide does not
+   say a nested object must declare its type, but every example does and an untyped object is not a documented
+   shape); at most 5,000 properties and 10 levels of literal nesting; 1,000 enum values; 120,000 characters of
+   property names, definition names, enum values and const values; and, per enum, "For a single enum property
+   with string values, the total string length of all enum values cannot exceed 15,000 characters when there are
+   more than 250 enum values" (checked on each `enum` alone, never summed across the schema). The profile is the guide's supported list plus `const`, which the guide counts in
+   its size limit ("total string length of all property names, definition names, enum values, and const values
+   cannot exceed 120,000 characters"): `type`, `properties`, `required`, `additionalProperties`, `enum`, `const`,
+   `anyOf`, `$ref` /
+   `$defs` with recursion, `items`, `minItems` / `maxItems`, `minimum` / `maximum`, `exclusiveMinimum` /
+   `exclusiveMaximum`, `multipleOf`, `pattern` (held to core's regex subset, the dialect being unnamed) and
+   `format` (`date-time`, `time`, `date`, `duration`, `email`, `hostname`, `ipv4`, `ipv6`, `uuid`).
+   `oneOf`, `prefixItems`, `minLength`, `maxLength`, `minProperties`, `maxProperties` and `uniqueItems` are not
+   named and are rejected. Schemas are forwarded verbatim with `strict: true`; the format name is the schema
+   `title` (the SDK typing's `^[a-zA-Z0-9_-]{1,64}$` rule) or `structured_output`.
+10. **Errors (ADR-036).** Core's classification for HTTP statuses (401 and 403 `invalid_auth`, 400 / 404 / 422
+    `bad_request`, 429 retryable `rate_limited` with `Retry-After` read from the SDK error's headers, 5xx retryable
+    `server`), tested through the pinned SDK. A 429 whose body names a billing, spend or usage limit
+    (`credit_balance_exhausted`, `organization_spend_limit_exceeded`, `project_spend_limit_exceeded`,
+    `organization_usage_limit_exceeded`, or the `insufficient_quota` type) is `rate_limited`, not retryable,
+    `reason: 'credits_exhausted'` (the guide: retrying those "won't restore access"). Only structured fields are
+    read.
+11. **Served-tier pricing, snapshot `openai-2026-11-20` (ADR-039).** The tier priced is the one the response
+    echoes, kept verbatim as `servedServiceTier`: `default` standard, `flex` 50% of every lane (Terra and Luna),
+    `fast` or `priority` 2× every lane (cached and writes included). Any other echo is an unpriced tier. Core prices
+    the requested tier when the adapter reports none, so a response with no echo is marked
+    `usage.details.service_tier_missing = 1`, on success and on a billed failure, and the pricing source returns
+    unpriced for it before it looks at the tier argument. Long context: the band follows the gross `input_tokens`
+    (above 272,000 is long: 2× input and cache, 1.5× output, the whole request); the page does not say whether
+    cached tokens count, so a call whose band the cached reads decide is `estimated`. Cache reads at the cached
+    rate; cache writes 1.25× (30 minutes) and 2.5× (12 hours) of input inside the `input` lane; ordinary input is
+    `input − reads − writes`. That subtraction is an inference from the caching guide ("billed cache reads.
+    Excludes tokens charged as writes"), so every call with writes is `estimated`, and writes without a TTL split
+    are priced at the 30-minute default and `estimated`. The adapter checks the RAW counters before core normalises
+    them (normalisation clamps cached tokens to the input): a counter that is present but not a non-negative safe
+    integer, reads plus writes above `input_tokens`, a TTL split that does not sum to `cache_write_tokens`,
+    reasoning above `output_tokens`, or `total_tokens` below input plus output (the typings define it as "The
+    total number of tokens used", so it cannot be lower; a higher total means tokens the lanes do not carry, and
+    core's normalisation already reports that cost `estimated`) sets `usage.details.usage_irreconcilable = 1` with a warning naming what did not
+    reconcile, and the call is unpriced; usage that lacks a cache lane (`usage_incomplete`) is unpriced too.
+    Regional-processing and FedRAMP surcharges (+10% each) are not modelled. The tests' usage objects are
+    synthetic and prove the arithmetic only.
+12. **Evidence in the tests (ADR-013).** Request mapping and streaming tests run the real `openai` SDK with a
+    stubbed `fetch` that serves SSE frames built from the SDK's own event typings; each helper says it is
+    documentation-derived, not a capture.
+
+**Deferred (BACKLOG, each with its probe):** document and file-id inputs, `countTokens`, a public fake,
+built-in tools, a file store, `prompt_cache_options`, `reasoning.mode: 'pro'`, `text.verbosity`, background
+windows, `ultrafast`, Batch, `high | xhigh | max` on GPT-6.2, reasoning summaries, a transport option, structured
+output with tools, and the unverified facts that limit the schema (GPT-6.2 default effort, sampling on Terra and
+Luna, the `reasoning.context` default, the echo on a `fast` request, cached tokens and the band, the
+ordinary-input subtraction, `parallel_tool_calls`, the error body shape, snapshot ids).
+
+**Consequences:**
+
+- A host calls OpenAI with `{ provider: 'openai', model, ... }` and `openaiProvider()`, priced and ledgered like
+  the other providers. `@gullabs/any-llm` does not re-export it.
+- Every cost from this package rests on documentation; a call with cache writes, or near the band edge, is
+  `estimated`, and a response that echoes no tier is unpriced, until probes settle the open items.
+- The first publish of `@gullabs/openai` has no trusted publisher yet (one can only be configured for an existing
+  package), so it uses the `NPM_TOKEN` fallback and carries no provenance attestation (RELEASING.md).
+
+---
+
+## ADR-048: Google refresh: SDK 3, no automatic continuation, `store: false`, Gemini 4, removals
+
+**Status:** Accepted (2026-11-20). Amends ADR-012 (default deadlines), ADR-018 (SDK version), ADR-019 (the
+pinned client), ADR-031 (one billed request per attempt), ADR-034 (a Gemini 4 profile), ADR-035 (Gemini 4
+grounding) and ADR-044 (finish reasons). Nothing in this ADR was verified by a live call: every new fact is
+documentation-derived (Google's pages under `https://aistudio.google.com/docs`, read 2026-11-20; the old
+`ai.google.dev/gemini-api/docs` URLs redirect there) or read from the installed `@google/genai` 3.6.1
+typings and source.
+
+**Context:**
+`@google/genai` 3.0.0 changed the Developer API default version from `v1beta` to `v1`, where explicit
+context caching does not exist, and began reading `GOOGLE_GENAI_API_VERSION` from the environment. The SDK
+also defaults `automaticContinuation` to `true` (present since 2.31.0): on a `CONTINUATION` finish it sends
+the request again with the continuation token and adds up every usage count, so one adapter attempt could
+be several billed requests and one ledger row. Google's changelog of 2026-10-26 says new paid-tier projects
+now store `generateContent` requests by default. Google released four Gemini 4 models (GA), deprecated
+`gemini-3.7-flash` (2026-10-08; requests are routed to `gemini-3.8-flash`, and it is gone from the pricing
+page), and announced that from 2026-12-01 requests to `gemini-2.5-pro` and `gemini-2.5-flash` are routed to
+`gemini-3.8-flash` and `gemini-3.5-flash-lite` and billed at their rates.
+
+**Decision:**
+
+1. **SDK 3, pinned.** `@google/genai` is a `^3.6.1` peer of `@gullabs/google` and `@gullabs/testing` (and a
+   `^3.6.1` dependency of `@gullabs/any-llm`): 3.6.1 is the version the wire tests run on. The client is
+   built with the call's `apiKey`, `vertexai: false`, `apiVersion: 'v1beta'` and the Developer API base URL.
+   In 3.6.1 an explicit option wins over its environment variable (`GOOGLE_GENAI_USE_VERTEXAI` /
+   `GOOGLE_GENAI_USE_ENTERPRISE` are read only when neither flag is passed; `GOOGLE_GENAI_API_VERSION` only
+   when no version is passed; `GOOGLE_GEMINI_BASE_URL` only when no base URL is passed), and the key
+   variables are never used because the key is always passed. A wire test (real SDK, stubbed `fetch`) sets
+   every one of those variables to a hostile value and checks that generate, both token-count paths, cache
+   create / update / delete and file upload reach `https://generativelanguage.googleapis.com/.../v1beta/...`
+   with the caller's key. ADR-018 is unchanged: bug #1277 was already fixed before 3.x (3.6.1 arms
+   `httpOptions.timeout` per fetch in `ApiClient.apiCall`), and #1468 concerns Vertex, which is not used.
+2. **No automatic continuation.** Every `generateContent`, the standard dispatch after a flex capacity error
+   included, is sent with `automaticContinuation: false` (an SDK option, never serialized), so the SDK never
+   sends a request the adapter did not send. An attempt is one request, or two when a flex call with
+   `flexFallback` falls back to the standard tier after a flex capacity error (ADR-012). A `CONTINUATION`
+   finish is `finishReason: 'length'` with that response's usage and a warning; a function call beside it is
+   dropped and named, as beside `MAX_TOKENS`; the continuation token is neither replayed nor kept. Resumable
+   long decode is a BACKLOG item: resuming is a second billed request and needs its own ledger design.
+3. **`store: false`.** Every `generateContent` carries the request-level field `store: false` ("Configures the
+   logging behavior for a given request. If set, it takes precedence over the project-level logging config",
+   generateContent API reference). This record claims only that the field is sent; it makes no statement about
+   Google's retention beyond that field. That the field is accepted and honoured on every model is the first
+   thing to confirm live (BACKLOG).
+4. **Finish reasons, explicitly.** Every `FinishReason` member of the 3.6.1 SDK is in the adapter's table, and a
+   test holds the table equal to the enum: the safety and policy blocks (`SAFETY`, `RECITATION`, `BLOCKLIST`,
+   `PROHIBITED_CONTENT`, `SPII`, the three `IMAGE_*` blocks, `ESCALATION`, `PUP_LIMITED_DISABLED`,
+   `MODEL_ARMOR`) are `content_filter`; `MAX_TOKENS` and `CONTINUATION` are `length`; `STOP` is `stop`; the
+   rest (`OTHER`, `LANGUAGE`, malformed or unexpected tool calls, `TOO_MANY_TOOL_CALLS`,
+   `MISSING_THOUGHT_SIGNATURE`, `MALFORMED_RESPONSE`, `IMAGE_OTHER`, `NO_IMAGE`, unspecified) and any value the
+   SDK does not know are `other`.
+5. **Gemini 4.** `gemini-4-carbon`, `gemini-4-argon`, `gemini-4-neon` and `gemini-4-hydrogen` are registered
+   (after the 3.x ids, before Gemma), documented and not live-verified:
+   - Level reasoning only: `low | medium | high`, plus `xhigh` (`ThinkingLevel.XHIGH`) on Neon and Hydrogen;
+     `none`, `max` and `budgetTokens` are `bad_request` before dispatch (Google rejects `minimal`; it maps a
+     `thinkingBudget` to a level with a warning, which is mapping, so it is not admitted). The thinking guide
+     calls `thinkingLevel` "required for Gemini 4" while the model pages give a default (medium on Carbon and
+     Argon, high on Neon and Hydrogen), so a call without an effort, or with `includeThoughts` alone, sends that
+     default explicitly: valid under either reading.
+   - No sampling keys (ADR-017; Google ignores them). No explicit caching ("returns an error"): the schemas have
+     no `cachedContent`, the descriptors say `caching: { explicit: false, minTokens: 4096 }` (the documented
+     implicit minimum), the adapter admits `cachedContent` only where `caching.explicit` is true, and
+     `GoogleCacheStore.create` rejects a model whose registered descriptor has no explicit caching before its
+     token preflight.
+   - Structured output with a documentation-backed JSON Schema profile: what the structured-output guide lists
+     (types with a `"null"` member, `properties`, `required`, `additionalProperties`, `enum`, `format` with
+     `date-time` / `date` / `time`, `minimum` / `maximum`, `items`, `prefixItems`, `minItems` / `maxItems`,
+     and the `anyOf` and recursive `$ref` / `$defs` its examples use). `pattern`, `minLength`, `maxLength`,
+     `items: false` and `email` are rejected: the P3 probe never ran on Gemini 4, and the guide says "The model
+     ignores unsupported properties". The portable subset is therefore not guaranteed on Gemini 4.
+   - Schema plus Search is off: `structuredOutputWithTools` is absent and the schemas have no
+     `allowSchemaWithSearch` (Google documents the pair as a preview; nothing measured it). Search with the
+     flex tier is rejected before dispatch (the flex schema branch has no `tools`, and the adapter checks the
+     pair for a direct call): no page shows it and the Gemini 4 flex price tab has no grounding row.
+   - `maxOutputTokens` at most 32,768 on Carbon and Argon (the documented per-request cap on a non-streaming
+     call, which is what the adapter sends) and 65,536 on Neon and Hydrogen; context 1,048,576 (input and
+     output together).
+   - With no `timeoutMs`, an untiered or standard call, the standard dispatch after a flex capacity error
+     included, gets a 20-minute client-side ceiling and SDK timeout (`GEMINI_4_DEFAULT_TIMEOUT_MS`; Google:
+     "Set HTTP client timeouts to at least 20 minutes per call"); flex keeps 25 minutes.
+   - Function calling with signed replay (function-response `id` and `name`, thought signatures) as on 3.x,
+     wire-tested against the SDK only.
+6. **Final-turn rules.** Google: "Starting with Gemini 3.6 Flash and Gemini 3.5 Flash-Lite, the following API
+   changes apply to these models and all future Gemini model releases ... If the last non-empty turn in the
+   request is a `model` turn, the API returns a `400` error." That request is `bad_request` before dispatch on
+   `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.8-flash` and the four Gemini 4 models. The 3.8 Flash
+   migration notes also say "ensure the final user turn contains non-empty text": on 3.8 Flash a final user
+   turn without non-empty text is `bad_request`, unless every part of that turn is a tool result (the
+   2026-10-03 capture shows 3.8 Flash accepting a final turn made only of function responses); a turn that
+   mixes a tool result with any other part needs the text too. Non-empty means a text part of length greater
+   than zero; whitespace is not examined, because the documentation does not speak to it. The text rule is not applied to Gemini 4, whose
+   pages do not state it. The rules live in `@gullabs/google` (`request-rules.ts`), keyed by the canonical
+   model id; core gains nothing (ADR-023).
+7. **Removals, with no alias.** `gemini-3.7-flash`, `gemini-2.5-pro` and `gemini-2.5-flash` are deleted
+   (descriptor, schema and export, limits, rates, grounding entries). A routed id is removed rather than kept
+   with a warning: once Google serves it with another model, the request gets the other model's behaviour and
+   bill (3.8 Flash semantics and rates for a "2.5 Pro" call) while the per-model schema, limits and price
+   describe the old one, and ADR-043's advisory cannot stop the dispatch. Suggested replacements:
+   `gemini-3.8-flash` for 3.7 Flash, `gemini-3.8-flash` or a Gemini 4 model for 2.5 Pro, `gemini-3.5-flash-lite`
+   for 2.5 Flash. `gemini-2.5-flash-lite` (not deprecated) stays and is the only budget-API model. Captures taken
+   on a removed model are kept as evidence; their tests check the capture as recorded and the registry only for
+   models still registered.
+8. **Pricing snapshot `gemini-2026-11-20`.** The rates already priced were re-read and are unchanged. Gemini 4
+   per 1M tokens, flex half on every lane: Neon $3.00 input / $0.15 cached / $15.00 output; Hydrogen $1.50 /
+   $0.075 / $7.50; Carbon and Argon $4.00 / $0.20 / $20.00. Google bills Carbon and Argon at half those rates
+   through 2026-11-30 ("$2.00 through November 30, 2026. $4.00 starting December 1, 2026."). The snapshot has
+   no date logic (plan decision of 2026-09-25: no date-windowed pricing): it carries the December rates and the
+   pricing source marks every priced Carbon and Argon cost `confidence: 'estimated'` before the grounding rules,
+   amount and lanes unchanged. The reason travels as an adapter `{ type: 'other' }` warning on every successful
+   and billed-failure attempt, so it reaches the ledger row (`Cost.unpricedReason` is only for an unpriced
+   call). The estimate overstates, never under-charges. A dated BACKLOG item (2026-12-01) removes exactly that
+   override and bumps the snapshot.
+9. **Gemini 4 grounding.** Search is $14 per 1,000 queries ("Gemini 3 and newer"), on the `tools` lane like
+   Gemini 3. Gemini 4 also bills "internal tool system instructions and function declarations when using
+   grounding" as tokens, and nothing documents whether `promptTokenCount` includes them: the reported counts
+   are priced as given, a grounded Gemini 4 call is `estimated` even when it ran no query, and the adapter
+   warns that the billed share cannot be isolated.
+
+**Consequences:**
+
+- Breaking: the SDK peer is `^3.6.1`; three model ids no longer resolve or price; every Google request carries
+  `store: false`; a `CONTINUATION` finish is a cut answer, not a silently resumed one; a request ending with an
+  assistant turn is rejected on the models above; the Gemini 4 contract is new. The changeset says what a host
+  changes.
+- A host that wants Google to keep its requests has no switch in this library; storage stays opt-in on the
+  host side (ADR-038 governs only this library's own payload table).
+- Everything Gemini 4 rests on documentation until probed; the BACKLOG lists each probe that would widen a
+  schema (schema + Search, Search + flex, the JSON Schema profile, the grounding token share, the
+  general-reference fields `stopSequences` and `safetySettings`) and the live confirmation of `store: false`.

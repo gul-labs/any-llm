@@ -170,7 +170,7 @@ describe('GoogleCacheStore', () => {
     const toolConfig = { functionCallingConfig: { mode: 'AUTO' as never } }
 
     await store.create({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-2.5-flash-lite',
       ttlSeconds: 600,
       systemInstruction: 'Be brief.',
       tools,
@@ -178,11 +178,11 @@ describe('GoogleCacheStore', () => {
     })
 
     expect(client.create).toHaveBeenCalledWith({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-2.5-flash-lite',
       config: { ttl: '600s', systemInstruction: 'Be brief.', tools, toolConfig },
     })
     expect(countTokens).toHaveBeenCalledWith({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-2.5-flash-lite',
       systemInstruction: 'Be brief.',
       tools,
     })

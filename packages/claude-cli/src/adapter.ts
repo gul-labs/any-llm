@@ -31,7 +31,7 @@ import type {
   Message,
   Part,
 } from '@gullabs/core'
-import { parseExtraEnv } from './env.js'
+import { REFUSAL_FALLBACK_ENV, parseExtraEnv } from './env.js'
 import { buildClaudeCliRunner } from './runner.js'
 import type { ClaudeCliRunner, ClaudeCliRunResult } from './runner.js'
 
@@ -62,6 +62,12 @@ export interface ClaudeCliEnvelope {
   subtype?: string
   is_error?: boolean
   result?: string
+  /**
+   * The parsed structured output of a `--json-schema` run. Documented at
+   * `https://code.claude.com/docs/en/headless` (read 2026-11-20): absent when a run
+   * ends without valid structured output.
+   */
+  structured_output?: unknown
   stop_reason?: string
   session_id?: string
   total_cost_usd?: number
@@ -352,7 +358,9 @@ export interface ClaudeCliAdapterOptions {
    * `ANTHROPIC_API_KEY` and provider-routing variables are never inherited, so the
    * CLI uses the subscription login; passing one here is the explicit opt-in, and
    * the call is then billed to it while the ledger still records it as unpriced.
-   * Values must be strings, else `bad_request` at construction.
+   * Values must be strings, else `bad_request` at construction. The adapter sets
+   * `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1` itself (see `env.ts`); naming it here is
+   * `bad_request`.
    */
   env?: Readonly<Record<string, string>>
 }
@@ -373,7 +381,11 @@ export function claudeCliAdapter(opts?: ClaudeCliAdapterOptions): ProviderAdapte
   const runner: ClaudeCliRunner = opts?.runner ?? buildClaudeCliRunner(opts?.claudePath)
 
   const semaphore = new Semaphore(opts?.maxConcurrency ?? 2)
-  const env = parseExtraEnv(opts?.env)
+  // The host's variables plus the adapter-owned one, which the host cannot set.
+  const env: Readonly<Record<string, string>> = Object.freeze({
+    ...parseExtraEnv(opts?.env),
+    [REFUSAL_FALLBACK_ENV.name]: REFUSAL_FALLBACK_ENV.value,
+  })
 
   return {
     id: 'claude-cli',
@@ -419,16 +431,6 @@ export function claudeCliAdapter(opts?: ClaudeCliAdapterOptions): ProviderAdapte
       }
       if (req.transientProviderState !== undefined) {
         throw new LlmError(`Model "${model}" does not admit transientProviderState.`, {
-          kind: 'bad_request',
-          retryable: false,
-          provider: 'claude-cli',
-        })
-      }
-      if (
-        config.reasoning !== undefined &&
-        req.modelDescriptor.capabilities?.reasoningApi === undefined
-      ) {
-        throw new LlmError(`Model "${model}" does not admit reasoning.`, {
           kind: 'bad_request',
           retryable: false,
           provider: 'claude-cli',
@@ -516,7 +518,7 @@ export function claudeCliAdapter(opts?: ClaudeCliAdapterOptions): ProviderAdapte
           cwd,
           ...(timeoutMs !== undefined ? { timeoutMs } : {}),
           ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
-          ...(env !== undefined ? { env } : {}),
+          env,
         })
       } catch (rawErr) {
         release()
@@ -585,14 +587,18 @@ export function claudeCliAdapter(opts?: ClaudeCliAdapterOptions): ProviderAdapte
       // ------------------------------------------------------------------
       const text = envelope.result ?? ''
 
+      // A structured call reads the documented `structured_output` field only; the
+      // `result` text is never parsed for it. A run without the field leaves
+      // `rawStructured` unset, which the engine reports as an unparsed output.
       let rawStructured: unknown
       if (req.outputJsonSchema !== undefined) {
-        try {
-          rawStructured = JSON.parse(text)
-        } catch {
+        if (envelope.structured_output !== undefined) {
+          rawStructured = envelope.structured_output
+        } else {
           warnings.push({
             type: 'other',
-            message: 'claude-cli: failed to parse structured output as JSON',
+            message:
+              'claude-cli: the result has no structured_output field, so no structured output was produced',
           })
         }
       }

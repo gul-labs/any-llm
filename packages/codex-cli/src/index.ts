@@ -14,7 +14,7 @@
  * const result = await client.generate(
  *   {
  *     provider: 'codex-cli',
- *     model: 'gpt-6-sol',
+ *     model: 'gpt-6.2-sol',
  *     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello' }] }],
  *   },
  *   { auth: { cliSession: true } },
@@ -38,8 +38,9 @@ export {
   codexCliRegistry,
   CODEX_CLI_MODEL_IDS,
   CODEX_CLI_REASONING_EFFORTS,
-  Gpt6AstraConfigSchema,
-  Gpt6SolConfigSchema,
+  Gpt62SolConfigSchema,
+  Gpt62AstraConfigSchema,
+  Gpt61TerraConfigSchema,
   Gpt6LunaConfigSchema,
 } from './models.js'
 export type { CodexCliModelId, CodexCliReasoningEffort } from './models.js'

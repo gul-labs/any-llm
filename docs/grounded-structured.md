@@ -1,8 +1,8 @@
 # Grounded -> Structured on Gemini
 
 The Google adapter rejects `googleSearch` plus `output.jsonSchema` on every
-registered Gemini model (`structuredOutputWithTools: false` on all six Gemini 3.x
-descriptors) with `bad_request`, before any network call. The error message points
+registered Gemini model (`structuredOutputWithTools: false` on the five Gemini 3.x
+descriptors, absent on the others) with `bad_request`, before any network call. The error message points
 here. The provider accepts the request shape, but an accepted request is not proof
 that Search ran: the live probes below show models that skipped Search or returned no
 `groundingMetadata` when a schema was attached. The default is the two-call recipe
@@ -18,9 +18,17 @@ middleware would pay for every attempt and fail each time. The error is retryabl
 without a schema, which grounded on 4 of 4 captured calls. The measured rates below say how often to
 expect the failure.
 
-The opt-in exists only for models with a measured negative result (the six Gemini 3.x models). Gemini
-2.5 and Gemma have no capture of schema plus Search, so that combination is rejected there with or
-without the flag; use the two-call recipe.
+The opt-in exists only for models with a measured negative result (the Gemini 3.x models). Gemini
+2.5 Flash-Lite, the Gemini 4 models and Gemma have no capture of schema plus Search, so that
+combination is rejected there with or without the flag (the Gemini 4 schemas have no
+`allowSchemaWithSearch` key); use the two-call recipe. Google documents schema plus Search on Gemini 4
+as a preview; nothing measured it here (BACKLOG).
+
+On Gemini 4, Search is admitted at the standard or omitted tier only: Search with `serviceTier: 'flex'`
+is `bad_request` before dispatch, because no page shows it and the Gemini 4 flex price tab has no
+grounding row (pricing page, read 2026-11-20). Gemini 4 also bills grounding's internal tool
+instructions as tokens, in a share `usageMetadata` does not isolate, so a grounded Gemini 4 call is
+`estimated` even when it ran no query, with a warning (ADR-048).
 
 A filtered candidate (`SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `IMAGE_SAFETY`) with no
 grounding evidence throws `content_filter` (not retryable), not `grounding_missing`.
@@ -54,6 +62,9 @@ output. Fixture: `packages/google/src/__fixtures__/grounding-schema-matrix-2026-
 | `gemini-3.6-flash`       | 4 of 4                           | **0 of 4**                         | 4 of 4                                     |
 | `gemini-3.5-flash-lite`  | 4 of 4                           | **0 of 4**                         | 0 of 4                                     |
 | `gemini-3.1-flash-lite`  | 4 of 4                           | **0 of 4**                         | 4 of 4                                     |
+
+`gemini-3.7-flash` was removed from the registry on 2026-11-20 (ADR-048); its row is kept as measured.
+Gemini 4 was not part of this probe.
 
 The rule for turning the pair on by default was metadata with a query on at least 3 of 4 schema
 calls. No model meets it (the best is 3.1 Pro at 2 of 4), so `structuredOutputWithTools` stays `false`
@@ -102,7 +113,7 @@ const operationId = 'op-2026-01-research'
 const research = await client.generate(
   {
     provider: 'google',
-    model: 'gemini-2.5-pro',
+    model: 'gemini-3.8-flash',
     system: 'Research the topic and quote only grounded findings.',
     messages: [
       {
@@ -190,7 +201,7 @@ const grounding = extractGroundingArtifacts(research.providerMetadata)
 const structured = await client.generate(
   {
     provider: 'google',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-4-hydrogen',
     system: 'Convert grounded research into a structured summary.',
     messages: [
       {

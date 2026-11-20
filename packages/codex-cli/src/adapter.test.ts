@@ -82,7 +82,7 @@ const FAKE_CTX: AdapterCtx = {
 }
 
 function makeResolvedReq(overrides: Partial<ResolvedRequest> = {}): ResolvedRequest {
-  const model = overrides.model ?? 'gpt-6-sol'
+  const model = overrides.model ?? 'gpt-6.2-sol'
   return {
     provider: 'codex-cli',
     model,
@@ -108,7 +108,7 @@ describe('happy path: plain text', () => {
     const result = await adapter.run(makeResolvedReq(), FAKE_CTX)
 
     expect(result.text).toBe('hi')
-    expect(result.model).toBe('gpt-6-sol')
+    expect(result.model).toBe('gpt-6.2-sol')
     expect(result.finishReason).toBe('stop')
     expect(result.providerMetadata).toEqual({
       threadId: '019f435f-4756-7242-98ab-d536aa30e739',
@@ -491,7 +491,7 @@ describe('argv construction', () => {
       '--color',
       'never',
       '-m',
-      'gpt-6-sol',
+      'gpt-6.2-sol',
       '-o',
       join(cwd!, 'output.json'),
       '-',
@@ -533,7 +533,7 @@ describe('argv construction', () => {
 
     const args = calls[0]?.args ?? []
     const mIndex = args.indexOf('-m')
-    expect(args[mIndex + 1]).toBe('gpt-6-sol')
+    expect(args[mIndex + 1]).toBe('gpt-6.2-sol')
     expect(args).toContain('model_reasoning_effort=max')
     expect(args).toContain('--output-schema')
     expect(args).toContain('-o')

@@ -97,7 +97,8 @@ paths to other repos.
 - **Priority:** P3
 - **Status:** done. The routine devDeps, `openai@7` (peer `^7`), `@google/genai@2` (peer `^2`),
   `@changesets/cli@3`, Vitest 5 and `actions/setup-node@v7` are on `main`, and `pnpm quality`
-  passes against them. TypeScript stays on 6.x: 7 is a separate plan.
+  passes against them. TypeScript stays on 6.x: 7 is a separate plan. `@google/genai` moved to
+  3.x on 2026-11-20 (peer `^3.6.1`, ADR-048).
 - **Origin:** open dependabot PRs.
 - **Next step:** none; re-run the review when Dependabot opens the next major.
 
@@ -136,10 +137,10 @@ paths to other repos.
 
 ## Model refresh deferrals (2026-09-25)
 
-- **2027-01-01 Gemini intro-price re-snapshot.** `gemini-3.6-flash`, `gemini-3.7-flash`, and `gemini-3.8-flash` ship at the published intro rates $0.75 / $0.075 / $3.75 per million (input / cached / output). On 2027-01-01 those become $1.50 / $0.15 / $7.50. Re-snapshot `GEMINI_PRICING` and bump `pricingVersion` before that date. The owner chose a dated backlog item instead of date-windowed pricing (plan D1).
+- **2027-01-01 Gemini intro-price re-snapshot.** `gemini-3.6-flash` and `gemini-3.8-flash` ship at the published intro rates $0.75 / $0.075 / $3.75 per million (input / cached / output; flex half). On 2027-01-01 those become $1.50 / $0.15 / $7.50 (re-read 2026-11-20 at <https://aistudio.google.com/docs/pricing>: "$0.75 through December 31, 2026. $1.50 starting January 1, 2027."). Re-snapshot `GEMINI_PRICING` and bump `pricingVersion` on that date. The owner chose a dated backlog item instead of date-windowed pricing (plan D1). (`gemini-3.7-flash`, once in this item, was removed on 2026-11-20, ADR-048.)
 - **2027-05-07 `gemini-3.1-flash-lite` shutdown.** Google's deprecations page (read 2026-10-03) lists the date and `gemini-3.5-flash-lite` as the replacement. The descriptor warns from 2027-02-06 (`shutdownDate`, ADR-043). After the date, delete the descriptor, its pricing row, config schema and fixtures in one change; do not keep an alias to the replacement. Re-read the page before each release: a new shutdown date is a one-line descriptor change.
 - **`gemini-3.5-flash` status.** The README and `docs/architecture.md` say it is deleted (a live 404 when the registry was refreshed); Google's pricing and deprecations pages still listed it when read 2026-10. Re-read both pages and re-probe the id before the next release; if it serves, it is a registry decision, not an alias.
-- Gemini `priority` tier. A live flex call (2026-09-26) echoed `usageMetadata.serviceTier`, and the adapter reads the served tier. Priority still needs live admission, pricing, and downgrade accounting before the schema admits it.
+- Gemini `priority` tier. A live flex call (2026-09-26) echoed `usageMetadata.serviceTier`, and the adapter reads the served tier. Priority still needs live admission, pricing, and downgrade accounting before the schema admits it. Read 2026-11-20 (<https://aistudio.google.com/docs/priority-inference>): priority costs 75-100% more than standard (1.8x on every token line checked, Gemini 4 included), and a downgrade is signalled by the response header `x-gemini-service-tier: standard`; the downgrade accounting must read it before priority is admitted.
 - Other Gemini features: built-in tools beyond `googleSearch` (URL context, Maps, code execution, file search); `media_resolution: ultra_high`; `gemini-3.1-pro-preview-customtools`.
 - xAI models not in this refresh: grok-4.3, the grok-4.20 family (including multi-agent), grok-build-0.1.
 - xAI tools not supported: code execution, collections, remote MCP.
@@ -155,8 +156,31 @@ paths to other repos.
 - **xAI `safety_identifier`.** New Responses request field (September 2026 release notes, <https://docs.x.ai/developers/faq/security>): an opaque, hashed end-user id. Candidate `providerOptions.xai.safetyIdentifier` for multi-tenant hosts on one key. Needs a live probe before admission.
 - **xAI `POST /v1/responses/compact`.** Documented transcript compaction (<https://docs.x.ai/developers/advanced-api-usage/context-compaction>). grok-4.7 replay resends the full wire input; compaction would be the cost control. Needs a design: a second endpoint plus an opaque `compaction` input item.
 - **xAI `include: ["no_inline_citations"]`.** Suppresses inline `[[N]](url)` links in the text (<https://docs.x.ai/developers/tools/citations>). Expose only if a host needs citation-free text.
-- **xAI `max_turns` enforcement.** Exposed as `providerOptions.xai.maxTurns`; not enforced by xAI on 2026-10-02 (fixture 33, ADR-030). Re-probe when xAI changes the agentic loop, then update the README.
+- **xAI `max_turns` enforcement.** Exposed as `providerOptions.xai.maxTurns`; not enforced by xAI on 2026-10-02 (fixture 33, ADR-030), and described as applied in xAI's tool usage guide read 2026-11-20 (<https://docs.x.ai/developers/tools/tool-usage-details>), which is documentation, not a probe. **Probe:** repeat the fixture 33 call (`web_search`, `tool_choice: 'required'`, `max_turns: 1`) on grok-4.5, 4.6 and 4.7 and read the search counters. Enforced: drop the "open" wording from the schema description, `types.ts`, the package README, `SPEC.md` and ADR-030. Still ignored: say so and decide whether the option stays.
 - Not exposed on purpose (xAI docs mark them compatibility-only, unsupported, or silently ignored): `reasoning.summary`, function `strict`, `metadata`, `truncation`, `background`, `logprobs`, `search_parameters`, `service_tier: 'fast'`.
+
+## xAI observed 2026-11-20, not modelled
+
+Read on 2026-11-20 from xAI's public documentation (<https://docs.x.ai/developers/models>, <https://docs.x.ai/developers/pricing>, <https://docs.x.ai/developers/release-notes>, <https://docs.x.ai/developers/rest-api-reference/inference/responses>, <https://docs.x.ai/openapi.json>). None is admitted, priced or sent by `@gullabs/xai`; each needs a design and, where it changes a request or a bill, a live probe first.
+
+- New Responses request fields: `min_p`, `top_k`, `guidelines` (custom moderation controls), `safety_identifier`, `context_management`, `prompt_cache_key` beyond today's `promptCacheKey` option.
+- The US regional endpoint `https://us.api.x.ai/v1` (grok-4.7 and grok-4.6), billed at 1.1x the global token rates. The client pins `https://api.x.ai/v1`; a host that points elsewhere would be under-priced by 10%.
+- `usage.cost_in_nano_usd` and `usage.context_details`, beside the `cost_in_usd_ticks` the adapter already reads.
+- Tool types `shell` and `tool_search` (OpenAPI `ModelTool`), with no usage counter and no price row; code execution ($5 per 1,000 calls) and collections search ($2.50 per 1,000 calls) have published rates but stay unpriced here.
+- Models not registered: `grok-4.3` and the `grok-4.20-*` family, listed on the models page with their own rates.
+
+## Gemini refresh deferrals (2026-11-20, ADR-048)
+
+Every Gemini 4 fact below is documented and not live-verified; no call was made for this release.
+
+- **2026-12-01: Gemini 4 Carbon / Argon re-snapshot.** The snapshot `gemini-2026-11-20` carries the rates Google bills from 2026-12-01 ($4.00 / $0.20 / $20.00, flex half) and marks every Carbon and Argon cost `estimated` with a warning, because through 2026-11-30 Google bills half. On 2026-12-01: re-read <https://aistudio.google.com/docs/pricing>, remove the two entries of `GEMINI_ESTIMATED_RATE_REASONS` (and nothing else), bump `pricingVersion`, update ADR-048 and the changeset. No date logic is added.
+- **Confirm `store: false` live.** The first thing to check with a key: that `store: false` is accepted on every registered model and that the request is not logged (Google's request-level logging field, `GenerateContentRequest.store`).
+- **Resumable long decode.** The adapter sends `automaticContinuation: false` and returns a `CONTINUATION` finish as `length` (no automatic continuation, ADR-048). Resuming with `continuationToken` ("contents ... must identically replicate the prompt", cumulative `maxOutputTokens`) would be a second billed request: it needs a design (one ledger row per hop, the token kept out of the ledger) and a live probe of the per-hop usage before it can be offered.
+- **Gemini 4 schema + Search.** The Gemini 4 descriptors have no `structuredOutputWithTools` and their schemas no `allowSchemaWithSearch`, so the pair is rejected. Google documents the combination as a preview; run the P4 probe (four schema calls per model, ADR-035) and admit the opt-in where it shows Search running.
+- **Gemini 4 Search + flex.** Rejected before dispatch: no page shows it and the Gemini 4 flex price tab has no grounding row. Probe one grounded flex call per model and read the bill before admitting it.
+- **Gemini 4 JSON Schema profile.** Documentation only: `pattern`, `minLength`, `maxLength`, `items: false` and the `email` format are rejected on Gemini 4 because the structured-output guide does not list them. Run the P3 probe on the four models and widen the profile to what it shows enforced.
+- **Gemini 4 grounding instruction tokens.** The pricing page says Gemini 4 bills grounding's internal tool instructions and function declarations as tokens; whether `promptTokenCount` includes them is not documented. A grounded call is therefore `estimated` even with zero queries. Reconcile one grounded call against a billing export.
+- **Gemini 4 fields admitted on the general API reference only.** `stopSequences` and `safetySettings` are admitted on Gemini 4 because the generateContent reference documents them and the Gemini 4 migration notes do not remove them; probe both.
 
 ## Follow-ups from Gemini 3 thought signatures (2026-10-03)
 
@@ -224,6 +248,14 @@ paths to other repos.
   server tools past 300 s was not tested (the longest, 99 s, had the same 15 s gap). Capture one, then tell
   hosts with tool-using calls whether they can drop the transport. Until then they set
   `transport.idleTimeoutMs` and a `bodyTimeout` near their longest quiet gap, not the whole deadline.
+- **xAI client on an isolated transport.** `buildXaiClient` constructs the `openai` SDK client, whose
+  constructor reads `OPENAI_*` variables. The values options can pin are pinned (`organization`, `project`,
+  `adminAPIKey`, `webhookSecret`, `logLevel`, plus `apiKey` and `baseURL`), and the default headers the
+  constructor collects from `OPENAI_CUSTOM_HEADERS` are dropped, so none reaches xAI; but a MALFORMED
+  `OPENAI_CUSTOM_HEADERS` still throws in the constructor and fails every xAI call. Move the xAI client to the
+  isolated transport `@gullabs/openai` uses (ADR-047: `fetch` plus `openai/streaming` and `openai/error`, no
+  constructed client), keeping its live-verified stream reader, deadline and idle timer, and re-run the
+  recorded-fixture tests.
 - **xAI billing of a cut stream.** A stream that fails after output began is not retried and carries a
   lower-bound usage estimate (ADR-040 Amendment A) because whether xAI bills a cut call is unknown (P9b).
   When it is measured, replace the estimate with the real rule and revisit whether a cut stream may retry.
@@ -243,6 +275,66 @@ paths to other repos.
 - **Gemini document types.** Google's document page lists no closed set ("TXT, Markdown, HTML, XML,
   etc."), so `text/*` is admitted as a family. Probe `text/csv`, `application/json` and
   `text/x-python` against the Files API to see which Google actually takes.
+
+## `@gullabs/openai` first slice (2026-11-20, ADR-047)
+
+The package was built from OpenAI's documentation and the `openai` 7.60.0 typings only; no OpenAI call
+was made. Each item names the live probe that closes it. A probe spends money and needs the owner's
+authorization.
+
+Deferred capabilities (rejected by the schema or the adapter today):
+
+- **Document and file-id inputs.** `file-ref` parts and non-image media are `bad_request`. Probe: a PDF as
+  `input_file` (`file_data` and a `user_data` upload) on each model, recording usage and the accepted types.
+- **`countTokens`.** `POST /v1/responses/input_tokens` exists in the SDK; whether it is billed or rate-limited
+  is undocumented. Probe: count the same request twice and compare with a real call's `input_tokens`.
+- **A public fake in `@gullabs/testing`.** Hosts inject an `OpenAiClientLike` today. Build one once a live
+  capture of a streamed response exists to replay.
+- **Built-in tools** (web search, file search, code interpreter, hosted shell, computer use, MCP, tool
+  search) and their tool fees. Probe: one call per tool, recording output items and `tool_usage`.
+- **A file store** (Files API upload, get, delete), after document input.
+- **`prompt_cache_options`** (explicit mode, `ttl: '12h'`, breakpoints, prewarm) and `prompt_cache_key`.
+  Probe: a 12-hour write and a read, reconciling `cache_write_tokens_details` with the billed amount.
+- **`reasoning.mode: 'pro'`.** Probe: one call per model, recording usage and whether the tier echo changes.
+- **`text.verbosity`.** Support and default on GPT-6.x are undocumented. Probe: each value on each model.
+- **Background windows** (`background_options.completion_window` `2h` / `8h`, 30% and 40% off). Needs a
+  non-streamed, polled path.
+- **`ultrafast`** (GPT-6.2: promotional 3× through 2027-02-28, then 6×). Needs date-aware rates and a probe of
+  the echoed tier.
+- **Batch.** No path in this library.
+- **`high`, `xhigh` and `max` effort on GPT-6.2.** The pages name only `low` and `medium`. Probe: each value on
+  `gpt-6.2-astra` and `gpt-6.2-sol`, then widen the schemas and descriptors to what is accepted.
+- **Reasoning summaries** (`reasoning.summary`, `includeThoughts`). Probe: `summary: 'auto'` on each model
+  (the reasoning guide says organization verification may be required).
+- **A transport option** (`fetch`, `fetchOptions`) for proxies and egress policy, as xAI has.
+- **Structured output together with function tools.** Rejected (`structuredOutputWithTools: false`). Probe:
+  a strict schema plus a function tool on each model, checking the call and the final answer.
+
+Unverified facts that limit the schema or the cost:
+
+- **GPT-6.2 default effort.** No page states it. Probe: a call without `reasoning`, reading the echoed effort.
+- **Sampling on Terra and Luna.** The pages are silent on `temperature` and `top_p`, so they are rejected.
+  Probe: one call with each.
+- **`reasoning.context` default on GPT-6.x.** Not sent; the replay sends every output item. The stub test
+  proves the request payload only. Probe: a two-turn function call with `all_turns` and without, comparing
+  `input_tokens` and the answer.
+- **The echoed tier on a `fast` request.** For GPT-5.6 and earlier the response says `priority`; GPT-6.x is
+  undocumented. Both price at the Fast table; a missing echo is unpriced. Probe: a `fast` call per model.
+- **Cached tokens and the 272,000 band.** Whether cached reads count toward the threshold is undocumented
+  (the band follows gross input; a call the reads decide is `estimated`). Probe: a warm call just above the
+  threshold whose uncached input is below it, reconciled with billing.
+- **Ordinary input = input − reads − writes.** Inferred from the caching guide's sentence; every call with
+  writes is `estimated`. Probe: a call with writes, reconciled with the usage dashboard.
+- **Per-model `parallel_tool_calls` support.** Not sent. Probe: two independent tool calls with and without it.
+- **The JSON error body.** The shape `error.{message,type,param,code}` is referenced, not shown; the billing
+  codes are matched on `error.code` and `error.type`. Capture a 401, a 429 and a 400 body.
+- **Dated snapshot ids.** The model pages list only bare ids, so no alias is declared. Re-read on each refresh.
+- **Animated GIF.** Only non-animated GIF is documented; the adapter does not decode images to check.
+
+Not modelled: regional-processing (data residency) and FedRAMP surcharges (+10% each); the
+`/v1/prompts` reusable prompt objects (shut down 2026-11-30).
+
+---
 
 ## Optional later (not ticketed)
 

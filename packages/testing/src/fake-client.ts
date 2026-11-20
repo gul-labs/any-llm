@@ -203,7 +203,7 @@ export class FakeClient implements Client {
    * does not match, or when there is no such call.
    *
    * ```ts
-   * client.expectRequest({ model: 'gemini-2.5-pro', config: { temperature: 0 } })
+   * client.expectRequest({ model: 'gemini-3.8-flash', config: { maxOutputTokens: 256 } })
    * client.expectRequest({ messages: [{ role: 'user', parts: [{ kind: 'text', text: 'hi' }] }] }, { call: 0 })
    * ```
    */

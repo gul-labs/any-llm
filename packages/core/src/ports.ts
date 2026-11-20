@@ -329,7 +329,7 @@ export interface RateLimitHint {
  * may wait arbitrarily long inside `acquire`.
  *
  * ## Key format
- * The engine builds keys as `"${provider}:${model}"` (e.g. `"google:gemini-2.5-pro"`),
+ * The engine builds keys as `"${provider}:${model}"` (e.g. `"google:gemini-3.8-flash"`),
  * with `provider` sourced directly from `req.provider` (never derived).
  * Rate limits are per-provider+model because providers enforce quotas per model,
  * and a single instance may call multiple models concurrently.

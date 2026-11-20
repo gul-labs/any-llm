@@ -19,6 +19,7 @@ import {
   pricingVersion,
   GEMINI_PRICING,
   GEMINI_PRICED_TIERS,
+  GEMINI_ESTIMATED_RATE_REASONS,
   resolveGeminiRates,
 } from './pricing.js'
 
@@ -82,7 +83,7 @@ function expectedComponents(
 // ---------------------------------------------------------------------------
 
 describe('computeCost — codex-mandated double-counting scenario', () => {
-  it('usage {input:250k, cached:100k, output:5k, thinking:2k} on gemini-2.5-pro', () => {
+  it('usage {input:250k, cached:100k, output:5k, thinking:2k} on gemini-3.1-pro-preview', () => {
     // GIVEN
     const usage = makeUsage({
       inputTokens: 250_000,
@@ -92,11 +93,11 @@ describe('computeCost — codex-mandated double-counting scenario', () => {
     })
 
     // WHEN
-    const cost = computeCost('gemini-2.5-pro', usage)
+    const cost = computeCost('gemini-3.1-pro-preview', usage)
 
     // Assert: gross input (250k) > 200k → >200k tier MUST be chosen.
     // We verify by using the gt200k rates from the snapshot.
-    const proRates = GEMINI_PRICING['gemini-2.5-pro']!.standard
+    const proRates = GEMINI_PRICING['gemini-3.1-pro-preview']!.standard
     expect(proRates).toBeDefined()
     expect(proRates.gt200k).toBeDefined()
     const gt200k = proRates.gt200k!
@@ -134,7 +135,7 @@ describe('computeCost — codex-mandated double-counting scenario', () => {
       cachedInputTokens: 100_000,
       outputTokens: 5_000, // same outputTokens; thinkingTokens is just metadata
     })
-    const costNoThinking = computeCost('gemini-2.5-pro', noThinkingUsage)
+    const costNoThinking = computeCost('gemini-3.1-pro-preview', noThinkingUsage)
     expect(cost.microUsd).toBe(costNoThinking.microUsd)
     expect(cost.details).toEqual(costNoThinking.details)
 
@@ -167,9 +168,9 @@ describe('computeCost — codex-mandated double-counting scenario', () => {
 describe('computeCost — tier boundary', () => {
   it('GROSS input exactly at 200k uses base rate (not >200k)', () => {
     const usage = makeUsage({ inputTokens: 200_000, outputTokens: 1_000 })
-    const cost = computeCost('gemini-2.5-pro', usage)
+    const cost = computeCost('gemini-3.1-pro-preview', usage)
 
-    const proRates = GEMINI_PRICING['gemini-2.5-pro']!.standard
+    const proRates = GEMINI_PRICING['gemini-3.1-pro-preview']!.standard
     const expected = expectedComponents(
       proRates.inputPerM,
       proRates.cachedPerM,
@@ -186,9 +187,9 @@ describe('computeCost — tier boundary', () => {
 
   it('GROSS input one token above 200k triggers >200k tier', () => {
     const usage = makeUsage({ inputTokens: 200_001, outputTokens: 1_000 })
-    const cost = computeCost('gemini-2.5-pro', usage)
+    const cost = computeCost('gemini-3.1-pro-preview', usage)
 
-    const proRates = GEMINI_PRICING['gemini-2.5-pro']!.standard
+    const proRates = GEMINI_PRICING['gemini-3.1-pro-preview']!.standard
     const expected = expectedComponents(
       proRates.gt200k!.inputPerM,
       proRates.gt200k!.cachedPerM,
@@ -215,7 +216,7 @@ describe('computeCost — edge cases', () => {
       cachedInputTokens: 50_000,
       outputTokens: 2_000,
     })
-    const cost = computeCost('gemini-2.5-flash', usage)
+    const cost = computeCost('gemini-2.5-flash-lite', usage)
 
     expect(cost.microUsd).not.toBeNull()
     expect(cost.details.input).toBe(0) // 0 billable input tokens
@@ -231,7 +232,7 @@ describe('computeCost — edge cases', () => {
       cachedInputTokens: 5_000, // more than input — invalid but handled defensively
       outputTokens: 500,
     })
-    const cost = computeCost('gemini-2.5-flash', usage)
+    const cost = computeCost('gemini-2.5-flash-lite', usage)
 
     expect(cost.microUsd).not.toBeNull()
     expect(cost.details.input).toBeGreaterThanOrEqual(0) // never negative
@@ -242,7 +243,7 @@ describe('computeCost — edge cases', () => {
 
   it('zero tokens everywhere → microUsd = 0', () => {
     const usage = makeUsage({ inputTokens: 0, outputTokens: 0 })
-    const cost = computeCost('gemini-2.5-flash', usage)
+    const cost = computeCost('gemini-2.5-flash-lite', usage)
 
     expect(cost.microUsd).toBe(0)
     expect(cost.details).toEqual({ input: 0, cached: 0, output: 0, tools: 0 })
@@ -302,7 +303,7 @@ describe('computeCost — edge cases', () => {
   it('inherited object keys are not priced tiers', () => {
     const usage = makeUsage({ inputTokens: 10_000, outputTokens: 500 })
     for (const tier of ['constructor', 'toString']) {
-      const cost = PRICING.price('gemini-2.5-pro', usage, tier)
+      const cost = PRICING.price('gemini-3.1-pro-preview', usage, tier)
       expect(cost.microUsd).toBeNull()
       expect(cost.confidence).toBe('estimated')
       expect(cost.unpricedReason).toContain(tier)
@@ -318,7 +319,7 @@ describe('computeCost — edge cases', () => {
 
   it('unknown (but defined) service tier → unpriced, never silently mapped to standard', () => {
     const usage = makeUsage({ inputTokens: 10_000, outputTokens: 500 })
-    const cost = computeCost('gemini-2.5-pro', usage, 'enterprise-super-tier')
+    const cost = computeCost('gemini-3.1-pro-preview', usage, 'enterprise-super-tier')
 
     expect(cost.microUsd).toBeNull()
     expect(cost.usd).toBeNull()
@@ -331,8 +332,8 @@ describe('computeCost — edge cases', () => {
 
   it('undefined tier defaults to standard (factor 1) — not a mapping', () => {
     const usage = makeUsage({ inputTokens: 10_000, outputTokens: 500 })
-    const costUndefined = computeCost('gemini-2.5-pro', usage)
-    const costStandard = computeCost('gemini-2.5-pro', usage, 'standard')
+    const costUndefined = computeCost('gemini-3.1-pro-preview', usage)
+    const costStandard = computeCost('gemini-3.1-pro-preview', usage, 'standard')
 
     expect(costUndefined.microUsd).not.toBeNull()
     expect(costUndefined.microUsd).toBe(costStandard.microUsd)
@@ -344,7 +345,7 @@ describe('computeCost — edge cases', () => {
     const usage = makeUsage({ inputTokens: 10_000, outputTokens: 500 })
 
     for (const tier of GEMINI_PRICED_TIERS) {
-      const cost = computeCost('gemini-2.5-pro', usage, tier)
+      const cost = computeCost('gemini-3.1-pro-preview', usage, tier)
       expect(cost.microUsd).not.toBeNull()
       expect(cost.confidence).toBe('exact')
       expect(cost.unpricedReason).toBeUndefined()
@@ -352,8 +353,8 @@ describe('computeCost — edge cases', () => {
 
     // Uncached flex input+output are half of standard. Cached tokens on
     // this model are not discounted, so a cached call is not a flat half.
-    const standard = computeCost('gemini-2.5-pro', usage, 'standard')
-    const flex = computeCost('gemini-2.5-pro', usage, 'flex')
+    const standard = computeCost('gemini-3.1-pro-preview', usage, 'standard')
+    const flex = computeCost('gemini-3.1-pro-preview', usage, 'flex')
     expect(flex.microUsd).toBe(Math.round((standard.microUsd as number) * 0.5))
   })
 
@@ -368,7 +369,7 @@ describe('computeCost — edge cases', () => {
   it('does not price unregistered suffix variants at a parent model rate', () => {
     const usage = makeUsage({ inputTokens: 10_000, outputTokens: 500 })
     for (const model of [
-      'gemini-2.5-pro-001',
+      'gemini-3.1-pro-preview-001',
       'gemini-3.8-flash-lite',
       'gemini-3.8-flash-tts',
     ]) {
@@ -392,8 +393,8 @@ describe('geminiPricingSource', () => {
   it('price() delegates to computeCost correctly', () => {
     const src = geminiPricingSource()
     const usage = makeUsage({ inputTokens: 100_000, outputTokens: 5_000 })
-    const direct = computeCost('gemini-2.5-flash', usage)
-    const viaSrc = src.price('gemini-2.5-flash', usage)
+    const direct = computeCost('gemini-2.5-flash-lite', usage)
+    const viaSrc = src.price('gemini-2.5-flash-lite', usage)
 
     expect(viaSrc).toEqual(direct)
   })
@@ -410,8 +411,8 @@ describe('geminiPricingSource', () => {
   it('hasModel uses exact model identifiers', () => {
     const src = geminiPricingSource()
 
-    expect(src.hasModel('gemini-2.5-pro')).toBe(true)
-    expect(src.hasModel('gemini-2.5-pro-001')).toBe(false)
+    expect(src.hasModel('gemini-3.1-pro-preview')).toBe(true)
+    expect(src.hasModel('gemini-3.1-pro-preview-001')).toBe(false)
     expect(src.hasModel('gemma-4-31b-it')).toBe(false)
   })
 
@@ -439,56 +440,6 @@ describe('per-tier golden table — published flex cached rates', () => {
     cachedPerM: number
     outputPerM: number
   }> = [
-    // gemini-2.5-pro
-    {
-      model: 'gemini-2.5-pro',
-      tier: 'standard',
-      context: 'le200k',
-      inputPerM: 1_250_000,
-      cachedPerM: 125_000,
-      outputPerM: 10_000_000,
-    },
-    {
-      model: 'gemini-2.5-pro',
-      tier: 'standard',
-      context: 'gt200k',
-      inputPerM: 2_500_000,
-      cachedPerM: 250_000,
-      outputPerM: 15_000_000,
-    },
-    {
-      model: 'gemini-2.5-pro',
-      tier: 'flex',
-      context: 'le200k',
-      inputPerM: 625_000,
-      cachedPerM: 125_000,
-      outputPerM: 5_000_000,
-    },
-    {
-      model: 'gemini-2.5-pro',
-      tier: 'flex',
-      context: 'gt200k',
-      inputPerM: 1_250_000,
-      cachedPerM: 250_000,
-      outputPerM: 7_500_000,
-    },
-    // gemini-2.5-flash — cached stays $0.03 on flex
-    {
-      model: 'gemini-2.5-flash',
-      tier: 'standard',
-      context: 'le200k',
-      inputPerM: 300_000,
-      cachedPerM: 30_000,
-      outputPerM: 2_500_000,
-    },
-    {
-      model: 'gemini-2.5-flash',
-      tier: 'flex',
-      context: 'le200k',
-      inputPerM: 150_000,
-      cachedPerM: 30_000,
-      outputPerM: 1_250_000,
-    },
     // gemini-2.5-flash-lite — cached stays $0.01
     {
       model: 'gemini-2.5-flash-lite',
@@ -556,22 +507,6 @@ describe('per-tier golden table — published flex cached rates', () => {
       outputPerM: 1_875_000,
     },
     {
-      model: 'gemini-3.7-flash',
-      tier: 'standard',
-      context: 'le200k',
-      inputPerM: 750_000,
-      cachedPerM: 75_000,
-      outputPerM: 3_750_000,
-    },
-    {
-      model: 'gemini-3.7-flash',
-      tier: 'flex',
-      context: 'le200k',
-      inputPerM: 375_000,
-      cachedPerM: 37_500,
-      outputPerM: 1_875_000,
-    },
-    {
       model: 'gemini-3.6-flash',
       tier: 'standard',
       context: 'le200k',
@@ -620,9 +555,75 @@ describe('per-tier golden table — published flex cached rates', () => {
       cachedPerM: 12_500,
       outputPerM: 750_000,
     },
+    // Gemini 4, read 2026-11-20 from https://aistudio.google.com/docs/pricing.md
+    // (Carbon and Argon: the rates from 2026-12-01; documented, not live-verified).
+    {
+      model: 'gemini-4-carbon',
+      tier: 'standard',
+      context: 'le200k',
+      inputPerM: 4_000_000,
+      cachedPerM: 200_000,
+      outputPerM: 20_000_000,
+    },
+    {
+      model: 'gemini-4-carbon',
+      tier: 'flex',
+      context: 'le200k',
+      inputPerM: 2_000_000,
+      cachedPerM: 100_000,
+      outputPerM: 10_000_000,
+    },
+    {
+      model: 'gemini-4-argon',
+      tier: 'standard',
+      context: 'le200k',
+      inputPerM: 4_000_000,
+      cachedPerM: 200_000,
+      outputPerM: 20_000_000,
+    },
+    {
+      model: 'gemini-4-argon',
+      tier: 'flex',
+      context: 'le200k',
+      inputPerM: 2_000_000,
+      cachedPerM: 100_000,
+      outputPerM: 10_000_000,
+    },
+    {
+      model: 'gemini-4-neon',
+      tier: 'standard',
+      context: 'le200k',
+      inputPerM: 3_000_000,
+      cachedPerM: 150_000,
+      outputPerM: 15_000_000,
+    },
+    {
+      model: 'gemini-4-neon',
+      tier: 'flex',
+      context: 'le200k',
+      inputPerM: 1_500_000,
+      cachedPerM: 75_000,
+      outputPerM: 7_500_000,
+    },
+    {
+      model: 'gemini-4-hydrogen',
+      tier: 'standard',
+      context: 'le200k',
+      inputPerM: 1_500_000,
+      cachedPerM: 75_000,
+      outputPerM: 7_500_000,
+    },
+    {
+      model: 'gemini-4-hydrogen',
+      tier: 'flex',
+      context: 'le200k',
+      inputPerM: 750_000,
+      cachedPerM: 37_500,
+      outputPerM: 3_750_000,
+    },
   ]
 
-  const PREMIUM_MODELS = new Set(['gemini-2.5-pro', 'gemini-3.1-pro-preview'])
+  const PREMIUM_MODELS = new Set(['gemini-3.1-pro-preview'])
 
   it('pins a published row for every model and tier, with both premium bands where applicable', () => {
     for (const model of Object.keys(GEMINI_PRICING)) {
@@ -670,7 +671,11 @@ describe('per-tier golden table — published flex cached rates', () => {
             tools: 0,
           })
           expect(cost.microUsd).toBe(expectedInput + expectedCached + expectedOutput)
-          expect(cost.confidence).toBe('exact')
+          expect(cost.confidence).toBe(
+            Object.hasOwn(GEMINI_ESTIMATED_RATE_REASONS, row.model)
+              ? 'estimated'
+              : 'exact',
+          )
         }
 
         const resolved = resolveGeminiRates(row.model, row.tier)
@@ -686,13 +691,8 @@ describe('per-tier golden table — published flex cached rates', () => {
     }
   })
 
-  it('does not halve flex cached tokens on the four models whose page keeps the standard cached rate', () => {
-    const models = [
-      'gemini-2.5-pro',
-      'gemini-2.5-flash',
-      'gemini-2.5-flash-lite',
-      'gemini-3.1-pro-preview',
-    ]
+  it('does not halve flex cached tokens on the models whose page keeps the standard cached rate', () => {
+    const models = ['gemini-2.5-flash-lite', 'gemini-3.1-pro-preview']
     const usage = makeUsage({
       inputTokens: 10_000,
       cachedInputTokens: 10_000,
@@ -708,11 +708,7 @@ describe('per-tier golden table — published flex cached rates', () => {
 })
 
 describe('property — sum(details) === microUsd', () => {
-  const KNOWN_MODELS = [
-    'gemini-2.5-pro',
-    'gemini-2.5-flash',
-    'gemini-2.5-flash-lite',
-  ] as const
+  const KNOWN_MODELS = Object.keys(GEMINI_PRICING)
 
   // Deterministic pseudo-random number generator (LCG) so tests are
   // reproducible without importing a random library.
@@ -770,7 +766,7 @@ describe('property — sum(details) === microUsd', () => {
 describe('Cost.usd — derived convenience field', () => {
   it('usd === microUsd / 1e6 for a priced call (round-trip within 1 µUSD)', () => {
     const usage = makeUsage({ inputTokens: 100_000, outputTokens: 5_000 })
-    const cost = computeCost('gemini-2.5-flash', usage)
+    const cost = computeCost('gemini-2.5-flash-lite', usage)
 
     expect(cost.microUsd).not.toBeNull()
     expect(cost.usd).not.toBeNull()
@@ -789,7 +785,7 @@ describe('Cost.usd — derived convenience field', () => {
   it('usd is exact division without rounding (microUsd / 1_000_000)', () => {
     // Use a model and token count that produces a non-round microUsd.
     const usage = makeUsage({ inputTokens: 1_000, outputTokens: 333 })
-    const cost = computeCost('gemini-2.5-flash', usage)
+    const cost = computeCost('gemini-2.5-flash-lite', usage)
 
     if (cost.microUsd !== null) {
       expect(cost.usd).toBe(cost.microUsd / 1_000_000)

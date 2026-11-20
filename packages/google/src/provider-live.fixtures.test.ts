@@ -38,25 +38,44 @@ const path = fileURLToPath(
 )
 const fixture = JSON.parse(readFileSync(path, 'utf8')) as LiveFixture
 
-describe('live Gemini model-refresh contracts', () => {
-  it.each(['gemini-3.8-flash', 'gemini-3.7-flash'])('rejects MINIMAL on %s', (model) => {
-    const probe = fixture.minimalReasoning[model]!
-    expect(probe).toMatchObject({ status: 400, errorStatus: 'INVALID_ARGUMENT' })
-    expect(probe.message).toContain('MINIMAL is not supported')
-    expect(
-      defaultGeminiRegistry
-        .resolve('google', model)
-        ?.capabilities?.admittedReasoningEfforts?.includes('none'),
-    ).toBe(false)
-  })
+/**
+ * The capture keeps its rows for models since removed from the registry
+ * (`gemini-3.7-flash`, removed 2026-11-20). Each fact is checked against every
+ * row of the capture, and against the descriptor only for the rows whose model
+ * is still registered; which models those are is pinned in models.test.ts.
+ */
+const stillRegistered = (models: readonly string[]): string[] =>
+  models.filter((model) => defaultGeminiRegistry.resolve('google', model) !== undefined)
 
-  it.each([
+describe('live Gemini model-refresh contracts', () => {
+  it.each(Object.keys(fixture.minimalReasoning))(
+    'the capture shows MINIMAL rejected on %s',
+    (model) => {
+      const probe = fixture.minimalReasoning[model]!
+      expect(probe).toMatchObject({ status: 400, errorStatus: 'INVALID_ARGUMENT' })
+      expect(probe.message).toContain('MINIMAL is not supported')
+    },
+  )
+
+  it.each(stillRegistered(Object.keys(fixture.minimalReasoning)))(
+    'the %s descriptor does not admit none',
+    (model) => {
+      expect(
+        defaultGeminiRegistry
+          .resolve('google', model)
+          ?.capabilities?.admittedReasoningEfforts?.includes('none'),
+      ).toBe(false)
+    },
+  )
+
+  const SEARCH_ACCEPTED = [
     'gemini-3.6-flash',
     'gemini-3.7-flash',
     'gemini-3.5-flash-lite',
     'gemini-3.1-flash-lite',
-  ])(
-    'accepted structured JSON plus Search on %s but the descriptor keeps it off',
+  ]
+  it.each(SEARCH_ACCEPTED)(
+    'the capture shows structured JSON plus Search accepted on %s',
     (model) => {
       const probe = fixture.structuredSearch[model]!
       expect(probe.status).toBe(200)
@@ -65,6 +84,12 @@ describe('live Gemini model-refresh contracts', () => {
         status: 200,
         json: { source: expect.any(String) },
       })
+    },
+  )
+
+  it.each(stillRegistered(SEARCH_ACCEPTED))(
+    'the %s descriptor keeps structured output with Search off anyway',
+    (model) => {
       // The request was accepted, but a 200 is not evidence that Search ran
       // (docs/grounded-structured.md), so the capability stays off.
       expect(
@@ -99,12 +124,18 @@ describe('live Gemini model-refresh contracts', () => {
   })
 
   it.each(Object.keys(fixture.cacheMinimum))(
-    'uses the live 1,024-token explicit-cache minimum for %s',
+    'the capture shows a 1,024-token explicit-cache minimum on %s',
     (model) => {
       const probe = fixture.cacheMinimum[model]!
       expect(probe.below).toMatchObject({ tokens: 103, status: 400 })
       expect(probe.below.message).toContain('min_total_token_count=1024')
       expect(probe.at).toMatchObject({ tokens: 1024, status: 200, usageTokens: 1024 })
+    },
+  )
+
+  it.each(stillRegistered(Object.keys(fixture.cacheMinimum)))(
+    'the %s descriptor uses the captured 1,024-token minimum',
+    (model) => {
       expect(
         defaultGeminiRegistry.resolve('google', model)?.capabilities?.caching?.minTokens,
       ).toBe(1024)

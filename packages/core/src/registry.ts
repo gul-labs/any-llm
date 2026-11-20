@@ -46,8 +46,8 @@ export interface ModelDescriptor {
    * Canonical provider-native model identifier. Resolution is exact: a request
    * resolves to this descriptor only when its model string equals `model` or
    * one of {@link ModelDescriptor.aliases}. There is no prefix matching, so an
-   * unregistered sibling (e.g. `"gemini-2.5-flash-image"` next to
-   * `"gemini-2.5-flash"`) is never priced or validated as this model. Identity
+   * unregistered sibling (an id that merely starts with this one, such as an
+   * image or preview variant) is never priced or validated as this model. Identity
    * for a descriptor is the pair (`provider`, `model`); the same bare `model`
    * string may be registered under multiple providers with different config
    * schemas.
@@ -65,7 +65,7 @@ export interface ModelDescriptor {
   /** Provider identifier (e.g. `"google"`). Must match the adapter's `id`. */
   provider: string
   /**
-   * Key into the pricing table (e.g. `"gemini-2.5-pro"`).
+   * Key into the pricing table (e.g. `"gemini-3.8-flash"`).
    * When omitted, the canonical {@link ModelDescriptor.model} is the pricing
    * key. Lookup is exact; there is no prefix matching.
    */

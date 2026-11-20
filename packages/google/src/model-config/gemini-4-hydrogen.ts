@@ -2,61 +2,51 @@ import { maxOutputTokensSchema } from '@gullabs/core'
 import { z } from 'zod'
 
 import { GOOGLE_MAX_TIMEOUT_MS, MAX_TIMER_MS } from '../client.js'
-import { cachedContentSchema } from './cached-content.js'
 import { GOOGLE_MODEL_LIMITS } from '../model-limits.js'
 import { GOOGLE_SAFETY_CATEGORIES, GOOGLE_SAFETY_THRESHOLDS } from '../safety-settings.js'
 
-export const Gemini25FlashConfigSchema = z
+/**
+ * Strict config for `gemini-4-hydrogen`, from Google's documentation only (documented,
+ * not live-verified): https://aistudio.google.com/docs/models/gemini-4-hydrogen.md,
+ * https://aistudio.google.com/docs/thinking.md and
+ * https://aistudio.google.com/docs/whats-new-gemini-4-carbon.md, read 2026-11-20.
+ *
+ * - Thinking levels low, medium, high, xhigh; default high, sent explicitly when no
+ *   effort is set. `xhigh` is `ThinkingLevel.XHIGH`. No `none` (Google rejects
+ *   `minimal`) and no `budgetTokens`.
+ * - No sampling keys (ADR-017; Google ignores them on Gemini 4).
+ * - No `cachedContent`: explicit caching is not supported on Gemini 4.
+ * - No `allowSchemaWithSearch`: nothing shows Search running beside a response schema on
+ *   Gemini 4, so the pair is rejected.
+ * - Search only at the standard or omitted tier: the flex branch has no `tools` and no
+ *   `requireGrounding`.
+ * - `maxOutputTokens` at most 65,536, the per-request cap on a non-streaming call.
+ */
+export const Gemini4HydrogenConfigSchema = z
   .union([
     z.strictObject({
-      temperature: z
-        .number()
-        .min(0)
-        .max(2)
-        .optional()
-        .meta({
-          title: 'Temperature',
-          description: 'Sampling temperature for gemini-2.5-flash.',
-          examples: [0.7],
-        }),
-      topP: z.number().min(0).max(1).optional().meta({
-        title: 'Top P',
-        description: 'Nucleus sampling probability for gemini-2.5-flash.',
-      }),
-      topK: z.number().int().positive().optional().meta({
-        title: 'Top K',
-        description: 'Top-k sampling limit for gemini-2.5-flash.',
-      }),
-      maxOutputTokens: maxOutputTokensSchema(GOOGLE_MODEL_LIMITS['gemini-2.5-flash'])
+      maxOutputTokens: maxOutputTokensSchema(GOOGLE_MODEL_LIMITS['gemini-4-hydrogen'])
         .optional()
         .meta({
           title: 'Max Output Tokens',
-          description: 'Maximum output token cap for gemini-2.5-flash.',
+          description:
+            'Maximum output token cap for gemini-4-hydrogen, thinking included: at most 65,536, the per-request cap on a non-streaming call.',
         }),
       stopSequences: z.array(z.string()).max(5).optional().meta({
         title: 'Stop Sequences',
-        description: 'Up to five stop sequences for gemini-2.5-flash.',
+        description: 'Up to five stop sequences for gemini-4-hydrogen.',
       }),
       serviceTier: z.literal('flex').meta({
         title: 'Service Tier',
-        description: 'Explicit flex tier for gemini-2.5-flash.',
+        description: 'Explicit flex tier for gemini-4-hydrogen.',
       }),
       reasoning: z
         .union([
           z.strictObject({
-            effort: z.enum(['none', 'low', 'medium', 'high']).meta({
+            effort: z.enum(['low', 'medium', 'high', 'xhigh']).meta({
               title: 'Reasoning Effort',
-              description: 'Reasoning effort for gemini-2.5-flash.',
-            }),
-            includeThoughts: z.boolean().optional().meta({
-              title: 'Include Thoughts',
-              description: 'Return provider thought summaries when supported.',
-            }),
-          }),
-          z.strictObject({
-            budgetTokens: z.number().int().min(0).max(24576).meta({
-              title: 'Reasoning Budget Tokens',
-              description: 'thinkingBudget token range for gemini-2.5-flash.',
+              description:
+                'Thinking level for gemini-4-hydrogen: low, medium, high, xhigh. none is not admitted (thinking cannot be turned off). xhigh is sent as thinkingLevel XHIGH.',
             }),
             includeThoughts: z.boolean().optional().meta({
               title: 'Include Thoughts',
@@ -66,29 +56,26 @@ export const Gemini25FlashConfigSchema = z
           z.strictObject({
             includeThoughts: z.boolean().meta({
               title: 'Include Thoughts',
-              description: 'Return provider thought summaries when supported.',
+              description:
+                'Return provider thought summaries when supported. The documented default level, high, is sent.',
             }),
           }),
         ])
         .optional()
         .meta({
           title: 'Reasoning',
-          description: 'Gemini 2.5 Flash thinkingBudget configuration.',
+          description:
+            'Gemini 4 Hydrogen thinkingLevel configuration. Without an effort the documented default level, high, is sent explicitly (Google calls thinkingLevel required for Gemini 4). thinkingBudget is not admitted.',
         }),
       timeoutMs: z.number().int().positive().max(GOOGLE_MAX_TIMEOUT_MS).optional().meta({
         title: 'Timeout',
-        description: 'Logical request timeout in milliseconds.',
+        description:
+          'Logical request timeout in milliseconds. Without it a flex call gets a 25-minute default deadline.',
       }),
       providerOptions: z
         .strictObject({
           google: z
             .strictObject({
-              requireGrounding: z.boolean().optional().meta({
-                title: 'Require Grounding',
-                description:
-                  'Fail the call unless the response proves Google Search ran (grounding metadata with at least one query). Judged only on a candidate that finished with STOP: a MAX_TOKENS or other abnormal finish returns with its own finish reason, a filtered one throws content_filter. The error is retryable only when no response schema is attached.',
-              }),
-              cachedContent: cachedContentSchema,
               safetySettings: z
                 .array(
                   z.strictObject({
@@ -106,21 +93,6 @@ export const Gemini25FlashConfigSchema = z
                 .meta({
                   title: 'Safety Settings',
                   description: 'Allowlisted Google safety settings.',
-                }),
-              tools: z
-                .array(
-                  z.strictObject({
-                    googleSearch: z.strictObject({}).meta({
-                      title: 'Google Search',
-                      description: 'Google Search grounding tool.',
-                    }),
-                  }),
-                )
-                .min(1)
-                .optional()
-                .meta({
-                  title: 'Tools',
-                  description: 'Allowlisted Google tools for gemini-2.5-flash.',
                 }),
               httpOptions: z
                 .strictObject({
@@ -144,64 +116,38 @@ export const Gemini25FlashConfigSchema = z
             .optional()
             .meta({
               title: 'Google Provider Options',
-              description: 'Allowlisted Google provider options for gemini-2.5-flash.',
+              description: 'Allowlisted Google provider options for gemini-4-hydrogen.',
             }),
         })
         .optional()
         .meta({
           title: 'Provider Options',
-          description: 'Provider-specific options accepted for gemini-2.5-flash.',
+          description: 'Provider-specific options accepted for gemini-4-hydrogen.',
         }),
     }),
     z.strictObject({
-      temperature: z
-        .number()
-        .min(0)
-        .max(2)
-        .optional()
-        .meta({
-          title: 'Temperature',
-          description: 'Sampling temperature for gemini-2.5-flash.',
-          examples: [0.7],
-        }),
-      topP: z.number().min(0).max(1).optional().meta({
-        title: 'Top P',
-        description: 'Nucleus sampling probability for gemini-2.5-flash.',
-      }),
-      topK: z.number().int().positive().optional().meta({
-        title: 'Top K',
-        description: 'Top-k sampling limit for gemini-2.5-flash.',
-      }),
-      maxOutputTokens: maxOutputTokensSchema(GOOGLE_MODEL_LIMITS['gemini-2.5-flash'])
+      maxOutputTokens: maxOutputTokensSchema(GOOGLE_MODEL_LIMITS['gemini-4-hydrogen'])
         .optional()
         .meta({
           title: 'Max Output Tokens',
-          description: 'Maximum output token cap for gemini-2.5-flash.',
+          description:
+            'Maximum output token cap for gemini-4-hydrogen, thinking included: at most 65,536, the per-request cap on a non-streaming call.',
         }),
       stopSequences: z.array(z.string()).max(5).optional().meta({
         title: 'Stop Sequences',
-        description: 'Up to five stop sequences for gemini-2.5-flash.',
+        description: 'Up to five stop sequences for gemini-4-hydrogen.',
       }),
       serviceTier: z.literal('standard').optional().meta({
         title: 'Service Tier',
-        description: 'Standard tier or omitted tier for gemini-2.5-flash.',
+        description: 'Standard tier or omitted tier for gemini-4-hydrogen.',
       }),
       reasoning: z
         .union([
           z.strictObject({
-            effort: z.enum(['none', 'low', 'medium', 'high']).meta({
+            effort: z.enum(['low', 'medium', 'high', 'xhigh']).meta({
               title: 'Reasoning Effort',
-              description: 'Reasoning effort for gemini-2.5-flash.',
-            }),
-            includeThoughts: z.boolean().optional().meta({
-              title: 'Include Thoughts',
-              description: 'Return provider thought summaries when supported.',
-            }),
-          }),
-          z.strictObject({
-            budgetTokens: z.number().int().min(0).max(24576).meta({
-              title: 'Reasoning Budget Tokens',
-              description: 'thinkingBudget token range for gemini-2.5-flash.',
+              description:
+                'Thinking level for gemini-4-hydrogen: low, medium, high, xhigh. none is not admitted (thinking cannot be turned off). xhigh is sent as thinkingLevel XHIGH.',
             }),
             includeThoughts: z.boolean().optional().meta({
               title: 'Include Thoughts',
@@ -211,18 +157,21 @@ export const Gemini25FlashConfigSchema = z
           z.strictObject({
             includeThoughts: z.boolean().meta({
               title: 'Include Thoughts',
-              description: 'Return provider thought summaries when supported.',
+              description:
+                'Return provider thought summaries when supported. The documented default level, high, is sent.',
             }),
           }),
         ])
         .optional()
         .meta({
           title: 'Reasoning',
-          description: 'Gemini 2.5 Flash thinkingBudget configuration.',
+          description:
+            'Gemini 4 Hydrogen thinkingLevel configuration. Without an effort the documented default level, high, is sent explicitly (Google calls thinkingLevel required for Gemini 4). thinkingBudget is not admitted.',
         }),
       timeoutMs: z.number().int().positive().max(GOOGLE_MAX_TIMEOUT_MS).optional().meta({
         title: 'Timeout',
-        description: 'Logical request timeout in milliseconds.',
+        description:
+          'Logical request timeout in milliseconds. Without it the call gets a 20-minute default deadline (Google asks for at least 20 minutes per call).',
       }),
       providerOptions: z
         .strictObject({
@@ -233,7 +182,6 @@ export const Gemini25FlashConfigSchema = z
                 description:
                   'Fail the call unless the response proves Google Search ran (grounding metadata with at least one query). Judged only on a candidate that finished with STOP: a MAX_TOKENS or other abnormal finish returns with its own finish reason, a filtered one throws content_filter. The error is retryable only when no response schema is attached.',
               }),
-              cachedContent: cachedContentSchema,
               safetySettings: z
                 .array(
                   z.strictObject({
@@ -265,7 +213,8 @@ export const Gemini25FlashConfigSchema = z
                 .optional()
                 .meta({
                   title: 'Tools',
-                  description: 'Allowlisted Google tools for gemini-2.5-flash.',
+                  description:
+                    'Allowlisted Google tools for gemini-4-hydrogen. Standard or omitted tier only: Search with flex is not admitted.',
                 }),
               httpOptions: z
                 .strictObject({
@@ -284,19 +233,19 @@ export const Gemini25FlashConfigSchema = z
             .optional()
             .meta({
               title: 'Google Provider Options',
-              description: 'Allowlisted Google provider options for gemini-2.5-flash.',
+              description: 'Allowlisted Google provider options for gemini-4-hydrogen.',
             }),
         })
         .optional()
         .meta({
           title: 'Provider Options',
-          description: 'Provider-specific options accepted for gemini-2.5-flash.',
+          description: 'Provider-specific options accepted for gemini-4-hydrogen.',
         }),
     }),
   ])
   .meta({
-    title: 'Gemini25FlashConfig',
+    title: 'Gemini4HydrogenConfig',
     description:
-      'Strict generateContent config for model gemini-2.5-flash. Budget reasoning, tunable sampling, flex/standard tiers, structured output, grounding, priced.',
-    examples: [{ serviceTier: 'flex', temperature: 0.7, reasoning: { effort: 'none' } }],
+      'Strict generateContent config for model gemini-4-hydrogen. Level reasoning (low, medium, high, xhigh; default high), fixed sampling, flex/standard tiers, structured output, grounding at the standard tier, no explicit caching, priced. Documented, not live-verified.',
+    examples: [{ reasoning: { effort: 'high' } }],
   })

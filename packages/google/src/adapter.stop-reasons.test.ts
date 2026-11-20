@@ -21,7 +21,7 @@ const FAKE_CTX: AdapterCtx = {
   auth: { apiKey: 'test-key' },
   logger: { info() {}, warn() {}, error() {}, debug() {} },
 }
-const MODEL = 'gemini-2.5-flash'
+const MODEL = 'gemini-2.5-flash-lite'
 
 const TOOL = {
   name: 'get_temperature',

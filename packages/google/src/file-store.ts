@@ -294,7 +294,8 @@ export class GoogleFileStore {
     try {
       // The signal goes to the SDK, and the wait is also raced against it: the
       // SDK's upload does not act on `abortSignal` (checked in
-      // `@google/genai` 2.25.0), and an abort cannot recall bytes already sent,
+      // `@google/genai` 2.25.0 and again in 3.6.1: `uploadFile` and
+      // `uploadBlobInternal` take no signal), and an abort cannot recall bytes already sent,
       // so the file may still be stored; the caller is released at once.
       uploadResp = await abortable(
         client.upload({

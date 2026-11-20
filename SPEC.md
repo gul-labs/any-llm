@@ -10,7 +10,8 @@
 1. Call **provider-hosted models** through self-contained provider packages composed via
    `composeProviders` (ADR-023): `@gullabs/google` over `@google/genai` (Gemini with Flex where
    supported; Gemma without Gemini-only Flex assumptions), `@gullabs/xai` over the `openai`
-   SDK's Responses API (grok-4.5, grok-4.6, grok-4.7), plus the dev-only CLI providers (`@gullabs/claude-cli`,
+   SDK's Responses API (grok-4.5, grok-4.6, grok-4.7), `@gullabs/openai` over the same SDK
+   (gpt-6.2-astra, gpt-6.2-sol, gpt-6.1-terra, gpt-6-luna), plus the dev-only CLI providers (`@gullabs/claude-cli`,
    `@gullabs/codex-cli`). The core engine ships zero provider knowledge.
 2. **Record token usage** (input / output / cached / **thinking**).
 3. Capture **thinking** — thinking _token usage_ always; the provider-returned _thought-summary
@@ -62,8 +63,9 @@ packages/
   core/       @gullabs/core       # types, ports, engine, callsite, computeCost, errors, record  (no provider deps)
   google/     @gullabs/google     # googleProvider: geminiAdapter over @google/genai + model configs + pricing  (peerDep @google/genai)
   xai/        @gullabs/xai        # xaiProvider: grok-4.5 / grok-4.6 / grok-4.7 over the openai SDK's Responses API  (peerDep openai)
-  claude-cli/ @gullabs/claude-cli # dev-only: claude-fable-5-1, claude-opus-5-5, claude-sonnet-5, claude-haiku-4-5-20251001
-  codex-cli/  @gullabs/codex-cli  # dev-only: gpt-6-astra, gpt-6-sol, gpt-6-luna
+  openai/     @gullabs/openai     # openaiProvider: gpt-6.2-astra / gpt-6.2-sol / gpt-6.1-terra / gpt-6-luna over the openai SDK  (peerDep openai ^7.60.0)
+  claude-cli/ @gullabs/claude-cli # dev-only: claude-fable-5-2, claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5
+  codex-cli/  @gullabs/codex-cli  # dev-only: gpt-6.2-sol, gpt-6.2-astra, gpt-6.1-terra, gpt-6-luna
   any-llm/    @gullabs/any-llm    # batteries-included facade: re-exports core + google
   drizzle/    @gullabs/drizzle    # reference llm_calls schema + drizzleUsageSink  (peerDep drizzle-orm)
   quota/      @gullabs/quota      # provider quota: rpm / rpd (day boundary) / tpm, presets, in-memory + Upstash stores
@@ -76,7 +78,7 @@ strict per-model Zod config schemas + pricing source + typed provider options, w
 
 Tooling: TypeScript (strict, `exactOptionalPropertyTypes`), **vitest**, **tsup** (ESM+CJS+d.ts),
 Node ≥22.12 (every package's `engines`; CI runs 22.12.0 and 24). Provider SDKs are **peerDependencies** (a host that only uses Gemini never pulls others). The provider-neutral and
-provider packages (`core`, `google`, `xai`, `quota`, `drizzle`, `any-llm`) import no Node built-in, `Buffer` or `process` (README, "Runtimes"); the CLI providers and `@gullabs/testing` are Node only.
+provider packages (`core`, `google`, `xai`, `openai`, `quota`, `drizzle`, `any-llm`) import no Node built-in, `Buffer` or `process` (README, "Runtimes"); the CLI providers and `@gullabs/testing` are Node only.
 
 > Naming note (decide before publish): "any-llm" collides with mozilla-ai/any-llm on npm; the
 > `@gullabs/*` scope is a working placeholder. Not a blocker for local build.
@@ -122,7 +124,7 @@ export interface GenConfig {
   providerOptions?: ProviderOptionsMap // open interface; each provider package augments it via declaration merging and enforces its own strict per-model allowlist (not a raw SDK passthrough)
 }
 export interface ReasoningIntent {
-  effort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' // gemini-2.5 → thinkingBudget; gemini-3 → thinkingLevel; xAI 4.6 admits xhigh
+  effort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' // admitted values are per model (descriptor `admittedReasoningEfforts`); gemini-2.5 → thinkingBudget; gemini-3/4 → thinkingLevel; xAI and OpenAI → reasoning.effort
   budgetTokens?: number
   includeThoughts?: boolean
 }
@@ -173,8 +175,13 @@ export interface Usage {
 //   usage_missing         1 on a Google 200 that carried no usageMetadata: the usage is unknown, the cost
 //                         is unpriced (ADR-044), else absent
 //   search_budget_exceeded  1 when an xAI `searchBudget` ceiling was exceeded (reported after the call), else absent
-//   usage_estimated       1 on the usage an xAI adapter ESTIMATED for a stream that failed after output began
-//                         (an estimate, priced 'estimated'; ADR-040 Amendments A and B), else absent
+//   usage_estimated       1 on the usage an xAI or OpenAI adapter ESTIMATED for a stream that failed after
+//                         output began (an estimate, priced 'estimated'; ADR-040 Amendments A and B), else absent
+//   service_tier_missing  1 when an OpenAI response echoed no `service_tier`: the served tier is unknown and the
+//                         cost is unpriced, never the requested tier's (ADR-047), else absent
+//   usage_incomplete      1 when OpenAI usage lacks `cached_tokens` or `cache_write_tokens` (unpriced), else absent
+//   usage_irreconcilable  1 when an OpenAI raw counter is malformed or contradicts another (unpriced), else absent
+//   cache_write, cache_write_30m, cache_write_12h  OpenAI cache-write tokens and their TTL split, as reported
 // `normalizeUsage` also warns, and the engine reports the cost as 'estimated', when totalTokens
 // is larger than inputTokens + outputTokens (the provider counted tokens the fields omit).
 
@@ -425,8 +432,8 @@ details = { input, cached, output, tools }   // thinking billed at output rate (
 - Long-context tier: Gemini Pro charges a premium above 200k input tokens — `inputRate` selects by
   total `inputTokens`. (Flash-lite is flat; encode per-model.)
 - Unknown model → `cost = { microUsd: null, … }`; tokens + raw still recorded for later backfill.
-- Input is priced **per modality where the provider prices modalities apart**. Gemini 2.5 Flash, 2.5
-  Flash-Lite and 3.1 Flash-Lite bill audio input above text, image and video (and cached audio apart from
+- Input is priced **per modality where the provider prices modalities apart**. Gemini 2.5 Flash-Lite
+  and 3.1 Flash-Lite bill audio input above text, image and video (and cached audio apart from
   cached text); the adapter records `promptTokensDetails` / `cacheTokensDetails` as
   `details.input_<modality>` / `cached_<modality>` and the pricing source bills the audio tokens at the audio
   rates and the rest at the text rate. Every other model has one input rate for all modalities. An audio
@@ -437,6 +444,11 @@ details = { input, cached, output, tools }   // thinking billed at output rate (
   no audio and covers every cached token proves cached audio is zero and the call stays exact. Source: Google's pricing page, read
   2026-10-03 (ADR-039).
 - Priced tiers are `standard` and `flex`; there is no Batch API path, so no batch rates are carried.
+- Snapshot `gemini-2026-11-20` (ADR-048): Gemini 4 Carbon and Argon are priced at the rates billed from
+  2026-12-01 and their cost is `estimated` until that date's re-snapshot (the reason is an adapter warning
+  on every attempt that reports usage); there is no date logic. A grounded Gemini 4 call is `estimated`
+  even with zero queries (grounding's internal instructions are billed as tokens in a share the usage does
+  not isolate).
 - `Cost.providerReported?: { microUsd }` is the total a provider itself reports billing (xAI
   `cost_in_usd_ticks`, 1 tick = 1e-10 USD, rounded like a lane). `microUsd` stays the snapshot price; the
   engine warns when the two totals differ by more than 1 µUSD per lane that can carry rounding (a non-zero amount or tokens for it; ADR-039 Amendment A).
@@ -518,22 +530,41 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
 
 ## Google adapter (`@gullabs/google`)
 
-- `geminiAdapter(): ProviderAdapter` over `@google/genai` (peerDep), API-key auth only (`{ apiKey }`
-  passed per call; no Vertex support in v1 — see DESIGN.md).
+- `geminiAdapter(): ProviderAdapter` over `@google/genai` (peerDep `^3.6.1`), API-key auth only (`{ apiKey }`
+  passed per call; no Vertex support in v1 — see DESIGN.md). The SDK client is built with `vertexai: false`,
+  `apiVersion: 'v1beta'` and the pinned Developer API base URL, so no environment variable moves a call
+  (ADR-048).
+- No hidden continuation, and request logging switched off: every `generateContent` sends
+  `automaticContinuation: false`, so the SDK never re-sends a request on its own, and `store: false`, Google's
+  request-level logging override (it overrides the project's logging setting for that request; it is not a
+  statement about any other retention at Google). An attempt is one dispatch, except that a flex call with
+  `flexFallback` makes a second, standard dispatch after a flex capacity error; both carry the two fields. A `CONTINUATION`
+  finish is `length` with that response's usage and a warning; calls beside it are dropped; the
+  continuation token is never replayed. Every SDK `FinishReason` member is mapped explicitly (policy blocks
+  → `content_filter`, `MAX_TOKENS`/`CONTINUATION` → `length`, the rest → `other`).
+- Final turn, before dispatch: a last non-empty assistant turn is `bad_request` on 3.5 Flash-Lite, 3.6 Flash,
+  3.8 Flash and Gemini 4; on 3.8 Flash so is a final user turn without non-empty text (a turn of tool
+  results is exempt).
 - Maps: `serviceTier:'flex'` → Gemini Flex only when the model descriptor supports it; `reasoning`
-  → `thinkingConfig` (budget for 2.5, level for 3.x); throws `LlmError('bad_request')` when the mapping cannot be applied;
+  → `thinkingConfig` (budget for 2.5, level for 3.x and 4; Gemini 4 sends its documented default level when
+  no effort is set, and `xhigh` → `XHIGH` on Neon and Hydrogen); throws `LlmError('bad_request')` when the mapping cannot be applied;
   `output.jsonSchema` → `responseJsonSchema` (`responseMimeType:'application/json'`) only when native
   structured output is enabled, and a tool's `inputJsonSchema` → `parametersJsonSchema`, both
   verbatim and in the host's key order, never the OpenAPI `responseSchema` / `parameters`
   (ADR-034). A keyword Google does not enforce (`const`, `oneOf`, `allOf`, `exclusiveMinimum`,
-  `multipleOf`, `uniqueItems`, …), a malformed schema, and (on Gemma models) `format`, `minLength`
-  and `maxLength` are `bad_request` with the path before dispatch; `providerOptions.google.*` is a strict per-model allowlist mapped
+  `multipleOf`, `uniqueItems`, …), a malformed schema, (on Gemma models) `format`, `minLength`
+  and `maxLength`, and (on Gemini 4, whose profile is documentation-only) `pattern`, `minLength`,
+  `maxLength`, `items: false` and any `format` but `date-time`, `date`, `time` are `bad_request` with the
+  path before dispatch; `providerOptions.google.*` is a strict per-model allowlist mapped
   field-by-field onto the SDK call, not forwarded verbatim.
-- Routes Gemini 2.5 (`gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`),
-  Gemini 3.x (`gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`,
-  `gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`), and two API-verified Gemma 4
-  models (`gemma-4-31b-it`, `gemma-4-26b-a4b-it`). `gemini-3-flash-preview` and
-  `gemini-3.5-flash` do not resolve. Both Gemma 4 descriptors support multimodal parts, native structured
+- Routes Gemini 2.5 (`gemini-2.5-flash-lite`), Gemini 3.x (`gemini-3.1-pro-preview`,
+  `gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.8-flash`), Gemini 4
+  (`gemini-4-carbon`, `gemini-4-argon`, `gemini-4-neon`, `gemini-4-hydrogen`; documented, not
+  live-verified), and two API-verified Gemma 4 models (`gemma-4-31b-it`, `gemma-4-26b-a4b-it`).
+  `gemini-3-flash-preview`, `gemini-3.5-flash` and the ids removed on 2026-11-20 (ADR-048) do not resolve.
+  Gemini 4 has no explicit caching (`cachedContent` and `GoogleCacheStore.create` are rejected), no schema
+  with Search, no Search with flex, output caps of 32,768 (Carbon, Argon) and 65,536 (Neon, Hydrogen), and
+  a 20-minute default deadline on untiered and standard calls without `timeoutMs` (flex keeps 25). Both Gemma 4 descriptors support multimodal parts, native structured
   output, grounding, and thinking (thinkingLevel). They do not support Gemini Flex or pricing.
 - Usage: read `usageMetadata` → `promptTokenCount`→inputTokens, `candidatesTokenCount`→outputTokens,
   `cachedContentTokenCount`→cachedInputTokens, `thoughtsTokenCount`→thinkingTokens; copy whole object
@@ -548,7 +579,7 @@ Core imports no ORM; a host with a different store implements `UsageSink` direct
 - Grounding (ADR-013, ADR-035, ADR-044): `providerOptions.google.tools: [{ googleSearch: {} }]` (or a
   `cachedContent` handle whose `toolKinds` lists `googleSearch`) sets `details.web_search_requested`; so does
   grounding metadata the request did not declare (evidence: the fee is priced from the observed queries,
-  `estimated`); `details.web_search_calls` is the number of `webSearchQueries` occurrences. The pricing source adds the fee to `Cost.details.tools` (Gemini 3: per query; Gemini 2.5:
+  `estimated`); `details.web_search_calls` is the number of `webSearchQueries` occurrences. The pricing source adds the fee to `Cost.details.tools` (Gemini 3 and 4: per query; Gemini 2.5:
   per grounded prompt) and a call that ran Search is `estimated`. `requireGrounding: true` throws a
   `server` error with reason `grounding_missing` (usage attached) unless metadata with at least one
   non-empty query is present; it is `retryable: true` only without an output schema, and is judged only on
@@ -619,7 +650,7 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
   | `tools`             | `tools`               | `web_search` / `x_search`, at most one of each; needs `capabilities.grounding`                                                                                           |
   | `parallelToolCalls` | `parallel_tool_calls` | boolean                                                                                                                                                                  |
   | `toolChoice`        | `tool_choice`         | `'auto' \| 'required' \| 'none'` for the search tools only; needs non-empty `tools`; rejected with function tools, file attachments or the request-level `toolChoice`    |
-  | `maxTurns`          | `max_turns`           | integer ≥ 1; needs non-empty `tools`; caps agentic turns, not searches; xAI did not enforce it as of 2026-10-02                                                          |
+  | `maxTurns`          | `max_turns`           | integer ≥ 1; needs non-empty `tools`; caps agentic turns, not searches; enforcement is open (ADR-030)                                                                    |
   | `searchBudget`      | none (observed only)  | `{ maxWebSearchCalls?, maxXItems? }`, integers ≥ 1, at least one; needs the matching tool; over budget → warning + `details.search_budget_exceeded = 1`, result returned |
 
 - xAI structured output and tool parameters take standard JSON Schema (ADR-034). A nullable
@@ -640,13 +671,74 @@ false` (measured; the Gemini 3.x models), and turns `requireGrounding` on unless
   headers are on `providerMetadata.xai` as `requestId` and `rateLimitRemaining`
   (the real client reads them with the SDK's `.withResponse()`; a fake client reports none).
 - **Output mapping (ADR-040 Amendment B).** A `function_call` is a tool call only on a `completed` response
-  (an `incomplete` one drops every call, with a warning, and `finishReason` stays `length` / `other`); a
+  (an `incomplete` one drops every call, with a warning, and `finishReason` stays `length` / `content_filter` / `other`); a
   completed call with non-JSON arguments is a non-retryable `server` error with usage; a `refusal` content
-  part is `content_filter` with no text; reasoning summary parts join with a blank line. `temperature` is 0 to 2,
-  `topP` 0 to 1, and a structured-output schema `title` must match `^[a-zA-Z0-9_-]{1,64}$` (else `bad_request`).
+  part is `content_filter` with no text; reasoning summary parts join with a blank line. `temperature` is 0 to 1 and
+  `topP` 0 to 0.95 (xAI samples higher values at those caps while echoing the value sent, so the schema rejects them),
+  an `incomplete` response's `incomplete_details.reason` maps `max_output_tokens` to `length`, `content_filter` to
+  `content_filter`, and `max_prompt_tokens`, `max_time_limit` or any other value to `other` with a warning naming it,
+  and a structured-output schema `title` must match `^[a-zA-Z0-9_-]{1,64}$` (else `bad_request`).
 - Search tools plus `output.jsonSchema` is admitted on all three models
   (`structuredOutputWithTools`). A response reporting `num_server_side_tools_used: 0` and no
   `server_side_tool_usage_details` prices exactly with no tool fee. See ADR-030.
+
+---
+
+## OpenAI adapter (`@gullabs/openai`)
+
+Documented, not live-verified (ADR-047; every page read 2026-11-20). Full details in `packages/openai/README.md`.
+
+- `openaiAdapter(): ProviderAdapter` over the `openai` SDK's Responses API (peerDep `openai@^7.60.0`),
+  per-call API key only. Ships `gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6.1-terra`, `gpt-6-luna` (context
+  1,050,000, `maxOutputTokens` up to 128,000). One strict schema per model: `maxOutputTokens`,
+  `reasoning.effort` (6.2: `low | medium`; Terra and Luna: `none | low | medium | high | xhigh | max`),
+  `serviceTier` (6.2: `fast`; Terra and Luna: `flex | fast`), `timeoutMs`. No sampling keys, no
+  `providerOptions`, no `countTokens`.
+- **Transport.** No SDK client is constructed (its constructor reads `OPENAI_*` variables, one of them with no
+  opt-out). The adapter `POST`s `https://api.openai.com/v1/responses` itself with exactly `authorization`,
+  `content-type` and `accept` headers through the injected or global `fetch` with `redirect: 'manual'` (any 3xx
+  is a non-retryable error, never followed; a 200 that is not `text/event-stream` is refused), and uses only the SDK's
+  environment-free `openai/error` (`APIError.generate`, the connection errors, built as the SDK's request path
+  builds them) and `openai/streaming` (`Stream.fromSSEResponse`). One request per attempt; no environment
+  variable changes the destination or the headers.
+- **Request.** `store: false`; `system` is a leading `developer` input message; text and image input
+  (PNG, JPEG, WebP, GIF as base64 or a fully qualified `http(s)` URL, `detail: 'auto'`, at most 1,500
+  images and 512 MB inline per request; the URL is checked on the string sent and the data as padded standard
+  base64); any other part kind, and a message that maps to no input item, is `bad_request`. `reasoning.context` and
+  `parallel_tool_calls` are never sent. Structured output is `text.format` with `strict: true`; tools are
+  strict function tools; the two cannot be combined (`structuredOutputWithTools: false`). Both schemas pass
+  core's `assertJsonSchemaProfile(OPENAI_JSON_SCHEMA_PROFILE)` (`const` admitted) and the strict-mode structure
+  (a root of exactly `type: "object"`, no root `anyOf`, every object typed, closed and with `required` equal to
+  its properties, 5,000 properties, 10 levels, 1,000 enum values, 120,000 characters of names, enum and const
+  values, and per enum 15,000 characters of values when it has more than 250).
+- **Continuation `'state'` (ADR-029).** State is `{ openai: { model, input } }`: the request input plus every
+  output item in order. It is accepted only with new messages, only for the same provider and model, only
+  when its items pass the split check (the adapter's own request items exact, unknown keys rejected;
+  provider `message`, `reasoning` and `function_call` items type-gated and replayed as returned, unknown keys
+  tolerated, values only deferred features produce rejected), and a tool result must answer an unanswered call
+  in it.
+- **Streaming (ADR-036, ADR-040 rules).** `run()` decodes the event stream; a terminal event is required (an
+  early clean end is `server`). One deadline (`timeoutMs + 5 000`, or one hour) covers the whole call from its
+  start (`timeout`, `transport_timeout`, not retryable); caller aborts are re-thrown. A terminal item missing a
+  key its `response.output_item.done` event carried, or carrying `null` for it (a reasoning item's
+  `encrypted_content`), gets the completed item's value. An `error` event is an error whether it is a named
+  frame or a data-only frame of `type: "error"`; terminal types are matched as own keys only. Output has begun once an event other than the lifecycle events and `error` arrives, or when
+  the terminal snapshot itself lists output. Before
+  that a transient failure is retryable with no usage; after it nothing is retried, the error is
+  `mayHaveBilled` and carries a usage estimate. `response.failed` classifies through the `error.code` table
+  and keeps the terminal usage and echoed tier; an `error` event uses the same table but only `server_error`
+  before output retries (`rate_limit_exceeded` mid-stream never does).
+- **Errors.** 401/403 `invalid_auth`, 400/404/422 `bad_request`, 429 retryable `rate_limited` with
+  `Retry-After`, 5xx retryable `server`; a 429 billing, spend or usage-limit code is not retryable,
+  `reason: 'credits_exhausted'`.
+- **Cost (`openai-2026-11-20`).** Priced from the echoed `service_tier` (`default` standard, `flex` 50%,
+  `fast` / `priority` 2×); a missing echo sets `usage.details.service_tier_missing = 1` and is unpriced, an
+  unknown echo is an unpriced tier. Long context above 272,000 gross input tokens (2× input and cache, 1.5×
+  output). Cache writes 1.25× (30 minutes) or 2.5× (12 hours) of input inside the `input` lane
+  (`usage.details.cache_write`, `cache_write_30m`, `cache_write_12h`); a call with writes, or whose band the
+  cached reads decide, is `estimated`; raw counters that do not reconcile
+  (`usage.details.usage_irreconcilable`, checked before core normalises them) or usage that lacks its cache
+  lanes (`usage.details.usage_incomplete`) is unpriced.
 
 ---
 

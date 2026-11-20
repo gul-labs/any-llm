@@ -5,61 +5,71 @@
  */
 
 import { readFileSync } from 'node:fs'
+
 import { describe, it, expect } from 'vitest'
 import { assertRegistryInvariants } from '@gullabs/testing'
 import {
   CLAUDE_CLI_EFFORTS,
-  ClaudeFable51ConfigSchema,
-  ClaudeHaiku45ConfigSchema,
+  ClaudeFable52ConfigSchema,
+  ClaudeHaiku55ConfigSchema,
   ClaudeOpus55ConfigSchema,
-  ClaudeSonnet5ConfigSchema,
+  ClaudeSonnet55ConfigSchema,
   claudeCliModelDescriptors,
   claudeCliRegistry,
 } from './models.js'
 
 const EXPECTED_MODEL_IDS = [
-  'claude-fable-5-1',
+  'claude-fable-5-2',
   'claude-opus-5-5',
+  'claude-sonnet-5-5',
+  'claude-haiku-5-5',
+] as const
+
+const REMOVED_MODEL_IDS = [
+  'claude-fable-5-1',
   'claude-sonnet-5',
   'claude-haiku-4-5-20251001',
 ] as const
 
 describe('config schema', () => {
   it('rejects an unknown key (strict object)', () => {
-    const result = ClaudeHaiku45ConfigSchema.safeParse({ temperature: 0.5 })
+    const result = ClaudeHaiku55ConfigSchema.safeParse({ temperature: 0.5 })
     expect(result.success).toBe(false)
   })
 
   it('rejects a bad effort value', () => {
-    const result = ClaudeSonnet5ConfigSchema.safeParse({
+    const result = ClaudeSonnet55ConfigSchema.safeParse({
       reasoning: { effort: 'extreme' },
     })
     expect(result.success).toBe(false)
   })
 
-  it('rejects a reasoning key on Haiku 4.5', () => {
-    const result = ClaudeHaiku45ConfigSchema.safeParse({
-      reasoning: { effort: 'high' },
-    })
-    expect(result.success).toBe(false)
-  })
-
   it.each([
-    ['claude-fable-5-1', ClaudeFable51ConfigSchema],
+    ['claude-fable-5-2', ClaudeFable52ConfigSchema],
     ['claude-opus-5-5', ClaudeOpus55ConfigSchema],
-    ['claude-sonnet-5', ClaudeSonnet5ConfigSchema],
-  ] as const)('%s accepts low through max and rejects none', (id, schema) => {
-    const descriptor = claudeCliRegistry.resolve('claude-cli', id)
-    expect(descriptor?.configSchema).toBe(schema)
-    expect(descriptor?.capabilities?.admittedReasoningEfforts).toEqual(CLAUDE_CLI_EFFORTS)
-    for (const effort of CLAUDE_CLI_EFFORTS) {
-      expect(schema.safeParse({ reasoning: { effort } }).success).toBe(true)
-    }
-    expect(schema.safeParse({ reasoning: { effort: 'none' } }).success).toBe(false)
-  })
+    ['claude-sonnet-5-5', ClaudeSonnet55ConfigSchema],
+    ['claude-haiku-5-5', ClaudeHaiku55ConfigSchema],
+  ] as const)(
+    '%s accepts low through max and rejects none and ultracode',
+    (id, schema) => {
+      const descriptor = claudeCliRegistry.resolve('claude-cli', id)
+      expect(descriptor?.configSchema).toBe(schema)
+      expect(descriptor?.capabilities?.reasoningApi).toBe('level')
+      expect(descriptor?.capabilities?.admittedReasoningEfforts).toEqual(
+        CLAUDE_CLI_EFFORTS,
+      )
+      expect([...CLAUDE_CLI_EFFORTS]).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+      for (const effort of CLAUDE_CLI_EFFORTS) {
+        expect(schema.safeParse({ reasoning: { effort } }).success).toBe(true)
+      }
+      expect(schema.safeParse({ reasoning: { effort: 'none' } }).success).toBe(false)
+      // `ultracode` is a Claude Code workflow switch, not a model level.
+      expect(schema.safeParse({ reasoning: { effort: 'ultracode' } }).success).toBe(false)
+    },
+  )
 
   it('accepts an empty config', () => {
-    const result = ClaudeHaiku45ConfigSchema.safeParse({})
+    const result = ClaudeHaiku55ConfigSchema.safeParse({})
     expect(result.success).toBe(true)
   })
 })
@@ -85,24 +95,24 @@ describe('registry', () => {
     expect(descriptor?.provider).toBe('claude-cli')
   })
 
-  it.each(['claude-fable-5', 'claude-opus-4-8'])('resolve(%s) is undefined', (id) => {
-    expect(claudeCliRegistry.resolve('claude-cli', id)).toBeUndefined()
+  it('registers the four ids in this order', () => {
+    expect(claudeCliModelDescriptors.map((d) => d.model)).toEqual([
+      'claude-fable-5-2',
+      'claude-opus-5-5',
+      'claude-sonnet-5-5',
+      'claude-haiku-5-5',
+    ])
   })
 
-  it('does not advertise a reasoning control for Haiku 4.5', () => {
-    const descriptor = claudeCliRegistry.resolve(
-      'claude-cli',
-      'claude-haiku-4-5-20251001',
-    )
-    expect(descriptor?.capabilities?.reasoningApi).toBeUndefined()
-    expect(descriptor?.capabilities?.admittedReasoningEfforts).toEqual([])
-    expect(
-      descriptor?.configSchema.safeParse({ reasoning: { effort: 'high' } }).success,
-    ).toBe(false)
-  })
+  it.each([...REMOVED_MODEL_IDS, 'claude-fable-5', 'claude-opus-4-8'])(
+    'resolve(%s) is undefined',
+    (id) => {
+      expect(claudeCliRegistry.resolve('claude-cli', id)).toBeUndefined()
+    },
+  )
 
   it('validateConfig accepts a valid config via the Standard Schema surface', () => {
-    const descriptor = claudeCliRegistry.resolve('claude-cli', 'claude-sonnet-5')
+    const descriptor = claudeCliRegistry.resolve('claude-cli', 'claude-sonnet-5-5')
     const result = descriptor?.validateConfig['~standard'].validate({
       reasoning: { effort: 'medium' },
     })
@@ -113,10 +123,7 @@ describe('registry', () => {
   })
 
   it('validateConfig rejects an invalid config via the Standard Schema surface', () => {
-    const descriptor = claudeCliRegistry.resolve(
-      'claude-cli',
-      'claude-haiku-4-5-20251001',
-    )
+    const descriptor = claudeCliRegistry.resolve('claude-cli', 'claude-haiku-5-5')
     const result = descriptor?.validateConfig['~standard'].validate({
       temperature: 0.7,
     })
@@ -128,7 +135,21 @@ describe('registry', () => {
 })
 
 describe('claude-cli limits and media', () => {
-  it('states each limit as the CLI reports it in the captured modelUsage, and admits no media', () => {
+  // The documented API figures (Anthropic models overview, read 2026-11-20). Only
+  // Opus 5.5 also has a CLI-reported value (the next test).
+  it('states the documented 1M context and 128K output for every model, and admits no media', () => {
+    for (const d of claudeCliModelDescriptors) {
+      expect(d.limits, d.model).toEqual({
+        contextWindow: 1_000_000,
+        maxOutputTokens: 128_000,
+      })
+      expect(d.capabilities?.inputMimeTypes).toEqual([])
+    }
+  })
+
+  // The capture (Claude Code 2.1.282, 2026-09-26) holds a `modelUsage` for one id
+  // that is still registered. Its ids for removed models are not registry claims.
+  it('claude-opus-5-5 states the limits the CLI reported in the captured modelUsage', () => {
     const fixture = JSON.parse(
       readFileSync(
         new URL('./__fixtures__/model-refresh-p-a1.json', import.meta.url),
@@ -140,23 +161,23 @@ describe('claude-cli limits and media', () => {
         { modelUsage: Record<string, { contextWindow: number; maxOutputTokens: number }> }
       >
     }
+    const reported = fixture.responses['claude-opus-5-5']?.modelUsage['claude-opus-5-5']
+    expect(reported).toBeDefined()
+    expect(claudeCliRegistry.resolve('claude-cli', 'claude-opus-5-5')?.limits).toEqual({
+      contextWindow: reported?.contextWindow,
+      maxOutputTokens: reported?.maxOutputTokens,
+    })
+    const captured = Object.keys(fixture.responses)
     for (const d of claudeCliModelDescriptors) {
-      const reported = fixture.responses[d.model]?.modelUsage[d.model]
-      expect(reported, d.model).toBeDefined()
-      expect(d.limits).toEqual({
-        contextWindow: reported?.contextWindow,
-        maxOutputTokens: reported?.maxOutputTokens,
-      })
-      expect(d.capabilities?.inputMimeTypes).toEqual([])
+      if (d.model !== 'claude-opus-5-5') expect(captured, d.model).not.toContain(d.model)
     }
   })
 })
 
 describe('claude-cli configKeys', () => {
-  it('lists only the keys each schema names: Haiku has no reasoning, none has maxOutputTokens', () => {
+  it('lists the keys every schema names and none has maxOutputTokens', () => {
     for (const d of claudeCliModelDescriptors) {
-      const haiku = d.model === 'claude-haiku-4-5-20251001'
-      expect(d.configKeys).toEqual(haiku ? ['timeoutMs'] : ['reasoning', 'timeoutMs'])
+      expect(d.configKeys).toEqual(['reasoning', 'timeoutMs'])
     }
   })
 })

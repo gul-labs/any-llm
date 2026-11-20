@@ -1715,7 +1715,7 @@ function attachCallContext(
  * const result = await client.generate(
  *   {
  *     provider: 'google',
- *     model: 'gemini-2.5-pro',
+ *     model: 'gemini-3.8-flash',
  *     messages: [{ role: 'user', parts: [{ kind: 'text', text: 'Hello!' }] }],
  *   },
  *   { auth: { apiKey: process.env['GEMINI_API_KEY']! } },
