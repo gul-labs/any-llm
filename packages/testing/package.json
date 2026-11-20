@@ -33,14 +33,14 @@
     "build": "tsup"
   },
   "peerDependencies": {
-    "@google/genai": "^2",
+    "@google/genai": "^3.6.1",
     "@gullabs/core": "workspace:*",
     "@gullabs/google": "workspace:*",
     "@gullabs/xai": "workspace:*",
     "openai": "^7"
   },
   "devDependencies": {
-    "@google/genai": "^2.31.0",
+    "@google/genai": "^3.6.1",
     "@gullabs/core": "workspace:*",
     "@gullabs/google": "workspace:*",
     "@gullabs/xai": "workspace:*",

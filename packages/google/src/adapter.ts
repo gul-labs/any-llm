@@ -1521,8 +1521,10 @@ export function geminiAdapterWithClientFactory(
       //
       // @google/genai issue #1277: on SDK versions before 2.0.0,
       // httpOptions.timeout is a no-op for generateContent. Upstream landed a
-      // related Undici dispatcher fix in 2.0.0 (commit 850f680), so this
-      // ceiling is now a second guard, not the only one. On explicit flex calls
+      // related Undici dispatcher fix in 2.0.0 (commit 850f680), and 3.6.1
+      // arms `httpOptions.timeout` on every fetch (`createAttemptSignal` in
+      // `ApiClient.apiCall`), so this ceiling is now a second guard, not the
+      // only one. On explicit flex calls
       // without timeoutMs, the engine arms NO AbortSignal; relying solely on
       // httpOptions.timeout risks a silent hang. We arm our own
       // AbortController here and combine it with any incoming signal so WE
