@@ -382,6 +382,119 @@ describe('final-turn rules, before dispatch', () => {
     expect(sent).toHaveLength(2)
   })
 
+  describe('3.8 Flash final turn with a tool result: only a turn made entirely of tool results is exempt', () => {
+    const tools = [
+      {
+        name: 'lookup',
+        description: 'Look something up',
+        inputJsonSchema: { type: 'object', properties: { q: { type: 'string' } } },
+      },
+    ]
+    const RESULT = {
+      kind: 'tool-result' as const,
+      toolCallId: 'call_1',
+      toolName: 'lookup',
+      result: { a: 1 },
+    }
+    const IMAGE = { kind: 'inline-media' as const, mimeType: 'image/png', data: 'AAAA' }
+
+    /** Turn 1 (a signed call), then the final turn built from `parts`. */
+    async function finalTurn(parts: Message['parts']): Promise<unknown> {
+      responses.push(
+        ok([
+          {
+            functionCall: { id: 'call_1', name: 'lookup', args: { q: 'x' } },
+            thoughtSignature: 'c2ln',
+          },
+        ]),
+      )
+      const first = await geminiAdapter().run(request('gemini-3.8-flash', { tools }), CTX)
+      responses.push(ok())
+      return geminiAdapter()
+        .run(
+          request('gemini-3.8-flash', {
+            tools,
+            messages: [USER, first.message, { role: 'user', parts }],
+            transientProviderState: first.transientProviderState as JsonValue,
+          }),
+          CTX,
+        )
+        .then(
+          () => undefined,
+          (e: unknown) => e,
+        )
+    }
+
+    it('only tool results: dispatched', async () => {
+      expect(await finalTurn([RESULT])).toBeUndefined()
+      expect(sent).toHaveLength(2)
+    })
+
+    it('a tool result and an image without text: bad_request naming the turn, not dispatched', async () => {
+      const err = (await finalTurn([RESULT, IMAGE])) as LlmError
+      expect(err).toBeInstanceOf(LlmError)
+      expect(err).toMatchObject({
+        kind: 'bad_request',
+        retryable: false,
+        provider: 'google',
+      })
+      expect(err.issues?.[0]?.path).toBe('messages[2]')
+      expect(sent).toHaveLength(1)
+    })
+
+    it('a tool result, an image and non-empty text: dispatched', async () => {
+      expect(
+        await finalTurn([
+          RESULT,
+          IMAGE,
+          { kind: 'text', text: 'Describe the image too.' },
+        ]),
+      ).toBeUndefined()
+      expect(sent).toHaveLength(2)
+    })
+
+    it('a tool result, an empty-string text part and an image: bad_request (the text is not non-empty)', async () => {
+      const err = (await finalTurn([
+        RESULT,
+        { kind: 'text', text: '' },
+        IMAGE,
+      ])) as LlmError
+      expect(err).toMatchObject({
+        kind: 'bad_request',
+        retryable: false,
+        provider: 'google',
+      })
+      expect(err.issues?.[0]?.path).toBe('messages[2]')
+      expect(sent).toHaveLength(1)
+    })
+
+    // "Non-empty" is a statement about length: a text part of length > 0
+    // satisfies the documented rule. Whitespace is not examined, because the
+    // documentation does not speak to it.
+    it('a tool result, an image and whitespace-only text: dispatched (the text is non-empty)', async () => {
+      expect(
+        await finalTurn([RESULT, IMAGE, { kind: 'text', text: '  \n' }]),
+      ).toBeUndefined()
+      expect(sent).toHaveLength(2)
+    })
+
+    it('a tool result and whitespace-only text: dispatched (the text is non-empty)', async () => {
+      expect(await finalTurn([RESULT, { kind: 'text', text: ' ' }])).toBeUndefined()
+      expect(sent).toHaveLength(2)
+    })
+
+    it('a user turn of whitespace-only text alone: dispatched (the text is non-empty)', async () => {
+      responses.push(ok())
+      await geminiAdapter().run(
+        request('gemini-3.8-flash', {
+          messages: [{ role: 'user', parts: [{ kind: 'text', text: '\t ' }] }],
+        }),
+        CTX,
+      )
+      expect(sent).toHaveLength(1)
+    })
+  })
+
   it('Gemini 4 is not held to the 3.8 text rule (not documented for it)', async () => {
     responses.push(ok())
     await geminiAdapter().run(

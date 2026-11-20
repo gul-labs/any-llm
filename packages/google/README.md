@@ -566,8 +566,9 @@ is documented, not live-verified.
 
 A request whose last non-empty turn is an assistant turn is `bad_request` before dispatch on
 `gemini-3.5-flash-lite`, `gemini-3.6-flash`, `gemini-3.8-flash` and the Gemini 4 models (Google answers
-400 there), and on `gemini-3.8-flash` so is a final user turn with no non-empty text, unless it is a turn
-of tool results.
+400 there), and on `gemini-3.8-flash` so is a final user turn with no non-empty text, unless every part
+of it is a tool result; a tool result beside an image still needs the text. Non-empty means a text part
+of length greater than zero; whitespace is not examined, because the documentation does not speak to it.
 
 ## Gemini 4
 

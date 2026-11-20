@@ -84,6 +84,29 @@ const OK = {
   },
 }
 
+/**
+ * A response that ends with `CONTINUATION` and carries a continuation token: with
+ * automatic continuation on, the SDK would send the request again.
+ */
+const continuation = (parts: unknown[]) => ({
+  status: 200,
+  body: {
+    candidates: [
+      {
+        content: { role: 'model', parts },
+        finishReason: 'CONTINUATION',
+        continuationToken: 'opaque-continuation-token',
+      },
+    ],
+    usageMetadata: {
+      promptTokenCount: 10,
+      candidatesTokenCount: 40,
+      thoughtsTokenCount: 5,
+      totalTokenCount: 55,
+    },
+  },
+})
+
 describe('store: false and no automatic continuation on every generation dispatch', () => {
   it('the registry has models to check', () => {
     expect(DESCRIPTORS.length).toBeGreaterThan(0)
@@ -104,19 +127,26 @@ describe('store: false and no automatic continuation on every generation dispatc
   )
 
   it.each(FLEX_DESCRIPTORS.map((d) => [d.model, d] as const))(
-    '%s: the standard dispatch after a flex capacity error carries store: false too',
+    '%s: the standard dispatch after a flex capacity error is one request (it is not continued) and carries store: false too',
     async (_model, descriptor) => {
       responses.push({
         status: 503,
         body: { error: { code: 503, message: 'at capacity', status: 'UNAVAILABLE' } },
       })
+      // The standard dispatch ends with CONTINUATION and a token: if that dispatch
+      // lost automaticContinuation: false, the SDK would send a third request and
+      // consume the response queued after it.
+      responses.push(continuation([{ text: 'partial answer' }]))
       responses.push(OK)
       const result = await geminiAdapter().run(
         request(descriptor, { config: { serviceTier: 'flex' } }),
         CTX,
       )
       expect(result.servedServiceTier).toBe('standard')
+      expect(result.finishReason).toBe('length')
+      expect(result.text).toBe('partial answer')
       expect(sent).toHaveLength(2)
+      expect(responses).toHaveLength(1)
       expect(sent.map((s) => s.body['store'])).toEqual([false, false])
       expect(
         sent.map(
@@ -131,25 +161,6 @@ describe('store: false and no automatic continuation on every generation dispatc
 })
 
 describe('a CONTINUATION finish is one fetch, returned as length', () => {
-  const continuation = (parts: unknown[]) => ({
-    status: 200,
-    body: {
-      candidates: [
-        {
-          content: { role: 'model', parts },
-          finishReason: 'CONTINUATION',
-          continuationToken: 'opaque-continuation-token',
-        },
-      ],
-      usageMetadata: {
-        promptTokenCount: 10,
-        candidatesTokenCount: 40,
-        thoughtsTokenCount: 5,
-        totalTokenCount: 55,
-      },
-    },
-  })
-
   it.each(DESCRIPTORS.map((d) => [d.model, d] as const))(
     '%s: one request, this response usage, a warning, the token not kept',
     async (_model, descriptor) => {
