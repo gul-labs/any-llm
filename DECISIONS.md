@@ -4309,8 +4309,14 @@ the probe that would close it.
    `POST https://api.openai.com/v1/responses` through the injected or global `fetch`, with exactly
    `authorization: Bearer <key>`, `content-type: application/json` and `accept: text/event-stream` (no
    `user-agent`: the runtime's `fetch` supplies its default, and a version string would need build-time
-   injection for nothing the API requires), the body `JSON.stringify({ ...params, stream: true })` and the call's
-   own abort signal. It uses two SDK modules whose runtime graph reads no environment variable and does not load
+   injection for nothing the API requires), the body `JSON.stringify({ ...params, stream: true })`, the call's own
+   abort signal, and `redirect: 'manual'`. A redirect is never followed (a 307 or 308 would re-send the prompt
+   and the bearer token to an unpinned URL): every 3xx, or an opaque redirect, is a non-retryable `server` error
+   naming the status and location. `'manual'` rather than `'error'`, because `'error'` rejects inside `fetch`
+   as an anonymous `TypeError` that cannot be told from a network failure and would classify as a retryable
+   connection error. A 200 that is not the stream is refused too: a `content-type` other than
+   `text/event-stream` is a non-retryable `bad_request` that may have billed (a `fetch` that buffered or rewrote
+   the answer), and a missing body is an early end. It uses two SDK modules whose runtime graph reads no environment variable and does not load
    the client module (checked in the installed 7.60.0: `streaming.js`, `core/streaming.js`, `core/error.js`,
    `error.js`, `internal/{tslib,errors,shims}.js`, `internal/decoders/line.js`,
    `internal/utils/{bytes,log,values}.js`): `openai/error`, whose `APIError.generate` and connection errors are
@@ -4329,12 +4335,21 @@ the probe that would close it.
    the SDK path did.
 5. **Streaming over the isolated transport (ADR-040 rules).** This supersedes the plan's decision to stream
    through the SDK's `responses.stream()` helper: the helper needs a constructed client (item 4). The client
-   iterates the decoded events and keeps only the terminal event's response object. A terminal event
+   iterates the decoded events and keeps only the terminal event's response object. Terminal event types are
+   matched as own keys of a `Map`, so a provider-controlled `type` such as `constructor` or `__proto__` is never
+   taken as terminal. Every decoded event of type `error` is an error event, in both framings: a named
+   `event: error` frame (the decoder throws for it) and a data-only frame whose JSON has `type: "error"` (the
+   decoder yields it; the SDK's `ResponseStream` threw for it), both with the code and message read the same
+   way. An event whose data is not JSON (a truncated or corrupted frame) is a malformed body: a `server` error,
+   retryable only before output. A terminal event
    (`response.completed`, `response.incomplete`, `response.failed`) is required: a stream that ends without one
    is a `server` error. The event type decides the status. Completed items and the terminal object are
    reconciled minimally: for each terminal output item with the same `id` as an item a
-   `response.output_item.done` event completed, every key the terminal copy lacks is filled in from the
-   completed item (the terminal copy wins for keys it carries), with a warning; no item the terminal response
+   `response.output_item.done` event completed, each key of the completed item takes the completed value when
+   the terminal copy lacks the key or carries `null` for it and the completed value is not `null`; every non-null
+   terminal value wins. A terminal `null` beside a real value the stream delivered is an omission (`null` is how
+   the typings say "none"), and keeping it would replay a reasoning item without its ciphertext. There is a
+   warning for each fill; no item the terminal response
    does not list is added, because the terminal object is the provider's statement of the response and the state
    replays it. This keeps a reasoning item's `encrypted_content` when only the completion event carried it.
    (When the terminal response has no `output` array at all, the completed items are used, with a warning, rather
