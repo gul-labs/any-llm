@@ -253,6 +253,8 @@ export type OpenAiStreamFailure =
   | { kind: 'aborted' }
   | { kind: 'cut'; detail: string }
   | { kind: 'error_event'; code?: string; message?: string }
+  | { kind: 'malformed'; detail: string }
+  | { kind: 'not_event_stream'; contentType: string }
 
 /** What the stream had delivered when it failed. */
 export interface OpenAiStreamProgress {
@@ -295,6 +297,10 @@ function describeFailure(failure: OpenAiStreamFailure): string {
       return 'OpenAI stream was aborted after output began'
     case 'cut':
       return `OpenAI stream failed after output began: ${failure.detail}`
+    case 'malformed':
+      return `OpenAI stream body is not valid event JSON: ${failure.detail}`
+    case 'not_event_stream':
+      return `OpenAI answered 200 with content-type "${failure.contentType}", not text/event-stream; the request asked for a stream (a fetch that buffers or rewrites the response?)`
     case 'error_event':
       return `OpenAI stream sent an error event${
         failure.code !== undefined ? ` (code "${failure.code}")` : ''
@@ -322,11 +328,16 @@ const NON_OUTPUT_EVENTS: ReadonlySet<string> = new Set([
   'error',
 ])
 
-const TERMINAL_STATUS: Readonly<Record<string, string>> = {
-  'response.completed': 'completed',
-  'response.incomplete': 'incomplete',
-  'response.failed': 'failed',
-}
+/**
+ * Terminal event type to response status. A `Map`, so only these own keys match:
+ * a provider-controlled `type` such as `constructor` or `__proto__` must never be
+ * read as terminal through an inherited object property.
+ */
+const TERMINAL_STATUS: ReadonlyMap<string, string> = new Map([
+  ['response.completed', 'completed'],
+  ['response.incomplete', 'incomplete'],
+  ['response.failed', 'failed'],
+])
 
 // ---------------------------------------------------------------------------
 // buildOpenAiClient: an isolated transport over the SDK's environment-free parts
@@ -365,8 +376,9 @@ const TERMINAL_STATUS: Readonly<Record<string, string>> = {
  * The request: `POST https://api.openai.com/v1/responses` through the injected
  * or global `fetch`, with exactly `authorization: Bearer <key>`,
  * `content-type: application/json` and `accept: text/event-stream`, the body
- * `JSON.stringify({ ...params, stream: true })`, and the call's own abort
- * signal. No `user-agent` is set: the runtime's `fetch` supplies its default,
+ * `JSON.stringify({ ...params, stream: true })`, the call's own abort signal,
+ * and `redirect: 'manual'` (a 3xx is rejected, never followed). A 200 whose
+ * `content-type` is not `text/event-stream`, or that has no body, is refused. No `user-agent` is set: the runtime's `fetch` supplies its default,
  * and a package version string would have to be injected at build time for a
  * value the API does not need. One HTTP request per attempt, by construction
  * (there is no retry loop here; retries are the engine's).
@@ -513,6 +525,12 @@ export async function buildOpenAiClient(
                 accept: 'text/event-stream',
               },
               body: JSON.stringify({ ...params, stream: true }),
+              // Never follow a redirect: a 307 / 308 would re-send the prompt and the
+              // bearer token to an unpinned URL. `'manual'` hands the 3xx back so it is
+              // rejected below with its status and location; `'error'` would reject
+              // inside `fetch` as an anonymous `TypeError` indistinguishable from a
+              // network failure, which classifies as a retryable connection error.
+              redirect: 'manual',
               signal: controller.signal,
             })
           } catch (err) {
@@ -521,12 +539,46 @@ export async function buildOpenAiClient(
           }
           const idHeader = response.headers.get('x-request-id')
           const requestId = idHeader !== null && idHeader !== '' ? idHeader : undefined
+          if (
+            response.type === 'opaqueredirect' ||
+            (response.status >= 300 && response.status < 400)
+          ) {
+            response.body?.cancel().catch(() => undefined)
+            const location = response.headers.get('location')
+            throw new LlmError(
+              `OpenAI answered with a redirect (HTTP ${response.status}${
+                location !== null ? ` to ${location}` : ''
+              }); the client never follows redirects, so the request was not re-sent${
+                requestId !== undefined ? ` (request id ${requestId})` : ''
+              }.`,
+              {
+                kind: 'server',
+                retryable: false,
+                ...(response.status > 0 ? { httpStatus: response.status } : {}),
+                provider: 'openai',
+                cause: { status: response.status, location },
+              },
+            )
+          }
           if (!response.ok) {
             const err = await statusError(response)
             const why: unknown = stopped() ?? err
             throw why
           }
 
+          const contentType = response.headers.get('content-type')
+          if (contentType !== null && !/^\s*text\/event-stream\b/i.test(contentType)) {
+            response.body?.cancel().catch(() => undefined)
+            const why: unknown =
+              stopped() ??
+              new OpenAiStreamError({ kind: 'not_event_stream', contentType }, progress)
+            throw why
+          }
+          if (response.body === null) {
+            const why: unknown =
+              stopped() ?? new OpenAiStreamError({ kind: 'ended_early' }, progress)
+            throw why
+          }
           const stream = Stream.fromSSEResponse<Record<string, unknown>>(
             response,
             controller,
@@ -536,6 +588,22 @@ export async function buildOpenAiClient(
           try {
             for await (const event of stream) {
               const type = typeof event['type'] === 'string' ? event['type'] : ''
+              // A data-only frame of type `error` (no `event: error` line) is an error
+              // event too: the decoder throws only for a named error frame or a frame
+              // with an `error` field, and the SDK's `ResponseStream` threw for this
+              // shape (`APIError(undefined, event.error ?? event, event.message)`).
+              // The same error, with the response headers, takes the same path.
+              if (type === 'error') {
+                const nested = event['error']
+                const body = isRecord(nested) ? nested : event
+                const message = event['message']
+                throw new errors.APIError(
+                  undefined,
+                  body,
+                  typeof message === 'string' ? message : undefined,
+                  response.headers,
+                )
+              }
               if (!NON_OUTPUT_EVENTS.has(type)) progress.progressed = true
               const delta = event['delta']
               if (typeof delta === 'string') progress.outputChars += delta.length
@@ -549,7 +617,7 @@ export async function buildOpenAiClient(
                   completed.set(item['id'], item as OpenAiOutputItem)
                 }
               }
-              if (TERMINAL_STATUS[type] !== undefined) {
+              if (TERMINAL_STATUS.has(type)) {
                 terminal = { type, response: event['response'] }
                 break
               }
@@ -567,7 +635,7 @@ export async function buildOpenAiClient(
           // generated, even when no separate output event preceded it.
           const listed = terminal.response['output']
           if (Array.isArray(listed) && listed.length > 0) progress.progressed = true
-          const status = TERMINAL_STATUS[terminal.type] as string
+          const status = TERMINAL_STATUS.get(terminal.type) as string
           // The event type decides the status (`response.incomplete` is incomplete
           // whatever its object says), as the xAI client does (ADR-040).
           const reconciled = reconcileWithCompletedItems(
@@ -595,10 +663,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * Fill in what the terminal response's copy of an item lacks from the item its
- * `response.output_item.done` event completed (matched by `id`). The terminal
- * copy wins for every key it carries; a key only the completed item carries
- * (for example a reasoning item's `encrypted_content`, which the replay needs) is
- * copied in. No item the terminal response does not list is added: the terminal
+ * `response.output_item.done` event completed (matched by `id`). For each key of
+ * the completed item, its value is taken when the terminal copy lacks the key OR
+ * carries `null` for it and the completed value is not `null`; every non-null
+ * value the terminal copy carries wins. `null` is how the typings say "none" for
+ * fields such as `encrypted_content`, so a terminal `null` beside a real value the
+ * stream delivered is an omission, not a statement that the value is gone, and
+ * keeping the terminal `null` would replay a reasoning item without the
+ * ciphertext the next turn needs. No item the terminal response does not list is added: the terminal
  * object is the provider's statement of what the response is, and the state
  * replays it; filling gaps keeps that statement and only stops a field the
  * stream did deliver from being lost. When the terminal response has no `output`
@@ -624,7 +696,14 @@ function reconcileWithCompletedItems(
     if (!isRecord(item) || typeof item['id'] !== 'string') return item as OpenAiOutputItem
     const done = completed.get(item['id'])
     if (done === undefined) return item as OpenAiOutputItem
-    const missing = Object.keys(done).filter((key) => !Object.hasOwn(item, key))
+    // A key the terminal copy lacks, or carries as `null`, takes the completed
+    // item's non-null value; every non-null terminal value wins.
+    const missing = Object.keys(done).filter(
+      (key) =>
+        (!Object.hasOwn(item, key) || item[key] === null) &&
+        done[key] !== null &&
+        done[key] !== undefined,
+    )
     if (missing.length === 0) return item as OpenAiOutputItem
     filled.push(`${item['id']} (${missing.join(', ')})`)
     const copy: Record<string, unknown> = { ...item }
@@ -683,6 +762,13 @@ function streamFailure(
       progress,
       { cause: err },
     )
+  }
+  // The decoder throws a `SyntaxError` for an event whose data is not JSON (a
+  // truncated or corrupted frame): a malformed body, before or after output.
+  if (err instanceof SyntaxError) {
+    return new OpenAiStreamError({ kind: 'malformed', detail: err.message }, progress, {
+      cause: err,
+    })
   }
   if (!progress.progressed) return err
   return new OpenAiStreamError(
