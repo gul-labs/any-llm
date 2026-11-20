@@ -32,7 +32,11 @@ const okBody = () => sseBody(streamEvents(responseObject([messageItem('msg_1', '
  * body makes `Response` add `text/plain;charset=UTF-8` when no header is given,
  * which would hide the missing-header case.
  */
-const respond = (body: string, contentType: string | null) =>
+const respond = (
+  body: string,
+  contentType: string | null,
+  extra: Record<string, string> = {},
+) =>
   new Response(
     new ReadableStream<Uint8Array>({
       start(controller) {
@@ -40,7 +44,13 @@ const respond = (body: string, contentType: string | null) =>
         controller.close()
       },
     }),
-    { status: 200, headers: contentType === null ? {} : { 'content-type': contentType } },
+    {
+      status: 200,
+      headers: {
+        ...(contentType === null ? {} : { 'content-type': contentType }),
+        ...extra,
+      },
+    },
   )
 
 describe('content-type of a 200: exactly text/event-stream', () => {
@@ -54,6 +64,15 @@ describe('content-type of a 200: exactly text/event-stream', () => {
     'text/event-stream; charset=utf-8',
     ' text/event-stream ;charset=utf-8',
     'text/event-stream;',
+    // Grammar decisions: an empty parameter is allowed (`parameters = *( OWS ";"
+    // OWS [ parameter ] )`), so a trailing or doubled `;` is accepted.
+    'text/event-stream; charset=utf-8;',
+    'text/event-stream;;',
+    'text/event-stream; charset="utf-8"',
+    // A comma inside a quoted parameter value is data, not a second media type.
+    'text/event-stream; boundary="a,b"',
+    'text/event-stream; x="quoted \\" pair"',
+    'text/event-stream;\tcharset=utf-8',
   ]
   const rejected: Array<string | null> = [
     null,
@@ -69,6 +88,19 @@ describe('content-type of a 200: exactly text/event-stream', () => {
     'text/event-stream, application/json',
     'application/json; x=text/event-stream',
     'text /event-stream',
+    // A comma outside a quoted string: more than one media type.
+    'text/event-stream; charset=utf-8, application/json',
+    'text/event-stream, text/event-stream',
+    'text/event-stream,',
+    // Parameters the grammar does not admit.
+    'text/event-stream; =x',
+    'text/event-stream; charset',
+    'text/event-stream; charset=',
+    'text/event-stream; charset = utf-8',
+    'text/event-stream; a="unterminated',
+    'text/event-stream; a="x"y',
+    'text/event-stream x',
+    'text/event-stream/',
   ]
 
   it.each(accepted)('accepts %j (predicate and a real call)', async (contentType) => {
@@ -242,4 +274,241 @@ describe('the fill copies own provider keys verbatim', () => {
       expect(raw).toContain('"encrypted_content":"gAAAA-x"')
     },
   )
+})
+
+describe('two content-type fields', () => {
+  it('a real Headers object with two appended content-type fields is rejected', async () => {
+    const headers = new Headers()
+    headers.append('content-type', 'text/event-stream; charset=utf-8')
+    headers.append('content-type', 'application/json')
+    expect(headers.get('content-type')).toBe(
+      'text/event-stream; charset=utf-8, application/json',
+    )
+    expect(isEventStreamMediaType(headers.get('content-type'))).toBe(false)
+    const { adapter } = wiredAdapter(
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(c) {
+              c.enqueue(new TextEncoder().encode(JSON.stringify(responseObject([]))))
+              c.close()
+            },
+          }),
+          { status: 200, headers },
+        ),
+    )
+    const err = (await adapter.run(request(), CTX).catch((e: unknown) => e)) as LlmError
+    expect(err.kind).toBe('server')
+    expect(err.retryable).toBe(false)
+    expect(err.mayHaveBilled).toBe(true)
+  })
+})
+
+describe('every frame is classified in one place: shape, framing, error, terminal', () => {
+  const before = streamEvents(responseObject([]), { cutAfter: 2 })
+  const after = streamEvents(responseObject([messageItem('msg_1', 'abc')]), {
+    cutAfter: 5,
+  })
+  const named = (name: string, json: string) => `event: ${name}\ndata: ${json}\n\n`
+  const dataOnly = (json: string) => `data: ${json}\n\n`
+  const run = async (
+    prefix: ReturnType<typeof streamEvents>,
+    frame: string,
+    headers: Record<string, string> = {},
+  ) => {
+    const { adapter } = wiredAdapter(() =>
+      respond(`${sseBody(prefix)}${frame}`, 'text/event-stream', headers),
+    )
+    return (await adapter.run(request(), CTX).catch((e: unknown) => e)) as LlmError
+  }
+  const malformedCases: Array<[string, string]> = [
+    ['a named error frame with null', named('error', 'null')],
+    ['a named error frame with 42', named('error', '42')],
+    ['a named error frame with {}', named('error', '{}')],
+    [
+      'a data-only frame with an error field and no type',
+      dataOnly('{"error":{"code":"rate_limit_exceeded","message":"m"}}'),
+    ],
+    [
+      'an error frame whose payload type is something else',
+      named('error', '{"type":"response.output_text.delta","delta":"x"}'),
+    ],
+    [
+      'a non-error frame whose payload type is error',
+      named('response.created', '{"type":"error","code":"rate_limit_exceeded"}'),
+    ],
+  ]
+
+  it.each(malformedCases)(
+    '%s, before output: malformed, retryable, not billed',
+    async (_l, frame) => {
+      const err = await run(before, frame)
+      expect(err.kind).toBe('server')
+      expect(err.message).toContain('stream body is malformed')
+      expect(err.retryable).toBe(true)
+      expect(err.mayHaveBilled).toBeUndefined()
+    },
+  )
+
+  it.each(malformedCases)(
+    '%s, after output: malformed, not retryable, mayHaveBilled',
+    async (_l, frame) => {
+      const err = await run(after, frame)
+      expect(err.kind).toBe('server')
+      expect(err.message).toContain('stream body is malformed')
+      expect(err.retryable).toBe(false)
+      expect(err.mayHaveBilled).toBe(true)
+    },
+  )
+
+  const validError =
+    '{"type":"error","sequence_number":9,"code":"rate_limit_exceeded","message":"slow down","param":null}'
+  it.each([
+    ['named', named('error', validError)],
+    ['data-only', dataOnly(validError)],
+  ])(
+    'a valid %s error event is rate_limited, never retried, mayHaveBilled, before and after output',
+    async (_l, frame) => {
+      for (const prefix of [before, after]) {
+        const err = await run(prefix, frame)
+        expect(err.kind).toBe('rate_limited')
+        expect(err.retryable).toBe(false)
+        expect(err.mayHaveBilled).toBe(true)
+        expect(err.message).toContain('slow down')
+      }
+    },
+  )
+
+  it('a valid named server_error event is retryable only before output', async () => {
+    const body = '{"type":"error","code":"server_error","message":"m"}'
+    expect((await run(before, named('error', body))).retryable).toBe(true)
+    expect((await run(after, named('error', body))).retryable).toBe(false)
+  })
+
+  it('a valid error event keeps the response x-request-id', async () => {
+    const err = await run(before, named('error', validError), {
+      'x-request-id': 'req_named',
+    })
+    const sdkError = (err.cause as { cause?: { requestID?: string } }).cause
+    expect(sdkError?.requestID).toBe('req_named')
+  })
+
+  it('[DONE] before a terminal event ends the stream early (retryable before output)', async () => {
+    const err = await run(
+      before,
+      'data: [DONE]\n\n' +
+        sseBody(streamEvents(responseObject([messageItem('msg_1', 'late')])).slice(2)),
+    )
+    expect(err.kind).toBe('server')
+    expect(err.message).toContain('ended without a terminal event')
+    expect(err.retryable).toBe(true)
+  })
+
+  it('[DONE] after output and before a terminal event is not retryable', async () => {
+    const err = await run(after, 'data: [DONE]\n\n')
+    expect(err.message).toContain('ended without a terminal event')
+    expect(err.retryable).toBe(false)
+  })
+
+  it('[DONE] after the terminal event changes nothing', async () => {
+    const { adapter } = wiredAdapter(() =>
+      respond(`${okBody()}data: [DONE]\n\n`, 'text/event-stream'),
+    )
+    expect((await adapter.run(request(), CTX)).text).toBe('ok')
+  })
+})
+
+describe('remaining branches of the input model', () => {
+  /**
+   * A body that delivers `prefix`, then fails as undici does when the socket drops
+   * mid-body (`TypeError: terminated` caused by `UND_ERR_SOCKET`). Pull-based, so the
+   * prefix is read before the failure (an errored stream discards queued chunks).
+   */
+  const failingBody = (prefix: string) => {
+    let pulls = 0
+    return new ReadableStream<Uint8Array>({
+      pull(c) {
+        pulls += 1
+        if (pulls === 1 && prefix !== '') {
+          c.enqueue(new TextEncoder().encode(prefix))
+          return
+        }
+        c.error(
+          Object.assign(new TypeError('terminated'), {
+            cause: Object.assign(new Error('other side closed'), {
+              code: 'UND_ERR_SOCKET',
+            }),
+          }),
+        )
+      },
+    })
+  }
+
+  it('a non-2xx whose body cannot be read is the status error, its message the read failure', async () => {
+    const { adapter } = wiredAdapter(
+      () =>
+        new Response(failingBody(''), { status: 503, headers: { 'retry-after': '3' } }),
+    )
+    const err = (await adapter.run(request(), CTX).catch((e: unknown) => e)) as LlmError
+    expect(err.kind).toBe('server')
+    expect(err.httpStatus).toBe(503)
+    expect(err.retryable).toBe(true)
+    expect(err.retryAfterMs).toBe(3000)
+  })
+
+  it('a body that fails before any output is a retryable transport failure', async () => {
+    const created = sseBody(streamEvents(responseObject([]), { cutAfter: 1 }))
+    const { adapter } = wiredAdapter(
+      () =>
+        new Response(failingBody(created), {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+    )
+    const err = (await adapter.run(request(), CTX).catch((e: unknown) => e)) as LlmError
+    expect(err.kind).toBe('server')
+    expect(err.retryable).toBe(true)
+    expect(err.usage).toBeUndefined()
+  })
+
+  it('a body that fails after output is a cut: not retryable, mayHaveBilled, estimate', async () => {
+    const after = sseBody(
+      streamEvents(responseObject([messageItem('msg_1', 'abc')]), { cutAfter: 5 }),
+    )
+    const { adapter } = wiredAdapter(
+      () =>
+        new Response(failingBody(after), {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+    )
+    const err = (await adapter.run(request(), CTX).catch((e: unknown) => e)) as LlmError
+    expect(err.kind).toBe('server')
+    expect(err.retryable).toBe(false)
+    expect(err.mayHaveBilled).toBe(true)
+    expect(err.usage?.details['usage_estimated']).toBe(1)
+  })
+
+  it('a terminal event without a response object is an early end', async () => {
+    const body = `${sseBody(streamEvents(responseObject([]), { cutAfter: 2 }))}data: {"type":"response.completed","sequence_number":3}\n\n`
+    const { adapter } = wiredAdapter(() => respond(body, 'text/event-stream'))
+    const err = (await adapter.run(request(), CTX).catch((e: unknown) => e)) as LlmError
+    expect(err.kind).toBe('server')
+    expect(err.message).toContain('ended without a terminal event')
+  })
+
+  it('a terminal response with no output array uses the completed items, with a warning', async () => {
+    const events = streamEvents(responseObject([messageItem('msg_1', 'kept')]))
+    const terminal = events[events.length - 1] as unknown as {
+      response: Record<string, unknown>
+    }
+    const { output: _drop, ...withoutOutput } = terminal.response
+    terminal.response = withoutOutput
+    const { adapter } = wiredAdapter(() => respond(sseBody(events), 'text/event-stream'))
+    const result = await adapter.run(request(), CTX)
+    expect(result.text).toBe('kept')
+    expect(
+      result.warnings.some((w) => w.message.includes('carried no output array')),
+    ).toBe(true)
+  })
 })

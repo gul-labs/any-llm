@@ -364,9 +364,9 @@ const TERMINAL_STATUS: ReadonlyMap<string, string> = new Map([
  *   request path (`makeRequest`, `makeStatusError`) builds them, so core's
  *   `classifyError`, the `Retry-After` reading and the billing-code checks see
  *   the same objects as before.
- * - `openai/streaming` (`src/core/streaming.ts`): `Stream.fromSSEResponse`
- *   decodes the event stream and turns an `error` event into an `APIError` with
- *   no status.
+ * - `openai/streaming` (`src/core/streaming.ts`): `Stream.fromSSEResponse` in
+ *   its `'events'` mode decodes the frames (JSON parse, `[DONE]`) and decides
+ *   nothing; the client classifies every frame itself.
  *
  * Their runtime module graph (`streaming.js`, `core/streaming.js`,
  * `core/error.js`, `error.js`, `internal/{tslib,errors,shims}.js`,
@@ -583,32 +583,57 @@ export async function buildOpenAiClient(
               stopped() ?? new OpenAiStreamError({ kind: 'ended_early' }, progress)
             throw why
           }
-          const stream = Stream.fromSSEResponse<Record<string, unknown>>(
+          // `'events'` mode with event names: the decoder parses each frame's JSON
+          // (ending at `[DONE]`) and yields `{ event, data }` for every frame without
+          // deciding anything; `'legacy'` would throw for `event: error` frames and for
+          // any payload with an `error` field before the shape could be checked. The
+          // whole decision (shape, error in either framing, terminal, output) is below.
+          const stream = Stream.fromSSEResponse<{ event: string | null; data: unknown }>(
             response,
             controller,
+            undefined,
+            true,
+            'events',
           )
           const completed = new Map<string, OpenAiOutputItem>()
           let terminal: { type: string; response: unknown } | undefined
           try {
-            for await (const decoded of stream as AsyncIterable<unknown>) {
-              // Every payload must be an object with a non-empty string `type` (own
-              // property), checked before it can count as output or be read further.
+            for await (const frame of stream) {
+              const name = frame.event
+              const decoded = frame.data
+              // 1. Shape: every payload is an object with an own non-empty string
+              //    `type`, checked before anything else reads it or counts it as output.
               if (!isEventPayload(decoded)) {
                 throw new OpenAiStreamError(
                   {
                     kind: 'malformed',
-                    detail: `an event payload is ${describePayload(decoded)}, not an object with a non-empty string type`,
+                    detail: `${
+                      name !== null ? `an "${name}" frame's` : 'an event'
+                    } payload is ${describePayload(decoded)}, not an object with a non-empty string type`,
                   },
                   progress,
                 )
               }
               const event = decoded
               const type = event['type']
-              // A data-only frame of type `error` (no `event: error` line) is an error
-              // event too: the decoder throws only for a named error frame or a frame
-              // with an `error` field, and the SDK's `ResponseStream` threw for this
-              // shape (`APIError(undefined, event.error ?? event, event.message)`).
-              // The same error, with the response headers, takes the same path.
+              // 2. Framing: the Responses streaming reference names each SSE event after
+              //    its payload's `type` (`event: response.created` carries
+              //    `"type": "response.created"`, `event: error` carries `"type": "error"`).
+              //    A frame whose `event:` name and `type` disagree is not a documented
+              //    shape; neither wins, it is malformed. A data-only frame (no name) is
+              //    read by its `type`.
+              if (name !== null && name !== type) {
+                throw new OpenAiStreamError(
+                  {
+                    kind: 'malformed',
+                    detail: `an "${name}" frame carries a payload of type ${JSON.stringify(type)}`,
+                  },
+                  progress,
+                )
+              }
+              // 3. Error, in either framing: the code and message are read as the SDK's
+              //    `ResponseStream` read them (`event.error ?? event`, `event.message`),
+              //    and the error keeps the response headers (its `x-request-id`).
               if (type === 'error') {
                 const nested = event['error']
                 const body = isRecord(nested) ? nested : event
@@ -673,21 +698,83 @@ export async function buildOpenAiClient(
   }
 }
 
+/** RFC 9110 §5.6.2 `tchar`. */
+const TCHAR = /[!#$%&'*+\-.^_`|~0-9A-Za-z]/
+
 /**
- * True when a `content-type` value is exactly the media type `text/event-stream`:
- * the type/subtype compared case-insensitively, optional whitespace around it,
- * and optional parameters after `;`. A media type (RFC 9110 §8.3.1) is
- * `type "/" subtype *( OWS ";" OWS parameter )`, one value: a missing or empty
- * header, a lookalike subtype (`event-stream+json`, `event-streamx`) and a
- * comma-joined list (`text/event-stream, application/json`, which is what
- * `Headers.get` returns for two `content-type` fields and is not one media type)
- * are all something else.
+ * True when a `content-type` value is exactly ONE media type, `text/event-stream`,
+ * parsed with the RFC 9110 grammar (§8.3.1 and §5.6.6):
+ *
+ * ```
+ * media-type = type "/" subtype parameters
+ * parameters = *( OWS ";" OWS [ parameter ] )
+ * parameter  = parameter-name "=" parameter-value
+ * value      = token / quoted-string
+ * ```
+ *
+ * Type and subtype are tokens compared case-insensitively; whitespace around the
+ * value is allowed. The whole string must be consumed: a comma outside a quoted
+ * string means the field carried more than one media type (`Headers.get` joins
+ * duplicate fields with ", "), and is rejected, as is any parameter that does
+ * not fit the grammar (`; =x`, an unterminated quote). An empty parameter (a
+ * trailing `;`) is allowed, because the grammar makes `parameter` optional. A
+ * missing or empty header is not a media type.
  */
 export function isEventStreamMediaType(value: string | null): boolean {
   if (value === null) return false
-  const semicolon = value.indexOf(';')
-  const essence = (semicolon === -1 ? value : value.slice(0, semicolon)).trim()
-  return essence.toLowerCase() === 'text/event-stream'
+  let i = 0
+  const n = value.length
+  const ows = (): void => {
+    while (i < n && (value[i] === ' ' || value[i] === '\t')) i += 1
+  }
+  const token = (): string => {
+    const start = i
+    while (i < n && TCHAR.test(value[i] as string)) i += 1
+    return value.slice(start, i)
+  }
+  const quoted = (): boolean => {
+    if (value[i] !== '"') return false
+    i += 1
+    while (i < n) {
+      const c = value[i] as string
+      if (c === '"') {
+        i += 1
+        return true
+      }
+      if (c === '\\') {
+        i += 2
+        continue
+      }
+      // qdtext: HTAB, SP, %x21, %x23-5B, %x5D-7E, obs-text (%x80-FF)
+      const code = c.charCodeAt(0)
+      if (code < 0x20 && c !== '\t') return false
+      if (code === 0x7f) return false
+      i += 1
+    }
+    return false
+  }
+  ows()
+  const type = token()
+  if (type === '' || value[i] !== '/') return false
+  i += 1
+  const subtype = token()
+  if (subtype === '') return false
+  for (;;) {
+    ows()
+    if (i === n) break
+    if (value[i] !== ';') return false
+    i += 1
+    ows()
+    if (i === n || value[i] === ';') continue
+    if (token() === '' || value[i] !== '=') return false
+    i += 1
+    if (value[i] === '"') {
+      if (!quoted()) return false
+    } else if (token() === '') {
+      return false
+    }
+  }
+  return type.toLowerCase() === 'text' && subtype.toLowerCase() === 'event-stream'
 }
 
 /** A decoded event payload this client reads: an object with an own non-empty string `type`. */
