@@ -44,7 +44,7 @@
     "@gullabs/core": "workspace:*",
     "@gullabs/google": "workspace:*",
     "@gullabs/xai": "workspace:*",
-    "openai": "^7.60.0"
+    "openai": "^7.63.0"
   },
   "engines": {
     "node": ">=22.12.0"
