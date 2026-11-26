@@ -39,7 +39,7 @@
     "drizzle-orm": ">=0.45.4 <1"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.5.16",
+    "@electric-sql/pglite": "^0.6.0",
     "@gullabs/core": "workspace:*",
     "@types/pg": "^8.23.1",
     "drizzle-orm": "^0.45.4",
